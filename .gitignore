@@ -1,0 +1,56 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+sender_config.json
+
+# Runtime/generated data
+output/
+*.jsonl
+*.xlsx
+*.csv
+*.html
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+pip-wheel-metadata/
+*.spec
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Archives
+*.zip
+*.tar.gz
+*.rar
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ai / local tooling
+.replit
+replit.nix
+.cache/
+.local/
+.agents/
+.freebuff
