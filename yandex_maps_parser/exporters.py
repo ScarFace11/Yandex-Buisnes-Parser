@@ -226,18 +226,23 @@ def _apply_conditional_formatting(ws) -> None:
 
 # ── Excel incremental (web mode) ─────────────────────────────
 #
-# The workbook stays open in memory during the run.  Each enriched record
-# is appended immediately so the user can download a partially-complete
-# file at any time.  Thread-safe via _EXCEL_LOCK.
+# The workbook stays open in memory during the run.  Records are appended
+# immediately, but the file is saved to disk only every _EXCEL_BATCH_SIZE
+# records to avoid the overhead of serializing the full workbook on every
+# single enrichment.  Thread-safe via _EXCEL_LOCK.
+
+_EXCEL_BATCH_SIZE = 5  # save to disk every N records
+
 
 class _ExcelState:
     """Mutable container for the in-progress workbook."""
-    __slots__ = ("wb", "path", "open")
+    __slots__ = ("wb", "path", "open", "_dirty")
 
     def __init__(self):
         self.wb: openpyxl.Workbook | None = None
         self.path: str = ""
         self.open: bool = False
+        self._dirty: int = 0  # unsaved row count
 
 
 _excel = _ExcelState()
@@ -254,26 +259,34 @@ def _init_excel(path: str) -> None:
         ws.sheet_view.showGridLines = False
         _write_headers(ws)
         wb.save(path)
-        _excel.wb   = wb
-        _excel.path = path
-        _excel.open = True
+        _excel.wb    = wb
+        _excel.path  = path
+        _excel.open  = True
+        _excel._dirty = 0
 
 
 def _append_excel(record: dict) -> None:
-    """Append one record to the in-progress workbook (thread-safe)."""
+    """Append one record to the in-progress workbook (thread-safe).
+
+    Saves to disk every _EXCEL_BATCH_SIZE records instead of every record.
+    The file is always valid because rows are added in memory first; the
+    disk save just catches up periodically.
+    """
     with _EXCEL_LOCK:
         if not _excel.open or _excel.wb is None:
             return
         ws = _excel.wb.active
         ri = ws.max_row + 1
         _write_row(ws, ri, record)
-        # Update autofilter range
-        ws.auto_filter.ref = f"A1:{get_column_letter(NUM_COLS)}{ws.max_row}"
-        # Save every record so the file is always downloadable
-        try:
-            _excel.wb.save(_excel.path)
-        except Exception:
-            pass
+        _excel._dirty += 1
+        # Batched save: only write to disk periodically
+        if _excel._dirty >= _EXCEL_BATCH_SIZE:
+            ws.auto_filter.ref = f"A1:{get_column_letter(NUM_COLS)}{ws.max_row}"
+            try:
+                _excel.wb.save(_excel.path)
+            except Exception:
+                pass
+            _excel._dirty = 0
 
 
 def _finalize_excel(records: list[dict]) -> None:
@@ -288,7 +301,7 @@ def _finalize_excel(records: list[dict]) -> None:
         wb = _excel.wb
         ws = wb.active
 
-        # Autofilter — just set the ref, no Table object
+        # Autofilter
         last_row = max(ws.max_row, 2)
         ws.auto_filter.ref = f"A1:{get_column_letter(NUM_COLS)}{last_row}"
         ws.freeze_panes = "B2"
@@ -302,8 +315,9 @@ def _finalize_excel(records: list[dict]) -> None:
         _fill_stats_sheet(wb.create_sheet("\u0421\u0442\u0430\u0442\u0438\u0441\u0442\u0438\u043a\u0430"), records, HDR_FILL, HDR_FONT, CELL_BORDER, ALT_FILL)
 
         wb.save(_excel.path)
-        _excel.open = False
-        _excel.wb   = None
+        _excel.open  = False
+        _excel.wb    = None
+        _excel._dirty = 0
 
 
 # ── Excel (batch / CLI) ──────────────────────────────────────

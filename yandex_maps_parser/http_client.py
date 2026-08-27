@@ -19,6 +19,10 @@ _local       = threading.local()
 
 _MAX_RATE_LIMIT_RETRIES = 8
 
+# Hard cap on requests/second to avoid triggering 429 errors.
+# The token bucket uses this as the ceiling regardless of DELAY settings.
+_MAX_RPS = 10.0
+
 
 def _next_ua() -> str:
     global _ua_index
@@ -66,10 +70,6 @@ def _worker_session() -> requests.Session:
 
 
 # ── Global rate limiting ─────────────────────────────────────
-# All worker threads share one token bucket so the pool paces as a
-# unit instead of every thread hammering the API independently.
-# A 429 hit anywhere sets a global cooldown that pauses the whole pool.
-
 
 class _TokenBucket:
     __slots__ = ("_capacity", "_tokens", "_lock", "_last")
@@ -114,8 +114,6 @@ def _cooldown_remaining() -> float:
 
 
 # ── Usage statistics ─────────────────────────────────────────
-# Counters for quota / rate-limit transparency: requests by kind, 429 hits,
-# total cooldown time, and network retries. Reset per run via reset_stats().
 _stats_lock = threading.Lock()
 _stats = {
     "requests": 0,
@@ -168,16 +166,12 @@ def _wait_for_token() -> bool:
     """
     Block until the token bucket grants a slot AND any 429 cooldown has
     elapsed. Returns True if the wait was interrupted by a stop request.
-    The bucket rate is derived from the live config (MAX_WORKERS /
-    average DELAY), so run_web() overrides take effect automatically.
+    The rate is capped at _MAX_RPS to prevent 429 errors.
     """
-    workers   = max(1, getattr(state, "MAX_WORKERS", 8))
-    avg_delay = (state.DELAY_MIN + state.DELAY_MAX) / 2.0
-    rate      = workers / max(0.05, avg_delay)
     while True:
         if state._STOP_EVENT and state._STOP_EVENT.is_set():
             return True
-        wait = max(_token_bucket.try_acquire(rate), _cooldown_remaining())
+        wait = max(_token_bucket.try_acquire(_MAX_RPS), _cooldown_remaining())
         if wait <= 0:
             return False
         if _interruptible_sleep(wait, quiet=True):
@@ -201,7 +195,7 @@ def _interruptible_sleep(seconds: float, quiet: bool = False) -> bool:
             bucket = int(remaining // 10) * 10
             if bucket > 0 and bucket not in reported:
                 reported.add(bucket)
-                state.warn(f"  ⏸ Автопауза — продолжим через ≈{bucket} сек…")
+                state.warn(f"  \u23f8 \u0410\u0432\u0442\u043e\u043f\u0430\u0443\u0437\u0430 \u2014 \u043f\u0440\u043e\u0434\u043e\u043b\u0436\u0438\u043c \u0447\u0435\u0440\u0435\u0437 \u2248{bucket} \u0441\u0435\u043a\u2026")
         time.sleep(min(1.0, remaining))
 
 
@@ -230,7 +224,7 @@ def _get(
                 _stats_add("rate_limits")
                 if rate_limit_hits > _MAX_RATE_LIMIT_RETRIES:
                     state.warn(
-                        f"Лимит API (429) — слишком много повторов ({rate_limit_hits}), пропускаем URL."
+                        f"\u041b\u0438\u043c\u0438\u0442 API (429) \u2014 \u0441\u043b\u0438\u0448\u043a\u043e\u043c \u043c\u043d\u043e\u0433\u043e \u043f\u043e\u0432\u0442\u043e\u0440\u043e\u0432 ({rate_limit_hits}), \u043f\u0440\u043e\u043f\u0443\u0441\u043a\u0430\u0435\u043c URL."
                     )
                     return None
                 retry_after = 0
@@ -240,25 +234,23 @@ def _get(
                     pass
                 wait = retry_after if retry_after > 0 else min(20 * rate_limit_hits, 120)
                 state.warn(
-                    f"⏸ Лимит API (429). Автопауза {wait} сек, затем продолжим… "
-                    f"(попытка {rate_limit_hits}/{_MAX_RATE_LIMIT_RETRIES})"
+                    f"\u23f8 \u041b\u0438\u043c\u0438\u0442 API (429). \u0410\u0432\u0442\u043e\u043f\u0430\u0443\u0437\u0430 {wait} \u0441\u0435\u043a, \u0437\u0430\u0442\u0435\u043c \u043f\u0440\u043e\u0434\u043e\u043b\u0436\u0438\u043c\u2026 "
+                    f"(\u043f\u043e\u043f\u044b\u0442\u043a\u0430 {rate_limit_hits}/{_MAX_RATE_LIMIT_RETRIES})"
                 )
-                # Pause the WHOLE pool, not just this thread — other workers
-                # will also wait out the cooldown before their next request.
                 _set_cooldown(wait)
                 _stats_add("cooldown_seconds", wait)
                 if _interruptible_sleep(wait):
                     return None
-                state.warn("▶ Пауза завершена, продолжаем…")
+                state.warn("\u25b6 \u041f\u0430\u0443\u0437\u0430 \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043d\u0430, \u043f\u0440\u043e\u0434\u043e\u043b\u0436\u0430\u0435\u043c\u2026")
                 continue
 
             if r.status_code == 403:
-                state.warn("Доступ запрещён (403) — возможно, лимит API или блокировка IP.")
+                state.warn("\u0414\u043e\u0441\u0442\u0443\u043f \u0437\u0430\u043f\u0440\u0435\u0449\u0451\u043d (403) \u2014 \u0432\u043e\u0437\u043c\u043e\u0436\u043d\u043e, \u043b\u0438\u043c\u0438\u0442 API \u0438\u043b\u0438 \u0431\u043b\u043e\u043a\u0438\u0440\u043e\u0432\u043a\u0430 IP.")
                 return None
             if r.status_code < 500:
                 return r
 
-            # 5xx — временная ошибка сервера
+            # 5xx
             net_attempts += 1
             _stats_add("retries")
             if net_attempts >= state.RETRY_COUNT:
@@ -276,13 +268,7 @@ def _get(
 
 
 def _head(url: str, timeout: int = 10) -> int:
-    """
-    HEAD-check a URL (used for social-link validation). Reuses the proxy
-    rotation so links to sites that are only reachable through a proxy
-    (Instagram / Facebook / X from RU IPs) aren't wrongly flagged as dead.
-    Paced through the same token bucket — without it, validating a batch of
-    records fires an unpaced burst of HEAD requests.
-    """
+    """HEAD-check a URL (used for social-link validation)."""
     if _wait_for_token():
         return 0
     _stats_count_request(url)

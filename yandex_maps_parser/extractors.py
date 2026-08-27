@@ -52,19 +52,15 @@ _OK_NON_PROFILE = re.compile(
     re.I,
 )
 _TWITTER_NON_PROFILE = re.compile(
-    r'(?:twitter|x)\.com/(intent|share|search|home|hashtag|explore|settings|'
+    r'(?:twitter|x\.com)/(intent|share|search|home|hashtag|explore|settings|'
     r'notifications|messages|compose|status|i/)\b',
     re.I,
 )
 
-# Matches the marker followed by the opening brace of an embedded JSON object.
-# We deliberately do NOT match a bounded "{...}" body: nested objects would be
-# truncated by a non-greedy match, so we only grab the start position and let
-# json.JSONDecoder.raw_decode parse the complete (nested) value from there.
 _JSON_BLOB_RE = re.compile(
     r'(?:window\.__(?:NUXT|INITIAL_STATE|SERVER_STATE|DATA|STATE)__'
     r'|window\.serverState'
-    r'|<script[^>]+type=["\']application/json["\'][^>]*>)\s*[=\s]*(\{)',
+    r'|<script[^>]+type=["\']application/json["\'][^>]*>)\s*[=]*(\{)',
     re.I,
 )
 
@@ -72,6 +68,9 @@ _ANTIBOT_MARKERS = (
     "showcaptcha", "robot", "captcha", "i-am-not-robot",
     "access denied", "too many requests",
 )
+
+# Fast pre-check: does this string look like it could contain social URLs?
+_HTTP_LIKE = re.compile(r'https?://[^\s"\'<>\\\\,}{]+', re.I)
 
 
 # ── URL helpers ───────────────────────────────────────────────
@@ -133,12 +132,11 @@ def _normalize_social_url(platform: str, url: str) -> str | None:
 
 
 # ── Fetch ─────────────────────────────────────────────────────
+# NOTE: No sleep here — the token bucket in http_client._get() already
+# paces requests globally. The old per-thread sleep was redundant and
+# doubled the wall-clock time of the detail-fetch phase.
 
 def fetch_html(url: str, session=None) -> str:
-    # Sleep OUTSIDE the semaphore so the concurrency slot isn't held during the delay.
-    # Each thread still waits its own random interval (rate-limiting per thread),
-    # but slots are free for other threads to acquire immediately.
-    time.sleep(random.uniform(state.DELAY_MIN, state.DELAY_MAX))
     with state._detail_semaphore:
         r = _get(url, session=session or _worker_session(), timeout=(8, 15))
     if not r or r.status_code != 200:
@@ -161,7 +159,7 @@ def _collect_url_strings(obj, depth: int = 0, limit: int = 200) -> list[str]:
         if len(out) >= limit or d > 8:
             return
         if isinstance(o, str):
-            if "http" in o and re.search(r'https?://', o):
+            if "http" in o:  # fast pre-check, avoids regex on non-URL strings
                 out.append(o)
         elif isinstance(o, dict):
             for v in o.values():
@@ -178,15 +176,17 @@ def _extract_from_json_blob(html: str) -> dict[str, str]:
     r"""Parse embedded JSON blobs in a Yandex Maps page and extract socials.
 
     Uses JSONDecoder.raw_decode so deeply nested objects are parsed correctly
-    (the old regex approach truncated at the first closing brace) and escaped
-    URLs like "https:\/\/vk.com\/club1" come back unescaped.
+    and escaped URLs like "https:\/\/vk.com\/club1" come back unescaped.
+    Limits parsing to the first 200KB to avoid slow parsing of huge pages.
     """
     result: dict[str, str] = {}
+    # Only parse the first 200KB — social links are always near the top
+    text = html[:200_000]
     decoder = json.JSONDecoder()
-    for m in _JSON_BLOB_RE.finditer(html):
+    for m in _JSON_BLOB_RE.finditer(text):
         start = m.start(1)
         try:
-            obj, _ = decoder.raw_decode(html, start)
+            obj, _ = decoder.raw_decode(text, start)
         except (ValueError, json.JSONDecodeError):
             continue
         for url in _collect_url_strings(obj):
@@ -208,7 +208,7 @@ def extract_socials(text: str) -> dict[str, str]:
     """Extract real social-profile links (URLs only — no fabrication from
     phone numbers or @mentions in arbitrary text)."""
     result: dict[str, str] = {}
-    for url in re.findall(r'https?://[^\s"\'<>\\,\}\{]+', text):
+    for url in _HTTP_LIKE.findall(text):
         url = _clean_social_url(url)
         if not url or EXCLUDE_URLS.search(url):
             continue
@@ -236,15 +236,7 @@ def extract_description(html: str) -> str:
 
 
 def extract_reviews_count(html: str) -> str:
-    """Extract the numeric review count from a Yandex Maps detail page.
-
-    The Search API normally supplies this value.  This is the detail-page
-    fallback, where Yandex has used several JSON/text representations over
-    time.  Return a plain digit string so callers can normalize it to an
-    integer before exporting.
-    """
-    # Bounded spans prevent a generic "count" from latching onto an unrelated
-    # rating/count hundreds of characters away.
+    """Extract the numeric review count from a Yandex Maps detail page."""
     for pat in [
         re.compile(r'"reviewCount"\s*:\s*(\d+)'),
         re.compile(r'"reviewsCount"\s*:\s*(\d+)'),
