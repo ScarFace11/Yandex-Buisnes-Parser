@@ -31,6 +31,7 @@ from yandex_maps_parser.http_client import _worker_session, reset_stats
 from yandex_maps_parser.exporters import (
     _resolve, load_existing_urls, load_jsonl, dedupe_records,
     save_csv, save_json, save_excel, save_map,
+    _init_excel, _finalize_excel,
 )
 from yandex_maps_parser.geocoding import geocode_city, build_grid, build_grid_index
 from yandex_maps_parser.stats import print_stats, print_limit_stats
@@ -110,6 +111,16 @@ def run() -> None:
     except Exception:
         state._RESULT_HANDLE = None
 
+    # Start incremental Excel: create workbook with headers on first record
+    if state.OUTPUT_EXCEL:
+        state._EXCEL_APPEND_ENABLED = True
+        try:
+            _init_excel(paths["xlsx"])
+        except Exception:
+            state._EXCEL_APPEND_ENABLED = False
+    else:
+        state._EXCEL_APPEND_ENABLED = False
+
     ckpt       = load_checkpoint(base) if state.RESUME_MODE else {"seen_urls": set(), "completed": set()}
     seen_urls  = ckpt["seen_urls"]
     completed  = ckpt["completed"]
@@ -136,17 +147,10 @@ def run() -> None:
         colour="cyan", leave=False, disable=state._TQDM_DISABLE,
     )
 
-    # Each query gets its own worker and HTTP session. Detail fetching still
-    # uses the shared semaphore, so query parallelism cannot exceed the
-    # configured detail-request limit.
     seen_lock = threading.Lock()
     progress_lock = threading.Lock()
     progress_count = len(completed)
 
-    # Adaptive grid: a point is skipped without a request when >= 2 of its
-    # already-visited neighbours (up / left / up-left) were empty — either
-    # the API reported `found == 0` there, or everything was already seen
-    # (zero new candidates). Unknown neighbours never block a probe.
     grid_index = build_grid_index(grid_points) if state.USE_GRID else {}
     dead_points: dict[tuple[float, float], bool] = {}
 
@@ -162,9 +166,6 @@ def run() -> None:
         processed_keys: list[tuple] = []
         search_session = _worker_session()
 
-        # Producer/consumer pipeline: the current point's SEARCH runs while the
-        # PREVIOUS point's detail-fetch thread is still busy, so the Search API
-        # no longer idles during the (much slower) detail phase.
         batch_results: dict = {}
         batch_key: tuple | None = None
         batch_thread: threading.Thread | None = None
@@ -194,7 +195,6 @@ def run() -> None:
 
             point_num = progress_count + 1
 
-            # ── Adaptive skip: neighbours all empty → don't query this point ──
             nb = grid_index.get((lat, lon), {})
             known_nb = [n for n in (nb.get("up"), nb.get("left"), nb.get("up_left")) if n]
             if len(known_nb) >= 2 and all(dead_points.get(n) for n in known_nb):
@@ -216,21 +216,16 @@ def run() -> None:
 
             pbar_search.set_description(f"«{query}»")
 
-            # ── Producer: search this point (fast) ──
             candidates, found, new_candidates = collect_candidates(
                 query, state.CITY, lat, lon, seen_urls,
                 pbar_search, pbar_detail, seen_lock=seen_lock,
                 search_session=search_session,
             )
 
-            # Mark empty immediately — neighbours' skip checks depend on it.
-            # found == None (API error) → alive, no cascade of false skips.
             dead_points[(lat, lon)] = bool(
                 found is not None and (found == 0 or new_candidates == 0)
             )
 
-            # ── Consumer: drain the PREVIOUS point's details. Its thread was
-            # running while we searched this point — join it now. ──
             if batch_thread is not None:
                 batch_thread.join()
                 recs = batch_results.pop(batch_key, [])
@@ -238,10 +233,8 @@ def run() -> None:
                 processed_keys.append(batch_key)
                 mark_progress(query)
 
-            # ── Start this point's detail phase in the background. ──
             start_batch(key, candidates)
 
-        # Drain the last point's details (also on stop).
         if batch_thread is not None:
             batch_thread.join()
             recs = batch_results.pop(batch_key, [])
@@ -258,8 +251,6 @@ def run() -> None:
     pbar_pts.update(len(completed))
     state._progress(len(completed), total_points, "")
 
-    # One detail-fetch pool for the whole run: worker threads (and their
-    # per-thread HTTP sessions / TLS connections) survive across grid points.
     detail_pool = ThreadPoolExecutor(max_workers=state.MAX_WORKERS)
 
     try:
@@ -280,9 +271,6 @@ def run() -> None:
                     if records and state.OUTPUT_CSV:
                         save_csv(records, paths["csv"], append=True)
 
-                    # Records already stream to the JSONL sidecar via
-                    # _emit_result; persist the checkpoint after each query
-                    # so resume stays reliable without concurrent writes.
                     if processed_keys:
                         save_checkpoint(base, seen_urls, completed)
                         save_global_seen(seen_urls)
@@ -309,8 +297,7 @@ def run() -> None:
             state._RESULT_HANDLE = None
         save_global_seen(seen_urls)
 
-    # Rebuild the full list from the crash-safe JSONL sidecar. APPEND_MODE
-    # merges with the previous JSON; duplicates are removed in both cases.
+    # Rebuild the full list from the crash-safe JSONL sidecar.
     jsonl_records = load_jsonl(paths["jsonl"])
     full_records  = dedupe_records(jsonl_records)
     if state.APPEND_MODE and os.path.exists(paths["json"]):
@@ -326,16 +313,35 @@ def run() -> None:
         except Exception:
             pass
 
-    # The sidecar is fully merged — remove it so it doesn't linger in listings.
+    # Remove the JSONL sidecar
     try:
         if os.path.exists(paths["jsonl"]):
             os.remove(paths["jsonl"])
     except Exception:
         pass
 
-    if full_records:
-        if state.OUTPUT_EXCEL:
+    # Finalize Excel: add table, conditional formatting, legend/help/stats sheets
+    if state.OUTPUT_EXCEL and state._EXCEL_APPEND_ENABLED:
+        try:
+            _finalize_excel(full_records or all_results)
+        except Exception as exc:
+            state.warn(f"Ошибка финализации Excel: {exc}")
+            # Fallback: rebuild from scratch
+            try:
+                if full_records:
+                    save_excel(full_records, paths["xlsx"])
+            except Exception:
+                pass
+    elif state.OUTPUT_EXCEL and full_records:
+        # CLI fallback (shouldn't normally happen)
+        try:
             save_excel(full_records, paths["xlsx"])
+        except Exception:
+            pass
+
+    state._EXCEL_APPEND_ENABLED = False
+
+    if full_records:
         if state.OUTPUT_MAP:
             save_map(full_records, paths["map"], center_lat, center_lon)
 

@@ -171,5 +171,17 @@ def _emit_result(record: dict) -> None:
                         f.write(line + "\n")
         except Exception:
             pass
+    # Incremental Excel: append this record to the in-progress workbook
+    if _EXCEL_APPEND_ENABLED:
+        try:
+            from .exporters import _append_excel
+            _append_excel(record)
+        except Exception:
+            pass
     if _LOG_FN:
         _LOG_FN("result", line)
+
+
+# ── Incremental Excel toggle ──────────────────────────────────
+# Enabled by run() / run_web() when OUTPUT_EXCEL is True.
+_EXCEL_APPEND_ENABLED = False
