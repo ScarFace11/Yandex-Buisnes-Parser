@@ -9,7 +9,9 @@ from collections import Counter
 from datetime import datetime
 
 import openpyxl
+from openpyxl.formatting.rule import ColorScaleRule, DataBarRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.worksheet.table import Table, TableStyleInfo
 from openpyxl.utils import get_column_letter
 
 from .constants import (
@@ -131,6 +133,7 @@ def save_excel(all_records: list[dict], path: str) -> None:
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Бизнесы"
+    ws.sheet_view.showGridLines = False
 
     THIN        = Side(style="thin",   color="CCCCCC")
     THICK       = Side(style="medium", color="AAAAAA")
@@ -180,6 +183,17 @@ def save_excel(all_records: list[dict], path: str) -> None:
                 cell.font      = LINK_FONT
                 if alt:
                     cell.fill = ALT_FILL
+            elif field == "reviews":
+                # Normalize records created by older runs as well as new
+                # records.  Numeric cells are what makes Excel's filter
+                # dropdown sort by count rather than alphabetically.
+                try:
+                    cell.value = int(str(val).replace("\xa0", "").replace(" ", "")) if val not in ("", None) else 0
+                except (TypeError, ValueError):
+                    cell.value = 0
+                cell.number_format = '#,##0'
+                if alt:
+                    cell.fill = ALT_FILL
             else:
                 cell.value = val
                 if alt and field not in SOCIAL_COLORS:
@@ -190,12 +204,57 @@ def save_excel(all_records: list[dict], path: str) -> None:
 
     for ci, field in enumerate(CSV_FIELDS, 1):
         ws.column_dimensions[get_column_letter(ci)].width = COL_WIDTHS.get(field, 16)
-    ws.auto_filter.ref = ws.dimensions
+
+    # A real Excel Table is more useful than a bare AutoFilter:
+    # - each header has a dropdown with a Search box;
+    # - filters and formatting expand when the user adds rows;
+    # - numeric columns keep numeric sorting.
+    table_ref = f"A1:{get_column_letter(len(CSV_FIELDS))}{max(ws.max_row, 2)}"
+    if ws.max_row >= 2:
+        table = Table(displayName="BusinessesTable", ref=table_ref)
+        table.tableStyleInfo = TableStyleInfo(
+            name="TableStyleMedium4",
+            showFirstColumn=False,
+            showLastColumn=False,
+            showRowStripes=False,
+            showColumnStripes=False,
+        )
+        ws.add_table(table)
+        ws.auto_filter.ref = table_ref
+    else:
+        ws.auto_filter.ref = "A1:" + get_column_letter(len(CSV_FIELDS)) + "1"
+
+    # Keep the business name and review count visible while scrolling.
+    ws.freeze_panes = "B2"
+
+    # Visual scanning: low-to-high rating and review-count data bars.
+    rating_col = get_column_letter(CSV_FIELDS.index("rating") + 1)
+    reviews_col = get_column_letter(CSV_FIELDS.index("reviews") + 1)
+    if ws.max_row >= 2:
+        ws.conditional_formatting.add(
+            f"{rating_col}2:{rating_col}{ws.max_row}",
+            ColorScaleRule(
+                start_type="min", start_color="F8696B",
+                mid_type="percentile", mid_value=50, mid_color="FFEB84",
+                end_type="max", end_color="63BE7B",
+            ),
+        )
+        ws.conditional_formatting.add(
+            f"{reviews_col}2:{reviews_col}{ws.max_row}",
+            DataBarRule(start_type="min", end_type="max", color="5B9BD5", showValue=True),
+        )
+
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    ws.page_setup.orientation = "landscape"
+    ws.print_title_rows = "1:1"
 
     _fill_legend_sheet(wb.create_sheet("Легенда цветов"))
+    _fill_help_sheet(wb.create_sheet("Как пользоваться"))
     _fill_stats_sheet(wb.create_sheet("Статистика"), all_records, HDR_FILL, HDR_FONT, CELL_BORDER, ALT_FILL)
-    wb.save(path)
 
+    wb.save(path)
 
 def _fill_legend_sheet(ws) -> None:
     THIN = Side(style="thin", color="CCCCCC")
@@ -232,6 +291,39 @@ def _fill_legend_sheet(ws) -> None:
     ws.cell(r, 2, "Ссылка не найдена").border = brd
 
 
+def _fill_help_sheet(ws) -> None:
+    """Add a compact in-workbook guide for filtering and searching."""
+    ws.sheet_view.showGridLines = False
+    ws.column_dimensions["A"].width = 28
+    ws.column_dimensions["B"].width = 95
+
+    title_fill = PatternFill("solid", fgColor="1A6B3C")
+    title_font = Font(bold=True, color="FFFFFF", size=12)
+    label_font = Font(bold=True, color="1A6B3C", size=10)
+
+    ws["A1"] = "Как работать с таблицей"
+    ws["A1"].font = title_font
+    ws["A1"].fill = title_fill
+    ws["B1"].fill = title_fill
+    ws.merge_cells("A1:B1")
+    ws.row_dimensions[1].height = 28
+
+    tips = [
+        ("Поиск", "Откройте фильтр в заголовке нужного столбца и введите текст в поле «Поиск». Excel покажет только подходящие строки."),
+        ("Фильтр по отзывам", "В столбце «Отзывов» выберите «Числовые фильтры» и задайте условие: больше, меньше или диапазон."),
+        ("Фильтр по рейтингу", "В столбце «Рейтинг» можно выбрать нужные значения или применить числовое условие, например больше либо равно 4,5."),
+        ("Сортировка", "Нажмите стрелку в заголовке столбца и выберите сортировку по возрастанию или убыванию. «Отзывов» сортируется как число."),
+        ("Несколько условий", "Фильтры разных столбцов работают одновременно. Например, можно оставить только бизнесы с рейтингом от 4,5 и минимум 50 отзывами."),
+        ("Сброс фильтров", "Откройте меню столбца и выберите «Очистить фильтр». Для сброса всех фильтров используйте меню «Данные» → «Очистить»."),
+        ("Закрепление", "Верхняя строка с заголовками и первый столбец остаются видимыми при прокрутке."),
+    ]
+    for row, (label, text) in enumerate(tips, 3):
+        ws.cell(row, 1, label).font = label_font
+        cell = ws.cell(row, 2, text)
+        cell.alignment = Alignment(wrap_text=True, vertical="top")
+        ws.row_dimensions[row].height = 34
+
+
 def _fill_stats_sheet(ws, records, hfill, hfont, border, alt_fill) -> None:
     THIN = Side(style="thin", color="CCCCCC")
     brd  = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
@@ -258,6 +350,7 @@ def _fill_stats_sheet(ws, records, hfill, hfont, border, alt_fill) -> None:
         ("Всего найдено",            len(records)),
         ("С описанием",              sum(1 for r in records if r.get("description"))),
         ("С рейтингом",              sum(1 for r in records if r.get("rating"))),
+        ("С количеством отзывов",    sum(1 for r in records if r.get("reviews") not in ("", None, 0))),
         ("Через taplink/linktree",   sum(1 for r in records if r.get("aggregator_url"))),
         ("С проверкой соцсетей",     sum(1 for r in records if r.get("socials_valid"))),
     ]:

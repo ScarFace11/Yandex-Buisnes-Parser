@@ -236,15 +236,25 @@ def extract_description(html: str) -> str:
 
 
 def extract_reviews_count(html: str) -> str:
-    # Bounded span (<= 200 chars) so "count" can't latch onto a "rating"
-    # key hundreds of characters away (the old .*? overshot badly).
+    """Extract the numeric review count from a Yandex Maps detail page.
+
+    The Search API normally supplies this value.  This is the detail-page
+    fallback, where Yandex has used several JSON/text representations over
+    time.  Return a plain digit string so callers can normalize it to an
+    integer before exporting.
+    """
+    # Bounded spans prevent a generic "count" from latching onto an unrelated
+    # rating/count hundreds of characters away.
     for pat in [
         re.compile(r'"reviewCount"\s*:\s*(\d+)'),
+        re.compile(r'"reviewsCount"\s*:\s*(\d+)'),
+        re.compile(r'"review_count"\s*:\s*(\d+)'),
         re.compile(r'"count"\s*:\s*(\d+).{0,200}?"rating"', re.DOTALL),
+        re.compile(r'(?<!\w)(\d[\d\s\xa0]*)\s+(?:отзыв(?:а|ов)?|reviews?)\b', re.I),
     ]:
         m = pat.search(html)
         if m:
-            return m.group(1)
+            return re.sub(r"\D", "", m.group(1))
     return ""
 
 

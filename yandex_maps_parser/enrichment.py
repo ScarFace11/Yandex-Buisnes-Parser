@@ -67,7 +67,9 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
                     socials.setdefault(k, v)
                 record["description"] = extract_description(html)
                 if not record.get("reviews"):
-                    record["reviews"] = extract_reviews_count(html)
+                    review_count = extract_reviews_count(html)
+                    if review_count:
+                        record["reviews"] = int(review_count)
 
         # Fallback: try aggregator page
         if agg_url and len(socials) < 2:

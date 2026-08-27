@@ -9,7 +9,6 @@ output/
 *.jsonl
 *.xlsx
 *.csv
-*.html
 
 # Python
 __pycache__/
@@ -47,7 +46,7 @@ ENV/
 .DS_Store
 Thumbs.db
 
-# ai / local tooling
+# AI / local tooling
 .replit
 replit.nix
 .cache/

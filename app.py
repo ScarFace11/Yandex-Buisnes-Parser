@@ -139,8 +139,12 @@ def status():
 
 @app.route("/results/<path:filename>")
 def results(filename):
-    filepath = os.path.join(OUTPUT_DIR, filename)
-    if not os.path.isfile(filepath):
+    # Resolve and constrain the path before reading.  Unlike
+    # send_from_directory(), a manual os.path.join would otherwise allow
+    # traversal with ../ on deployments that preserve the path component.
+    allowed = os.path.realpath(OUTPUT_DIR)
+    filepath = os.path.realpath(os.path.join(allowed, filename))
+    if not filepath.startswith(allowed + os.sep) or not os.path.isfile(filepath):
         return jsonify({"error": "not found"}), 404
     try:
         with open(filepath, encoding="utf-8") as f:
@@ -306,7 +310,21 @@ def _load_sender_config() -> dict:
     return {}
 
 
+def _safe_sender_config(data: dict) -> dict:
+    """Keep only non-secret sender preferences.
+
+    Access tokens are credentials, not UI preferences.  Older versions of the
+    app could have written them to sender_config.json, so strip those keys
+    when reading and when saving.
+    """
+    allowed = {
+        "message", "delayMin", "delayMax", "limitType", "limitN", "file",
+    }
+    return {key: data[key] for key in allowed if key in data}
+
+
 def _save_sender_config(data: dict):
+    data = _safe_sender_config(data)
     with open(SENDER_CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
@@ -340,8 +358,8 @@ def send_files():
 
 @app.route("/send/config", methods=["GET"])
 def send_config_get():
-    cfg = _load_sender_config()
-    return jsonify(cfg)
+    # Never return a legacy token that may exist in an old config file.
+    return jsonify(_safe_sender_config(_load_sender_config()))
 
 
 @app.route("/send/config", methods=["POST"])

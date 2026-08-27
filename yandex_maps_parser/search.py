@@ -108,8 +108,11 @@ def parse_feature(feature: dict, query: str) -> dict | None:
         "address":       meta.get("address", ""),
         "phone":         phones,
         "hours":         meta.get("Hours", {}).get("text", ""),
-        "rating":        str(rating_val)  if rating_val  else "",
-        "reviews":       str(reviews_val) if reviews_val else "",
+        # Keep the review count numeric all the way to Excel.  A string value
+        # makes Excel sort it lexicographically ("9" before "100") instead of
+        # by the actual number of reviews.
+        "rating":        str(rating_val) if rating_val else "",
+        "reviews":       reviews_val,
         "aggregator_url": aggregator,
         "lat":           coords[1] if len(coords) > 1 else "",
         "lon":           coords[0] if len(coords) > 1 else "",

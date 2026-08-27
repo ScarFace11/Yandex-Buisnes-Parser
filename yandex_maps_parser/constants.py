@@ -15,7 +15,7 @@ LINK_AGGREGATORS: set[str] = {
 }
 
 SOCIAL_DOMAINS: dict[str, re.Pattern] = {
-    "vk":        re.compile(r"vk\.com", re.I),
+    "vk":        re.compile(r"vk\.com|vk\.ru", re.I),
     "telegram":  re.compile(r"t\.me|telegram\.me", re.I),
     "instagram": re.compile(r"instagram\.com", re.I),
     "facebook":  re.compile(r"facebook\.com|fb\.com|fb\.me", re.I),
