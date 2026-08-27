@@ -23,7 +23,7 @@
 ### 1. Клонирование репозитория
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/yandex-maps-parser.git
+git clone https://github.com/ScarFace11/Yandex-Buisnes-Parser.git
 cd yandex-maps-parser
 ```
 
