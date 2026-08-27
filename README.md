@@ -27,25 +27,13 @@ git clone https://github.com/ScarFace11/Yandex-Buisnes-Parser.git
 cd yandex-maps-parser
 ```
 
-### 2. Создание виртуального окружения (рекомендуется)
-
-```bash
-# Linux / macOS
-python -m venv venv
-source venv/bin/activate
-
-# Windows
-python -m venv venv
-venv\Scripts\activate
-```
-
-### 3. Установка зависимостей
+### 2. Установка зависимостей
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 4. Настройка API-ключа Яндекс
+### 3. Настройка API-ключа Яндекс
 
 ```bash
 # Linux / macOS
@@ -63,7 +51,7 @@ YANDEX_API_KEY=ваш_ключ_сюда
 
 > 🔑 Получить ключ можно на [Yandex Cloud Developer](https://developer.tech.yandex.ru/)
 
-### 5. Запуск
+### 4. Запуск
 
 ```bash
 python app.py
