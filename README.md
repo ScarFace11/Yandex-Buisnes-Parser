@@ -24,7 +24,7 @@
 
 ```bash
 git clone https://github.com/ScarFace11/Yandex-Buisnes-Parser.git
-cd yandex-maps-parser
+cd Yandex-Buisnes-Parser
 ```
 
 ### 2. Установка зависимостей
