@@ -48,7 +48,11 @@ pip install -r requirements.txt
 ### 4. Настройка API-ключа Яндекс
 
 ```bash
+# Linux / macOS
 cp .env.example .env
+
+# Windows
+copy .env.example .env
 ```
 
 Откройте файл `.env` и вставьте ваш API-ключ:
