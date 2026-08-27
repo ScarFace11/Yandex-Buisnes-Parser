@@ -12,7 +12,6 @@ from datetime import datetime
 import openpyxl
 from openpyxl.formatting.rule import ColorScaleRule, DataBarRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-from openpyxl.worksheet.table import Table, TableStyleInfo
 from openpyxl.utils import get_column_letter
 
 from .constants import (
@@ -141,6 +140,8 @@ URL_RE       = re.compile(r"https?://", re.I)
 
 _EXCEL_LOCK = threading.Lock()  # guards _Excel state below
 
+NUM_COLS = len(CSV_FIELDS)  # cached column count
+
 
 def _write_row(ws, ri: int, record: dict) -> None:
     """Write a single business record to worksheet row ri (1=header, 2+=data)."""
@@ -199,7 +200,28 @@ def _write_headers(ws) -> None:
     ws.page_setup.fitToHeight = 0
     ws.page_setup.orientation = "landscape"
     ws.print_title_rows = "1:1"
-    ws.auto_filter.ref = f"A1:{get_column_letter(len(CSV_FIELDS))}1"
+    ws.auto_filter.ref = f"A1:{get_column_letter(NUM_COLS)}1"
+
+
+def _apply_conditional_formatting(ws) -> None:
+    """Add color-scale (rating) and data-bar (reviews) conditional formatting."""
+    ws.conditional_formatting._cf_rules.clear()
+    if ws.max_row < 2:
+        return
+    rating_col  = get_column_letter(CSV_FIELDS.index("rating")  + 1)
+    reviews_col = get_column_letter(CSV_FIELDS.index("reviews") + 1)
+    ws.conditional_formatting.add(
+        f"{rating_col}2:{rating_col}{ws.max_row}",
+        ColorScaleRule(
+            start_type="min", start_color="F8696B",
+            mid_type="percentile", mid_value=50, mid_color="FFEB84",
+            end_type="max", end_color="63BE7B",
+        ),
+    )
+    ws.conditional_formatting.add(
+        f"{reviews_col}2:{reviews_col}{ws.max_row}",
+        DataBarRule(start_type="min", end_type="max", color="5B9BD5", showValue=True),
+    )
 
 
 # ── Excel incremental (web mode) ─────────────────────────────
@@ -246,7 +268,7 @@ def _append_excel(record: dict) -> None:
         ri = ws.max_row + 1
         _write_row(ws, ri, record)
         # Update autofilter range
-        ws.auto_filter.ref = f"A1:{get_column_letter(len(CSV_FIELDS))}{ws.max_row}"
+        ws.auto_filter.ref = f"A1:{get_column_letter(NUM_COLS)}{ws.max_row}"
         # Save every record so the file is always downloadable
         try:
             _excel.wb.save(_excel.path)
@@ -255,48 +277,24 @@ def _append_excel(record: dict) -> None:
 
 
 def _finalize_excel(records: list[dict]) -> None:
-    """Add table, conditional formatting, legend/help/stats, then close."""
+    """Add conditional formatting, legend/help/stats, then close.
+
+    Uses only auto_filter (no Table object) to avoid XML corruption
+    that causes Excel recovery prompts.
+    """
     with _EXCEL_LOCK:
         if not _excel.open or _excel.wb is None:
             return
         wb = _excel.wb
         ws = wb.active
 
-        # Table + autofilter
-        table_ref = f"A1:{get_column_letter(len(CSV_FIELDS))}{max(ws.max_row, 2)}"
-        if ws.max_row >= 2:
-            # Clear existing tables (from incremental saves)
-            for tbl_name in list(ws.tables.keys()):
-                del ws.tables[tbl_name]
-            table = Table(displayName="BusinessesTable", ref=table_ref)
-            table.tableStyleInfo = TableStyleInfo(
-                name="TableStyleMedium4",
-                showFirstColumn=False,
-                showLastColumn=False,
-                showRowStripes=False,
-                showColumnStripes=False,
-            )
-            ws.add_table(table)
-        ws.auto_filter.ref = table_ref
+        # Autofilter — just set the ref, no Table object
+        last_row = max(ws.max_row, 2)
+        ws.auto_filter.ref = f"A1:{get_column_letter(NUM_COLS)}{last_row}"
         ws.freeze_panes = "B2"
 
         # Conditional formatting
-        rating_col  = get_column_letter(CSV_FIELDS.index("rating")  + 1)
-        reviews_col = get_column_letter(CSV_FIELDS.index("reviews") + 1)
-        ws.conditional_formatting._cf_rules.clear()
-        if ws.max_row >= 2:
-            ws.conditional_formatting.add(
-                f"{rating_col}2:{rating_col}{ws.max_row}",
-                ColorScaleRule(
-                    start_type="min", start_color="F8696B",
-                    mid_type="percentile", mid_value=50, mid_color="FFEB84",
-                    end_type="max", end_color="63BE7B",
-                ),
-            )
-            ws.conditional_formatting.add(
-                f"{reviews_col}2:{reviews_col}{ws.max_row}",
-                DataBarRule(start_type="min", end_type="max", color="5B9BD5", showValue=True),
-            )
+        _apply_conditional_formatting(ws)
 
         # Extra sheets
         _fill_legend_sheet(wb.create_sheet("\u041b\u0435\u0433\u0435\u043d\u0434\u0430 \u0446\u0432\u0435\u0442\u043e\u0432"))
@@ -322,34 +320,10 @@ def save_excel(all_records: list[dict], path: str) -> None:
     for ri, record in enumerate(all_records, 2):
         _write_row(ws, ri, record)
 
-    table_ref = f"A1:{get_column_letter(len(CSV_FIELDS))}{max(ws.max_row, 2)}"
-    if ws.max_row >= 2:
-        table = Table(displayName="BusinessesTable", ref=table_ref)
-        table.tableStyleInfo = TableStyleInfo(
-            name="TableStyleMedium4",
-            showFirstColumn=False,
-            showLastColumn=False,
-            showRowStripes=False,
-            showColumnStripes=False,
-        )
-        ws.add_table(table)
-    ws.auto_filter.ref = table_ref
+    last_row = max(ws.max_row, 2)
+    ws.auto_filter.ref = f"A1:{get_column_letter(NUM_COLS)}{last_row}"
 
-    rating_col  = get_column_letter(CSV_FIELDS.index("rating")  + 1)
-    reviews_col = get_column_letter(CSV_FIELDS.index("reviews") + 1)
-    if ws.max_row >= 2:
-        ws.conditional_formatting.add(
-            f"{rating_col}2:{rating_col}{ws.max_row}",
-            ColorScaleRule(
-                start_type="min", start_color="F8696B",
-                mid_type="percentile", mid_value=50, mid_color="FFEB84",
-                end_type="max", end_color="63BE7B",
-            ),
-        )
-        ws.conditional_formatting.add(
-            f"{reviews_col}2:{reviews_col}{ws.max_row}",
-            DataBarRule(start_type="min", end_type="max", color="5B9BD5", showValue=True),
-        )
+    _apply_conditional_formatting(ws)
 
     _fill_legend_sheet(wb.create_sheet("\u041b\u0435\u0433\u0435\u043d\u0434\u0430 \u0446\u0432\u0435\u0442\u043e\u0432"))
     _fill_help_sheet(wb.create_sheet("\u041a\u0430\u043a \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u044c\u0441\u044f"))
