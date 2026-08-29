@@ -238,3 +238,5 @@ def _bridge_reader(mp_queue, reg_queue, entry):
         except Exception:
             break
     entry["_done"] = True
+    # Mark run as finished and start next queued run
+    run_manager.finish_run(entry["id"])
