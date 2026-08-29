@@ -100,7 +100,7 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
                 other.append(v)
         record["other_socials"] = ", ".join(other)
 
-        record["socials_valid"] = validate_socials(socials) if state.VALIDATE_SOCIALS else ""
+        record["socials_valid"] = validate_socials(socials, pool) if state.VALIDATE_SOCIALS else ""
         record["parsed_at"]     = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         state._emit_result(record)
         return record

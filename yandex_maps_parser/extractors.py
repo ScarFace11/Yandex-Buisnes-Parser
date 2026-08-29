@@ -237,23 +237,33 @@ def extract_description(html: str) -> str:
 
 def extract_reviews_count(html: str) -> str:
     """Extract the numeric review count from a Yandex Maps detail page."""
-    for pat in [
-        re.compile(r'"reviewCount"\s*:\s*(\d+)'),
-        re.compile(r'"reviewsCount"\s*:\s*(\d+)'),
-        re.compile(r'"review_count"\s*:\s*(\d+)'),
-        re.compile(r'"count"\s*:\s*(\d+).{0,200}?"rating"', re.DOTALL),
-        re.compile(r'(?<!\w)(\d[\d\s\xa0]*)\s+(?:отзыв(?:а|ов)?|reviews?)\b', re.I),
-    ]:
+    for pat in _REVIEW_COUNT_PATS:
         m = pat.search(html)
         if m:
             return re.sub(r"\D", "", m.group(1))
     return ""
 
 
-def validate_socials(socials: dict[str, str]) -> str:
-    """HEAD-check each social URL; return comma-separated list of live platforms."""
+_REVIEW_COUNT_PATS = [
+    re.compile(r'"reviewCount"\s*:\s*(\d+)'),
+    re.compile(r'"reviewsCount"\s*:\s*(\d+)'),
+    re.compile(r'"review_count"\s*:\s*(\d+)'),
+    re.compile(r'"count"\s*:\s*(\d+).{0,200}?"rating"', re.DOTALL),
+    re.compile(r'(?<!\w)(\d[\d\s\xa0]*)\s+(?:отзыв(?:а|ов)?|reviews?)\b', re.I),
+]
+
+
+def validate_socials(socials: dict[str, str], pool: ThreadPoolExecutor | None = None) -> str:
+    """HEAD-check each social URL; return comma-separated list of live platforms.
+
+    Reuses the caller's thread pool when provided to avoid creating
+    a new ThreadPoolExecutor per record (which was a major perf bottleneck).
+    """
     valid: list[str] = []
-    with ThreadPoolExecutor(max_workers=min(len(socials), 5)) as pool:
+    owns_pool = pool is None
+    if owns_pool:
+        pool = ThreadPoolExecutor(max_workers=min(len(socials), 5))
+    try:
         future_to_platform = {
             pool.submit(_head, url): platform
             for platform, url in socials.items() if url
@@ -266,4 +276,7 @@ def validate_socials(socials: dict[str, str]) -> str:
                     valid.append(platform)
             except Exception:
                 pass
+    finally:
+        if owns_pool:
+            pool.shutdown(wait=False)
     return ", ".join(p for p in KNOWN_PLATFORMS if p in valid)

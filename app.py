@@ -46,24 +46,33 @@ def _new_run() -> dict:
 
 
 def _finish_run(run_id: str):
-    """Mark a run as finished and start the next queued run if any."""
+    """Mark a run as finished and start the next queued run if any.
+
+    Uses atomic check-and-claim to prevent two threads finishing
+    simultaneously from both starting the same queued run.
+    """
+    next_entry = None
     with _runs_lock:
         if run_id in _runs:
             _runs[run_id]["active"] = False
-        # Find next queued run
-        next_id = None
+        # Atomically find and claim the next queued run
         for rid, r in _runs.items():
             if r.get("queued"):
-                next_id = rid
+                r["queued"] = False
+                r["active"] = True
+                next_entry = r
                 break
-        if next_id:
-            _runs[next_id]["queued"] = False
-            _runs[next_id]["active"] = True
+        # Cleanup: remove finished runs older than 1 hour
+        now = time.time()
+        to_remove = [rid for rid, r in _runs.items()
+                     if not r["active"] and not r.get("queued")
+                     and now - r.get("started_at", 0) > 3600]
+        for rid in to_remove:
+            del _runs[rid]
     # Start next queued run outside the lock
-    if next_id:
-        entry = _runs[next_id]
+    if next_entry:
         threading.Thread(
-            target=_run_thread, args=(entry,), daemon=True
+            target=_run_thread, args=(next_entry,), daemon=True
         ).start()
 
 

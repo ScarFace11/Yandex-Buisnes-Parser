@@ -1197,6 +1197,10 @@ function handleProgress(raw) {
     // Update live stats
     const lsStage = document.getElementById('ls-stage');
     if (lsStage) lsStage.textContent = name;
+    // Play city completion sound when notifications enabled (idx > 1 = previous city done)
+    if (idx > 1 && Notification && Notification.permission === 'granted') {
+      playCityDoneSound(name, idx, total);
+    }
     return;
   }
   if (parts.length >= 2) {
@@ -1906,6 +1910,29 @@ function sendNotification(title, body, icon) {
 }
 
 // ── Completion sound (Web Audio API chime) ──
+function playCityDoneSound(cityName, idx, total) {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (ctx.state === 'suspended') ctx.resume();
+    // Two-tone chime: E5 → G5 (lighter than full done sound)
+    [659, 784].forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      const t = ctx.currentTime + i * 0.15;
+      gain.gain.setValueAtTime(0.22, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
+      osc.start(t);
+      osc.stop(t + 0.35);
+    });
+    // Browser notification
+    sendNotification(`Город ${idx}/${total} завершён`, `${cityName} — готово`, '🏙');
+  } catch (e) { /* Web Audio unavailable */ }
+}
+
 function playDoneSound() {
   try {
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
