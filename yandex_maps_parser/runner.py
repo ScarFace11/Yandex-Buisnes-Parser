@@ -369,17 +369,9 @@ def run() -> None:
         state.info("  • Снизьте MIN_RATING / MIN_REVIEWS до 0")
 
 
-def run_web(params: dict, log_fn, stop_event=None) -> list[str]:
-    """
-    Run the parser with settings from the web form.
-
-    params    — dict of settings from the browser form.
-    log_fn    — callable(level: str, msg: str) for streaming logs to the browser.
-    Returns a list of filenames (relative to OUTPUT_DIR) created during this run.
-    """
-    # Override state with form parameters
+def _apply_params(params: dict) -> None:
+    """Apply form parameters to the global state module."""
     state.SEARCH_QUERIES  = [q.strip() for q in params.get("queries", []) if q.strip()]
-    state.CITY            = params.get("city", state.CITY).strip() or state.CITY
     state.OUTPUT_CSV      = bool(params.get("output_csv", False))
     state.OUTPUT_JSON     = True   # always save JSON so we can list result files
     state.OUTPUT_EXCEL    = bool(params.get("output_excel", True))
@@ -404,22 +396,12 @@ def run_web(params: dict, log_fn, stop_event=None) -> list[str]:
         state.FETCH_DETAIL = False
     if params.get("api_key", "").strip():
         state.YANDEX_API_KEY = params["api_key"].strip()
-
     # Re-create semaphore to match the new MAX_WORKERS setting
     state._detail_semaphore = threading.Semaphore(state.MAX_WORKERS)
 
-    state._LOG_FN        = log_fn
-    state._TQDM_DISABLE  = True
-    state._STOP_EVENT    = stop_event
 
-    started_at = time.time()
-    try:
-        run()
-    finally:
-        state._LOG_FN       = None
-        state._TQDM_DISABLE = False
-
-    # Collect files written during this run
+def _collect_run_files(started_at: float) -> list[str]:
+    """Collect output files created after started_at."""
     result_files: list[str] = []
     if os.path.isdir(state.OUTPUT_DIR):
         for fname in sorted(os.listdir(state.OUTPUT_DIR)):
@@ -433,6 +415,65 @@ def run_web(params: dict, log_fn, stop_event=None) -> list[str]:
             ):
                 result_files.append(fname)
     return result_files
+
+
+def run_web(params: dict, log_fn, stop_event=None) -> list[str]:
+    """
+    Run the parser with settings from the web form.
+    Supports multi-city: if 'cities' list is provided, processes each
+    city sequentially, creating separate files per city.
+
+    params    — dict of settings from the browser form.
+    log_fn    — callable(level: str, msg: str) for streaming logs to the browser.
+    Returns a list of filenames (relative to OUTPUT_DIR) created during this run.
+    """
+    _apply_params(params)
+
+    # Build city list: 'cities' takes priority, fallback to 'city' string
+    raw_cities = params.get("cities", [])
+    if not raw_cities:
+        raw_cities = [params.get("city", state.CITY)]
+    cities = [c.strip() for c in raw_cities if c.strip()]
+    if not cities:
+        cities = [state.CITY]
+
+    all_files: list[str] = []
+    total_cities = len(cities)
+
+    state._LOG_FN        = log_fn
+    state._TQDM_DISABLE  = True
+    state._STOP_EVENT    = stop_event
+
+    try:
+        for city_idx, city in enumerate(cities):
+            if stop_event and stop_event.is_set():
+                break
+
+            if total_cities > 1:
+                state.info(
+                    f"\n{'═' * 50}\n"
+                    f"  🏙  Город {city_idx + 1}/{total_cities}: {city}\n"
+                    f"{'═' * 50}"
+                )
+                # Signal city transition to frontend
+                if log_fn:
+                    log_fn("progress", f"city/{city_idx + 1}/{total_cities}/{city}")
+
+            state.CITY = city
+            started_at = time.time()
+            run()
+
+            # Collect files from this city run
+            city_files = _collect_run_files(started_at)
+            all_files.extend(city_files)
+
+            if total_cities > 1 and city_files:
+                state.ok(f"  ✅ {city}: {len(city_files)} файл(ов) сохранено")
+    finally:
+        state._LOG_FN       = None
+        state._TQDM_DISABLE = False
+
+    return all_files
 
 
 if __name__ == "__main__":

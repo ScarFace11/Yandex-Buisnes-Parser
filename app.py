@@ -6,6 +6,7 @@ import json
 import queue
 import threading
 import time
+import uuid
 
 from flask import Flask, render_template, request, Response, send_from_directory, jsonify
 
@@ -16,18 +17,63 @@ app = Flask(__name__)
 OUTPUT_DIR    = "output"
 REVIEWED_FILE = os.path.join(OUTPUT_DIR, "_reviewed.json")
 
-# ── Global run state ──────────────────────────────────────────
-_state: dict = {
-    "active":     False,
-    "log_queue":  queue.Queue(),
-    "stop_event": threading.Event(),
-}
-_lock    = threading.Lock()
-_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+# ── Multi-run state ───────────────────────────────────────────
+# Each search gets its own queue, stop_event, and metadata.
+# Only one search runs at a time (state.py uses module globals);
+# additional runs are queued and auto-start when the current finishes.
+_runs: dict[str, dict] = {}
+_runs_lock = threading.Lock()
 
 
-def _strip_ansi(text: str) -> str:
-    return _ANSI_RE.sub("", text)
+def _new_run() -> dict:
+    """Create and register a new run entry."""
+    run_id = uuid.uuid4().hex[:8]
+    entry = {
+        "id":         run_id,
+        "active":     True,
+        "queued":     False,
+        "log_queue":  queue.Queue(),
+        "stop_event": threading.Event(),
+        "params":     {},
+        "files":      [],
+        "count":      0,
+        "cities":     [],
+        "started_at": time.time(),
+    }
+    with _runs_lock:
+        _runs[run_id] = entry
+    return entry
+
+
+def _finish_run(run_id: str):
+    """Mark a run as finished and start the next queued run if any."""
+    with _runs_lock:
+        if run_id in _runs:
+            _runs[run_id]["active"] = False
+        # Find next queued run
+        next_id = None
+        for rid, r in _runs.items():
+            if r.get("queued"):
+                next_id = rid
+                break
+        if next_id:
+            _runs[next_id]["queued"] = False
+            _runs[next_id]["active"] = True
+    # Start next queued run outside the lock
+    if next_id:
+        entry = _runs[next_id]
+        threading.Thread(
+            target=_run_thread, args=(entry,), daemon=True
+        ).start()
+
+
+def _active_run_id() -> str | None:
+    """Return the ID of the currently active run, if any."""
+    with _runs_lock:
+        for rid, r in _runs.items():
+            if r["active"] and not r.get("queued"):
+                return rid
+    return None
 
 
 # ── Reviewed helpers ──────────────────────────────────────────
@@ -48,11 +94,21 @@ def _save_reviewed(data: dict):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
+
+
 # ── Background run thread ─────────────────────────────────────
 
-def _run_thread(params: dict):
-    lq         = _state["log_queue"]
-    stop_event = _state["stop_event"]
+def _run_thread(entry: dict):
+    """Execute a search run.  Called in a daemon thread."""
+    lq         = entry["log_queue"]
+    stop_event = entry["stop_event"]
+    run_id     = entry["id"]
+    params     = entry["params"]
     files: list[str] = []
     count = 0
 
@@ -67,7 +123,8 @@ def _run_thread(params: dict):
 
     try:
         files = parser.run_web(params, log_fn, stop_event)
-        # Count results from the JSON output file (always created internally)
+        entry["files"] = files
+        # Count results from the JSON output file
         for f in files:
             if f.endswith(".json"):
                 try:
@@ -76,7 +133,8 @@ def _run_thread(params: dict):
                     break
                 except Exception:
                     pass
-        # Build list of formats the user actually requested for download
+        entry["count"] = count
+        # Build list of formats the user actually requested
         fmts = []
         if params.get("output_csv"):   fmts.append("csv")
         if params.get("output_json"):  fmts.append("json")
@@ -89,8 +147,7 @@ def _run_thread(params: dict):
         lq.put({"type": "done", "files": files,  "count": 0,
                 "stopped": stop_event.is_set(), "formats": []})
     finally:
-        with _lock:
-            _state["active"] = False
+        _finish_run(run_id)
 
 
 # ── Routes ────────────────────────────────────────────────────
@@ -102,27 +159,87 @@ def index():
 
 @app.route("/run", methods=["POST"])
 def run_parser():
-    with _lock:
-        if _state["active"]:
-            return jsonify({"error": "Уже выполняется"}), 409
-        _state["active"] = True
-        _state["log_queue"] = queue.Queue()
-        _state["stop_event"].clear()
-
     params = request.get_json(force=True) or {}
-    threading.Thread(target=_run_thread, args=(params,), daemon=True).start()
-    return jsonify({"ok": True})
+
+    # Validate
+    queries = [q.strip() for q in params.get("queries", []) if q.strip()]
+    if not queries:
+        return jsonify({"error": "Введите хотя бы один запрос"}), 400
+    cities = [c.strip() for c in params.get("cities", []) if c.strip()]
+    if not cities:
+        city = params.get("city", "").strip()
+        if city:
+            cities = [city]
+    if not cities:
+        return jsonify({"error": "Введите хотя бы один город"}), 400
+    params["cities"] = cities
+
+    entry = _new_run()
+    entry["params"] = params
+    entry["cities"] = cities
+
+    active = _active_run_id()
+    if active and active != entry["id"]:
+        # Another run is active — queue this one
+        with _runs_lock:
+            entry["queued"] = True
+            entry["active"] = False
+        return jsonify({"ok": True, "queued": True, "run_id": entry["id"],
+                        "position": _queue_position(entry["id"])})
+
+    # Start immediately
+    threading.Thread(target=_run_thread, args=(entry,), daemon=True).start()
+    return jsonify({"ok": True, "queued": False, "run_id": entry["id"]})
+
+
+def _queue_position(run_id: str) -> int:
+    """1-based position in the queue."""
+    pos = 1
+    with _runs_lock:
+        for rid, r in _runs.items():
+            if r.get("queued") and rid != run_id:
+                pos += 1
+    return pos
 
 
 @app.route("/stop", methods=["POST"])
 def stop_parser():
-    _state["stop_event"].set()
+    run_id = request.args.get("run_id", "")
+    with _runs_lock:
+        if run_id and run_id in _runs:
+            _runs[run_id]["stop_event"].set()
+        else:
+            # Stop the active run
+            for r in _runs.values():
+                if r["active"] and not r.get("queued"):
+                    r["stop_event"].set()
+                    break
     return jsonify({"ok": True})
 
 
 @app.route("/logs")
 def logs():
-    lq = _state["log_queue"]
+    # Connect to the latest active or queued run
+    run_id = request.args.get("run_id", "")
+    with _runs_lock:
+        if run_id and run_id in _runs:
+            entry = _runs[run_id]
+        else:
+            # Find the most recently started active/queued run
+            entry = None
+            for r in sorted(_runs.values(), key=lambda x: x["started_at"], reverse=True):
+                if r["active"] or r.get("queued"):
+                    entry = r
+                    break
+            if not entry:
+                # No runs — return empty stream
+                return Response(
+                    iter([json.dumps({"type": "ping"}) + "\n\n"]),
+                    mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                )
+
+    lq = entry["log_queue"]
 
     def generate():
         while True:
@@ -140,14 +257,30 @@ def logs():
 
 @app.route("/status")
 def status():
-    return jsonify({"active": _state["active"]})
+    active = _active_run_id()
+    queued = sum(1 for r in _runs.values() if r.get("queued"))
+    return jsonify({"active": active is not None, "active_run": active, "queued": queued})
+
+
+@app.route("/runs")
+def list_runs():
+    """List all runs with their status."""
+    with _runs_lock:
+        result = []
+        for r in _runs.values():
+            result.append({
+                "id":       r["id"],
+                "active":   r["active"],
+                "queued":   r.get("queued", False),
+                "count":    r.get("count", 0),
+                "cities":   r.get("cities", []),
+                "files":    r.get("files", []),
+            })
+        return jsonify({"runs": result})
 
 
 @app.route("/results/<path:filename>")
 def results(filename):
-    # Resolve and constrain the path before reading.  Unlike
-    # send_from_directory(), a manual os.path.join would otherwise allow
-    # traversal with ../ on deployments that preserve the path component.
     allowed = os.path.realpath(OUTPUT_DIR)
     filepath = os.path.realpath(os.path.join(allowed, filename))
     if not filepath.startswith(allowed + os.sep) or not os.path.isfile(filepath):
@@ -172,7 +305,6 @@ def test_api_key():
     data = request.get_json(force=True) or {}
     api_key = data.get("api_key", "").strip()
     if not api_key:
-        # Use built-in key from config
         try:
             from config import YANDEX_API_KEY
             api_key = YANDEX_API_KEY
@@ -316,12 +448,6 @@ def _load_sender_config() -> dict:
 
 
 def _safe_sender_config(data: dict) -> dict:
-    """Keep only non-secret sender preferences.
-
-    Access tokens are credentials, not UI preferences.  Older versions of the
-    app could have written them to sender_config.json, so strip those keys
-    when reading and when saving.
-    """
     allowed = {
         "message", "delayMin", "delayMax", "limitType", "limitN", "file",
     }
@@ -363,7 +489,6 @@ def send_files():
 
 @app.route("/send/config", methods=["GET"])
 def send_config_get():
-    # Never return a legacy token that may exist in an old config file.
     return jsonify(_safe_sender_config(_load_sender_config()))
 
 
@@ -375,10 +500,6 @@ def send_config_post():
 
 
 def _safe_excel_filename(filename: str) -> str | None:
-    """
-    Return the safe basename if the filename resolves inside OUTPUT_DIR,
-    or None if it looks like a path traversal attempt.
-    """
     if not filename:
         return None
     basename = os.path.basename(filename)

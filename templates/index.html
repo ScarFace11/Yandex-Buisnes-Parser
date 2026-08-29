@@ -765,11 +765,8 @@ input:focus-visible,textarea:focus-visible,select:focus-visible{
 
         <div>
           <label class="lbl" for="f-city">Где ищем?</label>
-          <div class="city-wrap">
-            <input type="text" id="f-city" value="Ярославль" placeholder="Москва" autocomplete="off"
-              oninput="cityInput(this)" onkeydown="cityKeyDown(event)" onblur="cityBlur()">
-            <div class="city-suggestions" id="city-suggestions"></div>
-          </div>
+          <textarea id="f-city" rows="2" placeholder="Ярославль&#10;Москва (по одному городу на строку)">Ярославль</textarea>
+          <div class="hint">Один город на строку. Если несколько — поиск пройдёт по каждому городу последовательно</div>
         </div>
 
         <details class="advanced-settings">
@@ -1189,6 +1186,19 @@ function clearLog() { logEl.innerHTML = ''; }
 // ═══════════════════════════════════════════
 function handleProgress(raw) {
   const parts = raw.split('/');
+  // City transition event: city/idx/total/name
+  if (parts[0] === 'city' && parts.length >= 4) {
+    const idx   = parseInt(parts[1]);
+    const total = parseInt(parts[2]);
+    const name  = parts.slice(3).join('/');  // city name may contain /
+    const label = `🏙  Город ${idx}/${total}: ${name}`;
+    setProgress(-1, label);
+    appendLog('info', label);
+    // Update live stats
+    const lsStage = document.getElementById('ls-stage');
+    if (lsStage) lsStage.textContent = name;
+    return;
+  }
   if (parts.length >= 2) {
     const cur = parseInt(parts[0]), tot = parseInt(parts[1]);
     const stage = parts[2] || '';
@@ -1226,7 +1236,7 @@ function handleProgress(raw) {
 function getParams() {
   return {
     queries:         document.getElementById('f-queries').value.split('\n').map(s=>s.trim()).filter(Boolean),
-    city:            document.getElementById('f-city').value.trim(),
+    cities:          document.getElementById('f-city').value.split('\n').map(s=>s.trim()).filter(Boolean),
     output_excel:    document.getElementById('f-excel').checked,
     output_json:     document.getElementById('f-json').checked,
     output_csv:      document.getElementById('f-csv').checked,
@@ -1248,7 +1258,7 @@ function getParams() {
 function startRun() {
   const params = getParams();
   if (!params.queries.length) { alert('Введите хотя бы один запрос'); return; }
-  if (!params.city)           { alert('Введите город'); return; }
+  if (!params.cities.length)  { alert('Введите хотя бы один город'); return; }
 
   clearLog();
   allResults = []; filteredRows = [];
@@ -1283,7 +1293,23 @@ function startRun() {
   if (evtSource) { evtSource.close(); evtSource = null; }
 
   fetch('/run', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(params)})
-    .then(r => { if (!r.ok) throw new Error('Ошибка запуска'); startSSE(); })
+    .then(r => r.json().then(d => ({ok: r.ok, status: r.status, data: d})))
+    .then(({ok, status, data}) => {
+      if (status === 409 || (data && data.error)) {
+        appendLog('warn', '  [!] ' + (data.error || 'Ошибка запуска'));
+        resetBtn(); setStatus('error','✖ Ошибка'); hideProgress();
+        return;
+      }
+      if (data && data.queued) {
+        appendLog('info', `  ⏳ Поиск поставлен в очередь (позиция: ${data.position}). Текущий поиск завершится автоматически.`);
+        setStatus('queued', '⏳ В очереди');
+        document.getElementById('btn-txt').textContent = 'В очереди…';
+        // Keep the button disabled, show queued state
+        setProgress(0, `Очередь: позиция ${data.position}`);
+        return;
+      }
+      startSSE();
+    })
     .catch(err => { appendLog('warn', '  [!] ' + err.message); resetBtn(); setStatus('error','✖ Ошибка'); hideProgress(); });
 }
 
@@ -1750,7 +1776,7 @@ const PRESETS_KEY  = 'yp_presets_v1';
 function getCurrentSettings() {
   return {
     queries:  document.getElementById('f-queries').value,
-    city:     document.getElementById('f-city').value,
+    city:     document.getElementById('f-city').value,  // kept for backward compat
     excel:    document.getElementById('f-excel').checked,
     json:     document.getElementById('f-json').checked,
     csv:      document.getElementById('f-csv').checked,
@@ -1772,7 +1798,7 @@ function getCurrentSettings() {
 function applySettings(s) {
   if (!s) return;
   if (s.queries  != null) document.getElementById('f-queries').value   = s.queries;
-  if (s.city     != null) document.getElementById('f-city').value      = s.city;
+  if (s.city     != null) document.getElementById('f-city').value      = Array.isArray(s.city) ? s.city.join('\n') : s.city;
   if (s.excel    != null) { document.getElementById('f-excel').checked = s.excel;   document.getElementById('f-excel').closest('.chk').classList.toggle('on', s.excel); }
   if (s.json     != null) { document.getElementById('f-json').checked  = s.json;    document.getElementById('f-json').closest('.chk').classList.toggle('on', s.json); }
   if (s.csv      != null) { document.getElementById('f-csv').checked   = s.csv;     document.getElementById('f-csv').closest('.chk').classList.toggle('on', s.csv); }
@@ -2102,56 +2128,7 @@ const CITIES = [
   'Тбилиси','Ереван','Душанбе','Ашхабад','Кишинёв',
 ];
 
-let cityActiveIdx = -1;
-let cityFilteredList = [];
-
-function cityInput(inp) {
-  const val = inp.value.trim().toLowerCase();
-  const box = document.getElementById('city-suggestions');
-  if (!val) { box.classList.remove('open'); return; }
-
-  cityFilteredList = CITIES.filter(c => c.toLowerCase().startsWith(val));
-  if (!cityFilteredList.length) { box.classList.remove('open'); return; }
-
-  cityActiveIdx = -1;
-  box.innerHTML = cityFilteredList.slice(0, 8).map((c, i) =>
-    `<div class="city-sug-item" data-i="${i}" onmousedown="cityPick(${i})">${c}</div>`
-  ).join('');
-  box.classList.add('open');
-}
-
-function cityPick(i) {
-  const c = cityFilteredList[i];
-  if (c) {
-    document.getElementById('f-city').value = c;
-    document.getElementById('city-suggestions').classList.remove('open');
-  }
-}
-
-function cityBlur() {
-  // slight delay so mousedown on item fires first
-  setTimeout(() => document.getElementById('city-suggestions').classList.remove('open'), 150);
-}
-
-function cityKeyDown(e) {
-  const box = document.getElementById('city-suggestions');
-  const items = box.querySelectorAll('.city-sug-item');
-  if (!items.length) return;
-  if (e.key === 'ArrowDown') {
-    e.preventDefault();
-    cityActiveIdx = Math.min(cityActiveIdx + 1, items.length - 1);
-    items.forEach((el, i) => el.classList.toggle('active', i === cityActiveIdx));
-  } else if (e.key === 'ArrowUp') {
-    e.preventDefault();
-    cityActiveIdx = Math.max(cityActiveIdx - 1, 0);
-    items.forEach((el, i) => el.classList.toggle('active', i === cityActiveIdx));
-  } else if (e.key === 'Enter' && cityActiveIdx >= 0) {
-    e.preventDefault();
-    cityPick(cityActiveIdx);
-  } else if (e.key === 'Escape') {
-    box.classList.remove('open');
-  }
-}
+// City autocomplete removed — textarea now supports multi-city input.
 
 // ═══════════════════════════════════════════
 //  SENDER
