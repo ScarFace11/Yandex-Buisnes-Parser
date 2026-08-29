@@ -1308,8 +1308,21 @@ function startRun() {
         appendLog('info', `  ⏳ Поиск поставлен в очередь (позиция: ${data.position}). Текущий поиск завершится автоматически.`);
         setStatus('queued', '⏳ В очереди');
         document.getElementById('btn-txt').textContent = 'В очереди…';
-        // Keep the button disabled, show queued state
         setProgress(0, `Очередь: позиция ${data.position}`);
+        // Poll /status and start SSE when our queued run becomes active
+        const _queuedRunId = data.run_id;
+        const _pollInterval = setInterval(() => {
+          fetch('/status').then(r => r.json()).then(s => {
+            if (s.active_run === _queuedRunId || !s.queued) {
+              clearInterval(_pollInterval);
+              if (s.active_run === _queuedRunId) {
+                // Our run is now active — connect SSE
+                startTime = Date.now();
+                startSSE();
+              }
+            }
+          }).catch(() => {});
+        }, 2000);
         return;
       }
       startSSE();
@@ -1322,8 +1335,9 @@ function stopRun() {
   appendLog('warn', '  [!] Остановка запрошена…');
 }
 
-function startSSE() {
-  evtSource = new EventSource('/logs');
+function startSSE(runId) {
+  const url = runId ? `/logs?run_id=${runId}` : '/logs';
+  evtSource = new EventSource(url);
   evtSource.onmessage = e => {
     const msg = JSON.parse(e.data);
     if (msg.type === 'ping') return;

@@ -478,28 +478,43 @@ def run_web(params: dict, log_fn, stop_event=None) -> list[str]:
 
 # ── Multiprocessing entry point ─────────────────────────────
 
-def run_process(params: dict, queue, stop_file: str | None = None) -> None:
+def run_process(params: dict, mp_queue, stop_file: str | None = None) -> None:
     """Entry point for a child process running a search.
 
     Each child process gets its own copy of state.py (via fork/spawn),
     so there are no conflicts between parallel searches.
 
-    params    — search parameters (serializable).
-    queue     — multiprocessing.Queue for streaming logs/results.
-    stop_file — optional file path; if it exists, the run stops gracefully.
+    params     — search parameters (serializable).
+    mp_queue   — multiprocessing.Queue for streaming logs/results.
+    stop_file  — optional file path; if it exists, the run stops gracefully.
     """
+    import threading as _threading
+
+    # Create a stop event for this child process
+    stop_event = _threading.Event()
+
+    # Watch the stop file in a background thread
+    if stop_file:
+        def _watch_stop():
+            while not stop_event.is_set():
+                if os.path.exists(stop_file):
+                    stop_event.set()
+                    return
+                _threading.Event().wait(0.5)  # sleep 0.5s without importing time
+        _threading.Thread(target=_watch_stop, daemon=True).start()
+
     def _q_log(level: str, msg: str):
         """Log callback that puts messages into the multiprocessing queue."""
         try:
             if level == "result":
-                queue.put({"type": "result", "data": json.loads(msg)})
+                mp_queue.put({"type": "result", "data": json.loads(msg)})
             else:
-                queue.put({"type": "log", "level": level, "msg": _strip_ansi(msg)})
+                mp_queue.put({"type": "log", "level": level, "msg": _strip_ansi(msg)})
         except Exception:
             pass
 
     try:
-        files = run_web(params, _q_log)
+        files = run_web(params, _q_log, stop_event)
         count = 0
         for f in files:
             if f.endswith(".json"):
@@ -515,16 +530,21 @@ def run_process(params: dict, queue, stop_file: str | None = None) -> None:
         if params.get("output_json"):  fmts.append("json")
         if params.get("output_excel"): fmts.append("xlsx")
         if params.get("output_map"):   fmts.append("map")
-        queue.put({"type": "done", "files": files, "count": count,
-                   "stopped": False, "formats": fmts})
+        mp_queue.put({"type": "done", "files": files, "count": count,
+                      "stopped": stop_event.is_set(), "formats": fmts})
     except Exception as exc:
         try:
-            queue.put({"type": "log",  "level": "warn", "msg": f"Ошибка: {exc}"})
-            queue.put({"type": "done", "files": [], "count": 0,
-                       "stopped": False, "formats": []})
+            mp_queue.put({"type": "log",  "level": "warn", "msg": f"Ошибка: {exc}"})
+            mp_queue.put({"type": "done", "files": [], "count": 0,
+                          "stopped": stop_event.is_set(), "formats": []})
         except Exception:
             pass
     finally:
+        # Send sentinel so bridge thread knows we're done
+        try:
+            mp_queue.put(None)
+        except Exception:
+            pass
         # Clean up stop file if it exists
         if stop_file:
             try:
