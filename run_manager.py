@@ -8,6 +8,7 @@ regular queue.Queue that the SSE endpoint can consume with timeout.
 import os
 import json
 import queue
+import re
 import threading
 import time
 import uuid
@@ -17,6 +18,9 @@ OUTPUT_DIR = "output"
 
 # Max time a process can run before we force-kill it (seconds)
 _PROCESS_TIMEOUT = 600  # 10 minutes
+
+# Compiled ANSI escape pattern for stripping colour codes from log lines
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 class RunManager:
@@ -41,6 +45,7 @@ class RunManager:
             "cities":     [],
             "started_at": time.time(),
             "_done":      False,
+            "_run_mode":  "thread",   # "process" or "thread"
         }
         with self._lock:
             self._runs[run_id] = entry
@@ -89,7 +94,7 @@ class RunManager:
             self.start_process(next_entry)
 
     def start_process(self, entry: dict):
-        """Start a search in a child process with bridge thread for SSE."""
+        """Start a search in a child process (or thread fallback) with bridge."""
         params   = entry["params"]
         run_id   = entry["id"]
         mp_queue = multiprocessing.Queue()
@@ -97,20 +102,25 @@ class RunManager:
         stop_dir  = os.path.join(OUTPUT_DIR, ".run_stop")
         os.makedirs(stop_dir, exist_ok=True)
         stop_file = os.path.join(stop_dir, f"{run_id}.stop")
+        entry["stop_file"] = stop_file
 
-        from yandex_maps_parser.runner import run_process
-
+        # Try multiprocessing first
+        used_process = False
         try:
+            from yandex_maps_parser.runner import run_process
             proc = multiprocessing.Process(
                 target=run_process,
                 args=(params, mp_queue, stop_file),
                 daemon=True,
             )
-            entry["process"] = proc
-            entry["stop_file"] = stop_file
             proc.start()
+            entry["process"] = proc
+            entry["_run_mode"] = "process"
+            used_process = True
         except Exception:
             # Fallback: run in a thread (no state isolation, but functional)
+            entry["process"] = None   # CRITICAL: clear so bridge uses sentinel
+            entry["_run_mode"] = "thread"
             self._start_thread_fallback(entry, mp_queue, stop_file)
 
         # Bridge thread: mp_queue → regular queue for SSE
@@ -122,28 +132,37 @@ class RunManager:
         bridge.start()
 
         # Watchdog: force-kill process if it runs too long
-        watchdog = threading.Thread(
-            target=_watchdog,
-            args=(entry,),
-            daemon=True,
-        )
-        watchdog.start()
+        if used_process:
+            watchdog = threading.Thread(
+                target=_watchdog,
+                args=(entry,),
+                daemon=True,
+            )
+            watchdog.start()
 
     def _start_thread_fallback(self, entry, mp_queue, stop_file):
         """Fallback: run search in a thread when multiprocessing fails."""
-        import re
         import yandex_maps_parser as _parser
 
-        _ansi_re = re.compile(r"\x1b\[[0-9;]*m")
         params = entry["params"]
+
+        def _log_to_queue(level: str, msg: str):
+            """Log callback that puts messages into the multiprocessing queue."""
+            try:
+                clean = _ANSI_RE.sub("", msg)
+                if level == "result":
+                    # msg is already a JSON string from _emit_result;
+                    # parse it to get the dict for the frontend
+                    mp_queue.put({"type": "result", "data": json.loads(clean)})
+                else:
+                    mp_queue.put({"type": "log", "level": level, "msg": clean})
+            except Exception:
+                pass
 
         def _thread_run():
             try:
                 stop_event = entry["stop_event"]
-                files = _parser.run_web(params, lambda l, m: mp_queue.put(
-                    {"type": "result", "data": json.loads(m)} if l == "result"
-                    else {"type": "log", "level": l, "msg": _ansi_re.sub("", m)}
-                ), stop_event)
+                files = _parser.run_web(params, _log_to_queue, stop_event)
                 count = 0
                 for f in files:
                     if f.endswith(".json"):
@@ -161,8 +180,11 @@ class RunManager:
                 mp_queue.put({"type": "done", "files": files, "count": count,
                               "stopped": stop_event.is_set(), "formats": fmts})
             except Exception as exc:
+                import traceback
+                tb = traceback.format_exc()
                 try:
-                    mp_queue.put({"type": "log", "level": "warn", "msg": f"Ошибка: {exc}"})
+                    mp_queue.put({"type": "log", "level": "warn",
+                                  "msg": f"Ошибка: {exc}\n{tb}"})
                     mp_queue.put({"type": "done", "files": [], "count": 0,
                                   "stopped": False, "formats": []})
                 except Exception:
@@ -232,20 +254,48 @@ def _bridge_reader(mp_queue, reg_queue, entry):
 
     Exits when:
     - Child sends None sentinel
-    - Child process dies and queue is drained
+    - Child process/thread dies and queue is drained
+    - Idle timeout with no messages and thread is no longer alive
     - Exception occurs
     """
+    mode = entry.get("_run_mode", "thread")
     proc = entry.get("process")
+    thread = entry.get("_thread")
+    empty_count = 0  # consecutive empty polls
+
     while True:
         try:
             msg = mp_queue.get(timeout=2.0)
             if msg is None:
                 break  # sentinel — child is done
             reg_queue.put(msg)
+            empty_count = 0
         except queue.Empty:
-            # No message for 2s — check if process is still alive
-            if proc and not proc.is_alive():
-                # Process died — drain any remaining messages
+            empty_count += 1
+            # Check if the producer is still alive
+            alive = False
+            if mode == "process" and proc:
+                alive = proc.is_alive()
+            elif mode == "thread" and thread:
+                alive = thread.is_alive()
+            else:
+                # Unknown mode — assume alive until sentinel
+                alive = True
+
+            if not alive:
+                # Producer died — drain any remaining messages and exit
+                while not mp_queue.empty():
+                    try:
+                        msg = mp_queue.get_nowait()
+                        if msg is not None:
+                            reg_queue.put(msg)
+                    except queue.Empty:
+                        break
+                break
+
+            # Safety: if idle for >60s with no sentinel, something is wrong
+            if empty_count >= 30:
+                # Try draining one last time
                 while not mp_queue.empty():
                     try:
                         msg = mp_queue.get_nowait()
@@ -257,6 +307,15 @@ def _bridge_reader(mp_queue, reg_queue, entry):
         except Exception:
             break
 
+    # Ensure a done message reaches the SSE endpoint
+    if not entry.get("_done"):
+        try:
+            reg_queue.put({"type": "done", "files": entry.get("files", []),
+                           "count": entry.get("count", 0),
+                           "stopped": False, "formats": []})
+        except Exception:
+            pass
+
     entry["_done"] = True
     # Always mark run as finished
     run_manager.finish_run(entry["id"])
@@ -264,7 +323,6 @@ def _bridge_reader(mp_queue, reg_queue, entry):
 
 def _watchdog(entry):
     """Force-kill a process if it exceeds _PROCESS_TIMEOUT."""
-    run_id = entry["id"]
     start = entry["started_at"]
     while True:
         time.sleep(5)
