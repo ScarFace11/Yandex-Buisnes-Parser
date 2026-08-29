@@ -15,6 +15,9 @@ import multiprocessing
 
 OUTPUT_DIR = "output"
 
+# Max time a process can run before we force-kill it (seconds)
+_PROCESS_TIMEOUT = 600  # 10 minutes
+
 
 class RunManager:
     """Manages parallel search runs with process isolation."""
@@ -118,6 +121,14 @@ class RunManager:
         )
         bridge.start()
 
+        # Watchdog: force-kill process if it runs too long
+        watchdog = threading.Thread(
+            target=_watchdog,
+            args=(entry,),
+            daemon=True,
+        )
+        watchdog.start()
+
     def _start_thread_fallback(self, entry, mp_queue, stop_file):
         """Fallback: run search in a thread when multiprocessing fails."""
         import re
@@ -217,16 +228,24 @@ run_manager = RunManager()
 # ── Bridge thread helper ──────────────────────────────────────
 
 def _bridge_reader(mp_queue, reg_queue, entry):
-    """Read from multiprocessing.Queue, forward to regular Queue for SSE."""
+    """Read from multiprocessing.Queue, forward to regular Queue for SSE.
+
+    Exits when:
+    - Child sends None sentinel
+    - Child process dies and queue is drained
+    - Exception occurs
+    """
     proc = entry.get("process")
     while True:
         try:
-            msg = mp_queue.get(timeout=1.0)
+            msg = mp_queue.get(timeout=2.0)
             if msg is None:
-                break
+                break  # sentinel — child is done
             reg_queue.put(msg)
         except queue.Empty:
+            # No message for 2s — check if process is still alive
             if proc and not proc.is_alive():
+                # Process died — drain any remaining messages
                 while not mp_queue.empty():
                     try:
                         msg = mp_queue.get_nowait()
@@ -237,6 +256,27 @@ def _bridge_reader(mp_queue, reg_queue, entry):
                 break
         except Exception:
             break
+
     entry["_done"] = True
-    # Mark run as finished and start next queued run
+    # Always mark run as finished
     run_manager.finish_run(entry["id"])
+
+
+def _watchdog(entry):
+    """Force-kill a process if it exceeds _PROCESS_TIMEOUT."""
+    run_id = entry["id"]
+    start = entry["started_at"]
+    while True:
+        time.sleep(5)
+        elapsed = time.time() - start
+        if elapsed > _PROCESS_TIMEOUT:
+            proc = entry.get("process")
+            if proc and proc.is_alive():
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+            break
+        # Stop watching if run already finished
+        if entry.get("_done"):
+            break

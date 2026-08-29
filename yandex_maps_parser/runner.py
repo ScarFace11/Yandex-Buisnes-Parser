@@ -284,7 +284,7 @@ def run() -> None:
     except KeyboardInterrupt:
         state.warn("Прервано пользователем. Прогресс сохранён в checkpoint.")
     finally:
-        detail_pool.shutdown(wait=True)
+        detail_pool.shutdown(wait=True, cancel_futures=True)
         pbar_pts.close()
         pbar_search.close()
         pbar_detail.close()
@@ -500,7 +500,8 @@ def run_process(params: dict, mp_queue, stop_file: str | None = None) -> None:
                 if os.path.exists(stop_file):
                     stop_event.set()
                     return
-                _threading.Event().wait(0.5)  # sleep 0.5s without importing time
+                import time as _t
+                _t.sleep(0.5)
         _threading.Thread(target=_watch_stop, daemon=True).start()
 
     def _q_log(level: str, msg: str):
