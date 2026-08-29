@@ -7,7 +7,13 @@ import queue
 import threading
 import time
 import uuid
+import sys
 import multiprocessing
+
+# On Windows, ensure multiprocessing uses the correct Python executable.
+# When running from a venv, sys.executable may not match what spawn needs.
+if sys.platform == "win32":
+    multiprocessing.set_executable(sys.executable)
 
 from flask import Flask, render_template, request, Response, send_from_directory, jsonify
 
@@ -113,14 +119,61 @@ def _start_process(entry: dict):
 
     from yandex_maps_parser.runner import run_process
 
-    proc = multiprocessing.Process(
-        target=run_process,
-        args=(params, mp_queue, stop_file),
-        daemon=True,
-    )
-    entry["process"] = proc
-    entry["stop_file"] = stop_file
-    proc.start()
+    try:
+        proc = multiprocessing.Process(
+            target=run_process,
+            args=(params, mp_queue, stop_file),
+            daemon=True,
+        )
+        entry["process"] = proc
+        entry["stop_file"] = stop_file
+        proc.start()
+    except Exception:
+        # Fallback: run in a thread (no state isolation, but functional)
+        import yandex_maps_parser as _parser
+        def _thread_run():
+            try:
+                stop_event = entry["stop_event"]
+                files = _parser.run_web(params, lambda l, m: mp_queue.put(
+                    {"type": "result", "data": json.loads(m)} if l == "result"
+                    else {"type": "log", "level": l, "msg": _strip_ansi(m)}
+                ), stop_event)
+                count = 0
+                for f in files:
+                    if f.endswith(".json"):
+                        try:
+                            with open(os.path.join(OUTPUT_DIR, f), encoding="utf-8") as jf:
+                                count = len(json.load(jf))
+                            break
+                        except Exception:
+                            pass
+                fmts = []
+                if params.get("output_csv"):   fmts.append("csv")
+                if params.get("output_json"):  fmts.append("json")
+                if params.get("output_excel"): fmts.append("xlsx")
+                if params.get("output_map"):   fmts.append("map")
+                mp_queue.put({"type": "done", "files": files, "count": count,
+                              "stopped": stop_event.is_set(), "formats": fmts})
+            except Exception as exc:
+                try:
+                    mp_queue.put({"type": "log", "level": "warn", "msg": f"Ошибка: {exc}"})
+                    mp_queue.put({"type": "done", "files": [], "count": 0,
+                                  "stopped": False, "formats": []})
+                except Exception:
+                    pass
+            finally:
+                try:
+                    mp_queue.put(None)
+                except Exception:
+                    pass
+                if stop_file:
+                    try:
+                        os.remove(stop_file)
+                    except OSError:
+                        pass
+        t = threading.Thread(target=_thread_run, daemon=True)
+        entry["_thread"] = t
+        t.start()
 
     # Bridge thread: mp_queue → regular queue for SSE
     bridge = threading.Thread(
