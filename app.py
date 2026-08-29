@@ -67,7 +67,7 @@ def _run_thread(params: dict):
 
     try:
         files = parser.run_web(params, log_fn, stop_event)
-        # Count results from the JSON output file
+        # Count results from the JSON output file (always created internally)
         for f in files:
             if f.endswith(".json"):
                 try:
@@ -76,12 +76,18 @@ def _run_thread(params: dict):
                     break
                 except Exception:
                     pass
+        # Build list of formats the user actually requested for download
+        fmts = []
+        if params.get("output_csv"):   fmts.append("csv")
+        if params.get("output_json"):  fmts.append("json")
+        if params.get("output_excel"): fmts.append("xlsx")
+        if params.get("output_map"):   fmts.append("map")
         lq.put({"type": "done", "files": files, "count": count,
-                "stopped": stop_event.is_set()})
+                "stopped": stop_event.is_set(), "formats": fmts})
     except Exception as exc:
         lq.put({"type": "log",  "level": "warn", "msg": f"Ошибка: {exc}"})
         lq.put({"type": "done", "files": files,  "count": 0,
-                "stopped": stop_event.is_set()})
+                "stopped": stop_event.is_set(), "formats": []})
     finally:
         with _lock:
             _state["active"] = False
@@ -206,7 +212,6 @@ def test_api_key():
 @app.route("/reviewed", methods=["GET"])
 def get_reviewed():
     return jsonify(_load_reviewed())
-
 
 @app.route("/reviewed", methods=["POST"])
 def set_reviewed():

@@ -1155,17 +1155,19 @@ function handleProgress(raw) {
     const elapsedSec = (Date.now() - startTime) / 1000;
 
     let etaStr = '';
-    if (cur > 3 && tot > cur && elapsedSec > 1) {
+    if (cur > 2 && tot > cur && elapsedSec > 1) {
       const speed = cur / elapsedSec;
       const etaSec = Math.round((tot - cur) / speed);
-      etaStr = etaSec < 60
-        ? ` · осталось ~${etaSec} с`
-        : ` · осталось ~${Math.ceil(etaSec / 60)} мин`;
+      if (etaSec > 0) {
+        etaStr = etaSec < 60
+          ? ` · осталось ~${etaSec}с`
+          : ` · осталось ~${Math.ceil(etaSec / 60)}м`;
+      }
     }
 
     const stageLabel = stage ? ` · «${stage}»` : '';
-    const foundLabel = found > 0 ? ` · найдено: ${found}` : '';
-    setProgress(pct, `${pct}% · точка ${cur}/${tot}${stageLabel}${foundLabel}${etaStr}`);
+    const foundLabel = found > 0 ? ` · ${found} найдено` : '';
+    setProgress(pct, `${pct}%${stageLabel}${foundLabel}${etaStr}`);
     document.title = `${pct}% ⏳ (${found} найдено) — Парсер`;
 
     // Update live stats strip
@@ -1333,7 +1335,7 @@ function onRunDone(msg) {
   document.title = 'Яндекс.Карты — Парсер бизнесов';
   resetBtn();
   hideProgress();
-  showDownloads(msg.files || []);
+  showDownloads(msg.files || [], msg.formats || []);
   // Reload from canonical JSON file (authoritative ordered list)
   const jf = (msg.files || []).find(f => f.endsWith('.json'));
   if (jf) {
@@ -1350,6 +1352,12 @@ function onRunDone(msg) {
   } else {
     _resetTableBadge();
   }
+  // Play completion sound when notifications are enabled
+  if (!stopped && Notification && Notification.permission === 'granted') {
+    playDoneSound();
+    sendNotification('Поиск завершён',
+      allResults.length ? `Найдено ${allResults.length} компаний` : 'Поиск завершён', '🗺');
+  }
 }
 
 function resetBtn() {
@@ -1365,10 +1373,18 @@ function resetBtn() {
 const ICONS = {xlsx:'📊', json:'📋', csv:'📄', html:'🗺'};
 function fileIcon(n) { for (const [ext,ic] of Object.entries(ICONS)) if (n.endsWith('.'+ext)) return ic; return '📁'; }
 
-function showDownloads(files) {
-  if (!files.length) return;
+function showDownloads(files, formats) {
+  const allowed = new Set(formats || []);
+  const filtered = files.filter(f => {
+    // Always allow non-standard extensions (map html, etc.)
+    if (f.endsWith('.xlsx')) return allowed.has('xlsx');
+    if (f.endsWith('.csv')) return allowed.has('csv');
+    if (f.endsWith('.json')) return allowed.has('json');
+    return true;  // map html, etc.
+  });
+  if (!filtered.length) return;
   const sec = document.getElementById('dl-section');
-  document.getElementById('dl-btns').innerHTML = files.map(f =>
+  document.getElementById('dl-btns').innerHTML = filtered.map(f =>
     `<a class="dl-btn" href="/download/${encodeURIComponent(f)}" download>${fileIcon(f)} ${f}</a>`
   ).join('');
   sec.style.display = '';
@@ -1799,6 +1815,28 @@ function sendNotification(title, body, icon) {
     const n = new Notification(title, {body, icon: icon || '🗺'});
     n.onclick = () => { window.focus(); n.close(); };
   } catch (e) { /* некоторые браузеры блокируют без service worker */ }
+}
+
+// ── Completion sound (Web Audio API chime) ──
+function playDoneSound() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (ctx.state === 'suspended') ctx.resume();
+    // Ascending three-tone chime: C5 → E5 → G5
+    [523, 659, 784].forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      const t = ctx.currentTime + i * 0.18;
+      gain.gain.setValueAtTime(0.28, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.45);
+      osc.start(t);
+      osc.stop(t + 0.45);
+    });
+  } catch (e) { /* Web Audio unavailable */ }
 }
 
 // ═══════════════════════════════════════════

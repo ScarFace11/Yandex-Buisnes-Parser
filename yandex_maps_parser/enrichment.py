@@ -37,6 +37,10 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
     """
     results: list[dict] = []
 
+    # Register candidate count for progress tracking
+    if candidates:
+        state._add_candidates(len(candidates))
+
     def process(record: dict) -> dict | None:
         biz_id  = record.pop("_biz_id", "")
         raw     = record.pop("_raw_feature", {})
@@ -81,9 +85,8 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
         with _pbar_lock:
             pbar.update(1)
 
-        if not socials:
-            return None
-
+        # Include ALL businesses — even those without social media.
+        # Users want the full list of businesses without websites.
         state._inc_found()
         for platform in KNOWN_PLATFORMS:
             record[platform] = socials.get(platform, "")

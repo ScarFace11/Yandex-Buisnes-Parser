@@ -10,6 +10,7 @@ Logging helpers (info / warn / ok) also live here so every module
 has a single import point for both config and logging.
 """
 import threading
+import time as _time
 
 from colorama import Fore, Style
 from tqdm import tqdm
@@ -62,6 +63,17 @@ _prog_cur: int = 0
 _prog_tot: int = 0
 _prog_stage: str = ""
 
+# ── Work-based progress tracking ──────────────────────────────
+# Combined progress = search_points_done + enrichment_done
+#                     ─────────────────────────────────────────
+#                     search_points_total + candidates_total
+#
+# This gives accurate percentage throughout the entire run, not just the
+# search phase.  Candidates total grows during search; enrichment_done
+# grows during enrichment; the percentage reflects real work completed.
+_work_candidates_total: int = 0   # total candidates discovered (grows during search)
+_work_candidates_done: int = 0    # candidates fully enriched so far
+
 # Semaphore limiting concurrent detail-page requests; re-created by run_web
 _detail_semaphore = threading.Semaphore(MAX_WORKERS)
 
@@ -100,10 +112,10 @@ def ok(msg: str) -> None:
 def _progress(current: int, total: int, stage: str = "") -> None:
     """Push progress event to the web interface (no-op in CLI mode).
 
-    Also caches cur/tot/stage so _inc_found() can emit a full event at any time.
-    Progress payload format: "cur/tot/stage/found"
+    Updates the search-phase counters and emits a work-based progress event.
+    The progress value represents: (search_done + enrich_done) / (search_total + candidates_total).
+    Progress payload format: "work_done/work_total/stage/found"
     """
-    import time as _time
     global _prog_cur, _prog_tot, _prog_stage, _last_inc_emit
     _prog_cur = current
     _prog_tot = total
@@ -112,7 +124,20 @@ def _progress(current: int, total: int, stage: str = "") -> None:
         _last_inc_emit = _time.monotonic()
         with _found_lock:
             count = _found_count
-        _LOG_FN("progress", f"{current}/{total}/{stage}/{count}")
+            work_done = current + _work_candidates_done
+            work_total = total + _work_candidates_total
+        _LOG_FN("progress", f"{work_done}/{work_total}/{stage}/{count}")
+
+
+def _add_candidates(n: int) -> None:
+    """Record that n new candidates were discovered and will be enriched.
+
+    Called from enrich() when a batch starts.  Increases the estimated total
+    work so the progress percentage accurately reflects remaining effort.
+    """
+    global _work_candidates_total
+    with _found_lock:
+        _work_candidates_total += n
 
 
 def _inc_found() -> None:
@@ -121,30 +146,33 @@ def _inc_found() -> None:
     Called from enrichment worker threads — may fire from multiple threads concurrently.
     Emits at most one progress event per _INC_EMIT_INTERVAL seconds to avoid flooding
     the SSE channel while still giving the UI live feedback during detail fetching.
-    Progress payload format: "cur/tot/stage/found"
+    Progress payload format: "work_done/work_total/stage/found"
     """
-    import time as _time
-    global _found_count, _last_inc_emit
+    global _found_count, _work_candidates_done, _last_inc_emit
     with _found_lock:
         _found_count += 1
+        _work_candidates_done += 1
         count = _found_count
-
-    if not _LOG_FN:
-        return
 
     now = _time.monotonic()
     # Check throttle outside the lock; a small race here is harmless (worst case:
     # two threads both pass and emit — that's fine, just one extra ping).
     if now - _last_inc_emit >= _INC_EMIT_INTERVAL:
         _last_inc_emit = now
-        _LOG_FN("progress", f"{_prog_cur}/{_prog_tot}/{_prog_stage}/{count}")
+        with _found_lock:
+            work_done = _prog_cur + _work_candidates_done
+            work_total = _prog_tot + _work_candidates_total
+        _LOG_FN("progress", f"{work_done}/{work_total}/{_prog_stage}/{count}")
 
 
 def _reset_found() -> None:
     """Reset found counter and cached progress state at the start of a new run."""
     global _found_count, _prog_cur, _prog_tot, _prog_stage, _last_inc_emit
+    global _work_candidates_total, _work_candidates_done
     with _found_lock:
         _found_count = 0
+        _work_candidates_total = 0
+        _work_candidates_done = 0
     _prog_cur = 0
     _prog_tot = 0
     _prog_stage = ""
