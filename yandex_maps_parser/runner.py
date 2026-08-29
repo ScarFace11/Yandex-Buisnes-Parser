@@ -397,6 +397,11 @@ def run_web(params: dict, log_fn, stop_event=None) -> list[str]:
     state.SEARCH_WORKERS  = max(1, min(5, int(params.get("query_workers", 2))))
     state.MAX_PAGES       = max(1, int(params.get("max_pages", 1)))
     state.FETCH_DETAIL    = bool(params.get("fetch_detail", True))
+    state.SOCIAL_MODE      = params.get("social_mode", "all")
+    # When user only wants businesses WITHOUT socials, skip expensive
+    # detail-page fetching — we don't need social links at all.
+    if state.SOCIAL_MODE == "without_socials":
+        state.FETCH_DETAIL = False
     if params.get("api_key", "").strip():
         state.YANDEX_API_KEY = params["api_key"].strip()
 

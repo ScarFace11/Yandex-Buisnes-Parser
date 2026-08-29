@@ -44,6 +44,11 @@ from config import (
     PROXIES,
 )
 
+# Social mode: "all" | "with_socials" | "without_socials"
+# Set by run_web(); controls whether enrichment fetches detail pages
+# and whether the frontend filters results by social media presence.
+SOCIAL_MODE = "all"
+
 # ── Runtime-only state ────────────────────────────────────────
 _LOG_FN = None           # callable(level, msg) set by run_web; None = CLI mode
 _TQDM_DISABLE = False    # True when running from web interface

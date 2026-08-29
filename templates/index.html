@@ -484,6 +484,10 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
 .export-sel-btn:hover{background:var(--cl)}
 
 /* ── API key ── */
+/* ── Social mode toggle ── */
+.social-mode-opt:hover{background:var(--cl);color:var(--c)}
+.social-mode-opt.active{background:var(--c);color:#fff;border-color:var(--c)}
+
 .apikey-row{display:flex;gap:6px;align-items:flex-start}
 .apikey-row input{flex:1}
 #btn-test-key{
@@ -820,6 +824,23 @@ input:focus-visible,textarea:focus-visible,select:focus-visible{
                 <input type="number" id="f-gstep" value="5" min="1"></div>
             </div>
 
+            <div class="sec">Режим поиска</div>
+            <div style="display:flex;gap:0;border:1.5px solid var(--bdr);border-radius:8px;overflow:hidden">
+              <label class="social-mode-opt" style="flex:1;padding:8px 6px;text-align:center;font-size:12px;font-weight:700;cursor:pointer;color:var(--sub);background:#fff;transition:all .13s;border-right:1px solid var(--bdr)" onclick="setSocialMode('all')">
+                <input type="radio" name="social_mode" value="all" checked style="display:none">
+                <span>🌐 Все</span>
+              </label>
+              <label class="social-mode-opt" style="flex:1;padding:8px 6px;text-align:center;font-size:12px;font-weight:700;cursor:pointer;color:var(--sub);background:#fff;transition:all .13s;border-right:1px solid var(--bdr)" onclick="setSocialMode('with_socials')">
+                <input type="radio" name="social_mode" value="with_socials" style="display:none">
+                <span>📱 С соцсетями</span>
+              </label>
+              <label class="social-mode-opt" style="flex:1;padding:8px 6px;text-align:center;font-size:12px;font-weight:700;cursor:pointer;color:var(--sub);background:#fff;transition:all .13s" onclick="setSocialMode('without_socials')">
+                <input type="radio" name="social_mode" value="without_socials" style="display:none">
+                <span>🚫 Без соцсетей</span>
+              </label>
+            </div>
+            <div class="hint" id="social-mode-hint">Показывать все найденные бизнесы</div>
+
             <div class="sec">Дополнительно</div>
             <label class="chk"><input type="checkbox" id="f-validate">
               Проверять активность соцсетей</label>
@@ -1078,6 +1099,7 @@ let leafMap     = null;
 let mapInited   = false;
 let startTime   = 0;
 let activeSocialFilters = new Set();
+let socialMode = 'all';  // 'all' | 'with_socials' | 'without_socials'
 
 // ═══════════════════════════════════════════
 //  Checkbox styling
@@ -1085,6 +1107,26 @@ let activeSocialFilters = new Set();
 document.querySelectorAll('.chk input').forEach(cb => {
   cb.addEventListener('change', () => cb.closest('.chk').classList.toggle('on', cb.checked));
 });
+
+// ═══════════════════════════════════════════
+//  Social mode toggle (form)
+// ═══════════════════════════════════════════
+function setSocialMode(mode) {
+  socialMode = mode;
+  document.querySelectorAll('.social-mode-opt').forEach(el => {
+    const radio = el.querySelector('input[type=radio]');
+    const isActive = radio.value === mode;
+    el.classList.toggle('active', isActive);
+    radio.checked = isActive;
+  });
+  const hint = document.getElementById('social-mode-hint');
+  if (hint) {
+    const hints = { all: 'Показывать все найденные бизнесы', with_socials: 'Только бизнесы с найденными соцсетями', without_socials: 'Только бизнесы без соцсетей (быстрее — без загрузки деталей)' };
+    hint.textContent = hints[mode] || '';
+  }
+  // Re-filter table if results exist
+  if (allResults.length) filterTable();
+}
 
 // ═══════════════════════════════════════════
 //  Grid toggle
@@ -1199,6 +1241,7 @@ function getParams() {
     grid_step:       +document.getElementById('f-gstep').value || 5,
     validate_socials:document.getElementById('f-validate').checked,
     api_key:         document.getElementById('f-apikey').value.trim(),
+    social_mode:     socialMode,
   };
 }
 
@@ -1305,13 +1348,22 @@ function scheduleLiveRender() {
   if (_liveRenderTimer) return;
   _liveRenderTimer = setTimeout(() => {
     _liveRenderTimer = null;
-    // Re-apply current filter (respects search box + social filters, preserves curPage)
+    // Re-apply current filter (respects search box + social filters + social mode)
     const q = document.getElementById('tbl-search').value.trim().toLocaleLowerCase('ru-RU');
+    const SOCIAL_KEYS = Object.keys(SOCIALS);
     filteredRows = allResults.filter(r => {
       const searchable = Object.values(r).some(value =>
         String(value ?? '').toLocaleLowerCase('ru-RU').includes(q)
       );
       if (q && !searchable) return false;
+      // Social mode filter
+      if (socialMode === 'with_socials') {
+        const hasAny = SOCIAL_KEYS.some(k => r[k]) || r.other_socials;
+        if (!hasAny) return false;
+      } else if (socialMode === 'without_socials') {
+        const hasAny = SOCIAL_KEYS.some(k => r[k]) || r.other_socials;
+        if (hasAny) return false;
+      }
       if (activeSocialFilters.size > 0) {
         if (![...activeSocialFilters].some(key => r[key])) return false;
       }
@@ -1442,13 +1494,21 @@ function renderTable(data) {
 
 function filterTable() {
   const q = document.getElementById('tbl-search').value.trim().toLocaleLowerCase('ru-RU');
+  const SOCIAL_KEYS = Object.keys(SOCIALS);
   filteredRows = allResults.filter(r => {
-    // Search every visible/data field: name, rating, review count, links,
-    // query, description, address, phone and social networks.
+    // Search every visible/data field
     const searchable = Object.values(r).some(value =>
       String(value ?? '').toLocaleLowerCase('ru-RU').includes(q)
     );
     if (q && !searchable) return false;
+    // Social mode filter (form-level toggle)
+    if (socialMode === 'with_socials') {
+      const hasAny = SOCIAL_KEYS.some(k => r[k]) || r.other_socials;
+      if (!hasAny) return false;
+    } else if (socialMode === 'without_socials') {
+      const hasAny = SOCIAL_KEYS.some(k => r[k]) || r.other_socials;
+      if (hasAny) return false;
+    }
     // Social filter — OR logic: row must have at least one selected network
     if (activeSocialFilters.size > 0) {
       const hasSocial = [...activeSocialFilters].some(key => r[key]);
@@ -1704,6 +1764,7 @@ function getCurrentSettings() {
     grad:     document.getElementById('f-grad').value,
     gstep:    document.getElementById('f-gstep').value,
     validate: document.getElementById('f-validate').checked,
+    socialMode: socialMode,
      // API keys are entered for the current run only and are never persisted.
   };
 }
@@ -1725,6 +1786,7 @@ function applySettings(s) {
   if (s.grad     != null) document.getElementById('f-grad').value    = s.grad;
   if (s.gstep    != null) document.getElementById('f-gstep').value   = s.gstep;
   if (s.validate != null) { document.getElementById('f-validate').checked = s.validate; document.getElementById('f-validate').closest('.chk').classList.toggle('on', s.validate); }
+  if (s.socialMode) setSocialMode(s.socialMode);
    // Do not restore API keys from browser storage.
 }
 
@@ -2282,6 +2344,8 @@ function resetSendBtn() {
   applyTheme(savedTheme ? savedTheme === 'dark' : prefersDark);
 
   try { applySettings(JSON.parse(localStorage.getItem(SETTINGS_KEY))); } catch {}
+  // Set initial social mode active state
+  setSocialMode(socialMode);
   renderPresets();
   loadReviewed();
   loadColState();
