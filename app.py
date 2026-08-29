@@ -7,50 +7,77 @@ import queue
 import threading
 import time
 import uuid
+import multiprocessing
 
 from flask import Flask, render_template, request, Response, send_from_directory, jsonify
 
-import yandex_maps_parser as parser
 import vk_sender
 
 app = Flask(__name__)
 OUTPUT_DIR    = "output"
 REVIEWED_FILE = os.path.join(OUTPUT_DIR, "_reviewed.json")
 
-# ── Multi-run state ───────────────────────────────────────────
-# Each search gets its own queue, stop_event, and metadata.
-# Only one search runs at a time (state.py uses module globals);
-# additional runs are queued and auto-start when the current finishes.
+# ── Parallel run state ────────────────────────────────────────
+# Each search runs in its own process (multiprocessing) for true isolation.
+# A bridge thread reads from the multiprocessing.Queue and forwards to a
+# regular queue.Queue that the SSE endpoint can consume with timeout.
 _runs: dict[str, dict] = {}
 _runs_lock = threading.Lock()
 
 
 def _new_run() -> dict:
-    """Create and register a new run entry."""
     run_id = uuid.uuid4().hex[:8]
     entry = {
         "id":         run_id,
+        "process":    None,       # multiprocessing.Process
         "active":     True,
         "queued":     False,
-        "log_queue":  queue.Queue(),
+        "log_queue":  queue.Queue(),  # regular Queue for SSE (fed by bridge)
         "stop_event": threading.Event(),
         "params":     {},
         "files":      [],
         "count":      0,
         "cities":     [],
         "started_at": time.time(),
+        "_done":      False,      # bridge signals when process is done
     }
     with _runs_lock:
         _runs[run_id] = entry
     return entry
 
 
-def _finish_run(run_id: str):
-    """Mark a run as finished and start the next queued run if any.
+def _bridge_reader(mp_queue, reg_queue, entry):
+    """Read from multiprocessing.Queue, forward to regular Queue for SSE.
 
-    Uses atomic check-and-claim to prevent two threads finishing
-    simultaneously from both starting the same queued run.
+    Runs in a daemon thread.  Exits when the process ends and the
+    multiprocessing queue is drained (or immediately if process crashed).
     """
+    proc = entry.get("process")
+    while True:
+        try:
+            msg = mp_queue.get(timeout=1.0)
+            if msg is None:
+                break  # sentinel from child
+            reg_queue.put(msg)
+        except queue.Empty:
+            # No message for 1s — check if process is still alive
+            if proc and not proc.is_alive():
+                # Drain any remaining items
+                while not mp_queue.empty():
+                    try:
+                        msg = mp_queue.get_nowait()
+                        if msg is not None:
+                            reg_queue.put(msg)
+                    except queue.Empty:
+                        break
+                break
+        except Exception:
+            break
+    entry["_done"] = True
+
+
+def _finish_run(run_id: str):
+    """Mark run done, start next queued run if any."""
     next_entry = None
     with _runs_lock:
         if run_id in _runs:
@@ -62,27 +89,46 @@ def _finish_run(run_id: str):
                 r["active"] = True
                 next_entry = r
                 break
-        # Cleanup: remove finished runs older than 1 hour
+        # Cleanup old finished runs (> 1 hour)
         now = time.time()
         to_remove = [rid for rid, r in _runs.items()
                      if not r["active"] and not r.get("queued")
                      and now - r.get("started_at", 0) > 3600]
         for rid in to_remove:
             del _runs[rid]
-    # Start next queued run outside the lock
     if next_entry:
-        threading.Thread(
-            target=_run_thread, args=(next_entry,), daemon=True
-        ).start()
+        _start_process(next_entry)
 
 
-def _active_run_id() -> str | None:
-    """Return the ID of the currently active run, if any."""
-    with _runs_lock:
-        for rid, r in _runs.items():
-            if r["active"] and not r.get("queued"):
-                return rid
-    return None
+def _start_process(entry: dict):
+    """Start a search in a child process with bridge thread for SSE."""
+    params    = entry["params"]
+    run_id    = entry["id"]
+    mp_queue  = multiprocessing.Queue()
+
+    # Stop file: child checks periodically and exits gracefully
+    stop_dir  = os.path.join(OUTPUT_DIR, ".run_stop")
+    os.makedirs(stop_dir, exist_ok=True)
+    stop_file = os.path.join(stop_dir, f"{run_id}.stop")
+
+    from yandex_maps_parser.runner import run_process
+
+    proc = multiprocessing.Process(
+        target=run_process,
+        args=(params, mp_queue, stop_file),
+        daemon=True,
+    )
+    entry["process"] = proc
+    entry["stop_file"] = stop_file
+    proc.start()
+
+    # Bridge thread: mp_queue → regular queue for SSE
+    bridge = threading.Thread(
+        target=_bridge_reader,
+        args=(mp_queue, entry["log_queue"], entry),
+        daemon=True,
+    )
+    bridge.start()
 
 
 # ── Reviewed helpers ──────────────────────────────────────────
@@ -110,55 +156,6 @@ def _strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text)
 
 
-# ── Background run thread ─────────────────────────────────────
-
-def _run_thread(entry: dict):
-    """Execute a search run.  Called in a daemon thread."""
-    lq         = entry["log_queue"]
-    stop_event = entry["stop_event"]
-    run_id     = entry["id"]
-    params     = entry["params"]
-    files: list[str] = []
-    count = 0
-
-    def log_fn(level: str, msg: str):
-        if level == "result":
-            try:
-                lq.put({"type": "result", "data": json.loads(msg)})
-            except Exception:
-                pass
-        else:
-            lq.put({"type": "log", "level": level, "msg": _strip_ansi(msg)})
-
-    try:
-        files = parser.run_web(params, log_fn, stop_event)
-        entry["files"] = files
-        # Count results from the JSON output file
-        for f in files:
-            if f.endswith(".json"):
-                try:
-                    with open(os.path.join(OUTPUT_DIR, f), encoding="utf-8") as jf:
-                        count = len(json.load(jf))
-                    break
-                except Exception:
-                    pass
-        entry["count"] = count
-        # Build list of formats the user actually requested
-        fmts = []
-        if params.get("output_csv"):   fmts.append("csv")
-        if params.get("output_json"):  fmts.append("json")
-        if params.get("output_excel"): fmts.append("xlsx")
-        if params.get("output_map"):   fmts.append("map")
-        lq.put({"type": "done", "files": files, "count": count,
-                "stopped": stop_event.is_set(), "formats": fmts})
-    except Exception as exc:
-        lq.put({"type": "log",  "level": "warn", "msg": f"Ошибка: {exc}"})
-        lq.put({"type": "done", "files": files,  "count": 0,
-                "stopped": stop_event.is_set(), "formats": []})
-    finally:
-        _finish_run(run_id)
-
-
 # ── Routes ────────────────────────────────────────────────────
 
 @app.route("/")
@@ -170,7 +167,6 @@ def index():
 def run_parser():
     params = request.get_json(force=True) or {}
 
-    # Validate
     queries = [q.strip() for q in params.get("queries", []) if q.strip()]
     if not queries:
         return jsonify({"error": "Введите хотя бы один запрос"}), 400
@@ -189,20 +185,17 @@ def run_parser():
 
     active = _active_run_id()
     if active and active != entry["id"]:
-        # Another run is active — queue this one
         with _runs_lock:
             entry["queued"] = True
             entry["active"] = False
         return jsonify({"ok": True, "queued": True, "run_id": entry["id"],
                         "position": _queue_position(entry["id"])})
 
-    # Start immediately
-    threading.Thread(target=_run_thread, args=(entry,), daemon=True).start()
+    _start_process(entry)
     return jsonify({"ok": True, "queued": False, "run_id": entry["id"]})
 
 
 def _queue_position(run_id: str) -> int:
-    """1-based position in the queue."""
     pos = 1
     with _runs_lock:
         for rid, r in _runs.items():
@@ -215,38 +208,47 @@ def _queue_position(run_id: str) -> int:
 def stop_parser():
     run_id = request.args.get("run_id", "")
     with _runs_lock:
+        targets = []
         if run_id and run_id in _runs:
-            _runs[run_id]["stop_event"].set()
+            targets.append(_runs[run_id])
         else:
-            # Stop the active run
             for r in _runs.values():
                 if r["active"] and not r.get("queued"):
-                    r["stop_event"].set()
-                    break
+                    targets.append(r)
+        for entry in targets:
+            # Signal via stop file
+            sf = entry.get("stop_file")
+            if sf:
+                try:
+                    with open(sf, "w") as f:
+                        f.write("stop")
+                except Exception:
+                    pass
+            # Also try to terminate the process
+            proc = entry.get("process")
+            if proc and proc.is_alive():
+                proc.terminate()
     return jsonify({"ok": True})
 
 
 @app.route("/logs")
 def logs():
-    # Connect to the latest active or queued run
     run_id = request.args.get("run_id", "")
     with _runs_lock:
         if run_id and run_id in _runs:
             entry = _runs[run_id]
         else:
-            # Find the most recently started active/queued run
             entry = None
             for r in sorted(_runs.values(), key=lambda x: x["started_at"], reverse=True):
                 if r["active"] or r.get("queued"):
                     entry = r
                     break
-            if not entry:
-                # No runs — return empty stream
-                return Response(
-                    iter([json.dumps({"type": "ping"}) + "\n\n"]),
-                    mimetype="text/event-stream",
-                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-                )
+        if not entry:
+            return Response(
+                iter(['data: {"type":"ping"}\n\n']),
+                mimetype="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
 
     lq = entry["log_queue"]
 
@@ -258,6 +260,10 @@ def logs():
                 if msg.get("type") == "done":
                     break
             except queue.Empty:
+                if entry.get("_done"):
+                    # Bridge finished and queue is empty
+                    yield 'data: {"type":"done","files":[],"count":0,"stopped":true,"formats":[]}\n\n'
+                    break
                 yield 'data: {"type":"ping"}\n\n'
 
     return Response(generate(), mimetype="text/event-stream",
@@ -273,7 +279,6 @@ def status():
 
 @app.route("/runs")
 def list_runs():
-    """List all runs with their status."""
     with _runs_lock:
         result = []
         for r in _runs.values():
@@ -286,6 +291,14 @@ def list_runs():
                 "files":    r.get("files", []),
             })
         return jsonify({"runs": result})
+
+
+def _active_run_id() -> str | None:
+    with _runs_lock:
+        for rid, r in _runs.items():
+            if r["active"] and not r.get("queued"):
+                return rid
+    return None
 
 
 @app.route("/results/<path:filename>")
@@ -358,11 +371,11 @@ def get_reviewed():
 def set_reviewed():
     data = request.get_json(force=True) or {}
     url = data.get("url", "").strip()
-    state = bool(data.get("reviewed", False))
+    state_val = bool(data.get("reviewed", False))
     if not url:
         return jsonify({"error": "url required"}), 400
     reviewed = _load_reviewed()
-    if state:
+    if state_val:
         reviewed[url] = True
     else:
         reviewed.pop(url, None)
@@ -477,7 +490,8 @@ def _send_thread(params: dict):
         lq.put({"type": "log", "level": level, "msg": _strip_ansi(msg)})
 
     try:
-        stats = vk_sender.run_send(params, log_fn, stop_event)
+        import vk_sender as _vk
+        stats = _vk.run_send(params, log_fn, stop_event)
         lq.put({"type": "done", "stats": stats, "stopped": stop_event.is_set()})
     except Exception as exc:
         lq.put({"type": "log",  "level": "warn", "msg": f"Ошибка: {exc}"})
