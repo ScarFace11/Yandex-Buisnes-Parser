@@ -338,15 +338,12 @@ def run() -> None:
 
     if len(completed) == total_points:
         clear_checkpoint(base)
-        state.info("  Checkpoint удалён (все точки обработаны).")
+        state.syslog("checkpoint_cleared: all points processed")
 
     state.ok(f"{'═' * 58}\n")
 
     if not full_records:
-        state.info("  Подходящих записей не найдено.")
-        state.info("  • Попробуйте другой запрос в config.py → SEARCH_QUERIES")
-        state.info("  • Включите USE_GRID = True")
-        state.info("  • Снизьте MIN_RATING / MIN_REVIEWS до 0")
+        state.warn("Подходящих записей не найдено. Попробуйте изменить запросы или фильтры.")
 
 
 def _apply_params(params: dict) -> None:
