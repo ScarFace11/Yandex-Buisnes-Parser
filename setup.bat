@@ -6,19 +6,54 @@ echo ║  Yandex Maps Parser — Автоустановка     ║
 echo ╚══════════════════════════════════════════╝
 echo.
 
-REM Проверка Python
-python --version >nul 2>&1
-if %errorlevel% neq 0 (
-    echo [ОШИБКА] Python не найден!
-    echo Скачайте Python 3.11+ с https://www.python.org/downloads/
-    echo При установке отметьте "Add Python to PATH"
-    pause
-    exit /b 1
+REM ── Поиск рабочего Python ──
+set PYTHON_CMD=
+
+REM 1. Пробуем py (Python Launcher — работает даже если python из Store)
+py --version >nul 2>&1
+if %errorlevel% equ 0 (
+    set PYTHON_CMD=py
+    goto :found
 )
 
+REM 2. Пробуем python3
+python3 --version >nul 2>&1
+if %errorlevel% equ 0 (
+    set PYTHON_CMD=python3
+    goto :found
+)
+
+REM 3. Пробуем python (может быть Store-заглушка)
+python --version >nul 2>&1
+if %errorlevel% equ 0 (
+    REM Проверяем что это не заглушка Store
+    for /f "delims=" %%i in ('python --version 2^>^&1') do set PYVER=%%i
+    echo %PYVER% | findstr /i "Python 3" >nul
+    if %errorlevel% equ 0 (
+        set PYTHON_CMD=python
+        goto :found
+    )
+)
+
+echo [ОШИБКА] Python 3.11+ не найден!
+echo.
+echo Установите Python:
+echo   1. Скачайте с https://www.python.org/downloads/
+echo   2. При установке ОБЯЗАТЕЛЬНО отметьте "Add Python to PATH"
+echo   3. Запустите setup.bat заново
+echo.
+pause
+exit /b 1
+
+:found
+echo Найден: %PYTHON_CMD%
+%PYTHON_CMD% --version
+echo.
+
+REM ── Установка ──
 echo [1/4] Создание виртуального окружения...
 if not exist ".venv" (
-    python -m venv .venv
+    %PYTHON_CMD% -m venv .venv
     echo       Готово.
 ) else (
     echo       Виртуальное окружение уже существует.

@@ -54,6 +54,7 @@ cd Yandex-Buisnes-Parser
 
 # Создание виртуального окружения
 python -m venv .venv
+# Если python не работает, попробуйте: py -m venv .venv
 
 # Активация (Windows)
 .venv\Scripts\activate
@@ -67,6 +68,8 @@ pip install -r requirements.txt
 # Запуск
 python app.py
 ```
+
+> ⚠️ **Windows-специфика:** Если `python --version` выводит просто `Python` без номера — это заглушка Windows Store. Используйте `py` (Python Launcher) вместо `python`. При установке Python ОБЯЗАТЕЛЬНО отметьте «Add Python to PATH».
 
 Откройте браузер: **http://localhost:5000**
 
