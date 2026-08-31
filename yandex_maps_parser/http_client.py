@@ -199,6 +199,37 @@ def _interruptible_sleep(seconds: float, quiet: bool = False) -> bool:
         time.sleep(min(1.0, remaining))
 
 
+def _abortable_get(s, url, params, timeout, allow_redirects, stop_event, skip_event):
+    """Run GET in a thread, abort if stop/skip is set during the request.
+
+    This allows the search to respond to stop/skip within ~1 second
+    even during a long HTTP request (which normally blocks for up to 20s).
+    """
+    result = [None]  # mutable container for thread result
+    error = [None]
+
+    def _do_request():
+        try:
+            result[0] = s.get(url, params=params, timeout=timeout, allow_redirects=allow_redirects)
+        except Exception as e:
+            error[0] = e
+
+    t = threading.Thread(target=_do_request, daemon=True)
+    t.start()
+
+    # Wait for request to complete OR for stop/skip signal
+    while t.is_alive():
+        t.join(timeout=0.5)  # check every 0.5s
+        if stop_event and stop_event.is_set():
+            return None  # stop requested — abort
+        if skip_event and skip_event.is_set():
+            return None  # skip requested — abort
+
+    if error[0] is not None:
+        raise error[0]
+    return result[0]
+
+
 def _get(
     url: str,
     params: dict | None = None,
@@ -214,10 +245,13 @@ def _get(
     while True:
         if state._STOP_EVENT and state._STOP_EVENT.is_set():
             return None
+        if state.is_skip_city():
+            return None
         if _wait_for_token():
             return None
         try:
-            r = s.get(url, params=params, timeout=timeout, allow_redirects=allow_redirects)
+            r = _abortable_get(s, url, params, timeout, allow_redirects,
+                               state._STOP_EVENT, state._SKIP_CITY_EVENT)
 
             if r.status_code == 429:
                 rate_limit_hits += 1
@@ -269,6 +303,10 @@ def _get(
 
 def _head(url: str, timeout: int = 10) -> int:
     """HEAD-check a URL (used for social-link validation)."""
+    if state._STOP_EVENT and state._STOP_EVENT.is_set():
+        return 0
+    if state.is_skip_city():
+        return 0
     if _wait_for_token():
         return 0
     _stats_count_request(url)
