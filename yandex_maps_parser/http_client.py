@@ -287,14 +287,16 @@ def _get(
             # 5xx
             net_attempts += 1
             _stats_add("retries")
+            state.warn(f"  ⚠ HTTP {r.status_code} — повтор {net_attempts}/{state.RETRY_COUNT}")
             if net_attempts >= state.RETRY_COUNT:
                 return None
             if _interruptible_sleep(state.RETRY_DELAY * net_attempts, quiet=True):
                 return None
 
-        except (requests.ConnectionError, requests.Timeout, OSError):
+        except (requests.ConnectionError, requests.Timeout, OSError) as e:
             net_attempts += 1
             _stats_add("retries")
+            state.warn(f"  ⚠ Сеть: {type(e).__name__} — повтор {net_attempts}/{state.RETRY_COUNT}")
             if net_attempts >= state.RETRY_COUNT:
                 return None
             if _interruptible_sleep(state.RETRY_DELAY * net_attempts, quiet=True):

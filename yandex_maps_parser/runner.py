@@ -154,6 +154,7 @@ def run() -> None:
             state._progress(progress_count, total_points, query)
 
     def run_query(query: str):
+        state.info(f"  ─── Запрос «{query}»: начало поиска")
         query_records: list[dict] = []
         processed_keys: list[tuple] = []
         search_session = _worker_session()
@@ -215,6 +216,10 @@ def run() -> None:
                 pbar_search, pbar_detail, seen_lock=seen_lock,
                 search_session=search_session,
             )
+            state.info(
+                f"  📊 Итого по точке: API вернул {found or '?'} | "
+                f"кандидатов: {len(candidates)} | новых: {new_candidates}"
+            )
 
             dead_points[(lat, lon)] = bool(
                 found is not None and (found == 0 or new_candidates == 0)
@@ -236,6 +241,7 @@ def run() -> None:
             processed_keys.append(batch_key)
             mark_progress(query)
 
+        state.info(f"  ─── Запрос «{query}»: завершён ({len(query_records)} записей)")
         return processed_keys, query_records
 
     pending_queries = [
@@ -264,6 +270,7 @@ def run() -> None:
                     completed.update(processed_keys)
                     if records and state.OUTPUT_CSV:
                         save_csv(records, paths["csv"], append=True)
+                        state.info(f"  💾 CSV: +{len(records)} записей")
 
                     if processed_keys:
                         save_checkpoint(base, seen_urls, completed)
@@ -304,6 +311,7 @@ def run() -> None:
     if state.OUTPUT_JSON and jsonl_records:
         try:
             save_json(full_records, paths["json"], append=False)
+            state.info(f"  💾 JSON: {len(full_records)} записей → {paths['json']}")
         except Exception:
             pass
 
@@ -317,7 +325,9 @@ def run() -> None:
     # Finalize Excel: add table, conditional formatting, legend/help/stats sheets
     if state.OUTPUT_EXCEL and state._EXCEL_APPEND_ENABLED:
         try:
+            state.info(f"  💾 Excel: финализация ({len(full_records or all_results)} записей)...")
             _finalize_excel(full_records or all_results)
+            state.info(f"  💾 Excel: готово → {paths['xlsx']}")
         except Exception as exc:
             state.warn(f"Ошибка финализации Excel: {exc}")
             # Fallback: rebuild from scratch
@@ -337,7 +347,9 @@ def run() -> None:
 
     if full_records:
         if state.OUTPUT_MAP:
+            state.info(f"  💾 Карта: генерация HTML...")
             save_map(full_records, paths["map"], center_lat, center_lon)
+            state.info(f"  💾 Карта: готово → {paths['map']}")
 
     print_stats(all_results)
     print_limit_stats()
@@ -457,6 +469,12 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None) -> list[str]
     state._SKIPPED_CITIES = []
     _total_records = 0
 
+    # Log configuration
+    _combined_log("info", f"  Потоки: {state.MAX_WORKERS} детали | {state.SEARCH_WORKERS} поиск")
+    _combined_log("info", f"  Фильтры: рейтинг ≥{state.MIN_RATING} | отзывов ≥{state.MIN_REVIEWS}")
+    _combined_log("info", f"  Режим: {state.SOCIAL_MODE} | страниц: {state.MAX_PAGES} | Retry: {state.RETRY_COUNT}")
+    _combined_log("info", f"  Вывод: {'CSV ' if state.OUTPUT_CSV else ''}{'JSON ' if state.OUTPUT_JSON else ''}{'Excel ' if state.OUTPUT_EXCEL else ''}{'Карта' if state.OUTPUT_MAP else ''}")
+
     try:
         for city_idx, city in enumerate(cities):
             if stop_event and stop_event.is_set():
@@ -504,6 +522,8 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None) -> list[str]
             city_files = _collect_run_files(started_at)
             all_files.extend(city_files)
 
+            if city_files:
+                state.ok(f"  📁 Файлы: {', '.join(city_files)}")
             if total_cities > 1 and city_files:
                 state.ok(f"  ✅ {city}: {len(city_files)} файл(ов) сохранено")
     finally:

@@ -45,6 +45,7 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
         biz_id  = record.pop("_biz_id", "")
         raw     = record.pop("_raw_feature", {})
         agg_url = record.pop("_aggregator_url", "")
+        biz_name = record.get("name", "?")
 
         if state._STOP_EVENT and state._STOP_EVENT.is_set():
             return None
@@ -65,6 +66,8 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
         # (e.g. VK was missed because a TG link appeared first in raw JSON).
         # Detail-page socials MERGE into the raw ones instead of replacing them.
         if state.FETCH_DETAIL and biz_id and len(socials) < 2:
+            if state._LOG_FN:
+                state._LOG_FN("info", f"    🔎 Детали: {biz_name} (raw соцсети: {len(socials)})")
             html = fetch_html(f"https://yandex.ru/maps/org/{biz_id}")
             if html:
                 for k, v in _extract_from_json_blob(html).items():
@@ -79,6 +82,8 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
 
         # Fallback: try aggregator page
         if agg_url and len(socials) < 2:
+            if state._LOG_FN:
+                state._LOG_FN("info", f"    🔗 Aggregator: {biz_name} ({agg_url})")
             agg_html = fetch_html(agg_url)
             if agg_html:
                 for k, v in extract_socials(agg_html).items():
@@ -98,6 +103,9 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
             return None  # skip — has social media, user wants only those without
 
         state._inc_found()
+        social_list = [f"{p}:{socials[p][:30]}" for p in KNOWN_PLATFORMS if socials.get(p)]
+        if state._LOG_FN:
+            state._LOG_FN("info", f"    ✅ {biz_name} | соцсети: {', '.join(social_list) or 'нет'}")
         for platform in KNOWN_PLATFORMS:
             record[platform] = socials.get(platform, "")
 
@@ -172,7 +180,11 @@ def collect_candidates(
         )
         if found is not None and found_total is None:
             found_total = found
+            if state._LOG_FN:
+                state._LOG_FN("info", f"  📡 API: найдено {found} организаций по запросу «{query}»")
         if not features:
+            if state._LOG_FN:
+                state._LOG_FN("info", f"  — Стр. {page + 1}: нет результатов, завершаю")
             break
 
         new_this_page = 0
@@ -224,7 +236,7 @@ def collect_candidates(
         time.sleep(delay)
 
     if state._LOG_FN and candidates:
-        state.info(f"  ⚙ Загружаю детали {len(candidates)} орг. «{query}»…")
+        state.info(f"  ⚙ Загружаю детали {len(candidates)} орг. «{query}» (без сайта)")
     elif state._LOG_FN and not candidates:
         state.info(f"  — «{query}»: кандидатов без сайта не найдено")
 
