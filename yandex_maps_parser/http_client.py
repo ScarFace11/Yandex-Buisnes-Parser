@@ -165,11 +165,13 @@ def get_stats() -> dict:
 def _wait_for_token() -> bool:
     """
     Block until the token bucket grants a slot AND any 429 cooldown has
-    elapsed. Returns True if the wait was interrupted by a stop request.
+    elapsed. Returns True if the wait was interrupted by a stop/skip request.
     The rate is capped at _MAX_RPS to prevent 429 errors.
     """
     while True:
         if state._STOP_EVENT and state._STOP_EVENT.is_set():
+            return True
+        if state.is_skip_city():
             return True
         wait = max(_token_bucket.try_acquire(_MAX_RPS), _cooldown_remaining())
         if wait <= 0:
@@ -180,13 +182,15 @@ def _wait_for_token() -> bool:
 
 def _interruptible_sleep(seconds: float, quiet: bool = False) -> bool:
     """
-    Wait *seconds*, checking stop_event every second.
-    Returns True if interrupted (stop was requested).
+    Wait *seconds*, checking stop_event and skip_event every second.
+    Returns True if interrupted (stop/skip was requested).
     """
     end = time.time() + seconds
     reported: set[int] = set()
     while True:
         if state._STOP_EVENT and state._STOP_EVENT.is_set():
+            return True
+        if state.is_skip_city():
             return True
         remaining = end - time.time()
         if remaining <= 0:

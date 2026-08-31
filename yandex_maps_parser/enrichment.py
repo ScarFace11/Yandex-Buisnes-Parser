@@ -130,6 +130,11 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
     try:
         futures = {pool.submit(process, r): r for r in candidates}
         for fut in as_completed(futures):
+            # Fast abort: stop waiting for queued futures when skip/stop fires
+            if state.is_skip_city() or (state._STOP_EVENT and state._STOP_EVENT.is_set()):
+                for remaining in futures:
+                    remaining.cancel()
+                break
             try:
                 res = fut.result(timeout=60)
                 if res is not None:
@@ -139,7 +144,7 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
                     pbar.update(1)
     finally:
         if owns_pool:
-            pool.shutdown(wait=True)
+            pool.shutdown(wait=False)
 
     return results
 

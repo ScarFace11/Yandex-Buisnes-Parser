@@ -354,11 +354,6 @@ function handleProgress(raw) {
     appendLog('info', label);
     const lsStage = document.getElementById('ls-stage');
     if (lsStage) lsStage.textContent = name;
-    // Play sound for PREVIOUS city completion (idx-1 because idx is the NEW city)
-    if (_lastCompletedCityIdx > 0 && notificationsEnabled && Notification && Notification.permission === 'granted') {
-      const prevIdx = _lastCompletedCityIdx;
-      playCityDoneSound(`Город ${prevIdx}/${total}`, prevIdx, total);
-    }
     _lastCompletedCityIdx = idx;
     return;
   }
@@ -1269,7 +1264,7 @@ function sendNotification(title, body, icon) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
   if (!notificationsEnabled) return;
   try {
-    const n = new Notification(title, {body, icon: icon || '🗺'});
+    const n = new Notification(title, {body});
     n.onclick = () => { window.focus(); n.close(); };
   } catch (e) { /* некоторые браузеры блокируют без service worker */ }
 }
