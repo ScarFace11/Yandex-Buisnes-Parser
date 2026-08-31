@@ -516,6 +516,24 @@ def run_process(params: dict, mp_queue, stop_file: str | None = None) -> None:
 
     try:
         files = run_web(params, _q_log, stop_event)
+        # If multiple cities, merge all JSON files into a combined one
+        # so the frontend can load all results at once for the map/stats.
+        json_files = [f for f in files if f.endswith(".json") and "_combined" not in f]
+        if len(json_files) > 1:
+            combined = []
+            for jf_name in json_files:
+                try:
+                    fpath = os.path.join(state.OUTPUT_DIR, jf_name)
+                    with open(fpath, encoding="utf-8") as fh:
+                        combined.extend(json.load(fh))
+                except Exception:
+                    pass
+            if combined:
+                combined_name = "_combined_results.json"
+                combined_path = os.path.join(state.OUTPUT_DIR, combined_name)
+                with open(combined_path, "w", encoding="utf-8") as fh:
+                    json.dump(combined, fh, ensure_ascii=False, indent=2)
+                files.insert(0, combined_name)
         count = 0
         for f in files:
             if f.endswith(".json"):

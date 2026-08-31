@@ -17,8 +17,9 @@
 <header>
   <h1>Яндекс.Карты — поиск новых клиентов</h1>
   <div class="hdr-right">
+    <span id="app-version">v{{ APP_VERSION }}</span>
     <span id="status-badge">Готово</span>
-    <button id="btn-notify" onclick="requestNotify()" title="Уведомления в браузере">
+    <button id="btn-notify" onclick="toggleNotifications()" title="Уведомления в браузере">
       <span id="notify-icon">•</span>
       <span id="notify-txt">Уведомления</span>
     </button>
@@ -61,8 +62,8 @@
 
         <div>
           <label class="lbl" for="f-city">Где ищем?</label>
-          <textarea id="f-city" rows="2" placeholder="Ярославль&#10;Москва (по одному городу на строку)">Ярославль</textarea>
-          <div class="hint">Один город на строку. Если несколько — поиск пройдёт по каждому городу последовательно</div>
+          <div id="city-select-box"></div>
+          <div class="hint">Выберите города из списка или введите вручную. Поиск пройдёт по каждому городу последовательно</div>
         </div>
 
         <details class="advanced-settings">

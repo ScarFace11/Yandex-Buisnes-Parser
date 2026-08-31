@@ -13,6 +13,7 @@ let mapInited   = false;
 let startTime   = 0;
 let activeSocialFilters = new Set();
 let socialMode = 'all';  // 'all' | 'with_socials' | 'without_socials'
+let notificationsEnabled = false;  // toggle state
 
 // ═══════════════════════════════════════════
 //  Checkbox styling
@@ -50,8 +51,172 @@ function toggleGrid() {
 }
 
 // ═══════════════════════════════════════════
+//  City combobox — population data
+// ═══════════════════════════════════════════
+const CITIES_DATA = [
+  {name:'Москва',pop:13104177},{name:'Санкт-Петербург',pop:5600044},{name:'Новосибирск',pop:1635338},{name:'Екатеринбург',pop:1544376},{name:'Казань',pop:1308660},
+  {name:'Нижний Новгород',pop:1204985},{name:'Челябинск',pop:1196680},{name:'Самара',pop:1173299},{name:'Уфа',pop:1144809},{name:'Ростов-на-Дону',pop:1142162},
+  {name:'Красноярск',pop:1196913},{name:'Воронеж',pop:1058261},{name:'Пермь',pop:1055397},{name:'Волгоград',pop:1028036},{name:'Краснодар',pop:1121291},
+  {name:'Саратов',pop:838042},{name:'Тюмень',pop:816907},{name:'Тольятти',pop:694998},{name:'Ижевск',pop:648318},{name:'Барнаул',pop:630877},
+  {name:'Ульяновск',pop:617075},{name:'Иркутск',pop:623005},{name:'Хабаровск',pop:617448},{name:'Ярославль',pop:599169},{name:'Владивосток',pop:605647},
+  {name:'Махачкала',pop:609621},{name:'Томск',pop:576746},{name:'Оренбург',pop:564407},{name:'Кемерово',pop:556434},{name:'Новокузнецк',pop:537385},
+  {name:'Рязань',pop:538962},{name:'Астрахань',pop:520339},{name:'Набережные Челны',pop:533392},{name:'Пенза',pop:501109},{name:'Липецк',pop:510024},
+  {name:'Тула',pop:472522},{name:'Киров',pop:501468},{name:'Чебоксары',pop:497611},{name:'Калининград',pop:490449},{name:'Брянск',pop:399704},
+  {name:'Курск',pop:452331},{name:'Иваново',pop:400315},{name:'Магнитогорск',pop:413571},{name:'Тверь',pop:414070},{name:'Ставрополь',pop:398539},
+  {name:'Нижний Тагил',pop:362224},{name:'Белгород',pop:399690},{name:'Архангельск',pop:338867},{name:'Владимир',pop:352347},{name:'Сочи',pop:466078},
+  {name:'Симферополь',pop:365511},{name:'Якутск',pop:349315},{name:'Улан-Удэ',pop:437543},{name:'Мурманск',pop:270283},{name:'Чита',pop:341509},
+  {name:'Вологда',pop:313549},{name:'Череповец',pop:312379},{name:'Саранск',pop:316525},{name:'Смоленск',pop:325656},{name:'Орёл',pop:307478},
+  {name:'Калуга',pop:341393},{name:'Курган',pop:311417},{name:'Тамбов',pop:290624},{name:'Кострома',pop:277656},{name:'Сургут',pop:396410},
+  {name:'Нижневартовск',pop:283034},{name:'Новороссийск',pop:279038},{name:'Ханты-Мансийск',pop:315066},{name:'Нальчик',pop:242531},{name:'Владикавказ',pop:304286},
+  {name:'Грозный',pop:328277},{name:'Майкоп',pop:234900},{name:'Черкесск',pop:123260},{name:'Элиста',pop:103749},{name:'Нарьян-Мар',pop:24723},
+  // CIS
+  {name:'Минск',pop:2009800},{name:'Алматы',pop:2154700},{name:'Ташкент',pop:2822500},{name:'Баку',pop:2303200},{name:'Бишкек',pop:1121900},
+  {name:'Астана',pop:1354900},{name:'Тбилиси',pop:1118035},{name:'Ереван',pop:1106100},{name:'Душанбе',pop:1201800},{name:'Ашхабад',pop:1031900},{name:'Кишинёв',pop:820900},
+];
+const MAX_POP = CITIES_DATA[0].pop; // Moscow = largest
+
+function formatPopulation(pop) {
+  if (pop >= 1000000) return (pop / 1000000).toFixed(1).replace(/\.0$/,'') + 'м';
+  if (pop >= 1000) return Math.round(pop / 1000) + 'к';
+  return String(pop);
+}
+
+// ═══════════════════════════════════════════
+//  City combobox — UI
+// ═══════════════════════════════════════════
+let selectedCities = [];
+let citySearchText = '';
+
+function initCitySelect() {
+  const box = document.getElementById('city-select-box');
+  box.innerHTML = '';
+  // Render selected tags
+  const tagsRow = document.createElement('div');
+  tagsRow.className = 'city-tags-row';
+  tagsRow.id = 'city-tags-row';
+  selectedCities.forEach((c, i) => {
+    const tag = document.createElement('span');
+    tag.className = 'city-tag';
+    tag.innerHTML = `${c}<span class="city-tag-x" data-idx="${i}" onclick="removeCity(${i})">✕</span>`;
+    tagsRow.appendChild(tag);
+  });
+  // Add input
+  const wrap = document.createElement('div');
+  wrap.className = 'city-input-wrap';
+  const inp = document.createElement('input');
+  inp.type = 'text'; inp.id = 'f-city-input';
+  inp.placeholder = selectedCities.length ? 'Добавить город…' : 'Начните вводить название города…';
+  inp.autocomplete = 'off';
+  inp.value = citySearchText;
+  const clr = document.createElement('button');
+  clr.className = 'city-clear' + (citySearchText ? ' visible' : '');
+  clr.textContent = '✕'; clr.onclick = () => { citySearchText = ''; document.getElementById('f-city-input').value = ''; updateCityDropdown(); };
+  wrap.appendChild(inp);
+  wrap.appendChild(clr);
+  tagsRow.appendChild(wrap);
+  box.appendChild(tagsRow);
+  // Dropdown
+  const dd = document.createElement('div');
+  dd.className = 'city-dropdown'; dd.id = 'city-dropdown';
+  box.appendChild(dd);
+  // Events
+  inp.addEventListener('input', e => { citySearchText = e.target.value; updateCityDropdown(); });
+  inp.addEventListener('focus', () => { updateCityDropdown(); });
+  inp.addEventListener('blur', () => {
+    // Delay so click on option registers first
+    setTimeout(() => {
+      dd.classList.remove('open');
+      // If text matches a city exactly, add it
+      if (citySearchText.trim()) {
+        const match = CITIES_DATA.find(c => c.name.toLowerCase() === citySearchText.trim().toLowerCase() && !selectedCities.includes(c.name));
+        if (match) { addCity(match.name); }
+        citySearchText = '';
+        const el = document.getElementById('f-city-input');
+        if (el) el.value = '';
+      }
+    }, 200);
+  });
+  inp.addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const visible = getFilteredCities();
+      if (visible.length) addCity(visible[0].name);
+    }
+    if (e.key === 'Escape') { dd.classList.remove('open'); }
+    if (e.key === 'Backspace' && !inp.value && selectedCities.length) {
+      removeCity(selectedCities.length - 1);
+    }
+  });
+}
+
+function getFilteredCities() {
+  const selSet = new Set(selectedCities);
+  const q = citySearchText.trim().toLowerCase();
+  return CITIES_DATA
+    .filter(c => !selSet.has(c.name))
+    .filter(c => !q || c.name.toLowerCase().includes(q))
+    .sort((a, b) => b.pop - a.pop)
+    .slice(0, 30);
+}
+
+function updateCityDropdown() {
+  const dd = document.getElementById('city-dropdown');
+  if (!dd) return;
+  const cities = getFilteredCities();
+  if (!cities.length) { dd.classList.remove('open'); dd.innerHTML = ''; return; }
+  dd.innerHTML = cities.map(c => {
+    const pct = Math.round(c.pop / MAX_POP * 100);
+    const hue = Math.round(pct * 1.2); // 0=red, 120=green
+    const barColor = `hsl(${hue}, 65%, 42%)`;
+    return `<div class="city-option" data-city="${c.name}" onmousedown="addCity('${c.name.replace(/'/g, "\\'")}')">`
+      + `<span class="city-option-name">${c.name}</span>`
+      + `<span class="city-option-bar"><span class="city-option-bar-fill" style="width:${pct}%;background:${barColor}"></span></span>`
+      + `<span class="city-option-pop">${formatPopulation(c.pop)}</span>`
+      + `</div>`;
+  }).join('');
+  dd.classList.add('open');
+}
+
+function addCity(name) {
+  if (!name || selectedCities.includes(name)) return;
+  selectedCities.push(name);
+  citySearchText = '';
+  initCitySelect();
+}
+
+function removeCity(idx) {
+  selectedCities.splice(idx, 1);
+  initCitySelect();
+}
+
+// ═══════════════════════════════════════════
 //  Tabs
 // ═══════════════════════════════════════════
+// ═══════════════════════════════════════════
+//  Notification toggle
+// ═══════════════════════════════════════════
+function toggleNotifications() {
+  if (!('Notification' in window)) return;
+  if (Notification.permission === 'denied') {
+    alert('Уведомления запрещены браузером. Разрешите их в настройках браузера.');
+    return;
+  }
+  if (notificationsEnabled) {
+    notificationsEnabled = false;
+    updateNotifyBtn();
+    return;
+  }
+  if (Notification.permission === 'default') {
+    Notification.requestPermission().then(perm => {
+      notificationsEnabled = (perm === 'granted');
+      updateNotifyBtn();
+    });
+  } else {
+    notificationsEnabled = true;
+    updateNotifyBtn();
+  }
+}
+
 function showTab(name) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
@@ -156,7 +321,7 @@ function handleProgress(raw) {
 function getParams() {
   return {
     queries:         document.getElementById('f-queries').value.split('\n').map(s=>s.trim()).filter(Boolean),
-    cities:          document.getElementById('f-city').value.split('\n').map(s=>s.trim()).filter(Boolean),
+    cities:          [...selectedCities],
     output_excel:    document.getElementById('f-excel').checked,
     output_json:     document.getElementById('f-json').checked,
     output_csv:      document.getElementById('f-csv').checked,
@@ -348,8 +513,9 @@ function onRunDone(msg) {
   resetBtn();
   hideProgress();
   showDownloads(msg.files || [], msg.formats || []);
-  // Reload from canonical JSON file (authoritative ordered list)
+  // Load combined results (includes all cities if multi-city)
   const jf = (msg.files || []).find(f => f.endsWith('.json'));
+  const cityFiles = (msg.files || []).filter(f => f.endsWith('.json') && !f.startsWith('_'));
   if (jf) {
     fetch('/results/' + encodeURIComponent(jf))
       .then(r => r.json())
@@ -358,18 +524,44 @@ function onRunDone(msg) {
         _resetTableBadge();
         loadReviewed();
         renderTable(allResults);
-        renderStats(allResults, (Date.now() - startTime) / 1000);
+        // Load per-city stats if multiple city files
+        const elapsed = (Date.now() - startTime) / 1000;
+        if (cityFiles.length > 1) {
+          _loadCityStats(cityFiles, elapsed);
+        } else {
+          renderStats(allResults, elapsed);
+        }
         if (allResults.length) showTab('table');
       });
   } else {
     _resetTableBadge();
   }
   // Play completion sound when notifications are enabled
-  if (!stopped && Notification && Notification.permission === 'granted') {
+  if (!stopped && notificationsEnabled && Notification && Notification.permission === 'granted') {
     playDoneSound();
     sendNotification('Поиск завершён',
       allResults.length ? `Найдено ${allResults.length} компаний` : 'Поиск завершён', '🗺');
   }
+}
+
+// Load stats from individual city JSON files for per-city breakdown
+function _loadCityStats(cityFiles, elapsed) {
+  const cityResults = [];
+  let loaded = 0;
+  cityFiles.forEach(f => {
+    fetch('/results/' + encodeURIComponent(f))
+      .then(r => r.json())
+      .then(data => {
+        cityResults.push({file: f, data: Array.isArray(data) ? data : []});
+      })
+      .catch(() => cityResults.push({file: f, data: []}))
+      .finally(() => {
+        loaded++;
+        if (loaded >= cityFiles.length) {
+          renderStats(allResults, elapsed, cityResults);
+        }
+      });
+  });
 }
 
 function resetBtn() {
@@ -642,7 +834,7 @@ function initMap() {
 // ═══════════════════════════════════════════
 const CAT_COLORS = ['#1A6B3C','#2980b9','#8e44ad','#c0392b','#d35400','#16a085','#2c3e50','#27ae60','#f39c12','#7f8c8d'];
 
-function renderStats(data, elapsed) {
+function renderStats(data, elapsed, cityResults) {
   if (!data.length) return;
   const total  = data.length;
   const withSo = data.filter(r => Object.keys(SOCIALS).some(p => r[p])).length;
@@ -671,11 +863,43 @@ function renderStats(data, elapsed) {
   const cats = Object.entries(catMap).sort((a,b)=>b[1]-a[1]).slice(0,10);
   const maxC = cats[0]?.[1] || 1;
 
+  // Per-city breakdown
+  let cityCardsHtml = '';
+  if (cityResults && cityResults.length > 1) {
+    // Sort by count desc
+    const sorted = cityResults.sort((a,b) => b.data.length - a.data.length);
+    const maxCityCount = sorted[0]?.data.length || 1;
+    cityCardsHtml = `<div class="stat-section"><h3>По городам</h3><div class="stat-city-grid">`;
+    sorted.forEach(cr => {
+      const cd = cr.data;
+      const cityTotal = cd.length;
+      const cityWithSo = cd.filter(r => Object.keys(SOCIALS).some(p => r[p])).length;
+      // Try to extract city name from filename: slug_YYYYMMDD_HHMMSS.json
+      const parts = cr.file.replace('.json', '').split('_');
+      // Remove timestamp (last 2 parts: date_time)
+      const nameParts = parts.slice(0, -2);
+      let cityName = nameParts.join(' ').replace(/_/g, ' ');
+      // Capitalize first letter of each word
+      cityName = cityName.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+      const pct = Math.round(cityTotal / maxCityCount * 100);
+      cityCardsHtml += `<div class="stat-city-card">
+        <h4>${escapeHtml(cityName)}</h4>
+        <div class="bar-row" style="margin-bottom:8px"><div class="bar-track"><div class="bar-fill" style="width:${pct}%;background:var(--c)"></div></div><div class="bar-val">${cityTotal}</div></div>
+        <div class="stat-mini-row"><span>Всего</span><span>${cityTotal}</span></div>
+        <div class="stat-mini-row"><span>С соцсетями</span><span>${cityWithSo}</span></div>
+        <div class="stat-mini-row"><span>Без соцсетей</span><span>${cityTotal - cityWithSo}</span></div>
+      </div>`;
+    });
+    cityCardsHtml += `</div></div>`;
+  }
+
   const body = document.getElementById('stats-body');
   body.innerHTML = `
     <div class="stat-cards">${cards.map(c =>
       `<div class="stat-card"><div class="num">${c.num}</div><div class="lbl">${c.lbl}</div></div>`
     ).join('')}</div>
+
+    ${cityCardsHtml}
 
     ${socialCounts.length ? `
     <div class="stat-section">
@@ -710,7 +934,7 @@ const PRESETS_KEY  = 'yp_presets_v1';
 function getCurrentSettings() {
   return {
     queries:  document.getElementById('f-queries').value,
-    city:     document.getElementById('f-city').value,  // kept for backward compat
+    city:     [...selectedCities],
     excel:    document.getElementById('f-excel').checked,
     json:     document.getElementById('f-json').checked,
     csv:      document.getElementById('f-csv').checked,
@@ -732,7 +956,14 @@ function getCurrentSettings() {
 function applySettings(s) {
   if (!s) return;
   if (s.queries  != null) document.getElementById('f-queries').value   = s.queries;
-  if (s.city     != null) document.getElementById('f-city').value      = Array.isArray(s.city) ? s.city.join('\n') : s.city;
+  if (s.city != null) {
+    if (Array.isArray(s.city)) {
+      selectedCities = [...s.city];
+    } else if (s.city) {
+      selectedCities = [s.city];
+    }
+    initCitySelect();
+  }
   if (s.excel    != null) { document.getElementById('f-excel').checked = s.excel;   document.getElementById('f-excel').closest('.chk').classList.toggle('on', s.excel); }
   if (s.json     != null) { document.getElementById('f-json').checked  = s.json;    document.getElementById('f-json').closest('.chk').classList.toggle('on', s.json); }
   if (s.csv      != null) { document.getElementById('f-csv').checked   = s.csv;     document.getElementById('f-csv').closest('.chk').classList.toggle('on', s.csv); }
@@ -811,28 +1042,21 @@ function updateNotifyBtn() {
     btn.style.display = 'none'; return;
   }
   const perm = Notification.permission;
-  if (perm === 'granted') {
-    btn.className = 'granted';
-    icon.textContent = '🔔'; txt.textContent = 'Уведомления вкл.';
-    btn.onclick = null; btn.style.cursor = 'default';
-  } else if (perm === 'denied') {
+  if (perm === 'denied') {
     btn.className = 'denied';
     icon.textContent = '🔕'; txt.textContent = 'Уведомления запрещены';
-    btn.onclick = null;
+  } else if (notificationsEnabled) {
+    btn.className = 'granted';
+    icon.textContent = '🔔'; txt.textContent = 'Уведомления вкл.';
   } else {
     btn.className = '';
     icon.textContent = '🔔'; txt.textContent = 'Уведомления';
-    btn.onclick = requestNotify;
   }
-}
-
-function requestNotify() {
-  if (!('Notification' in window)) return;
-  Notification.requestPermission().then(() => updateNotifyBtn());
 }
 
 function sendNotification(title, body, icon) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  if (!notificationsEnabled) return;
   try {
     const n = new Notification(title, {body, icon: icon || '🗺'});
     n.onclick = () => { window.focus(); n.close(); };
@@ -1061,31 +1285,8 @@ function toggleTheme() {
   localStorage.setItem(THEME_KEY, next ? 'dark' : 'light');
 }
 
-// ═══════════════════════════════════════════
-//  City autocomplete
-// ═══════════════════════════════════════════
-const CITIES = [
-  'Москва','Санкт-Петербург','Новосибирск','Екатеринбург','Казань',
-  'Нижний Новгород','Челябинск','Самара','Уфа','Ростов-на-Дону',
-  'Красноярск','Воронеж','Пермь','Волгоград','Краснодар',
-  'Саратов','Тюмень','Тольятти','Ижевск','Барнаул',
-  'Ульяновск','Иркутск','Хабаровск','Ярославль','Владивосток',
-  'Махачкала','Томск','Оренбург','Кемерово','Новокузнецк',
-  'Рязань','Астрахань','Набережные Челны','Пенза','Липецк',
-  'Тула','Киров','Чебоксары','Калининград','Брянск',
-  'Курск','Иваново','Магнитогорск','Тверь','Ставрополь',
-  'Нижний Тагил','Белгород','Архангельск','Владимир','Сочи',
-  'Симферополь','Якутск','Улан-Удэ','Мурманск','Чита',
-  'Вологда','Череповец','Саранск','Смоленск','Орёл',
-  'Калуга','Курган','Тамбов','Кострома','Сургут',
-  'Нижневартовск','Новороссийск','Ханты-Мансийск','Нальчик','Владикавказ',
-  'Грозный','Майкоп','Черкесск','Элиста','Нарьян-Мар',
-  // CIS
-  'Минск','Алматы','Ташкент','Баку','Бишкек','Астана','Нур-Султан',
-  'Тбилиси','Ереван','Душанбе','Ашхабад','Кишинёв',
-];
-
-// City autocomplete removed — textarea now supports multi-city input.
+// City data is defined above as CITIES_DATA with population info.
+// City combobox UI is implemented via initCitySelect/addCity/removeCity functions.
 
 // ═══════════════════════════════════════════
 //  SENDER
@@ -1277,12 +1478,18 @@ function resetSendBtn() {
   const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
   applyTheme(savedTheme ? savedTheme === 'dark' : prefersDark);
 
+  // Initialize city combobox first, then apply settings (which may set cities)
+  if (!selectedCities.length) selectedCities = ['Ярославль'];
+  initCitySelect();
+
   try { applySettings(JSON.parse(localStorage.getItem(SETTINGS_KEY))); } catch {}
   // Set initial social mode active state
   setSocialMode(socialMode);
   renderPresets();
   loadReviewed();
   loadColState();
+  // Initialize notifications toggle state from browser permission
+  notificationsEnabled = Notification && Notification.permission === 'granted';
   updateNotifyBtn();
 
   // Sender init

@@ -19,6 +19,12 @@ from routes.api   import bp as api_bp
 
 def create_app() -> Flask:
     app = Flask(__name__)
+    try:
+        from config import APP_VERSION
+    except ImportError:
+        APP_VERSION = "dev"
+    app.config["APP_VERSION"] = APP_VERSION
+    app.jinja_env.globals["APP_VERSION"] = APP_VERSION
     app.register_blueprint(parser_bp)
     app.register_blueprint(sender_bp)
     app.register_blueprint(api_bp)

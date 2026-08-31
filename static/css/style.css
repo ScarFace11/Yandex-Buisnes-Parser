@@ -607,6 +607,91 @@ details[open].sender-advanced summary::before{content:"▼  "}
 #send-log-ph{padding:36px 20px;color:var(--muted);text-align:center;font-size:13px}
 
 /* ════════════════════════════════
+   VERSION BADGE
+   ════════════════════════════════ */
+#app-version{
+  font-size:10px;font-weight:700;padding:3px 8px;border-radius:4px;
+  background:rgba(255,255,255,.14);color:rgba(255,255,255,.8);
+  letter-spacing:.02em;font-family:monospace;
+}
+
+/* ════════════════════════════════
+   CITY SELECT (multi-combobox)
+   ════════════════════════════════ */
+#city-select-box{display:flex;flex-direction:column;gap:6px}
+.city-input-wrap{position:relative;display:flex;align-items:center;gap:4px}
+.city-input-wrap input{
+  flex:1;padding:9px 32px 9px 11px;font-size:13px;
+  border:1.5px solid var(--bdr);border-radius:8px;
+  background:#fff;color:var(--txt);font-family:inherit;
+  transition:border-color .14s,box-shadow .14s;
+}
+.city-input-wrap input:focus{
+  outline:none;border-color:var(--c);
+  box-shadow:0 0 0 3px rgba(26,122,138,.1);
+}
+.city-input-wrap .city-clear{
+  position:absolute;right:8px;top:50%;transform:translateY(-50%);
+  width:18px;height:18px;border:none;border-radius:50%;
+  background:var(--bdr);color:var(--sub);font-size:11px;font-weight:800;
+  cursor:pointer;display:none;align-items:center;justify-content:center;
+  transition:background .12s;
+}
+.city-input-wrap .city-clear:hover{background:var(--red);color:#fff}
+.city-input-wrap .city-clear.visible{display:flex}
+.city-dropdown{
+  position:absolute;top:100%;left:0;right:0;z-index:600;
+  background:var(--card);border:1.5px solid var(--c);border-top:none;
+  border-radius:0 0 8px 8px;max-height:260px;overflow-y:auto;
+  box-shadow:0 8px 28px rgba(0,0,0,.15);display:none;
+}
+.city-dropdown.open{display:block}
+.city-option{
+  padding:8px 12px;cursor:pointer;display:flex;align-items:center;gap:8px;
+  transition:background .1s;border-bottom:1px solid rgba(0,0,0,.04);
+  position:relative;
+}
+.city-option:hover{background:var(--cl)}
+.city-option.selected{background:var(--cl);color:var(--c);font-weight:700}
+.city-option-name{font-size:13px;flex-shrink:0;min-width:140px}
+.city-option-pop{font-size:11px;color:var(--muted);flex-shrink:0;text-align:right;min-width:50px}
+.city-option-bar{flex:1;height:6px;background:var(--bdr);border-radius:3px;overflow:hidden;margin:0 4px}
+.city-option-bar-fill{height:100%;border-radius:3px;transition:width .2s}
+.city-tag{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:20px;font-size:12px;font-weight:600;background:var(--cl);color:var(--c);border:1.5px solid var(--c);cursor:default;white-space:nowrap}
+.city-tag .city-tag-x{cursor:pointer;font-size:13px;font-weight:800;color:var(--red);margin-left:2px;line-height:1}
+.city-tag .city-tag-x:hover{color:#a00}
+.city-add-btn{padding:4px 10px;border:1.5px dashed var(--bdr);border-radius:20px;font-size:12px;color:var(--muted);cursor:pointer;background:none;font-weight:600;font-family:inherit;transition:border-color .12s,color .12s}
+.city-add-btn:hover{border-color:var(--c);color:var(--c)}
+.city-tags-row{display:flex;flex-wrap:wrap;gap:5px;align-items:center;margin-top:4px}
+
+[data-theme="dark"] .city-input-wrap input{background:#182430;border-color:var(--bdr);color:var(--txt)}
+[data-theme="dark"] .city-input-wrap input:focus{background:#1c2c3c}
+[data-theme="dark"] .city-dropdown{background:#141b22;border-color:var(--bdr);box-shadow:0 8px 28px rgba(0,0,0,.5)}
+[data-theme="dark"] .city-option:hover{background:#1a2530}
+[data-theme="dark"] .city-option.selected{background:#0c2530}
+[data-theme="dark"] .city-tag{background:#0c2530;border-color:#3ab6c8;color:#3ab6c8}
+[data-theme="dark"] .city-option-bar{background:#1a2530}
+
+/* ════════════════════════════════
+   LOG PANEL (scroll, fixed height)
+   ════════════════════════════════ */
+#log-output{
+  max-height:420px;overflow-y:auto;
+  scrollbar-width:thin;scrollbar-color:var(--bdr) transparent;
+}
+#log-output::-webkit-scrollbar{width:5px}
+#log-output::-webkit-scrollbar-thumb{background:var(--bdr);border-radius:3px}
+
+/* ════════════════════════════════
+   STATS PER-CITY BREAKDOWN
+   ════════════════════════════════ */
+.stat-city-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-bottom:20px}
+.stat-city-card{background:var(--card);border:1.5px solid var(--bdr);border-radius:11px;padding:14px 16px}
+.stat-city-card h4{font-size:13px;font-weight:700;color:var(--c);margin:0 0 8px}
+.stat-city-card .stat-mini-row{display:flex;justify-content:space-between;font-size:12px;color:var(--sub);padding:3px 0}
+.stat-city-card .stat-mini-row span:last-child{font-weight:700;color:var(--txt)}
+
+/* ════════════════════════════════
    DESIGN POLISH
    ════════════════════════════════ */
 

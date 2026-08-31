@@ -209,8 +209,9 @@ def _emit_result(record: dict) -> None:
         try:
             from .exporters import _append_excel
             _append_excel(record)
-        except Exception:
-            pass
+        except Exception as exc:
+            if _LOG_FN:
+                _LOG_FN("warn", f"  [!] Ошибка записи Excel: {exc}")
     if _LOG_FN:
         _LOG_FN("result", line)
 
