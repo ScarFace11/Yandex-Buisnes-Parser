@@ -676,7 +676,10 @@ function onRunDone(msg) {
     fetch('/results/' + encodeURIComponent(jf))
       .then(r => r.json())
       .then(data => {
-        allResults = Array.isArray(data) ? data : allResults;
+        // Only overwrite if server returned actual data; keep live-streamed otherwise
+        if (Array.isArray(data) && data.length > 0) {
+          allResults = data;
+        }
         _resetTableBadge();
         loadReviewed();
         renderTable(allResults);
@@ -730,7 +733,7 @@ function onRunDone(msg) {
     const notifText = filteredCount === total
       ? `Найдено ${total} компаний`
       : `${filteredCount}/${total} компаний прошли фильтр`;
-    sendNotification('Поиск завершён', notifText, '🗺');
+    sendNotification('Поиск завершён', notifText);
   }
 }
 
@@ -1291,7 +1294,7 @@ function playCityDoneSound(cityName, idx, total) {
       osc.stop(t + 0.35);
     });
     // Browser notification
-    sendNotification(`Город ${idx}/${total} завершён`, `${cityName} — готово`, '🏙');
+    sendNotification(`Город ${idx}/${total} завершён`, `${cityName} — готово`);
   } catch (e) { /* Web Audio unavailable */ }
 }
 
