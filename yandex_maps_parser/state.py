@@ -51,6 +51,7 @@ SOCIAL_MODE = "all"
 
 # ── Runtime-only state ────────────────────────────────────────
 _LOG_FN = None           # callable(level, msg) set by run_web; None = CLI mode
+_SYSLOG_FN = None        # callable(msg) for file-only system traces (developer logs)
 _TQDM_DISABLE = False    # True when running from web interface
 _STOP_EVENT = None       # threading.Event; set to request graceful stop
 _SKIP_CITY_EVENT = None  # threading.Event; set to skip current city (not the whole run)
@@ -98,6 +99,7 @@ _RESULT_LOCK = threading.Lock()
 # ── Logging helpers ───────────────────────────────────────────
 
 def info(msg: str) -> None:
+    """User-facing log: goes to browser + file."""
     if _LOG_FN:
         _LOG_FN("info", msg)
         return
@@ -105,6 +107,7 @@ def info(msg: str) -> None:
 
 
 def warn(msg: str) -> None:
+    """User-facing warning: goes to browser + file."""
     if _LOG_FN:
         _LOG_FN("warn", "  [!] " + msg)
         return
@@ -112,10 +115,18 @@ def warn(msg: str) -> None:
 
 
 def ok(msg: str) -> None:
+    """User-facing success: goes to browser + file."""
     if _LOG_FN:
         _LOG_FN("ok", msg)
         return
     tqdm.write(Fore.CYAN + msg + Style.RESET_ALL)
+
+
+def syslog(msg: str) -> None:
+    """System/developer log: goes to file only, NOT to browser.
+    Use for internal traces: HTTP details, function calls, timings."""
+    if _SYSLOG_FN:
+        _SYSLOG_FN(msg)
 
 
 def _progress(current: int, total: int, stage: str = "") -> None:

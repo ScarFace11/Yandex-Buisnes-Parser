@@ -54,15 +54,23 @@ class RunLogger:
                 pass
 
     def log(self, level: str, msg: str) -> None:
-        """Log a message from the search pipeline."""
+        """Log a message from the search pipeline.
+
+        Levels:
+          info/warn/ok — user-facing messages (also sent to browser)
+          sys          — system/developer traces (file only)
+          result       — single enriched record summary
+        """
         ts = time.time() - self._started_at
         mins, secs = divmod(int(ts), 60)
         timestamp = f"[{mins:02d}:{secs:02d}]"
-        prefix = {"info": "ℹ", "warn": "⚠", "ok": "✔", "result": "→"}.get(level, "·")
+        prefix = {"info": "ℹ", "warn": "⚠", "ok": "✔", "result": "→", "sys": "⚙"}.get(level, "·")
 
         if level == "result":
             # Don't dump full JSON — just a summary line
             self._write(f"{timestamp} {prefix} {msg[:200]}")
+        elif level == "sys":
+            self._write(f"{timestamp} {prefix} [SYS] {msg}")
         else:
             self._write(f"{timestamp} {prefix} {msg}")
 

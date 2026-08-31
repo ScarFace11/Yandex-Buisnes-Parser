@@ -36,35 +36,20 @@ def run() -> None:
     Main parse loop — reads config from the `state` module so that
     run_web() can override settings before calling this function.
     """
+    # File-only: full config dump for developer trace
+    state.syslog(f"run() start: city={state.CITY}")
+    state.syslog(f"  queries={state.SEARCH_QUERIES}")
+    state.syslog(f"  grid: enabled={state.USE_GRID}, radius={state.GRID_RADIUS_KM}km, step={state.GRID_STEP_KM}km")
+    state.syslog(f"  workers: detail={state.MAX_WORKERS}, search={state.SEARCH_WORKERS}, retry={state.RETRY_COUNT}")
+    state.syslog(f"  filters: min_rating={state.MIN_RATING}, min_reviews={state.MIN_REVIEWS}")
+    state.syslog(f"  checkpoint: {'resume' if state.RESUME_MODE else 'fresh'}")
+    state.syslog(f"  validate_socials={state.VALIDATE_SOCIALS}, proxies={len(state.PROXIES)}")
+    state.syslog(f"  output: csv={state.OUTPUT_CSV}, json={state.OUTPUT_JSON}, excel={state.OUTPUT_EXCEL}, map={state.OUTPUT_MAP}")
+    state.syslog(f"  social_mode={state.SOCIAL_MODE}, fetch_detail={state.FETCH_DETAIL}")
+
+    # Web: minimal user-facing header
     print()
-    state.ok("╔══════════════════════════════════════════════════════════╗")
-    state.ok("║   Яндекс.Карты — бизнесы без сайта + с соцсетями        ║")
-    state.ok("╚══════════════════════════════════════════════════════════╝")
-    state.info(f"  Запросы    : {', '.join(state.SEARCH_QUERIES)}")
-    state.info(f"  Город      : {state.CITY}")
-    state.info(
-        f"  Сетка      : "
-        f"{'да (%d км, шаг %d км)' % (state.GRID_RADIUS_KM, state.GRID_STEP_KM) if state.USE_GRID else 'нет'}"
-    )
-    state.info(
-        f"  Потоки     : детали {state.MAX_WORKERS}  | "
-        f"поиск {state.SEARCH_WORKERS}  | Retry: {state.RETRY_COUNT}x"
-    )
-    state.info(f"  Фильтры    : рейтинг ≥ {state.MIN_RATING}  |  отзывов ≥ {state.MIN_REVIEWS}")
-    state.info(f"  Checkpoint : {'resume' if state.RESUME_MODE else 'с нуля'}")
-    state.info(f"  Валидация  : {'да' if state.VALIDATE_SOCIALS else 'нет'}")
-    state.info(
-        f"  Прокси    : {len(state.PROXIES)} шт."
-        if state.PROXIES else "  Прокси    : нет"
-    )
-    state.info(
-        f"  Вывод      : "
-        f"{'CSV ' if state.OUTPUT_CSV else ''}"
-        f"{'JSON ' if state.OUTPUT_JSON else ''}"
-        f"{'Excel ' if state.OUTPUT_EXCEL else ''}"
-        f"{'Карта' if state.OUTPUT_MAP else ''}"
-    )
-    print()
+    state.info(f"  🔍 Поиск в «{state.CITY}» — запросы: {', '.join(state.SEARCH_QUERIES)}")
 
     state.info(f"  Геокодирую «{state.CITY}»…")
     coords = geocode_city(state.CITY)
@@ -77,11 +62,7 @@ def run() -> None:
         state.warn("Геокодинг не удался, использую координаты Москвы")
 
     grid_points = build_grid(center_lat, center_lon, envelope) if state.USE_GRID else [(center_lat, center_lon)]
-    if state.USE_GRID:
-        state.info(
-            f"  Точек в сетке: {len(grid_points)}"
-            + (" (по границам города)" if envelope else "")
-        )
+    state.syslog(f"grid_points: {len(grid_points)}, envelope={'yes' if envelope else 'no'}")
 
     if state.OUTPUT_FILENAME:
         base = state.OUTPUT_FILENAME
@@ -193,21 +174,15 @@ def run() -> None:
             nb = grid_index.get((lat, lon), {})
             known_nb = [n for n in (nb.get("up"), nb.get("left"), nb.get("up_left")) if n]
             if len(known_nb) >= 2 and all(dead_points.get(n) for n in known_nb):
-                state.info(
-                    f"  ↯ Точка {point_num}/{total_points} [{lat:.3f}, {lon:.3f}] "
-                    f"пропущена — у соседей пусто"
-                )
+                state.syslog(f"point {point_num}/{total_points} [{lat:.3f}, {lon:.3f}] skipped — neighbors dead")
                 processed_keys.append(key)
                 mark_progress(query)
                 continue
 
             if state.USE_GRID:
-                state.info(
-                    f"  📍 Точка {point_num}/{total_points} · «{query}» "
-                    f"[{lat:.3f}, {lon:.3f}]"
-                )
+                state.syslog(f"point {point_num}/{total_points} [{lat:.3f}, {lon:.3f}], query={query}")
             else:
-                state.info(f"  🔍 Ищу: «{query}» в {state.CITY}…")
+                state.info(f"  🔍 Поиск: «{query}» в {state.CITY}…")
 
             pbar_search.set_description(f"«{query}»")
 
@@ -216,10 +191,7 @@ def run() -> None:
                 pbar_search, pbar_detail, seen_lock=seen_lock,
                 search_session=search_session,
             )
-            state.info(
-                f"  📊 Итого по точке: API вернул {found or '?'} | "
-                f"кандидатов: {len(candidates)} | новых: {new_candidates}"
-            )
+            state.syslog(f"point result: api_found={found}, candidates={len(candidates)}, new={new_candidates}")
 
             dead_points[(lat, lon)] = bool(
                 found is not None and (found == 0 or new_candidates == 0)
@@ -241,7 +213,8 @@ def run() -> None:
             processed_keys.append(batch_key)
             mark_progress(query)
 
-        state.info(f"  ─── Запрос «{query}»: завершён ({len(query_records)} записей)")
+        state.info(f"  ✅ «{query}»: {len(query_records)} записей")
+        state.syslog(f"query_done: query={query}, records={len(query_records)}")
         return processed_keys, query_records
 
     pending_queries = [
@@ -270,7 +243,7 @@ def run() -> None:
                     completed.update(processed_keys)
                     if records and state.OUTPUT_CSV:
                         save_csv(records, paths["csv"], append=True)
-                        state.info(f"  💾 CSV: +{len(records)} записей")
+                        state.syslog(f"csv_append: +{len(records)} records")
 
                     if processed_keys:
                         save_checkpoint(base, seen_urls, completed)
@@ -301,6 +274,7 @@ def run() -> None:
     # Rebuild the full list from the crash-safe JSONL sidecar.
     jsonl_records = load_jsonl(paths["jsonl"])
     full_records  = dedupe_records(jsonl_records)
+    state.syslog(f"jsonl_records={len(jsonl_records)}, full_after_dedupe={len(full_records)}")
     if state.APPEND_MODE and os.path.exists(paths["json"]):
         try:
             with open(paths["json"], encoding="utf-8") as f:
@@ -311,7 +285,7 @@ def run() -> None:
     if state.OUTPUT_JSON and jsonl_records:
         try:
             save_json(full_records, paths["json"], append=False)
-            state.info(f"  💾 JSON: {len(full_records)} записей → {paths['json']}")
+            state.syslog(f"json_save: {len(full_records)} records → {paths['json']}")
         except Exception:
             pass
 
@@ -325,9 +299,9 @@ def run() -> None:
     # Finalize Excel: add table, conditional formatting, legend/help/stats sheets
     if state.OUTPUT_EXCEL and state._EXCEL_APPEND_ENABLED:
         try:
-            state.info(f"  💾 Excel: финализация ({len(full_records or all_results)} записей)...")
+            state.syslog(f"excel_finalize: {len(full_records or all_results)} records...")
             _finalize_excel(full_records or all_results)
-            state.info(f"  💾 Excel: готово → {paths['xlsx']}")
+            state.syslog(f"excel_done: {paths['xlsx']}")
         except Exception as exc:
             state.warn(f"Ошибка финализации Excel: {exc}")
             # Fallback: rebuild from scratch
@@ -347,7 +321,7 @@ def run() -> None:
 
     if full_records:
         if state.OUTPUT_MAP:
-            state.info(f"  💾 Карта: генерация HTML...")
+            state.syslog(f"map_generate: {len(full_records)} records...")
             save_map(full_records, paths["map"], center_lat, center_lon)
             state.info(f"  💾 Карта: готово → {paths['map']}")
 
@@ -462,18 +436,35 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None) -> list[str]
         if _file_logger:
             _file_logger.log(level, msg)
 
+    # File-only system log: writes to log file but NOT to browser.
+    # Use for developer traces: function calls, HTTP details, internals.
+    def _syslog(msg: str) -> None:
+        if _file_logger:
+            _file_logger.log("sys", msg)
+
+    # Web-only log: writes to browser but NOT to file.
+    # Use for user-facing messages that shouldn't clutter the file log.
+    def _weblog(level: str, msg: str) -> None:
+        if log_fn:
+            log_fn(level, msg)
+
     state._LOG_FN        = _combined_log
+    state._SYSLOG_FN     = _syslog
     state._TQDM_DISABLE  = True
     state._STOP_EVENT    = stop_event
     state._SKIP_CITY_EVENT = skip_event or threading.Event()
     state._SKIPPED_CITIES = []
     _total_records = 0
 
-    # Log configuration
-    _combined_log("info", f"  Потоки: {state.MAX_WORKERS} детали | {state.SEARCH_WORKERS} поиск")
-    _combined_log("info", f"  Фильтры: рейтинг ≥{state.MIN_RATING} | отзывов ≥{state.MIN_REVIEWS}")
-    _combined_log("info", f"  Режим: {state.SOCIAL_MODE} | страниц: {state.MAX_PAGES} | Retry: {state.RETRY_COUNT}")
-    _combined_log("info", f"  Вывод: {'CSV ' if state.OUTPUT_CSV else ''}{'JSON ' if state.OUTPUT_JSON else ''}{'Excel ' if state.OUTPUT_EXCEL else ''}{'Карта' if state.OUTPUT_MAP else ''}")
+    # Log configuration — system traces to file only
+    _syslog(f"Запуск run_web: run_id={run_id}, города={cities}, запросы={state.SEARCH_QUERIES}")
+    _syslog(f"Конфиг: worker={state.MAX_WORKERS}, search_workers={state.SEARCH_WORKERS}, max_pages={state.MAX_PAGES}")
+    _syslog(f"Фильтры: social_mode={state.SOCIAL_MODE}, min_rating={state.MIN_RATING}, min_reviews={state.MIN_REVIEWS}, retry={state.RETRY_COUNT}")
+    _syslog(f"Вывод: excel={state.OUTPUT_EXCEL}, json={state.OUTPUT_JSON}, csv={state.OUTPUT_CSV}, map={state.OUTPUT_MAP}")
+    _syslog(f"GRID: enabled={state.USE_GRID}, radius={state.GRID_RADIUS_KM}km, step={state.GRID_STEP_KM}km")
+    # User-friendly config summary
+    output_formats = [f for f in ['Excel', 'JSON', 'CSV', 'Карта'] if getattr(state, f'OUTPUT_{f.upper().replace("КАРТА", "MAP")}', False)]
+    _weblog("info", f"  Поиск: {len(cities)} город(ов), запросы: {', '.join(state.SEARCH_QUERIES)}")
 
     try:
         for city_idx, city in enumerate(cities):
@@ -482,22 +473,22 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None) -> list[str]
 
             # Reset skip event and per-city record counter for each new city
             state.reset_skip_city()
+            _syslog(f"--- Город {city_idx + 1}/{total_cities}: {city} ---")
 
             if total_cities > 1:
-                state.info(
-                    f"\n{'═' * 50}\n"
-                    f"  🏙  Город {city_idx + 1}/{total_cities}: {city}\n"
-                    f"{'═' * 50}"
-                )
-                # Signal city transition to frontend
-                if _combined_log:
-                    _combined_log("progress", f"city/{city_idx + 1}/{total_cities}/{city}")
+                # Web: simple city header
+                _weblog("info", f"  🏙  Город {city_idx + 1}/{total_cities}: {city}")
+                # File: detailed separator
                 if _file_logger:
                     _file_logger.log_city_start(city_idx + 1, total_cities, city)
+                # Signal city transition to frontend
+                _combined_log("progress", f"city/{city_idx + 1}/{total_cities}/{city}")
 
             state.CITY = city
             started_at = time.time()
+            _syslog(f"Вызов run(): city={city}, queries={state.SEARCH_QUERIES}, max_pages={state.MAX_PAGES}")
             run()
+            _syslog(f"run() завершена за {time.time() - started_at:.1f}с")
 
             # Check if city was skipped
             was_skipped = state.is_skip_city()
@@ -505,27 +496,24 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None) -> list[str]
             _total_records += records_found
             if was_skipped:
                 state._SKIPPED_CITIES.append({"name": city, "records_found": records_found})
-                if _combined_log:
-                    _combined_log("ok", f"  ⏭ {city}: пропущен вручную ({records_found} записей сохранено)")
+                _weblog("ok", f"  ⏭ {city}: пропущен вручную ({records_found} записей сохранено)")
                 if _file_logger:
                     _file_logger.log_city_done(city, records_found, skipped=True)
-                # Signal city skip to frontend
-                if total_cities > 1 and _combined_log:
+                if total_cities > 1:
                     _combined_log("progress", f"city_done|{city_idx + 1}|{total_cities}|{city}|skipped|{records_found}")
             else:
                 if _file_logger:
                     _file_logger.log_city_done(city, records_found)
-                if total_cities > 1 and _combined_log:
+                if total_cities > 1:
                     _combined_log("progress", f"city_done|{city_idx + 1}|{total_cities}|{city}|done|{records_found}")
 
             # Collect files from this city run
             city_files = _collect_run_files(started_at)
             all_files.extend(city_files)
+            _syslog(f"Город {city}: файлы={city_files}, records={records_found}")
 
             if city_files:
-                state.ok(f"  📁 Файлы: {', '.join(city_files)}")
-            if total_cities > 1 and city_files:
-                state.ok(f"  ✅ {city}: {len(city_files)} файл(ов) сохранено")
+                _weblog("ok", f"  📁 {city}: {', '.join(city_files)}")
     finally:
         # Write final summary to file log
         if _file_logger:
@@ -535,6 +523,7 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None) -> list[str]
             except Exception:
                 pass
         state._LOG_FN        = None
+        state._SYSLOG_FN     = None
         state._TQDM_DISABLE  = False
         state._SKIP_CITY_EVENT = None
         state._SKIPPED_CITIES  = []

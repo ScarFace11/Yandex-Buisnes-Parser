@@ -254,9 +254,11 @@ def _get(
         if _wait_for_token():
             return None
         try:
+            state.syslog(f"http_get: {url[:80]}")
             r = _abortable_get(s, url, params, timeout, allow_redirects,
                                state._STOP_EVENT, state._SKIP_CITY_EVENT)
 
+            state.syslog(f"http_response: status={r.status_code}, url={url[:80]}")
             if r.status_code == 429:
                 rate_limit_hits += 1
                 _stats_add("rate_limits")
@@ -283,7 +285,8 @@ def _get(
                 continue
 
             if r.status_code == 403:
-                state.warn("\u0414\u043e\u0441\u0442\u0443\u043f \u0437\u0430\u043f\u0440\u0435\u0449\u0451\u043d (403) \u2014 \u0432\u043e\u0437\u043c\u043e\u0436\u043d\u043e, \u043b\u0438\u043c\u0438\u0442 API \u0438\u043b\u0438 \u0431\u043b\u043e\u043a\u0438\u0440\u043e\u0432\u043a\u0430 IP.")
+                state.syslog(f"http_403: url={url[:100]}")
+                state.warn("Доступ запрещён (403) — возможно, лимит API или блокировка IP.")
                 return None
             if r.status_code < 500:
                 return r
@@ -291,7 +294,8 @@ def _get(
             # 5xx
             net_attempts += 1
             _stats_add("retries")
-            state.warn(f"  ⚠ HTTP {r.status_code} — повтор {net_attempts}/{state.RETRY_COUNT}")
+            state.syslog(f"http_5xx: status={r.status_code}, url={url[:100]}, attempt={net_attempts}/{state.RETRY_COUNT}")
+            state.warn(f"⚠ HTTP {r.status_code} — повтор {net_attempts}/{state.RETRY_COUNT}")
             if net_attempts >= state.RETRY_COUNT:
                 return None
             if _interruptible_sleep(state.RETRY_DELAY * net_attempts, quiet=True):
@@ -300,7 +304,8 @@ def _get(
         except (requests.ConnectionError, requests.Timeout, OSError) as e:
             net_attempts += 1
             _stats_add("retries")
-            state.warn(f"  ⚠ Сеть: {type(e).__name__} — повтор {net_attempts}/{state.RETRY_COUNT}")
+            state.syslog(f"http_error: {type(e).__name__}: {e}, url={url[:100]}, attempt={net_attempts}")
+            state.warn(f"⚠ Сеть: {type(e).__name__} — повтор {net_attempts}/{state.RETRY_COUNT}")
             if net_attempts >= state.RETRY_COUNT:
                 return None
             if _interruptible_sleep(state.RETRY_DELAY * net_attempts, quiet=True):
