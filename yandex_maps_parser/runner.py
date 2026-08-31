@@ -455,6 +455,7 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None) -> list[str]
     state._STOP_EVENT    = stop_event
     state._SKIP_CITY_EVENT = skip_event or threading.Event()
     state._SKIPPED_CITIES = []
+    _total_records = 0
 
     try:
         for city_idx, city in enumerate(cities):
@@ -483,6 +484,7 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None) -> list[str]
             # Check if city was skipped
             was_skipped = state.is_skip_city()
             records_found = state._CITY_RECORDS_FOUND
+            _total_records += records_found
             if was_skipped:
                 state._SKIPPED_CITIES.append({"name": city, "records_found": records_found})
                 if _combined_log:
@@ -509,7 +511,7 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None) -> list[str]
         if _file_logger:
             try:
                 stopped = bool(stop_event and stop_event.is_set())
-                _file_logger.finish(len(all_files), all_files, stopped)
+                _file_logger.finish(_total_records, all_files, stopped)
             except Exception:
                 pass
         state._LOG_FN        = None
