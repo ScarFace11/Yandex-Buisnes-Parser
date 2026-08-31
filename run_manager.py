@@ -19,6 +19,11 @@ OUTPUT_DIR = "output"
 # Max time a process can run before we force-kill it (seconds)
 _PROCESS_TIMEOUT = 600  # 10 minutes
 
+# Delay before calling finish_run() after bridge exits.
+# Gives the frontend time to receive the done message and close the
+# SSE connection before a new queued run starts writing to the same queue.
+_FINISH_DELAY = 3  # seconds
+
 # Compiled ANSI escape pattern for stripping colour codes from log lines
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -39,6 +44,8 @@ class RunManager:
             "queued":     False,
             "log_queue":  queue.Queue(),
             "stop_event": threading.Event(),
+            "skip_event": threading.Event(),
+            "skip_file":  None,
             "params":     {},
             "files":      [],
             "count":      0,
@@ -103,6 +110,8 @@ class RunManager:
         os.makedirs(stop_dir, exist_ok=True)
         stop_file = os.path.join(stop_dir, f"{run_id}.stop")
         entry["stop_file"] = stop_file
+        skip_file = os.path.join(stop_dir, f"{run_id}.skip")
+        entry["skip_file"] = skip_file
 
         # Try multiprocessing first
         used_process = False
@@ -110,7 +119,7 @@ class RunManager:
             from yandex_maps_parser.runner import run_process
             proc = multiprocessing.Process(
                 target=run_process,
-                args=(params, mp_queue, stop_file),
+                args=(params, mp_queue, stop_file, skip_file),
                 daemon=True,
             )
             proc.start()
@@ -162,7 +171,8 @@ class RunManager:
         def _thread_run():
             try:
                 stop_event = entry["stop_event"]
-                files = _parser.run_web(params, _log_to_queue, stop_event)
+                skip_event = entry["skip_event"]
+                files = _parser.run_web(params, _log_to_queue, stop_event, skip_event)
                 # If multiple cities, merge all city JSON files into a combined one
                 json_files = [f for f in files if f.endswith(".json") and not f.startswith("_")]
                 if len(json_files) > 1:
@@ -230,8 +240,15 @@ class RunManager:
                 if params.get("output_json"):  fmts.append("json")
                 if params.get("output_excel"): fmts.append("xlsx")
                 if params.get("output_map"):   fmts.append("map")
+                # CRITICAL: Send done to mp_queue so the bridge forwards it
+                # to the SSE endpoint BEFORE the sentinel. The bridge will
+                # exit after seeing the sentinel, and the SSE endpoint will
+                # deliver the done message to the frontend.
+                # This is the ONLY place done is sent for normal completion.
+                skipped = getattr(_parser.state, '_SKIPPED_CITIES', [])
                 mp_queue.put({"type": "done", "files": files, "count": count,
-                              "stopped": stop_event.is_set(), "formats": fmts})
+                              "stopped": stop_event.is_set(), "formats": fmts,
+                              "skipped_cities": skipped})
             except Exception as exc:
                 import traceback
                 tb = traceback.format_exc()
@@ -250,6 +267,12 @@ class RunManager:
                 if stop_file:
                     try:
                         os.remove(stop_file)
+                    except OSError:
+                        pass
+                skip_f = entry.get("skip_file")
+                if skip_f:
+                    try:
+                        os.remove(skip_f)
                     except OSError:
                         pass
 
@@ -288,6 +311,40 @@ class RunManager:
                     except Exception:
                         pass
 
+    def skip_city(self, run_id: str = ""):
+        """Skip the current city in the active run."""
+        with self._lock:
+            targets = []
+            if run_id and run_id in self._runs:
+                targets.append(self._runs[run_id])
+            else:
+                for r in self._runs.values():
+                    if r["active"] and not r.get("queued"):
+                        targets.append(r)
+            for entry in targets:
+                # Signal thread fallback to skip city
+                skip_ev = entry.get("skip_event")
+                if skip_ev:
+                    skip_ev.set()
+                # Create skip file for multiprocessing mode
+                sf = entry.get("skip_file")
+                if sf:
+                    try:
+                        with open(sf, "w") as f:
+                            f.write("skip")
+                    except Exception:
+                        pass
+
+    def skip_city_info(self, run_id: str = "") -> dict:
+        """Get info about the current city (records found so far)."""
+        import yandex_maps_parser.state as _state
+        with _state._city_records_lock:
+            records = _state._CITY_RECORDS_FOUND
+        return {
+            "city": _state.CITY,
+            "records_found": records,
+        }
+
     def list_runs(self) -> list[dict]:
         with self._lock:
             return [{
@@ -315,10 +372,17 @@ def _bridge_reader(mp_queue, reg_queue, entry):
     """Read from multiprocessing.Queue, forward to regular Queue for SSE.
 
     Exits when:
-    - Child sends None sentinel
-    - Child process/thread dies and queue is drained
-    - Idle timeout with no messages and thread is no longer alive
+    - Child sends None sentinel (normal completion)
+    - Child process/thread dies and queue is drained (crash)
     - Exception occurs
+
+    CRITICAL DESIGN:
+    - The done message is ONLY sent when the producer is confirmed dead
+      (crash case). For normal completion, the producer itself sends
+      the done message before the sentinel.
+    - finish_run() is delayed by _FINISH_DELAY seconds after the bridge
+      exits. This gives the frontend time to receive the done message
+      and close the SSE connection before a new queued run starts.
     """
     mode = entry.get("_run_mode", "thread")
     proc = entry.get("process")
@@ -357,7 +421,7 @@ def _bridge_reader(mp_queue, reg_queue, entry):
 
             # Safety: if idle for >60s with no sentinel, something is wrong
             if empty_count >= 30:
-                # Try draining one last time
+                # Drain remaining messages
                 while not mp_queue.empty():
                     try:
                         msg = mp_queue.get_nowait()
@@ -366,21 +430,27 @@ def _bridge_reader(mp_queue, reg_queue, entry):
                     except queue.Empty:
                         break
                 break
+
         except Exception:
             break
 
-    # Ensure a done message reaches the SSE endpoint
+    # CRASH SAFETY: If the producer died without sending a done message,
+    # send one now so the frontend gets a clean completion signal.
     if not entry.get("_done"):
         try:
             reg_queue.put({"type": "done", "files": entry.get("files", []),
-                           "count": entry.get("count", 0),
-                           "stopped": False, "formats": []})
+                           "count": entry.get("count", 0), "stopped": False, "formats": []})
         except Exception:
             pass
 
     entry["_done"] = True
-    # Always mark run as finished
-    run_manager.finish_run(entry["id"])
+
+    # CRITICAL: Delay finish_run() to give the frontend time to receive
+    # the done message and close the SSE connection. Without this delay,
+    # a queued run could start and write to the same SSE queue before
+    # the frontend disconnects, causing results to be lost.
+    _rid = entry["id"]
+    threading.Timer(_FINISH_DELAY, lambda: run_manager.finish_run(_rid)).start()
 
 
 def _watchdog(entry):

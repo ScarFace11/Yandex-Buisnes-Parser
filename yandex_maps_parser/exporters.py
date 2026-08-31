@@ -292,8 +292,9 @@ def _append_excel(record: dict) -> None:
 def _finalize_excel(records: list[dict]) -> None:
     """Add conditional formatting, legend/help/stats, then close.
 
-    Uses only auto_filter (no Table object) to avoid XML corruption
-    that causes Excel recovery prompts.
+    CRITICAL: Data rows are saved FIRST to guarantee the file is always
+    valid. Extra sheets (legend/help/stats) are added AFTER and wrapped
+    in try/except so a failure in one sheet doesn't corrupt the data.
     """
     with _EXCEL_LOCK:
         if not _excel.open or _excel.wb is None:
@@ -306,15 +307,39 @@ def _finalize_excel(records: list[dict]) -> None:
         ws.auto_filter.ref = f"A1:{get_column_letter(NUM_COLS)}{last_row}"
         ws.freeze_panes = "B2"
 
-        # Conditional formatting
-        _apply_conditional_formatting(ws)
+        # CRITICAL: Save the workbook with data FIRST.
+        # This guarantees the file is always valid even if extra sheets fail.
+        try:
+            wb.save(_excel.path)
+        except Exception:
+            pass
 
-        # Extra sheets
-        _fill_legend_sheet(wb.create_sheet("\u041b\u0435\u0433\u0435\u043d\u0434\u0430 \u0446\u0432\u0435\u0442\u043e\u0432"))
-        _fill_help_sheet(wb.create_sheet("\u041a\u0430\u043a \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u044c\u0441\u044f"))
-        _fill_stats_sheet(wb.create_sheet("\u0421\u0442\u0430\u0442\u0438\u0441\u0442\u0438\u043a\u0430"), records, HDR_FILL, HDR_FONT, CELL_BORDER, ALT_FILL)
+        # Conditional formatting (wrapped — non-critical)
+        try:
+            _apply_conditional_formatting(ws)
+        except Exception:
+            pass
 
-        wb.save(_excel.path)
+        # Extra sheets (each wrapped — non-critical, failure won't corrupt data)
+        try:
+            _fill_legend_sheet(wb.create_sheet("\u041b\u0435\u0433\u0435\u043d\u0434\u0430 \u0446\u0432\u0435\u0442\u043e\u0432"))
+        except Exception:
+            pass
+        try:
+            _fill_help_sheet(wb.create_sheet("\u041a\u0430\u043a \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u044c\u0441\u044f"))
+        except Exception:
+            pass
+        try:
+            _fill_stats_sheet(wb.create_sheet("\u0421\u0442\u0430\u0442\u0438\u0441\u0442\u0438\u043a\u0430"), records, HDR_FILL, HDR_FONT, CELL_BORDER, ALT_FILL)
+        except Exception:
+            pass
+
+        # Re-save with extra sheets (if they were added successfully)
+        try:
+            wb.save(_excel.path)
+        except Exception:
+            pass
+
         _excel.open  = False
         _excel.wb    = None
         _excel._dirty = 0

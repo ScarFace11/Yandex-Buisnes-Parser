@@ -53,6 +53,10 @@ SOCIAL_MODE = "all"
 _LOG_FN = None           # callable(level, msg) set by run_web; None = CLI mode
 _TQDM_DISABLE = False    # True when running from web interface
 _STOP_EVENT = None       # threading.Event; set to request graceful stop
+_SKIP_CITY_EVENT = None  # threading.Event; set to skip current city (not the whole run)
+_SKIPPED_CITIES: list[dict] = []  # [{"name": str, "records_found": int}]
+_CITY_RECORDS_FOUND = 0  # records found in current city (for skip confirmation)
+_city_records_lock = threading.Lock()
 
 # Found-counter — written from multiple detail-fetching threads; protected by _found_lock
 _found_count = 0
@@ -220,3 +224,30 @@ def _emit_result(record: dict) -> None:
 # ── Incremental Excel toggle ──────────────────────────────────
 # Enabled by run() / run_web() when OUTPUT_EXCEL is True.
 _EXCEL_APPEND_ENABLED = False
+
+
+# ── Skip city helpers ───────────────────────────────────────
+def skip_city():
+    """Signal to skip the current city (not the whole run)."""
+    if _SKIP_CITY_EVENT:
+        _SKIP_CITY_EVENT.set()
+
+
+def reset_skip_city():
+    """Reset skip event and record counter for a new city."""
+    global _CITY_RECORDS_FOUND
+    if _SKIP_CITY_EVENT:
+        _SKIP_CITY_EVENT.clear()
+    _CITY_RECORDS_FOUND = 0
+
+
+def is_skip_city() -> bool:
+    """Check if current city skip was requested."""
+    return bool(_SKIP_CITY_EVENT and _SKIP_CITY_EVENT.is_set())
+
+
+def inc_city_record():
+    """Increment the per-city record counter (thread-safe)."""
+    global _CITY_RECORDS_FOUND
+    with _city_records_lock:
+        _CITY_RECORDS_FOUND += 1

@@ -48,6 +48,18 @@ def stop_parser():
     return jsonify({"ok": True})
 
 
+@bp.route("/skip-city", methods=["POST"])
+def skip_city_route():
+    run_id = request.args.get("run_id", "")
+    check = request.args.get("check", "")
+    info = run_manager.skip_city_info(run_id)
+    if check:
+        # Just return info, don't skip
+        return jsonify({"ok": True, "city": info["city"], "records": info["records_found"]})
+    run_manager.skip_city(run_id)
+    return jsonify({"ok": True, "city": info["city"], "records": info["records_found"]})
+
+
 @bp.route("/logs")
 def logs():
     run_id = request.args.get("run_id", "")

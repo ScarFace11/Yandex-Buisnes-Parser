@@ -47,6 +47,24 @@ header h1{font-size:15px;font-weight:700;letter-spacing:-.01em}
   font-size:12px;font-weight:700;cursor:pointer;
 }
 #btn-stop:hover{background:rgba(196,64,64,.75)}
+#btn-skip{
+  display:none;padding:5px 13px;
+  border:1px solid rgba(255,255,255,.28);border-radius:5px;
+  background:rgba(100,140,200,.55);color:#fff;
+  font-size:12px;font-weight:700;cursor:pointer;
+}
+#btn-skip:hover{background:rgba(100,140,200,.8)}
+/* Skip city confirmation modal */
+.skip-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center}
+.skip-modal{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px 28px;max-width:400px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,.3)}
+.skip-modal h3{margin:0 0 12px;font-size:16px;color:var(--fg)}
+.skip-modal p{margin:0 0 20px;font-size:13px;color:var(--muted);line-height:1.5}
+.skip-modal-btns{display:flex;gap:10px;justify-content:flex-end}
+.skip-modal-btns button{padding:8px 20px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;border:none}
+.skip-modal-btns .skip-confirm{background:rgba(100,140,200,.8);color:#fff}
+.skip-modal-btns .skip-confirm:hover{background:rgba(100,140,200,1)}
+.skip-modal-btns .skip-cancel{background:rgba(120,140,148,.3);color:var(--fg)}
+.skip-modal-btns .skip-cancel:hover{background:rgba(120,140,148,.5)}
 #btn-notify,#btn-theme{
   padding:5px 11px;border:1px solid rgba(255,255,255,.22);border-radius:5px;
   background:rgba(255,255,255,.1);color:#fff;

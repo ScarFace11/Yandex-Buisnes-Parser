@@ -48,6 +48,8 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
 
         if state._STOP_EVENT and state._STOP_EVENT.is_set():
             return None
+        if state.is_skip_city():
+            return None
 
         socials: dict[str, str] = {}
         raw_json = json.dumps(raw, ensure_ascii=False)
@@ -85,8 +87,16 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
         with _pbar_lock:
             pbar.update(1)
 
-        # Include ALL businesses — even those without social media.
-        # Users want the full list of businesses without websites.
+        # Backend social mode filtering:
+        # "with_socials" — skip businesses that have NO social media at all
+        # "without_socials" — skip businesses that HAVE social media
+        # "all" — include everything (default)
+        has_any_social = any(socials.get(p) for p in KNOWN_PLATFORMS) or bool(socials.get("other_socials"))
+        if state.SOCIAL_MODE == "with_socials" and not has_any_social:
+            return None  # skip — no social media found
+        if state.SOCIAL_MODE == "without_socials" and has_any_social:
+            return None  # skip — has social media, user wants only those without
+
         state._inc_found()
         for platform in KNOWN_PLATFORMS:
             record[platform] = socials.get(platform, "")
@@ -103,6 +113,7 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
         record["socials_valid"] = validate_socials(socials, pool) if state.VALIDATE_SOCIALS else ""
         record["parsed_at"]     = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         state._emit_result(record)
+        state.inc_city_record()
         return record
 
     owns_pool = pool is None
@@ -153,6 +164,8 @@ def collect_candidates(
 
     for page in range(state.MAX_PAGES):
         if state._STOP_EVENT and state._STOP_EVENT.is_set():
+            break
+        if state.is_skip_city():
             break
         features, found = search_page(
             query, city, lat, lon, page * 50, session=search_session

@@ -180,6 +180,8 @@ def run() -> None:
         for lat, lon in grid_points:
             if state._STOP_EVENT and state._STOP_EVENT.is_set():
                 break
+            if state.is_skip_city():
+                break
 
             key = (query, lat, lon)
             if key in completed:
@@ -409,7 +411,7 @@ def _collect_run_files(started_at: float) -> list[str]:
     return result_files
 
 
-def run_web(params: dict, log_fn, stop_event=None) -> list[str]:
+def run_web(params: dict, log_fn, stop_event=None, skip_event=None) -> list[str]:
     """
     Run the parser with settings from the web form.
     Supports multi-city: if 'cities' list is provided, processes each
@@ -435,11 +437,16 @@ def run_web(params: dict, log_fn, stop_event=None) -> list[str]:
     state._LOG_FN        = log_fn
     state._TQDM_DISABLE  = True
     state._STOP_EVENT    = stop_event
+    state._SKIP_CITY_EVENT = skip_event or threading.Event()
+    state._SKIPPED_CITIES = []
 
     try:
         for city_idx, city in enumerate(cities):
             if stop_event and stop_event.is_set():
                 break
+
+            # Reset skip event and per-city record counter for each new city
+            state.reset_skip_city()
 
             if total_cities > 1:
                 state.info(
@@ -455,6 +462,20 @@ def run_web(params: dict, log_fn, stop_event=None) -> list[str]:
             started_at = time.time()
             run()
 
+            # Check if city was skipped
+            was_skipped = state.is_skip_city()
+            records_found = state._CITY_RECORDS_FOUND
+            if was_skipped:
+                state._SKIPPED_CITIES.append({"name": city, "records_found": records_found})
+                if log_fn:
+                    log_fn("ok", f"  ⏭ {city}: пропущен вручную ({records_found} записей сохранено)")
+                # Signal city skip to frontend
+                if total_cities > 1 and log_fn:
+                    log_fn("progress", f"city_done|{city_idx + 1}|{total_cities}|{city}|skipped|{records_found}")
+            else:
+                if total_cities > 1 and log_fn:
+                    log_fn("progress", f"city_done|{city_idx + 1}|{total_cities}|{city}|done|{records_found}")
+
             # Collect files from this city run
             city_files = _collect_run_files(started_at)
             all_files.extend(city_files)
@@ -462,15 +483,17 @@ def run_web(params: dict, log_fn, stop_event=None) -> list[str]:
             if total_cities > 1 and city_files:
                 state.ok(f"  ✅ {city}: {len(city_files)} файл(ов) сохранено")
     finally:
-        state._LOG_FN       = None
-        state._TQDM_DISABLE = False
+        state._LOG_FN        = None
+        state._TQDM_DISABLE  = False
+        state._SKIP_CITY_EVENT = None
+        state._SKIPPED_CITIES  = []
 
     return all_files
 
 
 # ── Multiprocessing entry point ─────────────────────────────
 
-def run_process(params: dict, mp_queue, stop_file: str | None = None) -> None:
+def run_process(params: dict, mp_queue, stop_file: str | None = None, skip_file: str | None = None) -> None:
     """Entry point for a child process running a search.
 
     Each child process gets its own copy of state.py (via fork/spawn),
@@ -479,11 +502,14 @@ def run_process(params: dict, mp_queue, stop_file: str | None = None) -> None:
     params     — search parameters (serializable).
     mp_queue   — multiprocessing.Queue for streaming logs/results.
     stop_file  — optional file path; if it exists, the run stops gracefully.
+    skip_file  — optional file path; if it exists, the current city is skipped.
     """
     import threading as _threading
 
     # Create a stop event for this child process
     stop_event = _threading.Event()
+    # Create a skip-city event for this child process
+    skip_event = _threading.Event()
 
     # Watch the stop file in a background thread
     if stop_file:
@@ -496,6 +522,21 @@ def run_process(params: dict, mp_queue, stop_file: str | None = None) -> None:
                 _t.sleep(0.5)
         _threading.Thread(target=_watch_stop, daemon=True).start()
 
+    # Watch the skip file in a background thread
+    if skip_file:
+        def _watch_skip():
+            while not skip_event.is_set():
+                if os.path.exists(skip_file):
+                    skip_event.set()
+                    try:
+                        os.remove(skip_file)
+                    except OSError:
+                        pass
+                    return
+                import time as _t
+                _t.sleep(0.5)
+        _threading.Thread(target=_watch_skip, daemon=True).start()
+
     def _q_log(level: str, msg: str):
         """Log callback that puts messages into the multiprocessing queue."""
         try:
@@ -507,7 +548,7 @@ def run_process(params: dict, mp_queue, stop_file: str | None = None) -> None:
             pass
 
     try:
-        files = run_web(params, _q_log, stop_event)
+        files = run_web(params, _q_log, stop_event, skip_event)
         # If multiple cities, merge all JSON files into a combined one
         # so the frontend can load all results at once for the map/stats.
         json_files = [f for f in files if f.endswith(".json") and "_combined" not in f]

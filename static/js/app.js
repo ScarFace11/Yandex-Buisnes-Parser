@@ -291,6 +291,11 @@ function showTab(name) {
   document.getElementById('p-' + name).classList.add('active');
   if (name === 'map' && allResults.length && !mapInited) initMap();
   if (name === 'map' && leafMap) setTimeout(() => leafMap.invalidateSize(), 50);
+  // Re-render stats when switching to stats tab (fixes empty stats panel)
+  if (name === 'stats' && allResults.length) {
+    const elapsed = (Date.now() - startTime) / 1000;
+    renderStats(allResults, elapsed);
+  }
 }
 
 // ═══════════════════════════════════════════
@@ -334,6 +339,11 @@ function clearLog() { logEl.innerHTML = ''; }
 // ═══════════════════════════════════════════
 function handleProgress(raw) {
   const parts = raw.split('/');
+  // City completion event: city_done|idx|total|name|status|records
+  if (raw.startsWith('city_done|')) {
+    handleCityDone(raw);
+    return;
+  }
   // City transition event: city/idx/total/name
   if (parts[0] === 'city' && parts.length >= 4) {
     const idx   = parseInt(parts[1]);
@@ -435,6 +445,9 @@ function startRun() {
   document.getElementById('btn-icon').innerHTML = '<span class="spin"></span>';
   document.getElementById('btn-txt').textContent = 'Выполняется…';
   document.getElementById('btn-stop').style.display = 'inline-block';
+  if (params.cities.length > 1) {
+    document.getElementById('btn-skip').style.display = 'inline-block';
+  }
   startTime = Date.now();
   // Show live stats strip and reset counters
   const ls = document.getElementById('live-stats');
@@ -487,6 +500,65 @@ function stopRun() {
   _lastCompletedCityIdx = 0;
   fetch('/stop', {method:'POST'}).catch(()=>{});
   appendLog('warn', '  [!] Остановка запрошена…');
+}
+
+// ── Skip City ───────────────────────────────────────────────
+function skipCity() {
+  // Fetch current city info for confirmation
+  fetch('/skip-city', {method:'POST'})
+    .then(r => r.json())
+    .then(data => {
+      if (data.ok) {
+        appendLog('ok', `  ⏭ Город «${data.city}» пропущен (${data.records} записей)`);
+      }
+    })
+    .catch(() => {});
+}
+
+function showSkipConfirm() {
+  // Fetch current city info for confirmation dialog (check=true means don't skip yet)
+  fetch('/skip-city?check=1', {method:'POST'})
+    .then(r => r.json())
+    .then(data => {
+      const city = data.city || '…';
+      const records = data.records || 0;
+      const overlay = document.createElement('div');
+      overlay.className = 'skip-modal-overlay';
+      overlay.innerHTML = `
+        <div class="skip-modal">
+          <h3>⏭ Пропустить город?</h3>
+          <p>Вы уверены, что хотите пропустить город <b>«${city}»</b>?<br>
+          Собрано <b>${records}</b> записей. Данные будут сохранены.</p>
+          <div class="skip-modal-btns">
+            <button class="skip-cancel" onclick="this.closest('.skip-modal-overlay').remove()">Отмена</button>
+            <button class="skip-confirm" onclick="skipCity();this.closest('.skip-modal-overlay').remove()">Пропустить</button>
+          </div>
+        </div>`;
+      document.body.appendChild(overlay);
+      overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+    })
+    .catch(() => {});
+}
+
+function handleCityDone(raw) {
+  // City completion event: city_done|idx|total|name|status|records
+  const parts = raw.split('|');
+  if (parts[0] === 'city_done' && parts.length >= 6) {
+    const idx     = parseInt(parts[1]);
+    const total   = parseInt(parts[2]);
+    const name    = parts[3];
+    const status  = parts[4]; // 'done' or 'skipped'
+    const records = parseInt(parts[5]) || 0;
+    const icon    = status === 'skipped' ? '⏭' : '✅';
+    const label   = status === 'skipped'
+      ? `${icon} Город ${idx}/${total}: ${name} — пропущен (${records} записей)`
+      : `${icon} Город ${idx}/${total}: ${name} — завершён (${records} записей)`;
+    appendLog(status === 'skipped' ? 'ok' : 'info', label);
+    // Play sound for city completion
+    if (notificationsEnabled && Notification && Notification.permission === 'granted') {
+      playCityDoneSound(name, idx, total);
+    }
+  }
 }
 
 function startSSE(runId) {
@@ -585,34 +657,51 @@ function scheduleLiveRender() {
 
 function onRunDone(msg) {
   const stopped = msg.stopped;
+  const skippedCities = msg.skipped_cities || [];
   setStatus(stopped ? 'stopped' : 'done', stopped ? '⏹ Остановлено' : '✔ Готово');
   document.title = 'Яндекс.Карты — Парсер бизнесов';
   resetBtn();
   hideProgress();
   showDownloads(msg.files || [], msg.formats || []);
+  const elapsed = (Date.now() - startTime) / 1000;
   // Load results: prefer internal frontend file, then combined, then any JSON
   const jf = (msg.files || []).find(f => f === '_results_for_frontend.json')
     || (msg.files || []).find(f => f.endsWith('.json') && !f.startsWith('_'));
   const cityFiles = (msg.files || []).filter(f => f.endsWith('.json') && !f.startsWith('_'));
+  // Always render stats from live-streamed data as immediate fallback
+  if (allResults.length) {
+    renderStats(allResults, elapsed, undefined, skippedCities);
+  }
   if (jf) {
     fetch('/results/' + encodeURIComponent(jf))
       .then(r => r.json())
       .then(data => {
-        allResults = Array.isArray(data) ? data : [];
+        allResults = Array.isArray(data) ? data : allResults;
         _resetTableBadge();
         loadReviewed();
         renderTable(allResults);
-        // Load per-city stats if multiple city files
-        const elapsed = (Date.now() - startTime) / 1000;
+        // Re-render stats with server-side data (may include all cities)
         if (cityFiles.length > 1) {
-          _loadCityStats(cityFiles, elapsed);
+          _loadCityStats(cityFiles, elapsed, skippedCities);
         } else {
-          renderStats(allResults, elapsed);
+          renderStats(allResults, elapsed, undefined, skippedCities);
         }
+        if (allResults.length) showTab('table');
+      })
+      .catch(() => {
+        // JSON fetch failed — use live-streamed results
+        _resetTableBadge();
+        renderTable(allResults);
+        renderStats(allResults, elapsed, undefined, skippedCities);
         if (allResults.length) showTab('table');
       });
   } else {
     _resetTableBadge();
+    // No JSON file — render stats from live-streamed results
+    if (allResults.length) {
+      renderStats(allResults, elapsed, undefined, skippedCities);
+      showTab('table');
+    }
   }
   // Compute filtered count for notification
   const SOCIAL_KEYS = Object.keys(SOCIALS);
@@ -646,7 +735,7 @@ function onRunDone(msg) {
 }
 
 // Load stats from individual city JSON files for per-city breakdown
-function _loadCityStats(cityFiles, elapsed) {
+function _loadCityStats(cityFiles, elapsed, skippedCities) {
   const cityResults = [];
   let loaded = 0;
   cityFiles.forEach(f => {
@@ -659,7 +748,7 @@ function _loadCityStats(cityFiles, elapsed) {
       .finally(() => {
         loaded++;
         if (loaded >= cityFiles.length) {
-          renderStats(allResults, elapsed, cityResults);
+          renderStats(allResults, elapsed, cityResults, skippedCities);
         }
       });
   });
@@ -670,6 +759,7 @@ function resetBtn() {
   document.getElementById('btn-icon').textContent = '🚀';
   document.getElementById('btn-txt').textContent = 'Запустить';
   document.getElementById('btn-stop').style.display = 'none';
+  document.getElementById('btn-skip').style.display = 'none';
 }
 
 // ═══════════════════════════════════════════
@@ -941,7 +1031,7 @@ function initMap() {
 // ═══════════════════════════════════════════
 const CAT_COLORS = ['#1A6B3C','#2980b9','#8e44ad','#c0392b','#d35400','#16a085','#2c3e50','#27ae60','#f39c12','#7f8c8d'];
 
-function renderStats(data, elapsed, cityResults) {
+function renderStats(data, elapsed, cityResults, skippedCities) {
   if (!data.length) return;
   const total  = data.length;
   const withSo = data.filter(r => Object.keys(SOCIALS).some(p => r[p])).length;
@@ -1000,6 +1090,20 @@ function renderStats(data, elapsed, cityResults) {
     cityCardsHtml += `</div></div>`;
   }
 
+  // Show skipped cities if any
+  let skippedHtml = '';
+  if (skippedCities && skippedCities.length > 0) {
+    skippedHtml = `<div class="stat-section"><h3>⏭ Пропущенные города</h3><div class="stat-city-grid">`;
+    skippedCities.forEach(sc => {
+      skippedHtml += `<div class="stat-city-card" style="border-left:3px solid rgba(100,140,200,.6)">
+        <h4>${escapeHtml(sc.name)}</h4>
+        <div class="stat-mini-row"><span>Статус</span><span style="color:rgba(100,140,200,1)">Пропущен</span></div>
+        <div class="stat-mini-row"><span>Записей собрано</span><span>${sc.records_found}</span></div>
+      </div>`;
+    });
+    skippedHtml += `</div></div>`;
+  }
+
   const body = document.getElementById('stats-body');
   body.innerHTML = `
     <div class="stat-cards">${cards.map(c =>
@@ -1007,6 +1111,8 @@ function renderStats(data, elapsed, cityResults) {
     ).join('')}</div>
 
     ${cityCardsHtml}
+
+    ${skippedHtml}
 
     ${socialCounts.length ? `
     <div class="stat-section">
