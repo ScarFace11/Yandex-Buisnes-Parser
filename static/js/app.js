@@ -719,11 +719,7 @@ function onRunDone(msg) {
   // Play completion sound + notification when enabled
   if (!stopped && notificationsEnabled && Notification && Notification.permission === 'granted') {
     playDoneSound();
-    // Play final city sound if multi-city
-    if (_lastCompletedCityIdx > 0) {
-      const total = selectedCities.length || _lastCompletedCityIdx;
-      playCityDoneSound(`Финал`, _lastCompletedCityIdx, total);
-    }
+    // Note: per-city notifications are handled by handleCityDone()
     const total = allResults.length;
     const notifText = filteredCount === total
       ? `Найдено ${total} компаний`

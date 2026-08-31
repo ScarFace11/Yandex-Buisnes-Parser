@@ -439,7 +439,8 @@ def _bridge_reader(mp_queue, reg_queue, entry):
     if not entry.get("_done"):
         try:
             reg_queue.put({"type": "done", "files": entry.get("files", []),
-                           "count": entry.get("count", 0), "stopped": False, "formats": []})
+                           "count": entry.get("count", 0), "stopped": False, "formats": [],
+                           "skipped_cities": []})
         except Exception:
             pass
 

@@ -619,8 +619,10 @@ def run_process(params: dict, mp_queue, stop_file: str | None = None, skip_file:
         if params.get("output_json"):  fmts.append("json")
         if params.get("output_excel"): fmts.append("xlsx")
         if params.get("output_map"):   fmts.append("map")
+        skipped = getattr(state, '_SKIPPED_CITIES', [])
         mp_queue.put({"type": "done", "files": files, "count": count,
-                      "stopped": stop_event.is_set(), "formats": fmts})
+                      "stopped": stop_event.is_set(), "formats": fmts,
+                      "skipped_cities": skipped})
     except Exception as exc:
         try:
             mp_queue.put({"type": "log",  "level": "warn", "msg": f"Ошибка: {exc}"})
@@ -634,12 +636,13 @@ def run_process(params: dict, mp_queue, stop_file: str | None = None, skip_file:
             mp_queue.put(None)
         except Exception:
             pass
-        # Clean up stop file if it exists
-        if stop_file:
-            try:
-                os.remove(stop_file)
-            except OSError:
-                pass
+        # Clean up stop + skip files
+        for f in (stop_file, skip_file):
+            if f:
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
 
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
