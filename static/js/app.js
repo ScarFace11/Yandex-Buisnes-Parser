@@ -14,6 +14,8 @@ let startTime   = 0;
 let activeSocialFilters = new Set();
 let socialMode = 'all';  // 'all' | 'with_socials' | 'without_socials'
 let notificationsEnabled = false;  // toggle state
+let requiredSocials = new Set();   // AND filter: must have ALL selected socials
+let _lastCompletedCityIdx = 0;     // track last completed city for notification
 
 // ═══════════════════════════════════════════
 //  Checkbox styling
@@ -38,7 +40,28 @@ function setSocialMode(mode) {
     const hints = { all: 'Показывать все найденные бизнесы', with_socials: 'Только бизнесы с найденными соцсетями', without_socials: 'Только бизнесы без соцсетей (быстрее — без загрузки деталей)' };
     hint.textContent = hints[mode] || '';
   }
+  // Show/hide social network filter checkboxes
+  const netFilter = document.getElementById('social-network-filter');
+  if (netFilter) netFilter.style.display = mode === 'with_socials' ? '' : 'none';
+  if (mode !== 'with_socials') requiredSocials.clear();
   // Re-filter table if results exist
+  if (allResults.length) filterTable();
+}
+
+// ═══════════════════════════════════════════
+//  Social network checkboxes (AND filter)
+// ═══════════════════════════════════════════
+function initSocialNetCheckboxes() {
+  const grid = document.getElementById('social-net-chk-grid');
+  if (!grid) return;
+  grid.innerHTML = Object.entries(SLABELS).map(([key, label]) =>
+    `<label class="chk"><input type="checkbox" value="${key}" onchange="toggleRequiredSocial('${key}', this.checked)">${label}</label>`
+  ).join('');
+}
+
+function toggleRequiredSocial(key, checked) {
+  if (checked) requiredSocials.add(key);
+  else requiredSocials.delete(key);
   if (allResults.length) filterTable();
 }
 
@@ -69,11 +92,26 @@ const CITIES_DATA = [
   {name:'Калуга',pop:341393},{name:'Курган',pop:311417},{name:'Тамбов',pop:290624},{name:'Кострома',pop:277656},{name:'Сургут',pop:396410},
   {name:'Нижневартовск',pop:283034},{name:'Новороссийск',pop:279038},{name:'Ханты-Мансийск',pop:315066},{name:'Нальчик',pop:242531},{name:'Владикавказ',pop:304286},
   {name:'Грозный',pop:328277},{name:'Майкоп',pop:234900},{name:'Черкесск',pop:123260},{name:'Элиста',pop:103749},{name:'Нарьян-Мар',pop:24723},
+  {name:'Петрозаводск',pop:281680},{name:'Псков',pop:215560},{name:'Великий Новгород',pop:223400},{name:'Сыктывкар',pop:233310},{name:'Ухта',pop:99441},
+  {name:'Северодвинск',pop:183720},{name:'Комсомольск-на-Амуре',pop:249610},{name:'Благовещенск',pop:225090},{name:'Южно-Сахалинск',pop:207396},{name:'Находка',pop:156390},
+  {name:'Петропавловск-Камчатский',pop:181460},{name:'Магадан',pop:92050},{name:'Уссурийск',pop:180790},{name:'Рыбинск',pop:175560},{name:'Абакан',pop:184780},
+  {name:'Бийск',pop:208140},{name:'Рубцовск',pop:143590},{name:'Бердск',pop:51580},{name:'Кызыл',pop:120060},{name:'Горно-Алтайск',pop:58470},
+  {name:'Дзержинск',pop:227200},{name:'Саров',pop:93260},{name:'Арзамас',pop:103440},{name:'Сызрань',pop:165750},{name:'Новокуйбышевск',pop:100690},
+  {name:'Братск',pop:234730},{name:'Ангарск',pop:226390},{name:'Усть-Илимск',pop:59960},{name:'Воткинск',pop:97500},{name:'Сарапул',pop:96160},
+  {name:'Глазов',pop:93590},{name:'Зеленодольск',pop:97420},{name:'Альметьевск',pop:159740},{name:'Нижнекамск',pop:234044},{name:'Чистополь',pop:58930},
+  {name:'Дербент',pop:126940},{name:'Каспийск',pop:121100},{name:'Хасавюрт',pop:144710},{name:'Буйнакск',pop:65610},{name:'Избербаш',pop:56820},
+  {name:'Котлас',pop:58780},{name:'Коряжма',pop:35660},{name:'Кушва',pop:28580},{name:'Верхний Уфалей',pop:28580},{name:'Тутаев',pop:99340},
+  {name:'Переславль-Залесский',pop:38540},{name:'Углич',pop:32130},{name:'Ростов',pop:31030},{name:'Мышкин',pop:5570},{name:'Суздаль',pop:10200},
+  {name:'Плёс',pop:1840},{name:'Навашино',pop:14450},{name:'Выкса',pop:45250},{name:'Балахна',pop:49800},{name:'Кстово',pop:65310},
+  {name:'Жигулёвск',pop:55080},{name:'Отрадный',pop:47370},{name:'Свободный',pop:49060},{name:'Заречный',pop:28480},{name:'Обь',pop:30930},
+  {name:'Искитим',pop:57830},{name:'Тогучин',pop:18320},{name:'Кизляр',pop:48450},
   // CIS
   {name:'Минск',pop:2009800},{name:'Алматы',pop:2154700},{name:'Ташкент',pop:2822500},{name:'Баку',pop:2303200},{name:'Бишкек',pop:1121900},
   {name:'Астана',pop:1354900},{name:'Тбилиси',pop:1118035},{name:'Ереван',pop:1106100},{name:'Душанбе',pop:1201800},{name:'Ашхабад',pop:1031900},{name:'Кишинёв',pop:820900},
 ];
 const MAX_POP = CITIES_DATA[0].pop; // Moscow = largest
+// Pre-built lookup for O(1) city search by name
+const _citiesByName = new Map(CITIES_DATA.map(c => [c.name.toLowerCase(), c]));
 
 function formatPopulation(pop) {
   if (pop >= 1000000) return (pop / 1000000).toFixed(1).replace(/\.0$/,'') + 'м';
@@ -90,49 +128,56 @@ let citySearchText = '';
 function initCitySelect() {
   const box = document.getElementById('city-select-box');
   box.innerHTML = '';
-  // Render selected tags
+
+  // ── Tags row ──
   const tagsRow = document.createElement('div');
   tagsRow.className = 'city-tags-row';
   tagsRow.id = 'city-tags-row';
-  selectedCities.forEach((c, i) => {
-    const tag = document.createElement('span');
-    tag.className = 'city-tag';
-    tag.innerHTML = `${c}<span class="city-tag-x" data-idx="${i}" onclick="removeCity(${i})">✕</span>`;
-    tagsRow.appendChild(tag);
-  });
-  // Add input
+  box.appendChild(tagsRow);
+
+  // ── Input row ──
   const wrap = document.createElement('div');
   wrap.className = 'city-input-wrap';
+  wrap.id = 'city-input-wrap';
   const inp = document.createElement('input');
   inp.type = 'text'; inp.id = 'f-city-input';
-  inp.placeholder = selectedCities.length ? 'Добавить город…' : 'Начните вводить название города…';
+  inp.placeholder = 'Добавить город…';
   inp.autocomplete = 'off';
-  inp.value = citySearchText;
   const clr = document.createElement('button');
-  clr.className = 'city-clear' + (citySearchText ? ' visible' : '');
-  clr.textContent = '✕'; clr.onclick = () => { citySearchText = ''; document.getElementById('f-city-input').value = ''; updateCityDropdown(); };
+  clr.className = 'city-clear';
+  clr.textContent = '✕';
+  clr.onclick = (e) => {
+    e.preventDefault();
+    citySearchText = '';
+    inp.value = '';
+    updateCityDropdown();
+    inp.focus();
+  };
   wrap.appendChild(inp);
   wrap.appendChild(clr);
-  tagsRow.appendChild(wrap);
-  box.appendChild(tagsRow);
-  // Dropdown
+  box.appendChild(wrap);
+
+  // ── Dropdown ──
   const dd = document.createElement('div');
   dd.className = 'city-dropdown'; dd.id = 'city-dropdown';
   box.appendChild(dd);
-  // Events
-  inp.addEventListener('input', e => { citySearchText = e.target.value; updateCityDropdown(); });
+
+  // ── Events (attached once) ──
+  inp.addEventListener('input', e => {
+    citySearchText = e.target.value;
+    clr.classList.toggle('visible', citySearchText.length > 0);
+    updateCityDropdown();
+  });
   inp.addEventListener('focus', () => { updateCityDropdown(); });
   inp.addEventListener('blur', () => {
-    // Delay so click on option registers first
     setTimeout(() => {
       dd.classList.remove('open');
-      // If text matches a city exactly, add it
       if (citySearchText.trim()) {
-        const match = CITIES_DATA.find(c => c.name.toLowerCase() === citySearchText.trim().toLowerCase() && !selectedCities.includes(c.name));
-        if (match) { addCity(match.name); }
+        const match = _citiesByName.get(citySearchText.trim().toLowerCase());
+        if (match && !selectedCities.includes(match.name)) addCity(match.name);
         citySearchText = '';
-        const el = document.getElementById('f-city-input');
-        if (el) el.value = '';
+        inp.value = '';
+        clr.classList.remove('visible');
       }
     }, 200);
   });
@@ -141,12 +186,27 @@ function initCitySelect() {
       e.preventDefault();
       const visible = getFilteredCities();
       if (visible.length) addCity(visible[0].name);
+      else if (citySearchText.trim()) addCity(citySearchText.trim());
     }
-    if (e.key === 'Escape') { dd.classList.remove('open'); }
+    if (e.key === 'Escape') dd.classList.remove('open');
     if (e.key === 'Backspace' && !inp.value && selectedCities.length) {
       removeCity(selectedCities.length - 1);
     }
   });
+
+  // Initial render of tags
+  renderCityTags();
+}
+
+function renderCityTags() {
+  const tagsRow = document.getElementById('city-tags-row');
+  if (!tagsRow) return;
+  tagsRow.innerHTML = selectedCities.map((c, i) =>
+    `<span class="city-tag">${c}<span class="city-tag-x" onclick="removeCity(${i})">✕</span></span>`
+  ).join('');
+  // Update placeholder
+  const inp = document.getElementById('f-city-input');
+  if (inp) inp.placeholder = selectedCities.length ? 'Добавить город…' : 'Начните вводить название города…';
 }
 
 function getFilteredCities() {
@@ -155,8 +215,7 @@ function getFilteredCities() {
   return CITIES_DATA
     .filter(c => !selSet.has(c.name))
     .filter(c => !q || c.name.toLowerCase().includes(q))
-    .sort((a, b) => b.pop - a.pop)
-    .slice(0, 30);
+    .sort((a, b) => b.pop - a.pop);
 }
 
 function updateCityDropdown() {
@@ -168,10 +227,13 @@ function updateCityDropdown() {
     const pct = Math.round(c.pop / MAX_POP * 100);
     const hue = Math.round(pct * 1.2); // 0=red, 120=green
     const barColor = `hsl(${hue}, 65%, 42%)`;
-    return `<div class="city-option" data-city="${c.name}" onmousedown="addCity('${c.name.replace(/'/g, "\\'")}')">`
-      + `<span class="city-option-name">${c.name}</span>`
-      + `<span class="city-option-bar"><span class="city-option-bar-fill" style="width:${pct}%;background:${barColor}"></span></span>`
-      + `<span class="city-option-pop">${formatPopulation(c.pop)}</span>`
+    const safeName = c.name.replace(/'/g, "\\'");
+    return `<div class="city-option" onmousedown="addCity('${safeName}')">`
+      + `<div class="city-option-top">`
+      +   `<span class="city-option-name">${c.name}</span>`
+      +   `<span class="city-option-pop">${formatPopulation(c.pop)}</span>`
+      + `</div>`
+      + `<div class="city-option-bar"><div class="city-option-bar-fill" style="width:${pct}%;background:${barColor}"></div></div>`
       + `</div>`;
   }).join('');
   dd.classList.add('open');
@@ -181,12 +243,17 @@ function addCity(name) {
   if (!name || selectedCities.includes(name)) return;
   selectedCities.push(name);
   citySearchText = '';
-  initCitySelect();
+  renderCityTags();
+  // Clear input
+  const inp = document.getElementById('f-city-input');
+  if (inp) inp.value = '';
+  const clr = document.querySelector('.city-clear');
+  if (clr) clr.classList.remove('visible');
 }
 
 function removeCity(idx) {
   selectedCities.splice(idx, 1);
-  initCitySelect();
+  renderCityTags();
 }
 
 // ═══════════════════════════════════════════
@@ -271,17 +338,18 @@ function handleProgress(raw) {
   if (parts[0] === 'city' && parts.length >= 4) {
     const idx   = parseInt(parts[1]);
     const total = parseInt(parts[2]);
-    const name  = parts.slice(3).join('/');  // city name may contain /
+    const name  = parts.slice(3).join('/');
     const label = `🏙  Город ${idx}/${total}: ${name}`;
     setProgress(-1, label);
     appendLog('info', label);
-    // Update live stats
     const lsStage = document.getElementById('ls-stage');
     if (lsStage) lsStage.textContent = name;
-    // Play city completion sound when notifications enabled (idx > 1 = previous city done)
-    if (idx > 1 && Notification && Notification.permission === 'granted') {
-      playCityDoneSound(name, idx, total);
+    // Play sound for PREVIOUS city completion (idx-1 because idx is the NEW city)
+    if (_lastCompletedCityIdx > 0 && notificationsEnabled && Notification && Notification.permission === 'granted') {
+      const prevIdx = _lastCompletedCityIdx;
+      playCityDoneSound(`Город ${prevIdx}/${total}`, prevIdx, total);
     }
+    _lastCompletedCityIdx = idx;
     return;
   }
   if (parts.length >= 2) {
@@ -337,6 +405,7 @@ function getParams() {
     validate_socials:document.getElementById('f-validate').checked,
     api_key:         document.getElementById('f-apikey').value.trim(),
     social_mode:     socialMode,
+    required_socials: [...requiredSocials],
   };
 }
 
@@ -357,6 +426,9 @@ function startRun() {
   mapInited = false; if (leafMap) { leafMap.remove(); leafMap = null; }
   document.getElementById('map-container').innerHTML = '';
 
+  _lastCompletedCityIdx = 0;
+  requiredSocials.clear();
+  initSocialNetCheckboxes();
   setStatus('running', '⏳ Выполняется');
   setProgress(0, 'Запуск…');
   document.getElementById('btn-run').disabled = true;
@@ -412,6 +484,7 @@ function startRun() {
 }
 
 function stopRun() {
+  _lastCompletedCityIdx = 0;
   fetch('/stop', {method:'POST'}).catch(()=>{});
   appendLog('warn', '  [!] Остановка запрошена…');
 }
@@ -489,6 +562,10 @@ function scheduleLiveRender() {
         const hasAny = SOCIAL_KEYS.some(k => r[k]) || r.other_socials;
         if (hasAny) return false;
       }
+      // Required socials AND filter
+      if (requiredSocials.size > 0) {
+        if (![...requiredSocials].every(key => r[key])) return false;
+      }
       if (activeSocialFilters.size > 0) {
         if (![...activeSocialFilters].some(key => r[key])) return false;
       }
@@ -513,8 +590,9 @@ function onRunDone(msg) {
   resetBtn();
   hideProgress();
   showDownloads(msg.files || [], msg.formats || []);
-  // Load combined results (includes all cities if multi-city)
-  const jf = (msg.files || []).find(f => f.endsWith('.json'));
+  // Load results: prefer internal frontend file, then combined, then any JSON
+  const jf = (msg.files || []).find(f => f === '_results_for_frontend.json')
+    || (msg.files || []).find(f => f.endsWith('.json') && !f.startsWith('_'));
   const cityFiles = (msg.files || []).filter(f => f.endsWith('.json') && !f.startsWith('_'));
   if (jf) {
     fetch('/results/' + encodeURIComponent(jf))
@@ -536,11 +614,34 @@ function onRunDone(msg) {
   } else {
     _resetTableBadge();
   }
-  // Play completion sound when notifications are enabled
+  // Compute filtered count for notification
+  const SOCIAL_KEYS = Object.keys(SOCIALS);
+  const filteredCount = allResults.filter(r => {
+    if (socialMode === 'with_socials') {
+      const hasAny = SOCIAL_KEYS.some(k => r[k]) || r.other_socials;
+      if (!hasAny) return false;
+    } else if (socialMode === 'without_socials') {
+      const hasAny = SOCIAL_KEYS.some(k => r[k]) || r.other_socials;
+      if (hasAny) return false;
+    }
+    if (requiredSocials.size > 0) {
+      if (![...requiredSocials].every(key => r[key])) return false;
+    }
+    return true;
+  }).length;
+  // Play completion sound + notification when enabled
   if (!stopped && notificationsEnabled && Notification && Notification.permission === 'granted') {
     playDoneSound();
-    sendNotification('Поиск завершён',
-      allResults.length ? `Найдено ${allResults.length} компаний` : 'Поиск завершён', '🗺');
+    // Play final city sound if multi-city
+    if (_lastCompletedCityIdx > 0) {
+      const total = selectedCities.length || _lastCompletedCityIdx;
+      playCityDoneSound(`Финал`, _lastCompletedCityIdx, total);
+    }
+    const total = allResults.length;
+    const notifText = filteredCount === total
+      ? `Найдено ${total} компаний`
+      : `${filteredCount}/${total} компаний прошли фильтр`;
+    sendNotification('Поиск завершён', notifText, '🗺');
   }
 }
 
@@ -580,7 +681,8 @@ function fileIcon(n) { for (const [ext,ic] of Object.entries(ICONS)) if (n.endsW
 function showDownloads(files, formats) {
   const allowed = new Set(formats || []);
   const filtered = files.filter(f => {
-    // Always allow non-standard extensions (map html, etc.)
+    // Internal/temp files never shown in downloads
+    if (f.startsWith('_')) return false;
     if (f.endsWith('.xlsx')) return allowed.has('xlsx');
     if (f.endsWith('.csv')) return allowed.has('csv');
     if (f.endsWith('.json')) return allowed.has('json');
@@ -661,7 +763,12 @@ function filterTable() {
       const hasAny = SOCIAL_KEYS.some(k => r[k]) || r.other_socials;
       if (hasAny) return false;
     }
-    // Social filter — OR logic: row must have at least one selected network
+    // Required socials (AND filter): must have ALL checked socials
+    if (requiredSocials.size > 0) {
+      const hasAll = [...requiredSocials].every(key => r[key]);
+      if (!hasAll) return false;
+    }
+    // Social filter buttons in table — OR logic: row must have at least one
     if (activeSocialFilters.size > 0) {
       const hasSocial = [...activeSocialFilters].some(key => r[key]);
       if (!hasSocial) return false;
@@ -934,7 +1041,7 @@ const PRESETS_KEY  = 'yp_presets_v1';
 function getCurrentSettings() {
   return {
     queries:  document.getElementById('f-queries').value,
-    city:     [...selectedCities],
+    // city intentionally NOT saved to localStorage — start fresh each time
     excel:    document.getElementById('f-excel').checked,
     json:     document.getElementById('f-json').checked,
     csv:      document.getElementById('f-csv').checked,
@@ -956,14 +1063,9 @@ function getCurrentSettings() {
 function applySettings(s) {
   if (!s) return;
   if (s.queries  != null) document.getElementById('f-queries').value   = s.queries;
-  if (s.city != null) {
-    if (Array.isArray(s.city)) {
-      selectedCities = [...s.city];
-    } else if (s.city) {
-      selectedCities = [s.city];
-    }
-    initCitySelect();
-  }
+  // Cities are intentionally NOT restored from localStorage.
+  // User should select them fresh each time.
+  // (renderCityTags is called by initCitySelect on page load)
   if (s.excel    != null) { document.getElementById('f-excel').checked = s.excel;   document.getElementById('f-excel').closest('.chk').classList.toggle('on', s.excel); }
   if (s.json     != null) { document.getElementById('f-json').checked  = s.json;    document.getElementById('f-json').closest('.chk').classList.toggle('on', s.json); }
   if (s.csv      != null) { document.getElementById('f-csv').checked   = s.csv;     document.getElementById('f-csv').closest('.chk').classList.toggle('on', s.csv); }
@@ -1235,37 +1337,69 @@ document.addEventListener('click', e => {
 });
 
 // ═══════════════════════════════════════════
-//  API key test
+//  API key save to .env
 // ═══════════════════════════════════════════
-function testApiKey() {
-  const btn = document.getElementById('btn-test-key');
-  const statusEl = document.getElementById('apikey-status');
+function saveApiKey() {
+  const btn = document.getElementById('btn-save-key');
   const apiKey = document.getElementById('f-apikey').value.trim();
 
-  btn.disabled = true;
-  btn.textContent = '…';
-  statusEl.className = 'checking';
-  statusEl.style.display = '';
-  statusEl.textContent = 'Проверяем ключ…';
+  if (!apiKey) { showToast('Введите ключ API', 'error'); return; }
 
-  fetch('/test-api-key', {
+  btn.disabled = true;
+  btn.textContent = '⏳';
+
+  fetch('/save-api-key', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({api_key: apiKey})
   })
   .then(r => r.json())
   .then(data => {
-    statusEl.className = data.ok ? 'ok' : 'err';
-    statusEl.textContent = (data.ok ? '✓ ' : '✗ ') + (data.message || data.error || 'Неизвестный ответ');
+    if (data.ok) {
+      showToast(data.message || 'Ключ сохранён', 'success');
+    } else {
+      showToast(data.error || 'Ошибка сохранения', 'error');
+    }
   })
   .catch(e => {
-    statusEl.className = 'err';
-    statusEl.textContent = '✗ Ошибка соединения: ' + e.message;
+    showToast('Ошибка соединения: ' + e.message, 'error');
   })
   .finally(() => {
     btn.disabled = false;
-    btn.textContent = 'Проверить';
+    btn.textContent = '💾 Сохранить';
   });
+}
+
+// ── Toast notification (slides from top) ──
+let _toastTimer = null;
+function showToast(message, type) {
+  // Remove existing toast and clear its timer
+  const old = document.querySelector('.toast');
+  if (old) {
+    clearTimeout(old._autoHide);
+    old.remove();
+  }
+  clearTimeout(_toastTimer);
+
+  const toast = document.createElement('div');
+  toast.className = 'toast ' + (type || 'success');
+  const icon = type === 'error' ? '✕' : '✓';
+  toast.innerHTML = `<span style="font-size:16px;font-weight:800">${icon}</span> ${message}`;
+  document.body.appendChild(toast);
+
+  // Slide in
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      toast.classList.add('show');
+    });
+  });
+
+  // Auto-hide after 3 seconds
+  toast._autoHide = setTimeout(() => {
+    toast.classList.remove('show');
+    setTimeout(() => toast.remove(), 400);
+  }, 3000);
+  _toastTimer = toast._autoHide;
 }
 
 // ═══════════════════════════════════════════
@@ -1470,20 +1604,51 @@ function resetSendBtn() {
 }
 
 // ═══════════════════════════════════════════
-//  Init
+//  Version check from GitHub
 // ═══════════════════════════════════════════
+function checkForUpdates() {
+  fetch('/check-version')
+    .then(r => r.json())
+    .then(data => {
+      if (data.newer) {
+        showUpdateBanner(data.remote, data.changelog || '', data.download_url || '');
+      }
+    })
+    .catch(() => {});
+}
+
+function showUpdateBanner(newVer, changelog, url) {
+  // Remove existing banner if any
+  const existing = document.getElementById('update-banner');
+  if (existing) existing.remove();
+
+  const banner = document.createElement('div');
+  banner.id = 'update-banner';
+  banner.innerHTML = `
+    <span class="ub-text">🔄 Доступна новая версия <b>v${newVer}</b>${changelog ? ' — ' + changelog : ''}</span>
+    <a class="ub-btn" href="${url}" target="_blank" rel="noopener noreferrer">Скачать обновление</a>
+    <button class="ub-close" onclick="this.parentElement.remove()">✕</button>
+  `;
+  document.body.prepend(banner);
+}
 (function init() {
   // Theme
   const savedTheme = localStorage.getItem(THEME_KEY);
   const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
   applyTheme(savedTheme ? savedTheme === 'dark' : prefersDark);
 
-  // Initialize city combobox first, then apply settings (which may set cities)
-  if (!selectedCities.length) selectedCities = ['Ярославль'];
+  // Initialize city combobox — start empty, user picks cities fresh each time
+  selectedCities = [];
   initCitySelect();
 
-  try { applySettings(JSON.parse(localStorage.getItem(SETTINGS_KEY))); } catch {}
-  // Set initial social mode active state
+  try {
+    const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY));
+    // Restore non-city settings only
+    if (saved) delete saved.city;
+    applySettings(saved);
+  } catch {}
+  // Set initial social mode active state + social net checkboxes
+  initSocialNetCheckboxes();
   setSocialMode(socialMode);
   renderPresets();
   loadReviewed();
@@ -1505,6 +1670,9 @@ function resetSendBtn() {
       }
     }
   }, 800);
+
+  // Check for updates from GitHub
+  checkForUpdates();
 
   // Reload files list when switching to sender tab
   const _origShowTab = showTab;

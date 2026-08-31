@@ -28,9 +28,40 @@ def _save_reviewed(data: dict):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
+GITHUB_RAW_URL = "https://raw.githubusercontent.com/ScarFace11/Yandex-Buisnes-Parser/main/static/version.json"
+
+
 @bp.route("/")
 def index():
     return __import__("flask").render_template("index.html")
+
+
+@bp.route("/check-version")
+def check_version():
+    """Check if a newer version is available on GitHub."""
+    import requests as req_lib
+    from config import APP_VERSION
+    try:
+        r = req_lib.get(GITHUB_RAW_URL, timeout=8,
+                        headers={"User-Agent": "YandexParser/2.0"})
+        if r.status_code == 200:
+            remote = r.json()
+            remote_ver = remote.get("version", "0.0.0")
+            current = APP_VERSION
+            # Simple version compare: "2.2.0" > "2.1.0"
+            def _ver_tuple(v):
+                return tuple(int(x) for x in v.split(".") if x.isdigit())
+            newer = _ver_tuple(remote_ver) > _ver_tuple(current)
+            return jsonify({
+                "current": current,
+                "remote": remote_ver,
+                "newer": newer,
+                "changelog": remote.get("changelog", ""),
+                "download_url": "https://github.com/ScarFace11/Yandex-Buisnes-Parser/archive/refs/heads/main.zip",
+            })
+        return jsonify({"current": APP_VERSION, "newer": False, "error": f"HTTP {r.status_code}"})
+    except Exception as exc:
+        return jsonify({"current": APP_VERSION, "newer": False, "error": str(exc)})
 
 
 @bp.route("/reviewed", methods=["GET"])
@@ -72,42 +103,55 @@ def download(filename):
     return send_from_directory(OUTPUT_DIR, filename, as_attachment=True)
 
 
-@bp.route("/test-api-key", methods=["POST"])
-def test_api_key():
-    import requests as req_lib
+@bp.route("/save-api-key", methods=["POST"])
+def save_api_key():
+    """Save YANDEX_API_KEY to .env file and reload it."""
+    import re as _re
     data = request.get_json(force=True) or {}
     api_key = data.get("api_key", "").strip()
     if not api_key:
-        try:
-            from config import YANDEX_API_KEY
-            api_key = YANDEX_API_KEY
-        except Exception:
-            return jsonify({"ok": False, "error": "Ключ не задан"}), 400
+        return jsonify({"ok": False, "error": "Введите ключ API"}), 400
+
+    # Determine .env path — prefer project root
+    from pathlib import Path
+    project_root = Path(__file__).resolve().parent.parent
+    env_path = project_root / ".env"
+    if not env_path.exists():
+        # Also check yandex_maps_parser/ subfolder
+        alt = project_root / "yandex_maps_parser" / ".env"
+        if alt.exists():
+            env_path = alt
 
     try:
-        r = req_lib.get(
-            "https://geocode-maps.yandex.ru/1.x/",
-            params={"apikey": api_key, "format": "json", "geocode": "Москва"},
-            timeout=10,
-            headers={"User-Agent": "Mozilla/5.0"},
-        )
-        if r.status_code == 200:
-            try:
-                geo = r.json()
-                found = geo.get("response", {}).get("GeoObjectCollection", {}) \
-                           .get("metaDataProperty", {}).get("GeocoderResponseMetaData", {}) \
-                           .get("found", "?")
-                return jsonify({"ok": True, "status": 200,
-                                "message": f"Ключ рабочий. Геокодер нашёл {found} объект(ов) для «Москва»."})
-            except Exception:
-                return jsonify({"ok": True, "status": 200, "message": "Ключ рабочий (ответ получен)."})
-        elif r.status_code == 403:
-            return jsonify({"ok": False, "status": 403, "message": "Ключ недействителен или превышен лимит (403)."})
-        elif r.status_code == 429:
-            return jsonify({"ok": False, "status": 429, "message": "Превышен лимит запросов (429). Попробуйте позже."})
-        else:
-            return jsonify({"ok": False, "status": r.status_code,
-                            "message": f"Неожиданный ответ: HTTP {r.status_code}."})
+        # Read existing .env or create new
+        lines = []
+        if env_path.exists():
+            with open(env_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+
+        # Find and replace or append YANDEX_API_KEY
+        found = False
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith("YANDEX_API_KEY") and "=" in stripped:
+                lines[i] = f'YANDEX_API_KEY = "{api_key}"\n'
+                found = True
+                break
+        if not found:
+            lines.append(f'\nYANDEX_API_KEY = "{api_key}"\n')
+
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+
+        # Reload the key into the running config
+        os.environ["YANDEX_API_KEY"] = api_key
+        try:
+            import config
+            config.YANDEX_API_KEY = api_key
+        except Exception:
+            pass
+
+        return jsonify({"ok": True, "message": f"Ключ сохранён в {env_path.name}", "path": str(env_path)})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
 

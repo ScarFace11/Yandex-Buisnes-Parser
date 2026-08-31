@@ -164,10 +164,11 @@ def _inc_found() -> None:
     # two threads both pass and emit — that's fine, just one extra ping).
     if now - _last_inc_emit >= _INC_EMIT_INTERVAL:
         _last_inc_emit = now
-        with _found_lock:
-            work_done = _prog_cur + _work_candidates_done
-            work_total = _prog_tot + _work_candidates_total
-        _LOG_FN("progress", f"{work_done}/{work_total}/{_prog_stage}/{count}")
+        if _LOG_FN:
+            with _found_lock:
+                work_done = _prog_cur + _work_candidates_done
+                work_total = _prog_tot + _work_candidates_total
+            _LOG_FN("progress", f"{work_done}/{work_total}/{_prog_stage}/{count}")
 
 
 def _reset_found() -> None:

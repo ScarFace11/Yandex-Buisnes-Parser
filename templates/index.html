@@ -134,6 +134,11 @@
               </label>
             </div>
             <div class="hint" id="social-mode-hint">Показывать все найденные бизнесы</div>
+            <div id="social-network-filter" style="display:none">
+              <div class="sec" style="margin-top:8px">Только с соцсетями:</div>
+              <div class="chk-grid" id="social-net-chk-grid"></div>
+              <div class="hint" id="social-net-hint">Отметьте нужные — покажем только те, у кого есть ВСЕ отмеченные</div>
+            </div>
 
             <div class="sec">Дополнительно</div>
             <label class="chk"><input type="checkbox" id="f-validate">
@@ -141,8 +146,8 @@
             <div>
               <label class="lbl">API-ключ Яндекса</label>
               <div class="apikey-row">
-                <input type="text" id="f-apikey" placeholder="оставьте пустым — используется встроенный">
-                <button id="btn-test-key" onclick="testApiKey()">Проверить</button>
+                <input type="text" id="f-apikey" placeholder="ваш ключ API (необязательно)">
+                <button id="btn-save-key" onclick="saveApiKey()">💾 Сохранить</button>
               </div>
               <div id="apikey-status"></div>
             </div>

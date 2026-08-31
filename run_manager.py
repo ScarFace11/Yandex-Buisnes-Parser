@@ -163,9 +163,8 @@ class RunManager:
             try:
                 stop_event = entry["stop_event"]
                 files = _parser.run_web(params, _log_to_queue, stop_event)
-                # If multiple cities, merge all JSON files into a combined one
-                # so the frontend can load all results at once.
-                json_files = [f for f in files if f.endswith(".json") and "_combined" not in f]
+                # If multiple cities, merge all city JSON files into a combined one
+                json_files = [f for f in files if f.endswith(".json") and not f.startswith("_")]
                 if len(json_files) > 1:
                     combined = []
                     for jf in json_files:
@@ -180,7 +179,43 @@ class RunManager:
                         combined_path = os.path.join(OUTPUT_DIR, combined_name)
                         with open(combined_path, "w", encoding="utf-8") as fh:
                             json.dump(combined, fh, ensure_ascii=False, indent=2)
-                        files.insert(0, combined_name)  # put first so frontend picks it
+                        files.insert(0, combined_name)
+                # Always ensure a results JSON exists for the frontend to load.
+                # Check if any user-facing JSON already exists (not internal _ files).
+                user_json = [f for f in files if f.endswith(".json") and not f.startswith("_")]
+                if not user_json:
+                    # No user JSON — create an internal one for the frontend.
+                    all_records = []
+                    # Try reading from xlsx if available
+                    xlsx_files = [f for f in files if f.endswith(".xlsx")]
+                    if xlsx_files:
+                        try:
+                            import openpyxl
+                            xlsx_path = os.path.join(OUTPUT_DIR, xlsx_files[0])
+                            wb = openpyxl.load_workbook(xlsx_path, read_only=True)
+                            ws = wb.active
+                            headers = [str(c.value or "") for c in next(ws.iter_rows(max_row=1))]
+                            for row in ws.iter_rows(min_row=2, values_only=True):
+                                rec = {h: (str(v) if v is not None else "") for h, v in zip(headers, row)}
+                                all_records.append(rec)
+                            wb.close()
+                        except Exception:
+                            pass
+                    # Fallback: check if _combined_results.json exists
+                    if not all_records:
+                        combined_path = os.path.join(OUTPUT_DIR, "_combined_results.json")
+                        if os.path.exists(combined_path):
+                            try:
+                                with open(combined_path, encoding="utf-8") as fh:
+                                    all_records = json.load(fh)
+                            except Exception:
+                                pass
+                    if all_records:
+                        tmp_name = "_results_for_frontend.json"
+                        tmp_path = os.path.join(OUTPUT_DIR, tmp_name)
+                        with open(tmp_path, "w", encoding="utf-8") as fh:
+                            json.dump(all_records, fh, ensure_ascii=False, indent=2)
+                        files.insert(0, tmp_name)
                 count = 0
                 for f in files:
                     if f.endswith(".json"):
@@ -233,6 +268,11 @@ class RunManager:
                     if r["active"] and not r.get("queued"):
                         targets.append(r)
             for entry in targets:
+                # Signal thread fallback to stop
+                stop_ev = entry.get("stop_event")
+                if stop_ev:
+                    stop_ev.set()
+                # Create stop file for multiprocessing mode
                 sf = entry.get("stop_file")
                 if sf:
                     try:
@@ -240,9 +280,13 @@ class RunManager:
                             f.write("stop")
                     except Exception:
                         pass
+                # Force-kill child process if alive
                 proc = entry.get("process")
                 if proc and proc.is_alive():
-                    proc.terminate()
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
 
     def list_runs(self) -> list[dict]:
         with self._lock:

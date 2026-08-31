@@ -13,14 +13,6 @@ from datetime import datetime
 from colorama import init as colorama_init
 from tqdm import tqdm
 
-import sys
-from pathlib import Path
-
-# Добавляем корневую папку в путь
-ROOT_DIR = Path(__file__).parent.parent
-sys.path.insert(0, str(ROOT_DIR))
-
-# Теперь импортируем как из пакета
 from yandex_maps_parser import state
 from yandex_maps_parser.checkpoint import (
     load_checkpoint, save_checkpoint, clear_checkpoint,
@@ -373,7 +365,7 @@ def _apply_params(params: dict) -> None:
     """Apply form parameters to the global state module."""
     state.SEARCH_QUERIES  = [q.strip() for q in params.get("queries", []) if q.strip()]
     state.OUTPUT_CSV      = bool(params.get("output_csv", False))
-    state.OUTPUT_JSON     = True   # always save JSON so we can list result files
+    state.OUTPUT_JSON     = bool(params.get("output_json", False))
     state.OUTPUT_EXCEL    = bool(params.get("output_excel", True))
     state.OUTPUT_MAP      = bool(params.get("output_map", False))
     state.OUTPUT_FILENAME = None
