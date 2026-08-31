@@ -434,7 +434,23 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None) -> list[str]
     all_files: list[str] = []
     total_cities = len(cities)
 
-    state._LOG_FN        = log_fn
+    # Set up file logger for this run
+    import uuid as _uuid
+    run_id = _uuid.uuid4().hex[:8]
+    try:
+        from run_logger import RunLogger
+        _file_logger = RunLogger(run_id, cities, state.SEARCH_QUERIES)
+    except Exception:
+        _file_logger = None
+
+    # Combine browser + file logging
+    def _combined_log(level: str, msg: str) -> None:
+        if log_fn:
+            log_fn(level, msg)
+        if _file_logger:
+            _file_logger.log(level, msg)
+
+    state._LOG_FN        = _combined_log
     state._TQDM_DISABLE  = True
     state._STOP_EVENT    = stop_event
     state._SKIP_CITY_EVENT = skip_event or threading.Event()
@@ -455,8 +471,10 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None) -> list[str]
                     f"{'═' * 50}"
                 )
                 # Signal city transition to frontend
-                if log_fn:
-                    log_fn("progress", f"city/{city_idx + 1}/{total_cities}/{city}")
+                if _combined_log:
+                    _combined_log("progress", f"city/{city_idx + 1}/{total_cities}/{city}")
+                if _file_logger:
+                    _file_logger.log_city_start(city_idx + 1, total_cities, city)
 
             state.CITY = city
             started_at = time.time()
@@ -467,14 +485,18 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None) -> list[str]
             records_found = state._CITY_RECORDS_FOUND
             if was_skipped:
                 state._SKIPPED_CITIES.append({"name": city, "records_found": records_found})
-                if log_fn:
-                    log_fn("ok", f"  ⏭ {city}: пропущен вручную ({records_found} записей сохранено)")
+                if _combined_log:
+                    _combined_log("ok", f"  ⏭ {city}: пропущен вручную ({records_found} записей сохранено)")
+                if _file_logger:
+                    _file_logger.log_city_done(city, records_found, skipped=True)
                 # Signal city skip to frontend
-                if total_cities > 1 and log_fn:
-                    log_fn("progress", f"city_done|{city_idx + 1}|{total_cities}|{city}|skipped|{records_found}")
+                if total_cities > 1 and _combined_log:
+                    _combined_log("progress", f"city_done|{city_idx + 1}|{total_cities}|{city}|skipped|{records_found}")
             else:
-                if total_cities > 1 and log_fn:
-                    log_fn("progress", f"city_done|{city_idx + 1}|{total_cities}|{city}|done|{records_found}")
+                if _file_logger:
+                    _file_logger.log_city_done(city, records_found)
+                if total_cities > 1 and _combined_log:
+                    _combined_log("progress", f"city_done|{city_idx + 1}|{total_cities}|{city}|done|{records_found}")
 
             # Collect files from this city run
             city_files = _collect_run_files(started_at)
@@ -483,6 +505,13 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None) -> list[str]
             if total_cities > 1 and city_files:
                 state.ok(f"  ✅ {city}: {len(city_files)} файл(ов) сохранено")
     finally:
+        # Write final summary to file log
+        if _file_logger:
+            try:
+                stopped = bool(stop_event and stop_event.is_set())
+                _file_logger.finish(len(all_files), all_files, stopped)
+            except Exception:
+                pass
         state._LOG_FN        = None
         state._TQDM_DISABLE  = False
         state._SKIP_CITY_EVENT = None

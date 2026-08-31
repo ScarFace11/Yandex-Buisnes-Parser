@@ -6,6 +6,7 @@ sender_config.json
 
 # Runtime/generated data
 output/
+logs/
 *.jsonl
 *.xlsx
 *.csv

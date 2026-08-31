@@ -1713,6 +1713,49 @@ function resetSendBtn() {
 }
 
 // ═══════════════════════════════════════════
+//  Logs modal
+// ═══════════════════════════════════════════
+function showLogsModal() {
+  const existing = document.querySelector('.logs-modal-overlay');
+  if (existing) existing.remove();
+  const overlay = document.createElement('div');
+  overlay.className = 'logs-modal-overlay';
+  overlay.innerHTML = `<div class="logs-modal">
+    <h3>📜 Логи запусков</h3>
+    <div class="logs-empty">Загрузка…</div>
+  </div>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  fetch('/logs/list')
+    .then(r => r.json())
+    .then(data => {
+      const logs = data.logs || [];
+      const modal = overlay.querySelector('.logs-modal');
+      if (!logs.length) {
+        modal.innerHTML = `<h3>📜 Логи запусков</h3><div class="logs-empty">Логов пока нет. Запустите поиск чтобы создать лог.</div><div style="text-align:right;margin-top:12px"><button class="skip-cancel" onclick="this.closest('.logs-modal-overlay').remove()">Закрыть</button></div>`;
+        return;
+      }
+      const listHtml = logs.map(l => {
+        const sizeKB = (l.size / 1024).toFixed(1);
+        return `<li>
+          <span class="log-name">${escapeHtml(l.name)}</span>
+          <span class="log-meta">${l.modified} · ${sizeKB} КБ</span>
+          <span class="log-actions">
+            <a class="log-view" href="/logs/view/${encodeURIComponent(l.name)}" target="_blank">👁 Смотреть</a>
+            <a class="log-dl" href="/logs/download/${encodeURIComponent(l.name)}" download>💾 Скачать</a>
+          </span>
+        </li>`;
+      }).join('');
+      modal.innerHTML = `<h3>📜 Логи запусков</h3>
+        <ul class="logs-list">${listHtml}</ul>
+        <div style="text-align:right;margin-top:12px"><button class="skip-cancel" onclick="this.closest('.logs-modal-overlay').remove()">Закрыть</button></div>`;
+    })
+    .catch(() => {
+      overlay.querySelector('.logs-modal').innerHTML = `<h3>📜 Логи запусков</h3><div class="logs-empty">Ошибка загрузки</div><div style="text-align:right;margin-top:12px"><button class="skip-cancel" onclick="this.closest('.logs-modal-overlay').remove()">Закрыть</button></div>`;
+    });
+}
+
+// ═══════════════════════════════════════════
 //  Version check from GitHub
 // ═══════════════════════════════════════════
 function checkForUpdates() {

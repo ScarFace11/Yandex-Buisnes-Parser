@@ -215,3 +215,39 @@ def export_filtered():
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": "attachment; filename=filtered_export.xlsx"}
     )
+
+
+# ── Logs ────────────────────────────────────────────────────
+
+@bp.route("/logs/list")
+def list_log_files():
+    """List all log files with metadata."""
+    from run_logger import list_logs
+    return jsonify({"logs": list_logs()})
+
+
+@bp.route("/logs/view/<path:filename>")
+def view_log(filename):
+    """View a log file as plain text."""
+    from run_logger import LOGS_DIR
+    safe = os.path.basename(filename)
+    fpath = os.path.join(LOGS_DIR, safe)
+    if not os.path.isfile(fpath):
+        return jsonify({"error": "Log not found"}), 404
+    with open(fpath, encoding="utf-8") as f:
+        content = f.read()
+    return Response(content, mimetype="text/plain; charset=utf-8",
+                    headers={"Content-Disposition": f"inline; filename={safe}"})
+
+
+@bp.route("/logs/download/<path:filename>")
+def download_log(filename):
+    """Download a log file."""
+    from run_logger import LOGS_DIR
+    safe = os.path.basename(filename)
+    if not safe.endswith(".log"):
+        return jsonify({"error": "Invalid file"}), 400
+    fpath = os.path.join(LOGS_DIR, safe)
+    if not os.path.isfile(fpath):
+        return jsonify({"error": "Log not found"}), 404
+    return send_from_directory(LOGS_DIR, safe, as_attachment=True)

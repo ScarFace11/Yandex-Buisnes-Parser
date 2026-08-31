@@ -65,6 +65,25 @@ header h1{font-size:15px;font-weight:700;letter-spacing:-.01em}
 .skip-modal-btns .skip-confirm:hover{background:rgba(100,140,200,1)}
 .skip-modal-btns .skip-cancel{background:rgba(120,140,148,.3);color:var(--fg)}
 .skip-modal-btns .skip-cancel:hover{background:rgba(120,140,148,.5)}
+#btn-logs{
+  padding:5px 11px;border:1px solid rgba(255,255,255,.22);border-radius:5px;
+  background:rgba(120,140,148,.35);color:var(--fg);font-size:12px;cursor:pointer;
+}
+#btn-logs:hover{background:rgba(120,140,148,.55)}
+/* Logs modal */
+.logs-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center}
+.logs-modal{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px 28px;max-width:700px;width:90%;max-height:80vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,.3)}
+.logs-modal h3{margin:0 0 16px;font-size:16px;color:var(--fg)}
+.logs-list{list-style:none;padding:0;margin:0}
+.logs-list li{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-bottom:1px solid var(--border);font-size:13px}
+.logs-list li:last-child{border-bottom:none}
+.logs-list .log-name{color:var(--fg);font-family:monospace}
+.logs-list .log-meta{color:var(--muted);font-size:11px;margin:0 12px}
+.logs-list .log-actions a{padding:4px 10px;border-radius:4px;font-size:11px;text-decoration:none;margin-left:6px}
+.logs-list .log-view{background:rgba(100,140,200,.3);color:var(--fg)}
+.logs-list .log-dl{background:rgba(80,180,120,.3);color:var(--fg)}
+.logs-list .log-actions a:hover{opacity:.8}
+.logs-empty{color:var(--muted);font-size:13px;padding:20px;text-align:center}
 #btn-notify,#btn-theme{
   padding:5px 11px;border:1px solid rgba(255,255,255,.22);border-radius:5px;
   background:rgba(255,255,255,.1);color:#fff;
