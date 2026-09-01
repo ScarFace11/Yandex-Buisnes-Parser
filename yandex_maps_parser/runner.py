@@ -420,6 +420,7 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None) -> list[str]
 
     all_files: list[str] = []
     total_cities = len(cities)
+    _run_start_time = time.time()  # track overall run start for history
 
     # Set up file logger for this run
     import uuid as _uuid
@@ -535,7 +536,7 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None) -> list[str]
         # Save search history
         try:
             from search_history import add_entry as _hist_add
-            elapsed = time.time() - (locals().get('started_at') or time.time())
+            elapsed = time.time() - _run_start_time
             _hist_add(
                 run_id=run_id,
                 queries=state.SEARCH_QUERIES,

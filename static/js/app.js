@@ -25,12 +25,11 @@ let _currentCityName = '';         // name of city currently being processed
 // ═══════════════════════════════════════════
 function initCityProgress(totalCities) {
   _totalCities = totalCities;
-  _cityProgressData = {};
+  // Don't reset _cityProgressData — preserve completed cities
   const el = document.getElementById('city-progress');
   const list = document.getElementById('city-progress-list');
   if (totalCities > 1) {
     el.style.display = '';
-    list.innerHTML = '';
   } else {
     el.style.display = 'none';
   }
