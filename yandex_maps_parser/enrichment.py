@@ -80,13 +80,23 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
                         record["reviews"] = int(review_count)
             state.syslog(f"fetch_detail done: {biz_name}, socials_after={list(socials.keys())}")
 
-        # Fallback: try aggregator page
+        # Fallback: try aggregator page (with shorter timeout)
         if agg_url and len(socials) < 2:
             state.syslog(f"fetch_aggregator: {biz_name}, url={agg_url}")
-            agg_html = fetch_html(agg_url)
-            if agg_html:
-                for k, v in extract_socials(agg_html).items():
-                    socials.setdefault(k, v)
+            try:
+                from .http_client import _worker_session as _agg_session
+                from .extractors import _get as _agg_get
+                agg_r = _agg_get(
+                    agg_url,
+                    session=_agg_session(),
+                    timeout=(5, 10),  # shorter timeout for third-party aggregators
+                    allow_redirects=True,
+                )
+                if agg_r and agg_r.status_code == 200:
+                    for k, v in extract_socials(agg_r.text).items():
+                        socials.setdefault(k, v)
+            except Exception:
+                pass  # aggregator is best-effort, don't block
 
         with _pbar_lock:
             pbar.update(1)

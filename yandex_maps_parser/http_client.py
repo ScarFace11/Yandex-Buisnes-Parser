@@ -100,12 +100,38 @@ _token_bucket = _TokenBucket(capacity=64.0)
 _cooldown_until = 0.0
 _cooldown_lock  = threading.Lock()
 
+# Anti-bot backoff: increase delay after detecting anti-bot page
+_anti_bot_count = 0
+_anti_bot_lock  = threading.Lock()
+
 
 def _set_cooldown(seconds: float) -> None:
     """Pause the whole pool for *seconds* (extends any existing cooldown)."""
     global _cooldown_until
     with _cooldown_lock:
         _cooldown_until = max(_cooldown_until, time.monotonic() + seconds)
+
+
+def _anti_bot_detected() -> None:
+    """Called when an anti-bot page is detected.  Increases cooldown for
+    subsequent requests to avoid further triggers.
+    """
+    global _anti_bot_count, _cooldown_until
+    with _anti_bot_lock:
+        _anti_bot_count += 1
+        # Exponential backoff: 10s, 20s, 40s, capped at 120s
+        backoff = min(10 * (2 ** (_anti_bot_count - 1)), 120)
+    with _cooldown_lock:
+        _cooldown_until = max(_cooldown_until, time.monotonic() + backoff)
+    state.syslog(f"anti_bot_backoff: count={_anti_bot_count}, cooldown={backoff}s")
+    state.warn(f"⚠ Anti-bot обнаружен (#{_anti_bot_count}). Автопауза {backoff}с...")
+
+
+def _anti_bot_reset() -> None:
+    """Reset anti-bot counter at the start of a new city."""
+    global _anti_bot_count
+    with _anti_bot_lock:
+        _anti_bot_count = 0
 
 
 def _cooldown_remaining() -> float:

@@ -145,6 +145,12 @@ def fetch_html(url: str, session=None) -> str:
     lower = text[:4000].lower()
     if any(m in lower for m in _ANTIBOT_MARKERS):
         state.warn("Яндекс вернул anti-bot страницу — детали этой карточки пропущены.")
+        # Trigger adaptive backoff in http_client
+        try:
+            from .http_client import _anti_bot_detected
+            _anti_bot_detected()
+        except Exception:
+            pass
         return ""
     return text
 
