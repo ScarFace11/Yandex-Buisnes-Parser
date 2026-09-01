@@ -75,7 +75,7 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
             # Try Playwright first (fast, no throttling), fallback to httpx
             html = None
             if state.USE_BROWSER and browser_client.is_available():
-                html = browser_client.fetch_page(detail_url)
+                html = browser_client.fetch_page(detail_url, biz_id=biz_id)
             if html is None:
                 html = fetch_html(detail_url, biz_id=biz_id)
             if html:

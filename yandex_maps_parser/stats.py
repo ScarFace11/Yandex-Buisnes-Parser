@@ -28,8 +28,9 @@ def print_limit_stats() -> None:
     try:
         from .browser_client import get_stats as _bs
         bs = _bs()
-        if bs["pages_fetched"] > 0:
-            state.info(f"    браузер: {bs['pages_fetched']} стр. ({bs['avg_time']:.1f}с/стр.) ошибок: {bs['pages_error']}")
+        total_browser = bs["pages_fetched"] + bs["cache_hits"]
+        if total_browser > 0:
+            state.info(f"    браузер: {bs['pages_fetched']} стр. ({bs['avg_time']:.1f}с/стр.) кэш: {bs['cache_hits']} ошибок: {bs['pages_error']} рестартов: {bs['restarts']}")
     except Exception:
         pass
 

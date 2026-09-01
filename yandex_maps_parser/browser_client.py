@@ -3,14 +3,13 @@ Playwright-based browser pool for fetching Yandex Maps detail pages.
 
 Uses a real Chromium browser with proper TLS fingerprint, cookies, and JS
 rendering — Yandex does NOT throttle browser requests the way it throttles
-raw HTTP requests.  This is the key to unlocking ~1-2s per page instead of
-30-60s with raw httpx.
+raw HTTP requests.
 
-Architecture:
-  - One Chromium instance shared across all worker threads
-  - N browser pages (tabs) managed via a thread-safe queue
-  - Each worker borrows a page, navigates, extracts HTML, returns the page
-  - Graceful fallback to httpx if Playwright is not installed
+Features:
+  - Auto-check: verifies Playwright is installed, auto-installs if missing
+  - Disk cache: saves fetched HTML to avoid re-fetching
+  - Resilience: auto-restarts Chromium on crash
+  - Rate-limiting: semaphore to prevent overwhelming Yandex
 
 Usage:
   from .browser_client import init_browser, fetch_page, close_browser
@@ -20,10 +19,13 @@ Usage:
   close_browser()               # cleanup at run end
 """
 
+import os
 import queue
+import subprocess
+import sys
 import threading
 import time
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 from . import state
 
@@ -36,9 +38,20 @@ _pool_size = 0
 _init_lock = threading.Lock()
 _browser_lock = threading.Lock()  # guards _pw_instance, _browser, _page_pool
 
+# Rate-limiting: semaphore to limit concurrent browser navigations
+_rate_semaphore: threading.Semaphore | None = None
+_rate_lock = threading.Lock()
+
+# Cache directory
+_CACHE_DIR = None
+_CACHE_MAX_SIZE = 500  # max cached pages
+_cache_index: dict[str, float] = {}  # biz_id -> mtime
+_cache_lock = threading.Lock()
+
 # Stats
 _stats_lock = threading.Lock()
-_stats = {"pages_fetched": 0, "pages_error": 0, "total_time": 0.0}
+_stats = {"pages_fetched": 0, "pages_error": 0, "total_time": 0.0,
+          "cache_hits": 0, "cache_misses": 0, "restarts": 0}
 
 
 def _try_import_playwright():
@@ -54,18 +67,131 @@ def _try_import_playwright():
         return None
 
 
+def _auto_install_playwright() -> bool:
+    """Try to install Playwright automatically.
+
+    Returns True if installation succeeded, False otherwise.
+    """
+    state.syslog("browser_client: playwright not found, attempting auto-install...")
+    try:
+        # Install playwright package
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "playwright"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=120,
+        )
+        # Install chromium browser
+        subprocess.check_call(
+            [sys.executable, "-m", "playwright", "install", "chromium"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=300,
+        )
+        state.syslog("browser_client: playwright auto-installed successfully")
+        # Force reimport
+        import importlib
+        importlib.invalidate_caches()
+        global _playwright_mod
+        _playwright_mod = None
+        return _try_import_playwright() is not None
+    except Exception as e:
+        state.syslog(f"browser_client: auto-install failed: {e}")
+        return False
+
+
+def _init_cache():
+    """Initialize disk cache directory."""
+    global _CACHE_DIR
+    if _CACHE_DIR is not None:
+        return
+    cache_dir = Path(state.OUTPUT_DIR) / ".cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    _CACHE_DIR = cache_dir
+    # Build index of existing cache files
+    with _cache_lock:
+        for f in cache_dir.glob("*.html"):
+            try:
+                _cache_index[f.stem] = f.stat().st_mtime
+            except Exception:
+                pass
+    state.syslog(f"browser_client: cache initialized, {len(_cache_index)} entries")
+
+
+def _get_cache_path(biz_id: str) -> Path | None:
+    """Get cache file path for a biz_id."""
+    if _CACHE_DIR is None:
+        return None
+    return _CACHE_DIR / f"{biz_id}.html"
+
+
+def _cache_get(biz_id: str) -> str | None:
+    """Get cached HTML for a biz_id. Returns None if not cached or expired."""
+    if not biz_id:
+        return None
+    path = _get_cache_path(biz_id)
+    if path is None:
+        return None
+    with _cache_lock:
+        mtime = _cache_index.get(biz_id)
+        if mtime is None:
+            return None
+        # Expire after 24 hours
+        if time.time() - mtime > 86400:
+            try:
+                path.unlink()
+            except Exception:
+                pass
+            _cache_index.pop(biz_id, None)
+            return None
+    try:
+        return path.read_text(encoding="utf-8")
+    except Exception:
+        return None
+
+
+def _cache_set(biz_id: str, html: str) -> None:
+    """Save HTML to disk cache."""
+    if not biz_id:
+        return
+    path = _get_cache_path(biz_id)
+    if path is None:
+        return
+    try:
+        path.write_text(html, encoding="utf-8")
+        with _cache_lock:
+            _cache_index[biz_id] = time.time()
+            # Evict old entries if cache is too large
+            if len(_cache_index) > _CACHE_MAX_SIZE:
+                oldest = sorted(_cache_index.items(), key=lambda x: x[1])
+                for old_id, _ in oldest[:len(_cache_index) - _CACHE_MAX_SIZE]:
+                    old_path = _CACHE_DIR / f"{old_id}.html"
+                    try:
+                        old_path.unlink()
+                    except Exception:
+                        pass
+                    _cache_index.pop(old_id, None)
+    except Exception:
+        pass
+
+
 def init_browser(pool_size: int = 8) -> bool:
     """Initialize Playwright browser with a pool of pages.
 
-    Returns True if browser was initialized, False if Playwright is not
-    available (fallback to httpx should be used).
+    Auto-installs Playwright if not found.  Returns True if browser was
+    initialized, False if Playwright is not available (fallback to httpx).
     """
-    global _pw_instance, _browser, _page_pool, _pool_size
+    global _pw_instance, _browser, _page_pool, _pool_size, _rate_semaphore
 
     pw_mod = _try_import_playwright()
     if pw_mod is None:
-        state.syslog("browser_client: playwright not installed, using httpx fallback")
-        return False
+        # Try auto-install
+        if _auto_install_playwright():
+            pw_mod = _try_import_playwright()
+        if pw_mod is None:
+            state.syslog("browser_client: playwright not available, using httpx fallback")
+            state.warn("⚠ Playwright не установлен. Для ускорения: pip install playwright && playwright install chromium")
+            return False
 
     with _init_lock:
         with _browser_lock:
@@ -100,6 +226,12 @@ def init_browser(pool_size: int = 8) -> bool:
                     page = ctx.new_page()
                     _page_pool.put(page)
 
+                # Rate-limiting semaphore
+                _rate_semaphore = threading.Semaphore(pool_size)
+
+                # Initialize cache
+                _init_cache()
+
                 state.syslog(f"browser_client: initialized with {pool_size} pages")
                 return True
             except Exception as e:
@@ -116,67 +248,167 @@ def init_browser(pool_size: int = 8) -> bool:
                 return False
 
 
+def _restart_browser() -> bool:
+    """Restart the browser after a crash. Thread-safe.
+
+    Returns True if restart succeeded.
+    """
+    global _pw_instance, _browser, _page_pool, _rate_semaphore
+
+    with _browser_lock:
+        # Close existing browser
+        try:
+            if _browser:
+                _browser.close()
+        except Exception:
+            pass
+        _browser = None
+        _page_pool = None
+
+        # Wait a moment for cleanup
+        time.sleep(1)
+
+        try:
+            pw_mod = _try_import_playwright()
+            if pw_mod is None:
+                return False
+
+            _pw_instance = pw_mod.sync_playwright().start()
+            _browser = _pw_instance.chromium.launch(
+                headless=True,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                ],
+            )
+            _page_pool = queue.Queue()
+
+            for i in range(_pool_size):
+                ctx = _browser.new_context(
+                    locale="ru-RU",
+                    viewport={"width": 1400, "height": 900},
+                    user_agent=(
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/125.0.0.0 Safari/537.36"
+                    ),
+                )
+                page = ctx.new_page()
+                _page_pool.put(page)
+
+            with _stats_lock:
+                _stats["restarts"] += 1
+
+            state.syslog(f"browser_client: restarted with {_pool_size} pages")
+            return True
+
+        except Exception as e:
+            state.syslog(f"browser_client: restart failed: {e}")
+            _pw_instance = None
+            _browser = None
+            _page_pool = None
+            return False
+
+
 def is_available() -> bool:
     """Check if browser pool is initialized and ready."""
     return _browser is not None and _page_pool is not None
 
 
-def fetch_page(url: str, timeout_ms: int = 30000) -> str | None:
+def fetch_page(url: str, timeout_ms: int = 30000, biz_id: str = "") -> str | None:
     """Fetch a page using Playwright browser and return HTML content.
 
     Thread-safe: borrows a page from the pool, navigates, returns HTML,
     then returns the page to the pool.  Blocks if all pages are busy.
+
+    Checks disk cache first (keyed by biz_id).  Saves to cache after fetch.
 
     Returns None on error or if browser is not available.
     """
     if not is_available():
         return None
 
+    # Check cache first
+    if biz_id:
+        cached = _cache_get(biz_id)
+        if cached:
+            with _stats_lock:
+                _stats["cache_hits"] += 1
+            return cached
+        with _stats_lock:
+            _stats["cache_misses"] += 1
+
     page = None
     t0 = time.monotonic()
-    try:
-        # Borrow a page from the pool (blocks until one is free)
-        page = _page_pool.get(timeout=60)
+    max_retries = 2
 
-        # Navigate
-        page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-
-        # Wait a bit for JS to render social links
-        # (Yandex Maps loads social links via JS after initial page load)
+    for attempt in range(max_retries):
         try:
-            page.wait_for_timeout(1500)
-        except Exception:
-            pass
+            # Rate-limiting: wait for semaphore slot
+            if _rate_semaphore:
+                _rate_semaphore.acquire(timeout=60)
 
-        html = page.content()
-
-        with _stats_lock:
-            _stats["pages_fetched"] += 1
-            _stats["total_time"] += time.monotonic() - t0
-
-        return html
-
-    except Exception as e:
-        with _stats_lock:
-            _stats["pages_error"] += 1
-        state.syslog(f"browser_client: error fetching {url[:80]}: {type(e).__name__}")
-        return None
-    finally:
-        # Return page to pool
-        if page is not None:
             try:
-                _page_pool.put_nowait(page)
-            except queue.Full:
-                # Pool is full (shouldn't happen), close the page
+                # Borrow a page from the pool (blocks until one is free)
+                page = _page_pool.get(timeout=60)
+
+                # Navigate
+                page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+
+                # Wait a bit for JS to render social links
                 try:
-                    page.close()
+                    page.wait_for_timeout(1500)
                 except Exception:
                     pass
+
+                html = page.content()
+
+                with _stats_lock:
+                    _stats["pages_fetched"] += 1
+                    _stats["total_time"] += time.monotonic() - t0
+
+                # Save to cache
+                if biz_id and html:
+                    _cache_set(biz_id, html)
+
+                return html
+
+            finally:
+                if _rate_semaphore:
+                    _rate_semaphore.release()
+                # Return page to pool
+                if page is not None:
+                    try:
+                        _page_pool.put_nowait(page)
+                    except queue.Full:
+                        try:
+                            page.close()
+                        except Exception:
+                            pass
+                    page = None
+
+        except Exception as e:
+            with _stats_lock:
+                _stats["pages_error"] += 1
+            state.syslog(f"browser_client: error fetching {url[:80]}: {type(e).__name__}: {e}")
+
+            # On crash, try to restart browser
+            if attempt < max_retries - 1:
+                state.syslog("browser_client: attempting restart...")
+                if _restart_browser():
+                    state.syslog("browser_client: restart successful, retrying...")
+                    time.sleep(1)
+                    continue
+
+            return None
+
+    return None
 
 
 def close_browser() -> None:
     """Shut down the browser and free resources."""
-    global _pw_instance, _browser, _page_pool, _pool_size
+    global _pw_instance, _browser, _page_pool, _pool_size, _rate_semaphore
 
     with _browser_lock:
         if _page_pool is not None:
@@ -204,6 +436,7 @@ def close_browser() -> None:
             _pw_instance = None
 
         _pool_size = 0
+        _rate_semaphore = None
         state.syslog("browser_client: closed")
 
 
