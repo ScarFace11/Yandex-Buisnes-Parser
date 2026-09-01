@@ -87,11 +87,11 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
         if agg_url and len(socials) < 2:
             state.syslog(f"fetch_aggregator: {biz_name}, url={agg_url}")
             try:
-                from .http_client import _worker_session as _agg_session
+                from .http_client import _worker_client as _agg_client
                 from .extractors import _get as _agg_get
                 agg_r = _agg_get(
                     agg_url,
-                    session=_agg_session(),
+                    session=_agg_client(),
                     timeout=(5, 10),  # shorter timeout for third-party aggregators
                     allow_redirects=True,
                 )

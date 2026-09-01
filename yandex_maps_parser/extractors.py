@@ -13,7 +13,7 @@ from .constants import (
     KNOWN_PLATFORMS,
     EXCLUDE_URLS,
 )
-from .http_client import _head, _worker_session, _get
+from .http_client import _head, _worker_client, _get
 from . import state
 
 # ── Compiled patterns ─────────────────────────────────────────
@@ -138,7 +138,7 @@ def _normalize_social_url(platform: str, url: str) -> str | None:
 
 def fetch_html(url: str, session=None) -> str:
     with state._detail_semaphore:
-        r = _get(url, session=session or _worker_session(), timeout=(8, 15))
+        r = _get(url, session=session or _worker_client(), timeout=(8, 15))
     if not r or r.status_code != 200:
         return ""
     text = r.text

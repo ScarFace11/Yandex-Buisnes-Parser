@@ -19,7 +19,7 @@ from yandex_maps_parser.checkpoint import (
     load_global_seen, save_global_seen,
 )
 from yandex_maps_parser.enrichment import collect_candidates, enrich
-from yandex_maps_parser.http_client import _worker_session, reset_stats
+from yandex_maps_parser.http_client import _worker_client, reset_stats
 from yandex_maps_parser.exporters import (
     _resolve, load_existing_urls, load_jsonl, dedupe_records,
     save_csv, save_json, save_excel, save_map,
@@ -138,7 +138,7 @@ def run() -> None:
         state.info(f"  ─── Запрос «{query}»: начало поиска")
         query_records: list[dict] = []
         processed_keys: list[tuple] = []
-        search_session = _worker_session()
+        search_session = _worker_client()
 
         batch_results: dict = {}
         batch_key: tuple | None = None
