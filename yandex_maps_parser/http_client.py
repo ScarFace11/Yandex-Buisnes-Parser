@@ -22,10 +22,46 @@ _local       = threading.local()
 
 _MAX_RATE_LIMIT_RETRIES = 8
 
-# Hard cap on requests/second to avoid triggering 429 errors.
-# HTTP/2 multiplexing allows higher throughput — 25 RPS is safe for
-# Yandex Maps (tested: no 429 errors at this rate).
-_MAX_RPS = 25.0
+# Adaptive RPS: starts at MIN, increases by STEP every UP_INTERVAL
+# seconds when no 429 errors occur, drops by half on 429.
+_MIN_RPS = 10.0
+_MAX_RPS = 40.0
+_RPS_STEP = 5.0
+_RPS_UP_INTERVAL = 30  # seconds between auto-increments
+
+_current_rps: float = _MIN_RPS
+_rps_last_up: float = 0.0
+_rps_lock = threading.Lock()
+
+
+def _get_rps() -> float:
+    """Return the current adaptive RPS limit."""
+    global _current_rps, _rps_last_up
+    with _rps_lock:
+        now = time.monotonic()
+        # Auto-increase if no rate limits for _RPS_UP_INTERVAL seconds
+        if now - _rps_last_up >= _RPS_UP_INTERVAL and _current_rps < _MAX_RPS:
+            _current_rps = min(_current_rps + _RPS_STEP, _MAX_RPS)
+            _rps_last_up = now
+            state.syslog(f"rps_up: {_current_rps:.0f} RPS")
+        return _current_rps
+
+
+def _rps_drop() -> None:
+    """Drop RPS by half on 429 error."""
+    global _current_rps, _rps_last_up
+    with _rps_lock:
+        _current_rps = max(_MIN_RPS, _current_rps / 2)
+        _rps_last_up = time.monotonic()  # reset timer
+        state.syslog(f"rps_drop: {_current_rps:.0f} RPS (after 429)")
+
+
+def _rps_reset() -> None:
+    """Reset RPS to minimum at the start of a new city."""
+    global _current_rps, _rps_last_up
+    with _rps_lock:
+        _current_rps = _MIN_RPS
+        _rps_last_up = time.monotonic()
 
 
 def _next_ua() -> str:
@@ -217,7 +253,7 @@ def _wait_for_token() -> bool:
             return True
         if state.is_skip_city():
             return True
-        wait = max(_token_bucket.try_acquire(_MAX_RPS), _cooldown_remaining())
+        wait = max(_token_bucket.try_acquire(_get_rps()), _cooldown_remaining())
         if wait <= 0:
             return False
         if _interruptible_sleep(wait, quiet=True):
@@ -308,6 +344,7 @@ def _get(
             if r.status_code == 429:
                 rate_limit_hits += 1
                 _stats_add("rate_limits")
+                _rps_drop()  # adaptive: reduce RPS on rate limit
                 if rate_limit_hits > _MAX_RATE_LIMIT_RETRIES:
                     state.warn(
                         f"Лимит API (429) — слишком много повторов ({rate_limit_hits}), пропускаем URL."

@@ -473,8 +473,9 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None) -> list[str]
             state.reset_skip_city()
             # Reset anti-bot backoff counter for new city
             try:
-                from yandex_maps_parser.http_client import _anti_bot_reset
+                from yandex_maps_parser.http_client import _anti_bot_reset, _rps_reset
                 _anti_bot_reset()
+                _rps_reset()
             except Exception:
                 pass
             _syslog(f"--- Город {city_idx + 1}/{total_cities}: {city} ---")
