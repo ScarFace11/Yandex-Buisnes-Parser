@@ -175,11 +175,34 @@ def _cache_set(biz_id: str, html: str) -> None:
         pass
 
 
+def _test_playwright_in_subprocess() -> bool:
+    """Test if Playwright can launch Chromium in a subprocess.
+    
+    This catches hard crashes (0xC0000005) that can't be caught by try/except.
+    Returns True if Playwright works, False otherwise.
+    """
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c",
+             "from playwright.sync_api import sync_playwright; "
+             "p = sync_playwright().start(); "
+             "b = p.chromium.launch(headless=True); "
+             "b.close(); p.stop()"],
+            capture_output=True,
+            timeout=30,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
 def init_browser(pool_size: int = 8) -> bool:
     """Initialize Playwright browser with a pool of pages.
-
+    
     Auto-installs Playwright if not found.  Returns True if browser was
     initialized, False if Playwright is not available (fallback to httpx).
+    
+    Tests Chromium launch in a subprocess first to avoid hard crashes.
     """
     global _pw_instance, _browser, _page_pool, _pool_size, _rate_semaphore
 
@@ -192,6 +215,14 @@ def init_browser(pool_size: int = 8) -> bool:
             state.syslog("browser_client: playwright not available, using httpx fallback")
             state.warn("⚠ Playwright не установлен. Для ускорения: pip install playwright && playwright install chromium")
             return False
+
+    # Test Chromium launch in subprocess to avoid hard crash
+    state.syslog("browser_client: testing Chromium launch in subprocess...")
+    if not _test_playwright_in_subprocess():
+        state.syslog("browser_client: Chromium test failed, using httpx fallback")
+        state.warn("⚠ Chromium не может запуститься. Используем httpx fallback.")
+        return False
+    state.syslog("browser_client: Chromium test passed")
 
     with _init_lock:
         with _browser_lock:
