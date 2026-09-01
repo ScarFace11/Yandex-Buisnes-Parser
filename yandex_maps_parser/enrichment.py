@@ -65,9 +65,21 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
         # a false positive — the heavier detail page usually has the full set
         # (e.g. VK was missed because a TG link appeared first in raw JSON).
         # Detail-page socials MERGE into the raw ones instead of replacing them.
-        if state.FETCH_DETAIL and biz_id and len(socials) < 2:
+        #
+        # OPTIMIZATION for with_socials mode: skip detail fetch entirely when
+        # raw_socials=0 — these businesses rarely have social links on their
+        # detail page either, and fetching 300+ pages for one city takes hours.
+        _should_fetch = (
+            state.FETCH_DETAIL
+            and biz_id
+            and len(socials) < 2
+            and not (state.SOCIAL_MODE == "with_socials" and len(socials) == 0)
+        )
+        if _should_fetch:
             state.syslog(f"fetch_detail: biz_id={biz_id}, name={biz_name}, raw_socials={len(socials)}")
             html = fetch_html(f"https://yandex.ru/maps/org/{biz_id}")
+        elif state.SOCIAL_MODE == "with_socials" and len(socials) == 0:
+            state.syslog(f"skip_detail_no_socials: {biz_name} (raw_socials=0, mode=with_socials)")
             if html:
                 for k, v in _extract_from_json_blob(html).items():
                     socials.setdefault(k, v)
@@ -81,7 +93,8 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
             state.syslog(f"fetch_detail done: {biz_name}, socials_after={list(socials.keys())}")
 
         # Fallback: try aggregator page (with shorter timeout)
-        if agg_url and len(socials) < 2:
+        # Skip in with_socials mode when no socials found — saves time
+        if agg_url and len(socials) < 2 and not (state.SOCIAL_MODE == "with_socials" and len(socials) == 0):
             state.syslog(f"fetch_aggregator: {biz_name}, url={agg_url}")
             try:
                 from .http_client import _worker_session as _agg_session
@@ -225,6 +238,12 @@ def collect_candidates(
             pbar_search.update(len(features))
             pbar_search.set_postfix({"без сайта": len(candidates)})
         state.syslog(f"  page {page + 1}: {len(features)} features, {new_this_page} new candidates, total={len(candidates)}")
+
+        # Stop collecting if we hit the per-city candidate limit
+        max_cand = getattr(state, 'MAX_CANDIDATES_PER_CITY', 0)
+        if max_cand > 0 and len(candidates) >= max_cand:
+            state.syslog(f"  candidate limit reached: {len(candidates)}/{max_cand}, stopping search")
+            break
 
         if len(features) < 50:
             break

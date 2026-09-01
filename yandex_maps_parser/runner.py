@@ -367,6 +367,7 @@ def _apply_params(params: dict) -> None:
     state.MAX_PAGES       = max(1, int(params.get("max_pages", 1)))
     state.FETCH_DETAIL    = bool(params.get("fetch_detail", True))
     state.SOCIAL_MODE      = params.get("social_mode", "all")
+    state.MAX_CANDIDATES_PER_CITY = max(0, int(params.get("max_candidates", 200)))
     # When user only wants businesses WITHOUT socials, skip expensive
     # detail-page fetching — we don't need social links at all.
     if state.SOCIAL_MODE == "without_socials":
