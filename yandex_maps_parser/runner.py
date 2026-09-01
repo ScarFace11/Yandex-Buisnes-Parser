@@ -532,6 +532,22 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None) -> list[str]
             if city_files:
                 _weblog("ok", f"  📁 {city}: {', '.join(city_files)}")
     finally:
+        # Save search history
+        try:
+            from search_history import add_entry as _hist_add
+            elapsed = time.time() - (locals().get('started_at') or time.time())
+            _hist_add(
+                run_id=run_id,
+                queries=state.SEARCH_QUERIES,
+                cities=cities,
+                social_mode=state.SOCIAL_MODE,
+                results_count=_total_records,
+                files=all_files,
+                elapsed_sec=elapsed,
+                status="stopped" if (stop_event and stop_event.is_set()) else "completed",
+            )
+        except Exception:
+            pass
         # Shut down browser pool
         try:
             _close_browser()

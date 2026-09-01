@@ -46,6 +46,11 @@
   </span>
 </div>
 
+<!-- ── Multi-city progress (shown when >1 city) ── -->
+<div id="city-progress" style="display:none;padding:8px 24px;background:#f0f7f9;border-bottom:1px solid #d0e3e8;font-size:12px">
+  <div id="city-progress-list" style="display:flex;flex-wrap:wrap;gap:8px"></div>
+</div>
+
 <!-- ── Main layout ── -->
 <div class="layout">
 
@@ -185,6 +190,7 @@
       <button class="tab-btn"        onclick="showTab('table')"  id="t-table">Результаты</button>
       <button class="tab-btn"        onclick="showTab('map')"    id="t-map">На карте</button>
       <button class="tab-btn"        onclick="showTab('stats')"  id="t-stats">Статистика</button>
+      <button class="tab-btn"        onclick="showTab('history')" id="t-history">История</button>
       <button class="tab-btn"        onclick="showTab('sender')" id="t-sender">Отправить в VK</button>
     </div>
 
@@ -278,6 +284,19 @@
       <div class="tab-panel" id="p-stats">
         <div class="stats-body" id="stats-body">
             <div class="no-data">Запустите поиск, чтобы увидеть понятный обзор результатов.</div>
+        </div>
+      </div>
+
+      <!-- HISTORY -->
+      <div class="tab-panel" id="p-history">
+        <div style="padding:16px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+            <h3 style="margin:0;color:#333">История поисков</h3>
+            <button onclick="loadHistory()" style="padding:6px 12px;background:#2196f3;color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px">🔄 Обновить</button>
+          </div>
+          <div id="history-list">
+            <div class="no-data">Загрузка...</div>
+          </div>
         </div>
       </div>
 

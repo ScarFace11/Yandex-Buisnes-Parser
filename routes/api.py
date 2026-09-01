@@ -271,3 +271,43 @@ def analytics_route():
         return jsonify(get_analytics())
     except Exception:
         return jsonify({})
+
+
+# ── Search History ──────────────────────────────────────────
+
+@bp.route("/history")
+def history_list():
+    """List search history."""
+    from search_history import get_history, get_stats
+    limit = request.args.get("limit", 50, type=int)
+    return jsonify({
+        "history": get_history(limit),
+        "stats": get_stats(),
+    })
+
+
+@bp.route("/history/<run_id>")
+def history_entry(run_id):
+    """Get a specific history entry."""
+    from search_history import get_entry
+    entry = get_entry(run_id)
+    if not entry:
+        return jsonify({"error": "Entry not found"}), 404
+    return jsonify(entry)
+
+
+@bp.route("/history/<run_id>", methods=["DELETE"])
+def history_delete(run_id):
+    """Delete a history entry."""
+    from search_history import delete_entry
+    if delete_entry(run_id):
+        return jsonify({"ok": True})
+    return jsonify({"error": "Entry not found"}), 404
+
+
+@bp.route("/history/clear", methods=["POST"])
+def history_clear():
+    """Clear all history."""
+    from search_history import clear_history
+    clear_history()
+    return jsonify({"ok": True})

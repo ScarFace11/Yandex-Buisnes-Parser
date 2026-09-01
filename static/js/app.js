@@ -16,6 +16,49 @@ let socialMode = 'all';  // 'all' | 'with_socials' | 'without_socials'
 let notificationsEnabled = false;  // toggle state
 let requiredSocials = new Set();   // AND filter: must have ALL selected socials
 let _lastCompletedCityIdx = 0;     // track last completed city for notification
+let _cityProgressData = {};        // {cityName: {total, found, status, pct}}
+let _totalCities = 0;              // total cities in current run
+let _currentCityName = '';         // name of city currently being processed
+
+// ═══════════════════════════════════════════
+//  Multi-city progress tracking
+// ═══════════════════════════════════════════
+function initCityProgress(totalCities) {
+  _totalCities = totalCities;
+  _cityProgressData = {};
+  const el = document.getElementById('city-progress');
+  const list = document.getElementById('city-progress-list');
+  if (totalCities > 1) {
+    el.style.display = '';
+    list.innerHTML = '';
+  } else {
+    el.style.display = 'none';
+  }
+}
+
+function updateCityProgress(cityName, pct, found, status) {
+  if (!cityName || _totalCities <= 1) return;
+  _cityProgressData[cityName] = { pct, found, status };
+  renderCityProgress();
+}
+
+function renderCityProgress() {
+  const list = document.getElementById('city-progress-list');
+  if (!list) return;
+  const entries = Object.entries(_cityProgressData);
+  list.innerHTML = entries.map(([name, data]) => {
+    const statusIcon = data.status === 'done' ? '✅' : data.status === 'skipped' ? '⏭' : '⏳';
+    const barColor = data.status === 'done' ? '#4caf50' : data.status === 'skipped' ? '#ff9800' : '#2196f3';
+    return `<div style="display:flex;align-items:center;gap:6px;min-width:180px">
+      <span style="font-size:12px">${statusIcon}</span>
+      <span style="font-weight:600;color:#333;font-size:11px;min-width:80px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${name}">${name}</span>
+      <div style="flex:1;height:6px;background:#e0e0e0;border-radius:3px;min-width:60px;max-width:120px">
+        <div style="height:100%;width:${data.pct}%;background:${barColor};border-radius:3px;transition:width 0.3s"></div>
+      </div>
+      <span style="font-size:10px;color:#666;min-width:30px;text-align:right">${data.found > 0 ? data.found + ' найд.' : data.pct + '%'}</span>
+    </div>`;
+  }).join('');
+}
 
 // ═══════════════════════════════════════════
 //  Checkbox styling
@@ -291,6 +334,10 @@ function showTab(name) {
   document.getElementById('p-' + name).classList.add('active');
   if (name === 'map' && allResults.length && !mapInited) initMap();
   if (name === 'map' && leafMap) setTimeout(() => leafMap.invalidateSize(), 50);
+  // Load history when switching to history tab
+  if (name === 'history') {
+    loadHistory();
+  }
   // Re-render stats when switching to stats tab (fixes empty stats panel)
   if (name === 'stats' && allResults.length) {
     const elapsed = (Date.now() - startTime) / 1000;
@@ -355,6 +402,10 @@ function handleProgress(raw) {
     const lsStage = document.getElementById('ls-stage');
     if (lsStage) lsStage.textContent = name;
     _lastCompletedCityIdx = idx;
+    // Init multi-city progress
+    if (total > 1) initCityProgress(total);
+    _currentCityName = name;
+    updateCityProgress(name, 0, 0, 'running');
     return;
   }
   if (parts.length >= 2) {
@@ -385,6 +436,11 @@ function handleProgress(raw) {
     if (lsFound) lsFound.textContent = found;
     const lsStage = document.getElementById('ls-stage');
     if (lsStage) lsStage.textContent = stage ? `«${stage}» · ${cur} из ${tot}` : `${cur} из ${tot}`;
+
+    // Update city-specific progress
+    if (_currentCityName) {
+      updateCityProgress(_currentCityName, pct, found, 'running');
+    }
   }
 }
 
@@ -549,6 +605,8 @@ function handleCityDone(raw) {
       ? `${icon} Город ${idx}/${total}: ${name} — пропущен (${records} записей)`
       : `${icon} Город ${idx}/${total}: ${name} — завершён (${records} записей)`;
     appendLog(status === 'skipped' ? 'ok' : 'info', label);
+    // Update city progress to completed
+    updateCityProgress(name, 100, records, status);
     // Play sound for city completion
     if (notificationsEnabled && Notification && Notification.permission === 'granted') {
       playCityDoneSound(name, idx, total);
@@ -1854,3 +1912,93 @@ function showUpdateBanner(newVer, changelog, url) {
     if (name === 'sender') loadSenderFiles();
   };
 })();
+
+// ═══════════════════════════════════════════
+//  Search History
+// ═══════════════════════════════════════════
+function loadHistory() {
+  const el = document.getElementById('history-list');
+  if (!el) return;
+  el.innerHTML = '<div class="no-data">Загрузка...</div>';
+
+  fetch('/history')
+    .then(r => r.json())
+    .then(data => {
+      const history = data.history || [];
+      const stats = data.stats || {};
+      if (!history.length) {
+        el.innerHTML = '<div class="no-data">История пуста</div>';
+        return;
+      }
+      el.innerHTML = `
+        <div style="margin-bottom:12px;font-size:12px;color:#666">
+          Всего поисков: ${stats.total} · Найдено записей: ${stats.total_results} · Общее время: ${Math.round(stats.total_time / 60)}мин
+        </div>
+        ${history.map(h => renderHistoryEntry(h)).join('')}
+      `;
+    })
+    .catch(err => {
+      el.innerHTML = `<div class="no-data">Ошибка загрузки: ${err.message}</div>`;
+    });
+}
+
+function renderHistoryEntry(entry) {
+  const date = new Date(entry.timestamp * 1000);
+  const dateStr = date.toLocaleDateString('ru-RU') + ' ' + date.toLocaleTimeString('ru-RU', {hour: '2-digit', minute: '2-digit'});
+  const statusIcon = entry.status === 'completed' ? '✅' : entry.status === 'stopped' ? '⏹' : '❓';
+  const statusText = entry.status === 'completed' ? 'Завершён' : entry.status === 'stopped' ? 'Остановлен' : entry.status;
+  const elapsedMin = Math.round(entry.elapsed_sec / 60);
+  const elapsedSec = Math.round(entry.elapsed_sec % 60);
+  const timeStr = elapsedMin > 0 ? `${elapsedMin}м ${elapsedSec}с` : `${elapsedSec}с`;
+
+  return `
+    <div style="background:#f8fffe;border:1px solid #e0e8e5;border-radius:8px;padding:12px 16px;margin-bottom:8px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
+        <div style="flex:1">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+            <span style="font-size:14px">${statusIcon}</span>
+            <span style="font-weight:700;color:#333;font-size:13px">${entry.queries.join(', ')}</span>
+            <span style="font-size:11px;color:#888">${dateStr}</span>
+          </div>
+          <div style="font-size:12px;color:#555;margin-bottom:4px">
+            🏙 ${entry.cities.join(', ')} · 📊 ${entry.results_count} записей · ⏱ ${timeStr}
+          </div>
+          <div style="font-size:11px;color:#888">
+            Режим: ${entry.social_mode} · Статус: ${statusText}
+          </div>
+        </div>
+        <div style="display:flex;gap:6px;flex-shrink:0">
+          ${entry.files && entry.files.length ? entry.files.filter(f => !f.startsWith('_')).map(f =>
+            `<a href="/download/${encodeURIComponent(f)}" download style="padding:4px 8px;background:#e8f5e9;color:#2e7d32;border-radius:4px;text-decoration:none;font-size:11px;font-weight:600">📥 ${f.split('_').pop()}</a>`
+          ).join('') : ''}
+          <button onclick="rerunSearch('${entry.run_id}')" style="padding:4px 8px;background:#2196f3;color:white;border:none;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600">🔄 Повтор</button>
+          <button onclick="deleteHistory('${entry.run_id}')" style="padding:4px 8px;background:#f44336;color:white;border:none;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600">🗑</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function rerunSearch(runId) {
+  fetch(`/history/${runId}`)
+    .then(r => r.json())
+    .then(entry => {
+      // Populate form with historical parameters
+      document.getElementById('f-queries').value = entry.queries.join('\n');
+      // Set cities
+      selectedCities = [...entry.cities];
+      renderCityTags();
+      // Set social mode
+      setSocialMode(entry.social_mode || 'all');
+      // Switch to log tab and start
+      showTab('log');
+      startRun();
+    })
+    .catch(err => alert('Ошибка: ' + err.message));
+}
+
+function deleteHistory(runId) {
+  if (!confirm('Удалить эту запись из истории?')) return;
+  fetch(`/history/${runId}`, { method: 'DELETE' })
+    .then(() => loadHistory())
+    .catch(() => {});
+}
