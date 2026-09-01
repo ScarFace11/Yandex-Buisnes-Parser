@@ -1,6 +1,21 @@
-flask>=3.0
+# ══════════════════════════════════════════════════════════════
+#  Yandex Business Parser — Dependencies
+# ══════════════════════════════════════════════════════════════
+
+# Core
+Flask>=3.0
+httpx[http2]>=0.27
 requests>=2.31
-tqdm>=4.66
-colorama>=0.4.6
+tqdm>=4.65
+colorama>=0.4
+
+# Excel export
 openpyxl>=3.1
-folium>=0.16
+
+# Maps (HTML)
+folium>=0.15
+
+# Geocoding (built-in, uses httpx)
+
+# Dev / Testing
+# pytest>=7.0

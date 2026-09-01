@@ -83,32 +83,36 @@ def _next_proxy() -> str | None:
 
 
 def _make_client(proxy: str | None = None) -> httpx.Client:
-    """Create an httpx client with HTTP/2 support.
+    """Create an httpx client with HTTP/2 support (graceful fallback).
 
     Each client maintains its own connection pool.  With HTTP/2, multiple
-    concurrent requests are multiplexed over a single TCP+TLS connection,
-    eliminating the ~500ms handshake overhead per request.
+    concurrent requests are multiplexed over a single TCP+TLS connection.
+    Falls back to HTTP/1.1 if the h2 package is not installed.
     """
-    transport_kwargs = {
-        "http2": True,
-        "limits": httpx.Limits(
-            max_connections=20,
-            max_keepalive_connections=10,
-            keepalive_expiry=30,
-        ),
-    }
-    if proxy:
-        transport_kwargs["proxy"] = proxy
-
-    return httpx.Client(
-        **transport_kwargs,
-        timeout=httpx.Timeout(connect=8, read=20, write=8, pool=5),
-        headers={
-            "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Referer": "https://yandex.ru/maps/",
-        },
-        follow_redirects=True,
+    limits = httpx.Limits(
+        max_connections=20,
+        max_keepalive_connections=10,
+        keepalive_expiry=30,
     )
+    timeout = httpx.Timeout(connect=8, read=20, write=8, pool=5)
+    headers = {
+        "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Referer": "https://yandex.ru/maps/",
+    }
+    kwargs = dict(
+        timeout=timeout,
+        headers=headers,
+        follow_redirects=True,
+        limits=limits,
+    )
+    if proxy:
+        kwargs["proxy"] = proxy
+
+    # Try HTTP/2 first; fall back to HTTP/1.1 if h2 is not installed
+    try:
+        return httpx.Client(**kwargs, http2=True)
+    except ImportError:
+        return httpx.Client(**kwargs)
 
 
 # Client pool for proxy rotation: one client per proxy + one direct.
