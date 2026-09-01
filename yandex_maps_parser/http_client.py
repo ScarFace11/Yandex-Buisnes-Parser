@@ -111,15 +111,66 @@ def _make_client(proxy: str | None = None) -> httpx.Client:
     )
 
 
+# Client pool for proxy rotation: one client per proxy + one direct.
+# Round-robin between them to distribute requests across IPs.
+_client_pool: list[httpx.Client] = []
+_pool_lock = threading.Lock()
+_pool_index = 0
+
+
+def _init_client_pool() -> None:
+    """Initialize (or reinitialize) the client pool from state.PROXIES.
+
+    Called at the start of each run.  Creates one httpx client per proxy
+    plus one direct client (no proxy).  With N proxies, we get N+1 clients
+    that rotate via _next_client().
+    """
+    global _client_pool, _pool_index
+    with _pool_lock:
+        # Close old clients
+        for c in _client_pool:
+            try:
+                c.close()
+            except Exception:
+                pass
+        _client_pool = []
+        # Direct client (no proxy)
+        _client_pool.append(_make_client())
+        # One client per proxy
+        for proxy_url in state.PROXIES:
+            try:
+                _client_pool.append(_make_client(proxy_url))
+            except Exception:
+                pass
+        _pool_index = 0
+    state.syslog(f"client_pool: {len(_client_pool)} clients ({len(state.PROXIES)} proxies)")
+
+
+def _next_client() -> httpx.Client:
+    """Round-robin to the next client in the pool."""
+    global _pool_index
+    with _pool_lock:
+        if not _client_pool:
+            _client_pool.append(_make_client())
+        client = _client_pool[_pool_index % len(_client_pool)]
+        _pool_index += 1
+    return client
+
+
 # Shared client for single-threaded requests (search, geocoding)
 _main_client = _make_client()
 
 
 def _worker_client() -> httpx.Client:
-    """Return (or lazily create) the current thread's dedicated client."""
+    """Return (or lazily create) the current thread's dedicated client.
+
+    In proxy mode, returns the next client from the rotation pool.
+    In direct mode, returns a thread-local client.
+    """
+    if state.PROXIES:
+        return _next_client()
     if not hasattr(_local, "client"):
-        proxy = _next_proxy()
-        _local.client = _make_client(proxy)
+        _local.client = _make_client()
     return _local.client
 
 
@@ -323,7 +374,7 @@ def _get(
     timeout: int | tuple = (8, 20),
     allow_redirects: bool = True,
 ) -> httpx.Response | None:
-    s = session or _main_client
+    s = session or (_next_client() if state.PROXIES else _main_client)
     net_attempts    = 0
     rate_limit_hits = 0
     _stats_count_request(url)
