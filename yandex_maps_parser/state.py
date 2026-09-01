@@ -194,16 +194,22 @@ def _inc_found() -> None:
 
 
 def _emit_analytics_throttled(now: float) -> None:
-    """Emit real-time analytics event every _ANALYTICS_INTERVAL seconds."""
+    """Emit compact analytics summary every _ANALYTICS_INTERVAL seconds.
+    
+    Only writes a short one-line summary to syslog (file), NOT the full JSON.
+    The full analytics dict is served via the /analytics API endpoint.
+    """
     global _last_analytics_emit
     if now - _last_analytics_emit < _ANALYTICS_INTERVAL:
         return
     _last_analytics_emit = now
-    if _LOG_FN:
+    if _SYSLOG_FN:
         try:
             from .http_client import get_analytics
-            analytics = get_analytics()
-            _LOG_FN("analytics", str(analytics))
+            a = get_analytics()
+            _SYSLOG_FN(f"analytics: rps={a['rps_actual']}/{a['rps_target']:.0f} "
+                       f"lat={a['avg_latency']:.1f}s(p50={a['p50_latency']:.1f}s) "
+                       f"req={a['total_requests']} err={a['errors']} 429={a['rate_limits']}")
         except Exception:
             pass
 

@@ -25,9 +25,9 @@ _MAX_RATE_LIMIT_RETRIES = 8
 # Adaptive RPS: starts at MIN, increases by STEP every UP_INTERVAL
 # seconds when no 429 errors occur, drops by half on 429.
 _MIN_RPS = 10.0
-_MAX_RPS = 40.0
-_RPS_STEP = 5.0
-_RPS_UP_INTERVAL = 30  # seconds between auto-increments
+_MAX_RPS = 15.0  # conservative: Yandex throttles responses after ~10 concurrent requests
+_RPS_STEP = 2.0
+_RPS_UP_INTERVAL = 45  # slower ramp-up to avoid triggering anti-bot
 
 _current_rps: float = _MIN_RPS
 _rps_last_up: float = 0.0
@@ -35,25 +35,35 @@ _rps_lock = threading.Lock()
 
 
 def _get_rps() -> float:
-    """Return the current adaptive RPS limit."""
+    """Return the current adaptive RPS limit.
+
+    Auto-increases when no 429 errors and latency is healthy.
+    If p95 latency > 30s, we're already bottlenecked — no point increasing RPS.
+    """
     global _current_rps, _rps_last_up
     with _rps_lock:
         now = time.monotonic()
-        # Auto-increase if no rate limits for _RPS_UP_INTERVAL seconds
         if now - _rps_last_up >= _RPS_UP_INTERVAL and _current_rps < _MAX_RPS:
+            # Don't increase if latency is already high — Yandex is throttling us
+            with _latency_lock:
+                if _latency_window and len(_latency_window) >= 5:
+                    sorted_lat = sorted(_latency_window)
+                    p95 = sorted_lat[int(len(sorted_lat) * 0.95)]
+                    if p95 > 30.0:
+                        return _current_rps  # skip increase — too slow
             _current_rps = min(_current_rps + _RPS_STEP, _MAX_RPS)
             _rps_last_up = now
             state.syslog(f"rps_up: {_current_rps:.0f} RPS")
         return _current_rps
 
 
-def _rps_drop() -> None:
-    """Drop RPS by half on 429 error."""
+def _rps_drop(reason: str = "429") -> None:
+    """Drop RPS by half on rate limit or connection error."""
     global _current_rps, _rps_last_up
     with _rps_lock:
         _current_rps = max(_MIN_RPS, _current_rps / 2)
         _rps_last_up = time.monotonic()  # reset timer
-        state.syslog(f"rps_drop: {_current_rps:.0f} RPS (after 429)")
+        state.syslog(f"rps_drop: {_current_rps:.0f} RPS (reason={reason})")
 
 
 def _rps_reset() -> None:
@@ -508,6 +518,8 @@ def _get(
             net_attempts += 1
             _stats_add("retries")
             _stats_add("errors")
+            # Drop RPS on connection errors (SSL timeout = Yandex is throttling us)
+            _rps_drop(reason=f"error:{type(e).__name__}")
             state.syslog(f"http_error: {type(e).__name__}: {e}, url={url[:100]}, attempt={net_attempts}")
             state.warn(f"⚠ Сеть: {type(e).__name__} — повтор {net_attempts}/{state.RETRY_COUNT}")
             if net_attempts >= state.RETRY_COUNT:
