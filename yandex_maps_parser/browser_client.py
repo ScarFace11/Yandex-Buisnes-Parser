@@ -424,6 +424,30 @@ def fetch_page(url: str, timeout_ms: int = 30000, biz_id: str = "") -> str | Non
                 _stats["pages_error"] += 1
             state.syslog(f"browser_client: error fetching {url[:80]}: {type(e).__name__}: {e}")
 
+            # Return broken page to pool and create a fresh replacement
+            # so the next caller doesn't get a page in a bad state
+            if page is not None:
+                try:
+                    page.close()
+                except Exception:
+                    pass
+                page = None
+                # Create replacement context + page
+                try:
+                    if _browser is not None:
+                        ctx = _browser.new_context(
+                            locale="ru-RU",
+                            viewport={"width": 1400, "height": 900},
+                            user_agent=(
+                                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                "Chrome/125.0.0.0 Safari/537.36"
+                            ),
+                        )
+                        _page_pool.put_nowait(ctx.new_page())
+                except Exception:
+                    pass
+
             # On crash, try to restart browser
             if attempt < max_retries - 1:
                 state.syslog("browser_client: attempting restart...")

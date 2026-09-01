@@ -87,7 +87,7 @@ def cleanup_expired() -> int:
             if not fname.endswith(".html"):
                 continue
             fpath = os.path.join(_CACHE_DIR, fname)
-            if now - os.path.getmtime(fpath) > _TTL_EXPIRED:
+            if now - os.path.getmtime(fpath) > _TTL_SECONDS:
                 try:
                     os.remove(fpath)
                     removed += 1
@@ -96,7 +96,3 @@ def cleanup_expired() -> int:
     except Exception:
         pass
     return removed
-
-
-# Overwrite TTL for cleanup (keep longer than read TTL)
-_TTL_EXPIRED = _TTL_SECONDS

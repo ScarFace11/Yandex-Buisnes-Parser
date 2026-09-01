@@ -7,6 +7,7 @@ share a single TCP+TLS connection, reducing handshake overhead from
 """
 import threading
 import time
+from collections import deque
 
 import httpx
 
@@ -270,8 +271,7 @@ _stats = {
 }
 
 # Rolling latency window (last N requests)
-_latency_window: list[float] = []
-_latency_max = 200  # keep last 200 latencies
+_latency_window: deque[float] = deque(maxlen=200)
 _latency_lock = threading.Lock()
 
 # RPS calculation
@@ -307,9 +307,7 @@ def _record_latency(seconds: float) -> None:
     """Record a request latency for rolling average calculation."""
     global _rps_request_count
     with _latency_lock:
-        _latency_window.append(seconds)
-        if len(_latency_window) > _latency_max:
-            _latency_window.pop(0)
+        _latency_window.append(seconds)  # deque(maxlen=200) auto-evicts oldest
     with _stats_lock:
         _rps_request_count += 1
 
@@ -529,7 +527,11 @@ def _get(
 
 
 def _head(url: str, timeout: int = 10) -> int:
-    """HEAD-check a URL (used for social-link validation)."""
+    """HEAD-check a URL (used for social-link validation).
+
+    Uses the shared connection pool instead of creating a new client
+    per request — avoids connection leak and TLS handshake overhead.
+    """
     if state._STOP_EVENT and state._STOP_EVENT.is_set():
         return 0
     if state.is_skip_city():
@@ -538,16 +540,8 @@ def _head(url: str, timeout: int = 10) -> int:
         return 0
     _stats_count_request(url)
     try:
-        headers = {
-            "User-Agent": _next_ua(),
-            "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-        }
-        proxy = _next_proxy()
-        client_kwargs = {"http2": True, "timeout": httpx.Timeout(timeout), "headers": headers, "follow_redirects": True}
-        if proxy:
-            client_kwargs["proxy"] = proxy
-        with httpx.Client(**client_kwargs) as client:
-            r = client.head(url)
-            return r.status_code
+        s = _next_client() if state.PROXIES else _main_client
+        r = s.head(url, timeout=httpx.Timeout(timeout))
+        return r.status_code
     except Exception:
         return 0
