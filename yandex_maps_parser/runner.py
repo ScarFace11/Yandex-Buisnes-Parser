@@ -20,6 +20,7 @@ from yandex_maps_parser.checkpoint import (
 )
 from yandex_maps_parser.enrichment import collect_candidates, enrich
 from yandex_maps_parser.http_client import _worker_client, reset_stats, _init_client_pool
+from yandex_maps_parser.browser_client import init_browser as _init_browser, close_browser as _close_browser, is_available as _browser_ready
 from yandex_maps_parser.exporters import (
     _resolve, load_existing_urls, load_jsonl, dedupe_records,
     save_csv, save_json, save_excel, save_map,
@@ -369,6 +370,7 @@ def _apply_params(params: dict) -> None:
     state.FETCH_DETAIL    = bool(params.get("fetch_detail", True))
     state.SOCIAL_MODE      = params.get("social_mode", "all")
     state.MAX_CANDIDATES_PER_CITY = max(0, int(params.get("max_candidates", 200)))
+    state.USE_BROWSER    = bool(params.get("use_browser", True))
     # When user only wants businesses WITHOUT socials, skip expensive
     # detail-page fetching — we don't need social links at all.
     if state.SOCIAL_MODE == "without_socials":
@@ -461,6 +463,15 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None) -> list[str]
     _syslog(f"Фильтры: social_mode={state.SOCIAL_MODE}, min_rating={state.MIN_RATING}, min_reviews={state.MIN_REVIEWS}, retry={state.RETRY_COUNT}")
     _syslog(f"Вывод: excel={state.OUTPUT_EXCEL}, json={state.OUTPUT_JSON}, csv={state.OUTPUT_CSV}, map={state.OUTPUT_MAP}")
     _syslog(f"GRID: enabled={state.USE_GRID}, radius={state.GRID_RADIUS_KM}km, step={state.GRID_STEP_KM}km")
+
+    # Initialize browser pool for detail-page fetching (if enabled)
+    if state.USE_BROWSER and state.FETCH_DETAIL:
+        browser_ok = _init_browser(pool_size=min(state.MAX_WORKERS, 10))
+        if browser_ok:
+            _syslog("Browser pool: Playwright initialized — detail pages via browser")
+            _weblog("info", "  🌐 Режим: браузер (Playwright) для detail-страниц")
+        else:
+            _syslog("Browser pool: Playwright unavailable, fallback to httpx")
     # User-friendly config summary
     output_formats = [f for f in ['Excel', 'JSON', 'CSV', 'Карта'] if getattr(state, f'OUTPUT_{f.upper().replace("КАРТА", "MAP")}', False)]
     _weblog("info", f"  Поиск: {len(cities)} город(ов), запросы: {', '.join(state.SEARCH_QUERIES)}")
@@ -521,6 +532,11 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None) -> list[str]
             if city_files:
                 _weblog("ok", f"  📁 {city}: {', '.join(city_files)}")
     finally:
+        # Shut down browser pool
+        try:
+            _close_browser()
+        except Exception:
+            pass
         # Write final summary to file log
         if _file_logger:
             try:

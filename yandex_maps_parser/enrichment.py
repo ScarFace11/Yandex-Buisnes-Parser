@@ -21,6 +21,7 @@ from .extractors import (
 )
 from .exporters import record_key
 from . import state
+from . import browser_client
 
 # tqdm is not thread-safe: in CLI mode several search workers update the
 # shared search/detail progress bars concurrently, so every mutation is
@@ -70,7 +71,13 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
         # the detail page even when raw_socials=0.
         if state.FETCH_DETAIL and biz_id and len(socials) < 2:
             state.syslog(f"fetch_detail: biz_id={biz_id}, name={biz_name}, raw_socials={len(socials)}")
-            html = fetch_html(f"https://yandex.ru/maps/org/{biz_id}", biz_id=biz_id)
+            detail_url = f"https://yandex.ru/maps/org/{biz_id}"
+            # Try Playwright first (fast, no throttling), fallback to httpx
+            html = None
+            if state.USE_BROWSER and browser_client.is_available():
+                html = browser_client.fetch_page(detail_url)
+            if html is None:
+                html = fetch_html(detail_url, biz_id=biz_id)
             if html:
                 for k, v in _extract_from_json_blob(html).items():
                     socials.setdefault(k, v)

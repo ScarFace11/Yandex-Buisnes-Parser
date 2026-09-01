@@ -40,6 +40,7 @@ from config import (
     DELAY_MAX,
     MAX_PAGES,
     FETCH_DETAIL,
+    USE_BROWSER,
     MAX_CANDIDATES_PER_CITY,
     YANDEX_API_KEY,
     PROXIES,

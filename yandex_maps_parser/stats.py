@@ -24,6 +24,14 @@ def print_limit_stats() -> None:
         )
     if s["retries"]:
         state.info(f"    сетевых ретраев: {s['retries']}")
+    # Browser stats
+    try:
+        from .browser_client import get_stats as _bs
+        bs = _bs()
+        if bs["pages_fetched"] > 0:
+            state.info(f"    браузер: {bs['pages_fetched']} стр. ({bs['avg_time']:.1f}с/стр.) ошибок: {bs['pages_error']}")
+    except Exception:
+        pass
 
 
 def print_stats(records: list[dict]) -> None:
