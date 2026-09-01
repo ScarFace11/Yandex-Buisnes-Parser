@@ -15,6 +15,7 @@ from flask import Flask
 from routes.parser import bp as parser_bp
 from routes.sender import bp as sender_bp
 from routes.api   import bp as api_bp
+from routes.public_api import bp as public_api_bp
 
 
 def create_app() -> Flask:
@@ -28,6 +29,7 @@ def create_app() -> Flask:
     app.register_blueprint(parser_bp)
     app.register_blueprint(sender_bp)
     app.register_blueprint(api_bp)
+    app.register_blueprint(public_api_bp)
     return app
 
 
