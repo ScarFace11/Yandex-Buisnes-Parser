@@ -69,6 +69,10 @@ _last_inc_emit: float = 0.0
 # INC_EMIT_INTERVAL: minimum seconds between progress pings triggered by _inc_found
 _INC_EMIT_INTERVAL = 0.5
 
+# Analytics throttling: emit at most once per _ANALYTICS_INTERVAL seconds
+_last_analytics_emit: float = 0.0
+_ANALYTICS_INTERVAL = 5.0  # seconds
+
 # Cached progress values so _inc_found can emit a full progress event at any time
 _prog_cur: int = 0
 _prog_tot: int = 0
@@ -185,11 +189,28 @@ def _inc_found() -> None:
                 work_done = _prog_cur + _work_candidates_done
                 work_total = _prog_tot + _work_candidates_total
             _LOG_FN("progress", f"{work_done}/{work_total}/{_prog_stage}/{count}")
+            # Emit analytics every 5 seconds
+            _emit_analytics_throttled(now)
+
+
+def _emit_analytics_throttled(now: float) -> None:
+    """Emit real-time analytics event every _ANALYTICS_INTERVAL seconds."""
+    global _last_analytics_emit
+    if now - _last_analytics_emit < _ANALYTICS_INTERVAL:
+        return
+    _last_analytics_emit = now
+    if _LOG_FN:
+        try:
+            from .http_client import get_analytics
+            analytics = get_analytics()
+            _LOG_FN("analytics", str(analytics))
+        except Exception:
+            pass
 
 
 def _reset_found() -> None:
     """Reset found counter and cached progress state at the start of a new run."""
-    global _found_count, _prog_cur, _prog_tot, _prog_stage, _last_inc_emit
+    global _found_count, _prog_cur, _prog_tot, _prog_stage, _last_inc_emit, _last_analytics_emit
     global _work_candidates_total, _work_candidates_done
     with _found_lock:
         _found_count = 0
@@ -199,6 +220,7 @@ def _reset_found() -> None:
     _prog_tot = 0
     _prog_stage = ""
     _last_inc_emit = 0.0
+    _last_analytics_emit = 0.0
 
 
 def _emit_result(record: dict) -> None:

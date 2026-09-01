@@ -136,7 +136,23 @@ def _normalize_social_url(platform: str, url: str) -> str | None:
 # paces requests globally. The old per-thread sleep was redundant and
 # doubled the wall-clock time of the detail-fetch phase.
 
-def fetch_html(url: str, session=None) -> str:
+def fetch_html(url: str, session=None, biz_id: str = "") -> str:
+    """Fetch a detail page, with disk cache support.
+
+    If biz_id is provided, checks the disk cache first.  On cache hit,
+    returns the cached HTML without making an HTTP request.
+    """
+    # Try cache first
+    if biz_id:
+        try:
+            from .cache import get_cached
+            cached = get_cached(biz_id)
+            if cached:
+                state.syslog(f"cache_hit: biz_id={biz_id}")
+                return cached
+        except Exception:
+            pass
+
     with state._detail_semaphore:
         r = _get(url, session=session or _worker_client(), timeout=(8, 15))
     if not r or r.status_code != 200:
@@ -152,6 +168,13 @@ def fetch_html(url: str, session=None) -> str:
         except Exception:
             pass
         return ""
+    # Store in cache
+    if biz_id:
+        try:
+            from .cache import set_cached
+            set_cached(biz_id, text)
+        except Exception:
+            pass
     return text
 
 

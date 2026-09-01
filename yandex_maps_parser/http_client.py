@@ -244,7 +244,7 @@ def _cooldown_remaining() -> float:
         return max(0.0, _cooldown_until - time.monotonic())
 
 
-# ── Usage statistics ─────────────────────────────────────────
+# ── Usage statistics + real-time analytics ───────────────────
 _stats_lock = threading.Lock()
 _stats = {
     "requests": 0,
@@ -252,7 +252,17 @@ _stats = {
     "rate_limits": 0,
     "cooldown_seconds": 0.0,
     "retries": 0,
+    "errors": 0,
 }
+
+# Rolling latency window (last N requests)
+_latency_window: list[float] = []
+_latency_max = 200  # keep last 200 latencies
+_latency_lock = threading.Lock()
+
+# RPS calculation
+_rps_start_time: float = 0.0
+_rps_request_count: int = 0
 
 
 def _request_kind(url: str) -> str:
@@ -279,13 +289,65 @@ def _stats_count_request(url: str) -> None:
         _stats["by_kind"][kind] = _stats["by_kind"].get(kind, 0) + 1
 
 
+def _record_latency(seconds: float) -> None:
+    """Record a request latency for rolling average calculation."""
+    global _rps_request_count
+    with _latency_lock:
+        _latency_window.append(seconds)
+        if len(_latency_window) > _latency_max:
+            _latency_window.pop(0)
+    with _stats_lock:
+        _rps_request_count += 1
+
+
+def get_analytics() -> dict:
+    """Return real-time analytics for the web UI."""
+    global _rps_start_time
+    with _stats_lock:
+        total_requests = _stats["requests"]
+        errors = _stats["errors"]
+        rate_limits = _stats["rate_limits"]
+        retries = _stats["retries"]
+    with _latency_lock:
+        if _latency_window:
+            avg_latency = sum(_latency_window) / len(_latency_window)
+            p50 = sorted(_latency_window)[len(_latency_window) // 2]
+            p95 = sorted(_latency_window)[int(len(_latency_window) * 0.95)]
+        else:
+            avg_latency = p50 = p95 = 0.0
+    # Calculate actual RPS
+    now = time.monotonic()
+    if _rps_start_time > 0 and now > _rps_start_time:
+        elapsed = now - _rps_start_time
+        actual_rps = _rps_request_count / elapsed if elapsed > 0 else 0
+    else:
+        actual_rps = 0.0
+    return {
+        "rps_target": _get_rps(),
+        "rps_actual": round(actual_rps, 1),
+        "avg_latency": round(avg_latency, 2),
+        "p50_latency": round(p50, 2),
+        "p95_latency": round(p95, 2),
+        "total_requests": total_requests,
+        "errors": errors,
+        "rate_limits": rate_limits,
+        "retries": retries,
+    }
+
+
 def reset_stats() -> None:
+    global _rps_start_time, _rps_request_count
     with _stats_lock:
         _stats["requests"] = 0
         _stats["by_kind"] = {}
         _stats["rate_limits"] = 0
         _stats["cooldown_seconds"] = 0.0
         _stats["retries"] = 0
+        _stats["errors"] = 0
+    with _latency_lock:
+        _latency_window.clear()
+    _rps_start_time = time.monotonic()
+    _rps_request_count = 0
 
 
 def get_stats() -> dict:
@@ -388,10 +450,13 @@ def _get(
             return None
         try:
             state.syslog(f"http_get: {url[:80]}")
+            _t0 = time.monotonic()
             r = _abortable_get(s, url, params, timeout, allow_redirects,
                                state._STOP_EVENT, state._SKIP_CITY_EVENT)
+            _elapsed = time.monotonic() - _t0
+            _record_latency(_elapsed)
 
-            state.syslog(f"http_response: status={r.status_code}, url={url[:80]}")
+            state.syslog(f"http_response: status={r.status_code}, url={url[:80]}, latency={_elapsed:.1f}s")
             if r.status_code == 429:
                 rate_limit_hits += 1
                 _stats_add("rate_limits")
@@ -438,6 +503,7 @@ def _get(
         except (httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError, OSError) as e:
             net_attempts += 1
             _stats_add("retries")
+            _stats_add("errors")
             state.syslog(f"http_error: {type(e).__name__}: {e}, url={url[:100]}, attempt={net_attempts}")
             state.warn(f"⚠ Сеть: {type(e).__name__} — повтор {net_attempts}/{state.RETRY_COUNT}")
             if net_attempts >= state.RETRY_COUNT:

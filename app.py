@@ -42,5 +42,14 @@ try:
 except Exception:
     pass
 
+# Cleanup expired cache files on startup
+try:
+    from yandex_maps_parser.cache import cleanup_expired as _cache_cleanup
+    removed = _cache_cleanup()
+    if removed:
+        print(f"  🧹 Удалено {removed} устаревших кэш-файлов")
+except Exception:
+    pass
+
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=5000, debug=False)

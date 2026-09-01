@@ -561,9 +561,9 @@ function startSSE(runId) {
   evtSource = new EventSource(url);
   evtSource.onmessage = e => {
     const msg = JSON.parse(e.data);
-    if (msg.type === 'ping') return;
-    if (msg.type === 'log') {
+    if (msg.type === 'ping') return;      if (msg.type === 'log') {
       if (msg.level === 'progress') { handleProgress(msg.msg); return; }
+      if (msg.level === 'analytics') { /* analytics handled by renderStats */ return; }
       appendLog(msg.level, msg.msg);
     } else if (msg.type === 'result') {
       onLiveResult(msg.data);
@@ -1099,10 +1099,37 @@ function renderStats(data, elapsed, cityResults, skippedCities) {
   }
 
   const body = document.getElementById('stats-body');
-  body.innerHTML = `
+  // Fetch live analytics + cache stats
+  Promise.all([
+    fetch('/analytics').then(r=>r.json()).catch(()=>({})),
+    fetch('/cache/stats').then(r=>r.json()).catch(()=>({}))
+  ]).then(([a, c]) => {
+    const analyticsHtml = (a && a.total_requests) || (c && c.total) ? `
+    <div class="stat-section">
+      <h3>⚡ Аналитика</h3>
+      <div class="stat-cards">
+        ${a.total_requests ? `
+        <div class="stat-card"><div class="num">${a.rps_actual}</div><div class="lbl">RPS (факт.)</div></div>
+        <div class="stat-card"><div class="num">${a.rps_target}</div><div class="lbl">RPS (цель)</div></div>
+        <div class="stat-card"><div class="num">${a.avg_latency}с</div><div class="lbl">Среднее</div></div>
+        <div class="stat-card"><div class="num">${a.p50_latency}с</div><div class="lbl">P50</div></div>
+        <div class="stat-card"><div class="num">${a.p95_latency}с</div><div class="lbl">P95</div></div>
+        <div class="stat-card"><div class="num">${a.total_requests}</div><div class="lbl">Запросов</div></div>
+        <div class="stat-card"><div class="num">${a.errors}</div><div class="lbl">Ошибок</div></div>
+        <div class="stat-card"><div class="num">${a.rate_limits}</div><div class="lbl">429</div></div>
+        ` : ''}
+        ${c.valid ? `
+        <div class="stat-card"><div class="num">${c.valid}</div><div class="lbl">Кэш (активных)</div></div>
+        <div class="stat-card"><div class="num">${c.expired}</div><div class="lbl">Кэш (устаревших)</div></div>
+        ` : ''}
+      </div>
+    </div>` : '';
+    body.innerHTML = `
     <div class="stat-cards">${cards.map(c =>
       `<div class="stat-card"><div class="num">${c.num}</div><div class="lbl">${c.lbl}</div></div>`
     ).join('')}</div>
+
+    ${analyticsHtml}
 
     ${cityCardsHtml}
 
@@ -1130,6 +1157,7 @@ function renderStats(data, elapsed, cityResults, skippedCities) {
         </div>`).join('')}
     </div>` : ''}
   `;
+  }).catch(()=>{});
 }
 
 // ═══════════════════════════════════════════

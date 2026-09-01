@@ -70,7 +70,7 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
         # the detail page even when raw_socials=0.
         if state.FETCH_DETAIL and biz_id and len(socials) < 2:
             state.syslog(f"fetch_detail: biz_id={biz_id}, name={biz_name}, raw_socials={len(socials)}")
-            html = fetch_html(f"https://yandex.ru/maps/org/{biz_id}")
+            html = fetch_html(f"https://yandex.ru/maps/org/{biz_id}", biz_id=biz_id)
             if html:
                 for k, v in _extract_from_json_blob(html).items():
                     socials.setdefault(k, v)

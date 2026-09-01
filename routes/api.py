@@ -251,3 +251,23 @@ def download_log(filename):
     if not os.path.isfile(fpath):
         return jsonify({"error": "Log not found"}), 404
     return send_from_directory(LOGS_DIR, safe, as_attachment=True)
+
+
+@bp.route("/cache/stats")
+def cache_stats_route():
+    """Return cache statistics."""
+    try:
+        from yandex_maps_parser.cache import cache_stats
+        return jsonify(cache_stats())
+    except Exception:
+        return jsonify({"total": 0, "valid": 0, "expired": 0})
+
+
+@bp.route("/analytics")
+def analytics_route():
+    """Return real-time analytics."""
+    try:
+        from yandex_maps_parser.http_client import get_analytics
+        return jsonify(get_analytics())
+    except Exception:
+        return jsonify({})
