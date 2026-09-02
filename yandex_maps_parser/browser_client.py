@@ -53,6 +53,9 @@ _stats_lock = threading.Lock()
 _stats = {"pages_fetched": 0, "pages_error": 0, "total_time": 0.0,
           "cache_hits": 0, "cache_misses": 0, "restarts": 0}
 
+# Installation status (checked once, cached)
+_playwright_installed: bool | None = None  # None = not checked yet
+
 
 def _try_import_playwright():
     """Try to import playwright.sync_api. Returns module or None."""
@@ -340,6 +343,15 @@ def _restart_browser() -> bool:
             _browser = None
             _page_pool = None
             return False
+
+
+def is_installed() -> bool:
+    """Check if Playwright package is installed (cached after first check)."""
+    global _playwright_installed
+    if _playwright_installed is not None:
+        return _playwright_installed
+    _playwright_installed = _try_import_playwright() is not None
+    return _playwright_installed
 
 
 def is_available() -> bool:
