@@ -29,6 +29,22 @@ from . import cdp_client
 # guarded by this lock.
 _pbar_lock = threading.Lock()
 
+# Government institutions almost never have social media.
+# Skip detail fetch for these to save 30-120s per organization.
+_GOV_KEYWORDS = (
+    "поликлиника", "больница", "госпиталь", "клиническая",
+    "муниципальн", "государств", "федеральн", "районн",
+    "областн", "городск", "стоматологическ{}ое отделение",
+    "стоматологическое отделение",
+)
+
+def _is_government_institution(record: dict) -> bool:
+    """Check if a record is likely a government institution (no socials)."""
+    name = record.get("name", "").lower()
+    category = record.get("category", "").lower()
+    combined = name + " " + category
+    return any(kw in combined for kw in _GOV_KEYWORDS)
+
 # Adaptive concurrency semaphore: starts at MAX_WORKERS, dynamically reduced
 # when p95 latency is high to prevent the "death spiral" of all workers waiting.
 _concurrency_semaphore: threading.Semaphore | None = None
@@ -105,6 +121,10 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
         should_fetch = state.FETCH_DETAIL and biz_id and len(socials) < 2
         if should_fetch and len(socials) >= 2:
             should_fetch = False  # raw already has enough socials
+        # Skip government institutions in with_socials mode — they never have socials
+        if should_fetch and state.SOCIAL_MODE == "with_socials" and _is_government_institution(record):
+            state.syslog(f"skip_gov: {biz_name} (government institution)")
+            should_fetch = False
 
         # Adaptive concurrency: reduce slots when latency is high
         if should_fetch and _concurrency_semaphore:

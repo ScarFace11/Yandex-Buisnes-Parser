@@ -321,38 +321,47 @@ def init_browser(pool_size: int = 8) -> bool:
                 return True  # already running
 
             try:
-                # Find a free port if auto-detect
-                if _CDP_PORT == 0:
+                # Try up to 3 times with different ports
+                for port_attempt in range(3):
+                    # Find a free port
                     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                         s.bind(("", 0))
                         _base_port = s.getsockname()[1]
-                else:
-                    _base_port = _CDP_PORT
-                _proc = subprocess.Popen(
-                    [
-                        chrome_path,
-                        f"--remote-debugging-port={_base_port}",
-                        "--remote-allow-origins=*",
-                        "--headless=new",
-                        "--no-sandbox",
-                        "--disable-gpu",
-                        "--disable-dev-shm-usage",
-                        "--disable-features=VizDisplayCompositor",
-                        "about:blank",
-                    ],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
 
-                # Wait for Chrome to start
-                time.sleep(2)
+                    _proc = subprocess.Popen(
+                        [
+                            chrome_path,
+                            f"--remote-debugging-port={_base_port}",
+                            "--remote-allow-origins=*",
+                            "--headless=new",
+                            "--no-sandbox",
+                            "--disable-gpu",
+                            "--disable-dev-shm-usage",
+                            "--disable-features=VizDisplayCompositor",
+                            "about:blank",
+                        ],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
 
-                # Verify Chrome is responding
-                version = _cdp_get(_base_port, "/json/version")
-                if not version:
-                    state.warn("Chrome не отвечает на CDP порту.")
-                    _proc.terminate()
+                    # Wait for Chrome to start
+                    time.sleep(2)
+
+                    # Verify Chrome is responding
+                    version = _cdp_get(_base_port, "/json/version")
+                    if version:
+                        break  # Chrome is running
+
+                    # Port conflict or Chrome failed — kill and retry
+                    state.syslog(f"cdp_client: Chrome failed on port {_base_port}, retrying...")
+                    try:
+                        _proc.terminate()
+                    except Exception:
+                        pass
                     _proc = None
+                    time.sleep(1)
+                else:
+                    state.warn("Chrome не отвечает после 3 попыток.")
                     return False
 
                 state.syslog(f"cdp_client: Chrome started, version={version.get('Browser', '?')}")
@@ -429,9 +438,13 @@ def fetch_page(url: str, timeout_ms: int = 30000, biz_id: str = "") -> str | Non
                     return None
 
             # Navigate and get HTML
+            from .http_client import _stats_count_request, _record_latency
+            _stats_count_request(url)
+            t_req = time.monotonic()
             html = _cdp_navigate_and_get_html(
                 ws_url, url, timeout_s=timeout_ms / 1000
             )
+            _record_latency(time.monotonic() - t_req)
 
             with _stats_lock:
                 _stats["pages_fetched"] += 1
