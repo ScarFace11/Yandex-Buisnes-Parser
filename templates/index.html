@@ -299,8 +299,12 @@
         <div style="padding:16px">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
             <h3 style="margin:0;color:#333">История поисков</h3>
-            <button onclick="loadHistory()" style="padding:6px 12px;background:#2196f3;color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px">🔄 Обновить</button>
+            <div style="display:flex;gap:8px">
+              <button onclick="loadHistory()" style="padding:6px 12px;background:#2196f3;color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px">🔄 Обновить</button>
+              <button onclick="clearSeenStore()" title="Сбросить кэш бизнесов — повторно обработать все города" style="padding:6px 12px;background:#ff9800;color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px">🗑 Очистить кэш</button>
+            </div>
           </div>
+          <div id="seen-status" style="padding:8px 12px;background:#fff3e0;border-radius:6px;margin-bottom:12px;font-size:12px;color:#e65100;display:none"></div>
           <div id="history-list">
             <div class="no-data">Загрузка...</div>
           </div>

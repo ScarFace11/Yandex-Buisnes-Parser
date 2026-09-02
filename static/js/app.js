@@ -336,6 +336,7 @@ function showTab(name) {
   // Load history when switching to history tab
   if (name === 'history') {
     loadHistory();
+    loadSeenStatus();
   }
   // Re-render stats when switching to stats tab (fixes empty stats panel)
   if (name === 'stats' && allResults.length) {
@@ -2008,4 +2009,36 @@ function deleteHistory(runId) {
   fetch(`/history/${runId}`, { method: 'DELETE' })
     .then(() => loadHistory())
     .catch(() => {});
+}
+
+// ── Seen store management ────────────────────────
+function loadSeenStatus() {
+  fetch('/seen/status')
+    .then(r => r.json())
+    .then(data => {
+      const el = document.getElementById('seen-status');
+      if (!el) return;
+      if (data.count > 0) {
+        const date = data.saved_at ? new Date(data.saved_at).toLocaleString('ru-RU') : '';
+        el.style.display = 'block';
+        el.innerHTML = `📦 В кэше <b>${data.count}</b> бизнесов${date ? ' (обновлено: ' + date + ')' : ''}. Повторные запуски по тем же городам пропустят уже найденные.`;
+      } else {
+        el.style.display = 'none';
+      }
+    })
+    .catch(() => {});
+}
+
+function clearSeenStore() {
+  if (!confirm('Очистить кэш бизнесов? Все города будут обработаны заново.')) return;
+  fetch('/seen/clear', { method: 'POST' })
+    .then(r => r.json())
+    .then(data => {
+      if (data.ok) {
+        const el = document.getElementById('seen-status');
+        if (el) { el.style.display = 'none'; el.innerHTML = ''; }
+        alert(`Кэш очищен: удалено ${data.cleared} бизнесов. Теперь все города будут обработаны заново.`);
+      }
+    })
+    .catch(err => alert('Ошибка: ' + err.message));
 }

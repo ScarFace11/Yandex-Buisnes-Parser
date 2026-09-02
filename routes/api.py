@@ -311,3 +311,35 @@ def history_clear():
     from search_history import clear_history
     clear_history()
     return jsonify({"ok": True})
+
+
+@bp.route("/seen/clear", methods=["POST"])
+def seen_clear():
+    """Clear global _seen.json so previously processed businesses are re-scanned."""
+    seen_path = os.path.join(OUTPUT_DIR, "_seen.json")
+    if os.path.exists(seen_path):
+        try:
+            with open(seen_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            count = len(data.get("seen_urls", []))
+        except Exception:
+            count = 0
+        os.remove(seen_path)
+        return jsonify({"ok": True, "cleared": count})
+    return jsonify({"ok": True, "cleared": 0})
+
+
+@bp.route("/seen/status")
+def seen_status():
+    """Show how many businesses are in the global seen store."""
+    seen_path = os.path.join(OUTPUT_DIR, "_seen.json")
+    if os.path.exists(seen_path):
+        try:
+            with open(seen_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            count = len(data.get("seen_urls", []))
+            saved_at = data.get("saved_at", "unknown")
+            return jsonify({"count": count, "saved_at": saved_at})
+        except Exception:
+            pass
+    return jsonify({"count": 0, "saved_at": None})

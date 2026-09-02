@@ -296,9 +296,12 @@ def collect_candidates(
             break
 
         new_this_page = 0
+        filtered_websites = 0
+        deduped = 0
         for feat in features:
             rec = parse_feature(feat, query)
             if rec is None:
+                filtered_websites += 1
                 continue
             uid = (
                 rec.get("_biz_id")
@@ -308,10 +311,12 @@ def collect_candidates(
             if seen_lock:
                 with seen_lock:
                     if not uid or uid in seen_urls:
+                        deduped += 1
                         continue
                     seen_urls.add(uid)
             else:
                 if not uid or uid in seen_urls:
+                    deduped += 1
                     continue
                 seen_urls.add(uid)
             candidates.append(rec)
@@ -321,7 +326,7 @@ def collect_candidates(
         with _pbar_lock:
             pbar_search.update(len(features))
             pbar_search.set_postfix({"без сайта": len(candidates)})
-        state.syslog(f"  page {page + 1}: {len(features)} features, {new_this_page} new candidates, total={len(candidates)}")
+        state.syslog(f"  page {page + 1}: {len(features)} features, {new_this_page} new, {filtered_websites} had_website, {deduped} deduped, total={len(candidates)}")
 
         # Stop collecting if we hit the per-city candidate limit
         max_cand = getattr(state, 'MAX_CANDIDATES_PER_CITY', 0)
