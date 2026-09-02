@@ -47,6 +47,7 @@ _CACHE_DIR = None
 _CACHE_MAX_SIZE = 500  # max cached pages
 _cache_index: dict[str, float] = {}  # biz_id -> mtime
 _cache_lock = threading.Lock()
+_cache_last_cleanup: float = 0.0
 
 # Stats
 _stats_lock = threading.Lock()
@@ -153,6 +154,34 @@ def _cache_get(biz_id: str) -> str | None:
         return None
 
 
+def _cache_maybe_evict() -> None:
+    """Periodic cache eviction — only runs every 60s."""
+    global _cache_last_cleanup
+    now = time.time()
+    if now - _cache_last_cleanup < 60:
+        return
+    _cache_last_cleanup = now
+    with _cache_lock:
+        # Remove expired entries (>24h)
+        expired = [bid for bid, mt in _cache_index.items() if now - mt > 86400]
+        for bid in expired:
+            try:
+                (_CACHE_DIR / f"{bid}.html").unlink()
+            except Exception:
+                pass
+            _cache_index.pop(bid, None)
+        # Evict oldest if over limit
+        if len(_cache_index) > _CACHE_MAX_SIZE:
+            excess = len(_cache_index) - _CACHE_MAX_SIZE
+            oldest = sorted(_cache_index.items(), key=lambda x: x[1])[:excess]
+            for old_id, _ in oldest:
+                try:
+                    (_CACHE_DIR / f"{old_id}.html").unlink()
+                except Exception:
+                    pass
+                _cache_index.pop(old_id, None)
+
+
 def _cache_set(biz_id: str, html: str) -> None:
     """Save HTML to disk cache."""
     if not biz_id:
@@ -164,18 +193,9 @@ def _cache_set(biz_id: str, html: str) -> None:
         path.write_text(html, encoding="utf-8")
         with _cache_lock:
             _cache_index[biz_id] = time.time()
-            # Evict old entries if cache is too large
-            if len(_cache_index) > _CACHE_MAX_SIZE:
-                oldest = sorted(_cache_index.items(), key=lambda x: x[1])
-                for old_id, _ in oldest[:len(_cache_index) - _CACHE_MAX_SIZE]:
-                    old_path = _CACHE_DIR / f"{old_id}.html"
-                    try:
-                        old_path.unlink()
-                    except Exception:
-                        pass
-                    _cache_index.pop(old_id, None)
     except Exception:
         pass
+    _cache_maybe_evict()
 
 
 def _test_playwright_in_subprocess() -> bool:

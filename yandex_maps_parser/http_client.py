@@ -46,12 +46,9 @@ def _get_rps() -> float:
         now = time.monotonic()
         if now - _rps_last_up >= _RPS_UP_INTERVAL and _current_rps < _MAX_RPS:
             # Don't increase if latency is already high — Yandex is throttling us
-            with _latency_lock:
-                if _latency_window and len(_latency_window) >= 5:
-                    sorted_lat = sorted(_latency_window)
-                    p95 = sorted_lat[int(len(sorted_lat) * 0.95)]
-                    if p95 > 30.0:
-                        return _current_rps  # skip increase — too slow
+            _, _, p95 = _get_latency_stats()
+            if p95 > 30.0:
+                return _current_rps  # skip increase — too slow
             _current_rps = min(_current_rps + _RPS_STEP, _MAX_RPS)
             _rps_last_up = now
             state.syslog(f"rps_up: {_current_rps:.0f} RPS")
@@ -159,6 +156,19 @@ def _init_client_pool() -> None:
                 pass
         _pool_index = 0
     state.syslog(f"client_pool: {len(_client_pool)} clients ({len(state.PROXIES)} proxies)")
+
+
+def close_client_pool() -> None:
+    """Close all HTTP clients in the pool. Call at run end to free connections."""
+    global _client_pool, _pool_index
+    with _pool_lock:
+        for c in _client_pool:
+            try:
+                c.close()
+            except Exception:
+                pass
+        _client_pool = []
+        _pool_index = 0
 
 
 def _next_client() -> httpx.Client:
@@ -274,9 +284,12 @@ _stats = {
 _latency_window: deque[float] = deque(maxlen=200)
 _latency_lock = threading.Lock()
 
-# RPS calculation
-_rps_start_time: float = 0.0
-_rps_request_count: int = 0
+# Cached P95 latency — recalculated only when window changes
+_cached_p95: float = 0.0
+_cached_p50: float = 0.0
+_cached_avg: float = 0.0
+_latency_version: int = 0  # incremented on each append
+_latency_cache_version: int = 0  # last version we recomputed from
 
 
 def _request_kind(url: str) -> str:
@@ -305,11 +318,33 @@ def _stats_count_request(url: str) -> None:
 
 def _record_latency(seconds: float) -> None:
     """Record a request latency for rolling average calculation."""
-    global _rps_request_count
+    global _rps_request_count, _latency_version
     with _latency_lock:
         _latency_window.append(seconds)  # deque(maxlen=200) auto-evicts oldest
+        _latency_version += 1
     with _stats_lock:
         _rps_request_count += 1
+
+
+def _get_latency_stats() -> tuple[float, float, float]:
+    """Return (avg, p50, p95) from the rolling latency window.
+
+    Caches the computation — only recalculates when the window has changed
+    since the last call. Avoids O(n log n) sort on every request.
+    """
+    global _cached_avg, _cached_p50, _cached_p95, _latency_cache_version
+    with _latency_lock:
+        if _latency_version == _latency_cache_version and _latency_window:
+            return _cached_avg, _cached_p50, _cached_p95
+        if not _latency_window:
+            return 0.0, 0.0, 0.0
+        n = len(_latency_window)
+        _cached_avg = sum(_latency_window) / n
+        sorted_lat = sorted(_latency_window)
+        _cached_p50 = sorted_lat[n // 2]
+        _cached_p95 = sorted_lat[int(n * 0.95)]
+        _latency_cache_version = _latency_version
+    return _cached_avg, _cached_p50, _cached_p95
 
 
 def get_analytics() -> dict:
@@ -320,13 +355,7 @@ def get_analytics() -> dict:
         errors = _stats["errors"]
         rate_limits = _stats["rate_limits"]
         retries = _stats["retries"]
-    with _latency_lock:
-        if _latency_window:
-            avg_latency = sum(_latency_window) / len(_latency_window)
-            p50 = sorted(_latency_window)[len(_latency_window) // 2]
-            p95 = sorted(_latency_window)[int(len(_latency_window) * 0.95)]
-        else:
-            avg_latency = p50 = p95 = 0.0
+    avg_latency, p50, p95 = _get_latency_stats()
     # Calculate actual RPS
     now = time.monotonic()
     if _rps_start_time > 0 and now > _rps_start_time:
@@ -363,8 +392,21 @@ def reset_stats() -> None:
 
 
 def get_stats() -> dict:
+    """Return detailed request statistics with per-kind breakdown."""
     with _stats_lock:
-        return dict(_stats, by_kind=dict(_stats["by_kind"]))
+        stats = dict(_stats, by_kind=dict(_stats["by_kind"]))
+    # Add per-kind latency from the latency window
+    # Note: per-kind latency would require tracking kind alongside latency,
+    # which adds overhead. For now, aggregate stats suffice.
+    try:
+        import tracemalloc
+        current, peak = tracemalloc.get_traced_memory()
+        stats["memory_mb"] = round(current / 1024 / 1024, 1)
+        stats["memory_peak_mb"] = round(peak / 1024 / 1024, 1)
+    except Exception:
+        stats["memory_mb"] = 0
+        stats["memory_peak_mb"] = 0
+    return stats
 
 
 def _wait_for_token() -> bool:

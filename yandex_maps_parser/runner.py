@@ -32,6 +32,14 @@ from yandex_maps_parser.stats import print_stats, print_limit_stats
 
 colorama_init(autoreset=True)
 
+# Start memory tracking for analytics (if available)
+try:
+    import tracemalloc
+    if not tracemalloc.is_tracing():
+        tracemalloc.start()
+except ImportError:
+    pass
+
 
 def run() -> None:
     """
@@ -266,6 +274,12 @@ def run() -> None:
         pbar_search.close()
         pbar_detail.close()
         state._RESULT_FILE = None
+        # Close HTTP client pool to free connections
+        try:
+            from yandex_maps_parser.http_client import close_client_pool
+            close_client_pool()
+        except Exception:
+            pass
         if state._RESULT_HANDLE is not None:
             try:
                 state._RESULT_HANDLE.close()

@@ -92,14 +92,10 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
         # delay before each detail fetch to reduce concurrent load on Yandex.
         # This prevents the "death spiral" where all 10 workers wait 100s+ each.
         try:
-            from .http_client import _latency_window, _latency_lock
-            with _latency_lock:
-                if len(_latency_window) >= 10:
-                    sorted_lat = sorted(_latency_window)
-                    p95 = sorted_lat[int(len(sorted_lat) * 0.95)]
-                    if p95 > 60.0:
-                        # Reduce effective concurrency by adding delay
-                        time.sleep(min(3.0, (p95 - 30) / 30))
+            from .http_client import _get_latency_stats
+            _, _, p95 = _get_latency_stats()
+            if p95 > 60.0:
+                time.sleep(min(3.0, (p95 - 30) / 30))
         except Exception:
             pass
 
@@ -131,15 +127,12 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
         # This naturally reduces throughput without broken semaphore manipulation.
         if should_fetch and _concurrency_semaphore:
             try:
-                from .http_client import _latency_window, _latency_lock
-                with _latency_lock:
-                    if len(_latency_window) >= 10:
-                        sorted_lat = sorted(_latency_window)
-                        p95 = sorted_lat[int(len(sorted_lat) * 0.95)]
-                        if p95 > 60.0:
-                            delay = min(5.0, (p95 - 30) / 20)
-                            time.sleep(delay)
-                            state.syslog(f"throttle: sleep {delay:.1f}s (p95={p95:.0f}s)")
+                from .http_client import _get_latency_stats
+                _, _, p95 = _get_latency_stats()
+                if p95 > 60.0:
+                    delay = min(5.0, (p95 - 30) / 20)
+                    time.sleep(delay)
+                    state.syslog(f"throttle: sleep {delay:.1f}s (p95={p95:.0f}s)")
             except Exception:
                 pass
 
@@ -152,13 +145,19 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
             # Try browser first (fast, no throttling), fallback to httpx
             # Priority: Playwright > CDP > httpx
             html = None
+            _fetch_source = "none"
+            _fetch_t0 = time.monotonic()
             if state.USE_BROWSER:
                 if browser_client.is_available():
                     html = browser_client.fetch_page(detail_url, biz_id=biz_id)
+                    _fetch_source = "playwright"
                 elif cdp_client.is_available():
                     html = cdp_client.fetch_page(detail_url, biz_id=biz_id)
+                    _fetch_source = "cdp"
             if html is None:
                 html = fetch_html(detail_url, biz_id=biz_id)
+                _fetch_source = "httpx"
+            _fetch_elapsed = time.monotonic() - _fetch_t0
             if html:
                 for k, v in _extract_from_json_blob(html).items():
                     socials.setdefault(k, v)
@@ -169,7 +168,7 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
                     review_count = extract_reviews_count(html)
                     if review_count:
                         record["reviews"] = int(review_count)
-            state.syslog(f"fetch_detail done: {biz_name}, socials_after={list(socials.keys())}")
+            state.syslog(f"fetch_detail done: {biz_name}, socials_after={list(socials.keys())}, source={_fetch_source}, time={_fetch_elapsed:.1f}s")
             # Release concurrency slot
             if _concurrency_semaphore:
                 try:
@@ -252,6 +251,7 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
         if owns_pool:
             pool.shutdown(wait=False)
 
+    state.syslog(f"enrich_done: candidates={len(candidates)}, results={len(results)}, rate={len(results)/max(len(candidates),1)*100:.0f}%")
     return results
 
 
