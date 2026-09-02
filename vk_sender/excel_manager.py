@@ -25,7 +25,7 @@ def list_excel_files(output_dir: str = "output") -> list[str]:
         return []
     return sorted(
         f for f in os.listdir(output_dir)
-        if f.endswith(".xlsx") and not f.startswith("_")
+        if f.endswith(".xlsx") and not f.startswith("_") and not f.startswith("~$")
     )
 
 

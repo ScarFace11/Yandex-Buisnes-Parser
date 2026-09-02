@@ -101,7 +101,13 @@ def logs():
 
 @bp.route("/status")
 def status():
-    return jsonify(run_manager.status())
+    s = run_manager.status()
+    try:
+        from yandex_maps_parser.browser_client import is_available
+        s["playwright_available"] = is_available()
+    except Exception:
+        s["playwright_available"] = False
+    return jsonify(s)
 
 
 @bp.route("/runs")

@@ -28,6 +28,12 @@ from . import browser_client
 # guarded by this lock.
 _pbar_lock = threading.Lock()
 
+# Adaptive concurrency semaphore: starts at MAX_WORKERS, dynamically reduced
+# when p95 latency is high to prevent the "death spiral" of all workers waiting.
+_concurrency_semaphore: threading.Semaphore | None = None
+_semaphore_lock = threading.Lock()
+_effective_workers: int = 0
+
 
 def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None = None) -> list[dict]:
     """Fetch detail pages in parallel and attach social links to each record.
@@ -37,6 +43,12 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
     alive instead of rebuilding 20 threads per point.
     """
     results: list[dict] = []
+
+    # Initialize adaptive concurrency semaphore
+    global _concurrency_semaphore, _effective_workers
+    with _semaphore_lock:
+        _effective_workers = state.MAX_WORKERS
+        _concurrency_semaphore = threading.Semaphore(state.MAX_WORKERS)
 
     # Register candidate count for progress tracking
     if candidates:
@@ -56,6 +68,21 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
         socials: dict[str, str] = {}
         raw_json = json.dumps(raw, ensure_ascii=False)
 
+        # Adaptive throttling: when p95 latency is very high, add a small
+        # delay before each detail fetch to reduce concurrent load on Yandex.
+        # This prevents the "death spiral" where all 10 workers wait 100s+ each.
+        try:
+            from .http_client import _latency_window, _latency_lock
+            with _latency_lock:
+                if len(_latency_window) >= 10:
+                    sorted_lat = sorted(_latency_window)
+                    p95 = sorted_lat[int(len(sorted_lat) * 0.95)]
+                    if p95 > 60.0:
+                        # Reduce effective concurrency by adding delay
+                        time.sleep(min(3.0, (p95 - 30) / 30))
+        except Exception:
+            pass
+
         # The Search API payload sometimes already includes real social links.
         # Only real URLs count — no fabricated WhatsApp from phone numbers and
         # no Telegram from @mentions in context text.
@@ -69,7 +96,46 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
         # NOTE: Yandex Search API almost NEVER includes social links in raw
         # data — they are only on the detail page. So we must always fetch
         # the detail page even when raw_socials=0.
-        if state.FETCH_DETAIL and biz_id and len(socials) < 2:
+        #
+        # OPTIMIZATION: If social_mode is "with_socials" and the raw feature
+        # already has >= 2 social platforms, skip the expensive detail fetch.
+        # This avoids downloading 200KB HTML pages for businesses that already
+        # clearly have social media — saving ~50% of enrichment time.
+        should_fetch = state.FETCH_DETAIL and biz_id and len(socials) < 2
+        if should_fetch and len(socials) >= 2:
+            should_fetch = False  # raw already has enough socials
+
+        # Adaptive concurrency: reduce slots when latency is high
+        if should_fetch and _concurrency_semaphore:
+            try:
+                from .http_client import _latency_window, _latency_lock
+                with _latency_lock:
+                    if len(_latency_window) >= 10:
+                        sorted_lat = sorted(_latency_window)
+                        p95 = sorted_lat[int(len(sorted_lat) * 0.95)]
+                        target = max(2, state.MAX_WORKERS // max(1, int(p95 / 20)))
+                        if target < _effective_workers:
+                            # Release extra slots to reduce concurrency
+                            for _ in range(_effective_workers - target):
+                                try:
+                                    _concurrency_semaphore.release()
+                                except ValueError:
+                                    pass  # already at max
+                            _effective_workers = target
+                            state.syslog(f"concurrency_down: {target} workers (p95={p95:.0f}s)")
+                        elif target > _effective_workers and _effective_workers < state.MAX_WORKERS:
+                            # Re-acquire slots if latency improved
+                            for _ in range(min(target - _effective_workers, state.MAX_WORKERS - _effective_workers)):
+                                if _concurrency_semaphore.acquire(blocking=False):
+                                    _effective_workers += 1
+                            state.syslog(f"concurrency_up: {_effective_workers} workers (p95={p95:.0f}s)")
+            except Exception:
+                pass
+
+        if should_fetch:
+            # Acquire concurrency slot (blocks if all slots taken)
+            if _concurrency_semaphore:
+                _concurrency_semaphore.acquire()
             state.syslog(f"fetch_detail: biz_id={biz_id}, name={biz_name}, raw_socials={len(socials)}")
             detail_url = f"https://yandex.ru/maps/org/{biz_id}"
             # Try Playwright first (fast, no throttling), fallback to httpx
@@ -89,6 +155,12 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
                     if review_count:
                         record["reviews"] = int(review_count)
             state.syslog(f"fetch_detail done: {biz_name}, socials_after={list(socials.keys())}")
+            # Release concurrency slot
+            if _concurrency_semaphore:
+                try:
+                    _concurrency_semaphore.release()
+                except Exception:
+                    pass
 
         # Fallback: try aggregator page (with shorter timeout)
         if agg_url and len(socials) < 2:

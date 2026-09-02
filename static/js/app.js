@@ -1902,6 +1902,14 @@ function showUpdateBanner(newVer, changelog, url) {
   // Check for updates from GitHub
   checkForUpdates();
 
+  // Check Playwright availability
+  fetch('/status').then(r => r.json()).then(s => {
+    if (s.playwright_available === false) {
+      const el = document.getElementById('playwright-notice');
+      if (el) el.style.display = '';
+    }
+  }).catch(() => {});
+
   // Reload files list when switching to sender tab
   const _origShowTab = showTab;
   showTab = function(name) {

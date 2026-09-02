@@ -173,6 +173,12 @@
 
   <!-- RIGHT: Tabs -->
   <div class="right-col">
+    <!-- Playwright install notice -->
+    <div id="playwright-notice" class="playwright-notice" style="display:none">
+      ⚡ <b>Playwright не установлен</b> — detail-страницы загружаются медленнее.
+      <code>pip install playwright && playwright install chromium</code>
+      <button onclick="this.parentElement.style.display='none'">✕</button>
+    </div>
     <div id="onboarding-screen" class="onboarding">
       <div class="onboarding-inner">
         <div class="onboarding-mark">⌕</div>

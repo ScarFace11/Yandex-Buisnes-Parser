@@ -391,6 +391,7 @@ def _collect_run_files(started_at: float) -> list[str]:
                 os.path.isfile(fpath)
                 and os.path.getmtime(fpath) >= started_at
                 and not fname.startswith("_")
+                and not fname.startswith("~$")
                 and not fname.endswith(".checkpoint.json")
                 and not fname.endswith(".jsonl")
             ):

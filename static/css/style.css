@@ -266,6 +266,15 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
 #onboarding-screen{display:none}
 .right-col:not(.revealed) #onboarding-screen{display:flex;flex:1;min-height:520px}
 
+.playwright-notice{
+  background:#fff3cd;border:1px solid #ffc107;border-radius:var(--r);
+  padding:10px 16px;margin:0 0 8px;font-size:13px;display:flex;align-items:center;gap:8px;
+  flex-wrap:wrap;
+}
+.playwright-notice code{background:#f8f9fa;padding:2px 6px;border-radius:4px;font-size:12px}
+.playwright-notice button{background:none;border:none;cursor:pointer;font-size:16px;margin-left:auto;padding:0 4px}
+[data-theme="dark"] .playwright-notice{background:#2a2000;border-color:#806000}
+
 .onboarding{
   background:var(--card);border:1px solid var(--bdr);
   border-radius:var(--r);box-shadow:var(--sh);
