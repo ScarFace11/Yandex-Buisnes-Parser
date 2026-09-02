@@ -23,53 +23,12 @@ _local       = threading.local()
 
 _MAX_RATE_LIMIT_RETRIES = 8
 
-# Adaptive RPS: starts at MIN, increases by STEP every UP_INTERVAL
-# seconds when no 429 errors occur, drops by half on 429.
-_MIN_RPS = 10.0
-_MAX_RPS = 15.0  # conservative: Yandex throttles responses after ~10 concurrent requests
-_RPS_STEP = 2.0
-_RPS_UP_INTERVAL = 45  # slower ramp-up to avoid triggering anti-bot
-
-_current_rps: float = _MIN_RPS
-_rps_last_up: float = 0.0
-_rps_lock = threading.Lock()
-
-
-def _get_rps() -> float:
-    """Return the current adaptive RPS limit.
-
-    Auto-increases when no 429 errors and latency is healthy.
-    If p95 latency > 30s, we're already bottlenecked — no point increasing RPS.
-    """
-    global _current_rps, _rps_last_up
-    with _rps_lock:
-        now = time.monotonic()
-        if now - _rps_last_up >= _RPS_UP_INTERVAL and _current_rps < _MAX_RPS:
-            # Don't increase if latency is already high — Yandex is throttling us
-            _, _, p95 = _get_latency_stats()
-            if p95 > 30.0:
-                return _current_rps  # skip increase — too slow
-            _current_rps = min(_current_rps + _RPS_STEP, _MAX_RPS)
-            _rps_last_up = now
-            state.syslog(f"rps_up: {_current_rps:.0f} RPS")
-        return _current_rps
-
-
-def _rps_drop(reason: str = "429") -> None:
-    """Drop RPS by half on rate limit or connection error."""
-    global _current_rps, _rps_last_up
-    with _rps_lock:
-        _current_rps = max(_MIN_RPS, _current_rps / 2)
-        _rps_last_up = time.monotonic()  # reset timer
-        state.syslog(f"rps_drop: {_current_rps:.0f} RPS (reason={reason})")
-
-
-def _rps_reset() -> None:
-    """Reset RPS to minimum at the start of a new city."""
-    global _current_rps, _rps_last_up
-    with _rps_lock:
-        _current_rps = _MIN_RPS
-        _rps_last_up = time.monotonic()
+# Rate limiting policy imported from rate_limit module
+from .rate_limit import (
+    _get_rps, _rps_drop, _rps_reset,
+    _set_cooldown, _anti_bot_detected, _anti_bot_reset, _cooldown_remaining,
+    _wait_for_token, _interruptible_sleep,
+)
 
 
 def _next_ua() -> str:
@@ -200,73 +159,6 @@ def _worker_client() -> httpx.Client:
 
 
 # ── Global rate limiting ─────────────────────────────────────
-
-class _TokenBucket:
-    __slots__ = ("_capacity", "_tokens", "_lock", "_last")
-
-    def __init__(self, capacity: float) -> None:
-        self._capacity = max(1.0, capacity)
-        self._tokens = self._capacity
-        self._lock = threading.Lock()
-        self._last = time.monotonic()
-
-    def try_acquire(self, rate: float) -> float:
-        """
-        Consume one token if available; otherwise return the seconds to
-        wait for one (token not consumed). Thread-safe.
-        """
-        with self._lock:
-            now = time.monotonic()
-            self._tokens = min(self._capacity, self._tokens + (now - self._last) * rate)
-            self._last = now
-            if self._tokens >= 1.0:
-                self._tokens -= 1.0
-                return 0.0
-            return (1.0 - self._tokens) / max(rate, 1e-9)
-
-
-_token_bucket = _TokenBucket(capacity=64.0)
-
-_cooldown_until = 0.0
-_cooldown_lock  = threading.Lock()
-
-# Anti-bot backoff: increase delay after detecting anti-bot page
-_anti_bot_count = 0
-_anti_bot_lock  = threading.Lock()
-
-
-def _set_cooldown(seconds: float) -> None:
-    """Pause the whole pool for *seconds* (extends any existing cooldown)."""
-    global _cooldown_until
-    with _cooldown_lock:
-        _cooldown_until = max(_cooldown_until, time.monotonic() + seconds)
-
-
-def _anti_bot_detected() -> None:
-    """Called when an anti-bot page is detected.  Increases cooldown for
-    subsequent requests to avoid further triggers.
-    """
-    global _anti_bot_count, _cooldown_until
-    with _anti_bot_lock:
-        _anti_bot_count += 1
-        # Exponential backoff: 10s, 20s, 40s, capped at 120s
-        backoff = min(10 * (2 ** (_anti_bot_count - 1)), 120)
-    with _cooldown_lock:
-        _cooldown_until = max(_cooldown_until, time.monotonic() + backoff)
-    state.syslog(f"anti_bot_backoff: count={_anti_bot_count}, cooldown={backoff}s")
-    state.warn(f"⚠ Anti-bot обнаружен (#{_anti_bot_count}). Автопауза {backoff}с...")
-
-
-def _anti_bot_reset() -> None:
-    """Reset anti-bot counter at the start of a new city."""
-    global _anti_bot_count
-    with _anti_bot_lock:
-        _anti_bot_count = 0
-
-
-def _cooldown_remaining() -> float:
-    with _cooldown_lock:
-        return max(0.0, _cooldown_until - time.monotonic())
 
 
 # ── Usage statistics + real-time analytics ───────────────────
@@ -412,46 +304,6 @@ def get_stats() -> dict:
         stats["memory_peak_mb"] = 0
     return stats
 
-
-def _wait_for_token() -> bool:
-    """
-    Block until the token bucket grants a slot AND any 429 cooldown has
-    elapsed. Returns True if the wait was interrupted by a stop/skip request.
-    The rate is capped at _MAX_RPS to prevent 429 errors.
-    """
-    while True:
-        if state._STOP_EVENT and state._STOP_EVENT.is_set():
-            return True
-        if state.is_skip_city():
-            return True
-        wait = max(_token_bucket.try_acquire(_get_rps()), _cooldown_remaining())
-        if wait <= 0:
-            return False
-        if _interruptible_sleep(wait, quiet=True):
-            return True
-
-
-def _interruptible_sleep(seconds: float, quiet: bool = False) -> bool:
-    """
-    Wait *seconds*, checking stop_event and skip_event every second.
-    Returns True if interrupted (stop/skip was requested).
-    """
-    end = time.time() + seconds
-    reported: set[int] = set()
-    while True:
-        if state._STOP_EVENT and state._STOP_EVENT.is_set():
-            return True
-        if state.is_skip_city():
-            return True
-        remaining = end - time.time()
-        if remaining <= 0:
-            return False
-        if not quiet:
-            bucket = int(remaining // 10) * 10
-            if bucket > 0 and bucket not in reported:
-                reported.add(bucket)
-                state.warn(f"  ⏸ Автопауза — продолжим через ≈{bucket} сек…")
-        time.sleep(min(1.0, remaining))
 
 
 def _abortable_get(client, url, params, timeout, allow_redirects, stop_event, skip_event):
