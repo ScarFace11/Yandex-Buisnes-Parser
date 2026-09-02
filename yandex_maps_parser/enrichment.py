@@ -144,13 +144,15 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
             if state.is_skip_city():
                 return None
             # Acquire concurrency slot with timeout so stop can interrupt
+            _sem_acquired = False
             if _concurrency_semaphore:
                 acquired = _concurrency_semaphore.acquire(timeout=5)
                 if not acquired:
                     # Retry once with stop check
                     if state._STOP_EVENT and state._STOP_EVENT.is_set():
                         return None
-                    _concurrency_semaphore.acquire(timeout=5)
+                    acquired = _concurrency_semaphore.acquire(timeout=5)
+                _sem_acquired = acquired
             state.syslog(f"fetch_detail: biz_id={biz_id}, name={biz_name}, raw_socials={len(socials)}")
             detail_url = f"https://yandex.ru/maps/org/{biz_id}"
             # Try browser first (fast, no throttling), fallback to httpx
@@ -180,8 +182,8 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
                     if review_count:
                         record["reviews"] = int(review_count)
             state.syslog(f"fetch_detail done: {biz_name}, socials_after={list(socials.keys())}, source={_fetch_source}, time={_fetch_elapsed:.1f}s")
-            # Release concurrency slot
-            if _concurrency_semaphore:
+            # Release concurrency slot (only if acquired)
+            if _sem_acquired and _concurrency_semaphore:
                 try:
                     _concurrency_semaphore.release()
                 except Exception:

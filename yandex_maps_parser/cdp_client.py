@@ -429,9 +429,15 @@ def fetch_page(url: str, timeout_ms: int = 30000, biz_id: str = "") -> str | Non
         if state.is_skip_city():
             return None
         ws_url = None
+        _rate_acquired = False
         try:
             if _rate_semaphore:
-                _rate_semaphore.acquire(timeout=5)
+                if not _rate_semaphore.acquire(timeout=5):
+                    # Timeout — all tabs busy. Check stop before retrying.
+                    if state._STOP_EVENT and state._STOP_EVENT.is_set():
+                        return None
+                    continue
+                _rate_acquired = True
 
             try:
                 # Short timeout so stop can interrupt
@@ -485,11 +491,12 @@ def fetch_page(url: str, timeout_ms: int = 30000, biz_id: str = "") -> str | Non
                     pass
 
         finally:
-            if _rate_semaphore:
+            if _rate_acquired and _rate_semaphore:
                 try:
                     _rate_semaphore.release()
                 except Exception:
                     pass
+                _rate_acquired = False
             if ws_url and _tab_pool is not None:
                 try:
                     _tab_pool.put_nowait(ws_url)
