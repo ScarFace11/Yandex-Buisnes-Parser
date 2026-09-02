@@ -140,14 +140,16 @@ def _cdp_close_tab(port: int, tab_id: str) -> bool:
     return _cdp_put(port, f"/json/close/{tab_id}")
 
 
-def _cdp_navigate_and_get_html(ws_url: str, url: str, timeout_s: float = 30) -> str | None:
+def _cdp_navigate_and_get_html(ws_url: str, url: str, timeout_s: float = 40) -> str | None:
     """Navigate to URL via CDP WebSocket and return page HTML.
 
     Uses websocket-client for synchronous CDP communication.
+    Has a hard wall-clock deadline of timeout_s seconds.
     """
+    overall_deadline = time.monotonic() + timeout_s
     try:
         import websocket
-        ws = websocket.create_connection(ws_url, timeout=timeout_s)
+        ws = websocket.create_connection(ws_url, timeout=min(timeout_s, 10))
         try:
             # Navigate
             msg_id = 1
@@ -157,28 +159,35 @@ def _cdp_navigate_and_get_html(ws_url: str, url: str, timeout_s: float = 30) -> 
                 "params": {"url": url}
             }))
 
-            # Wait for loadEventFired or timeout
-            deadline = time.monotonic() + timeout_s
+            # Wait for loadEventFired or hard deadline
             loaded = False
-            while time.monotonic() < deadline:
+            while time.monotonic() < overall_deadline:
+                remaining = overall_deadline - time.monotonic()
+                if remaining <= 0:
+                    break
                 try:
+                    ws.settimeout(min(remaining, 5.0))
                     raw = ws.recv()
                     data = json.loads(raw)
                     if data.get("method") == "Page.loadEventFired":
                         loaded = True
                         break
-                    # Also accept Page.frameStoppedLoading
                     if data.get("method") == "Page.frameStoppedLoading":
                         loaded = True
                         break
                 except websocket.WebSocketTimeoutException:
-                    break
+                    # Check overall deadline before continuing
+                    if time.monotonic() >= overall_deadline:
+                        break
+                    continue
                 except Exception:
                     break
 
             if not loaded:
-                # Give JS a moment to render
-                time.sleep(1.5)
+                # Give JS a moment to render, but respect deadline
+                remaining = overall_deadline - time.monotonic()
+                if remaining > 0.5:
+                    time.sleep(min(1.5, remaining - 0.1))
 
             # Get HTML content
             msg_id += 1
@@ -188,10 +197,13 @@ def _cdp_navigate_and_get_html(ws_url: str, url: str, timeout_s: float = 30) -> 
                 "params": {"expression": "document.documentElement.outerHTML"}
             }))
 
-            # Read response
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline:
+            # Read response — must finish before overall deadline
+            while time.monotonic() < overall_deadline:
+                remaining = overall_deadline - time.monotonic()
+                if remaining <= 0:
+                    break
                 try:
+                    ws.settimeout(min(remaining, 5.0))
                     raw = ws.recv()
                     data = json.loads(raw)
                     if data.get("id") == msg_id:
@@ -405,7 +417,7 @@ def init_browser(pool_size: int = 8) -> bool:
                 return False
 
 
-def fetch_page(url: str, timeout_ms: int = 30000, biz_id: str = "") -> str | None:
+def fetch_page(url: str, timeout_ms: int = 40000, biz_id: str = "") -> str | None:
     """Fetch a page using Chrome CDP and return HTML."""
     if not is_available():
         return None

@@ -170,6 +170,34 @@ def run() -> None:
             )
             batch_thread.start()
 
+        def drain_batch() -> None:
+            """Wait for current enrichment batch and collect results."""
+            nonlocal batch_key, batch_thread
+            if batch_thread is not None:
+                batch_thread.join()
+                recs = batch_results.pop(batch_key, [])
+                query_records.extend(recs)
+                processed_keys.append(batch_key)
+                mark_progress(query)
+                batch_thread = None
+                batch_key = None
+
+        def join_prev_batch(prev_thread, prev_key) -> None:
+            """Join a specific previous batch thread and collect its results."""
+            if prev_thread is not None:
+                prev_thread.join()
+                recs = batch_results.pop(prev_key, [])
+                query_records.extend(recs)
+                processed_keys.append(prev_key)
+                mark_progress(query)
+
+        # Drain any leftover enrichment from previous city's last query
+        drain_batch()
+
+        # Track previous batch for pipelining
+        prev_batch_thread: threading.Thread | None = None
+        prev_batch_key: tuple | None = None
+
         for lat, lon in grid_points:
             if state._STOP_EVENT and state._STOP_EVENT.is_set():
                 break
@@ -208,21 +236,19 @@ def run() -> None:
                 found is not None and (found == 0 or new_candidates == 0)
             )
 
-            if batch_thread is not None:
-                batch_thread.join()
-                recs = batch_results.pop(batch_key, [])
-                query_records.extend(recs)
-                processed_keys.append(batch_key)
-                mark_progress(query)
-
+            # Start enrichment for THIS point
             start_batch(key, candidates)
 
-        if batch_thread is not None:
-            batch_thread.join()
-            recs = batch_results.pop(batch_key, [])
-            query_records.extend(recs)
-            processed_keys.append(batch_key)
-            mark_progress(query)
+            # Now wait for the PREVIOUS point's enrichment while we go back
+            # to the top of the loop and search the next point.
+            # This allows search-next-point and enrich-current-point to overlap.
+            join_prev_batch(prev_batch_thread, prev_batch_key)
+            prev_batch_thread = batch_thread
+            prev_batch_key = batch_key
+
+        # Wait for the final batch
+        join_prev_batch(prev_batch_thread, prev_batch_key)
+        drain_batch()
 
         state.info(f"  ✅ «{query}»: {len(query_records)} записей")
         state.syslog(f"query_done: query={query}, records={len(query_records)}")
