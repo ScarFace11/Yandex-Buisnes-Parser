@@ -423,14 +423,23 @@ def fetch_page(url: str, timeout_ms: int = 30000, biz_id: str = "") -> str | Non
     t0 = time.monotonic()
 
     for attempt in range(_MAX_RETRIES):
+        # Check stop before each attempt
+        if state._STOP_EVENT and state._STOP_EVENT.is_set():
+            return None
+        if state.is_skip_city():
+            return None
         ws_url = None
         try:
             if _rate_semaphore:
-                _rate_semaphore.acquire(timeout=60)
+                _rate_semaphore.acquire(timeout=5)
 
             try:
-                ws_url = _tab_pool.get(timeout=60)
+                # Short timeout so stop can interrupt
+                ws_url = _tab_pool.get(timeout=5)
             except queue.Empty:
+                # Check stop before retrying
+                if state._STOP_EVENT and state._STOP_EVENT.is_set():
+                    return None
                 state.syslog("cdp_client: no free tabs, waiting...")
                 continue
 

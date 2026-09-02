@@ -5,7 +5,8 @@ import json
 import random
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import concurrent.futures
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait as _future_wait
 from datetime import datetime
 
 from tqdm import tqdm
@@ -137,9 +138,19 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
                 pass
 
         if should_fetch:
-            # Acquire concurrency slot (blocks if all slots taken)
+            # Check stop before blocking on semaphore
+            if state._STOP_EVENT and state._STOP_EVENT.is_set():
+                return None
+            if state.is_skip_city():
+                return None
+            # Acquire concurrency slot with timeout so stop can interrupt
             if _concurrency_semaphore:
-                _concurrency_semaphore.acquire()
+                acquired = _concurrency_semaphore.acquire(timeout=5)
+                if not acquired:
+                    # Retry once with stop check
+                    if state._STOP_EVENT and state._STOP_EVENT.is_set():
+                        return None
+                    _concurrency_semaphore.acquire(timeout=5)
             state.syslog(f"fetch_detail: biz_id={biz_id}, name={biz_name}, raw_socials={len(socials)}")
             detail_url = f"https://yandex.ru/maps/org/{biz_id}"
             # Try browser first (fast, no throttling), fallback to httpx
@@ -234,19 +245,24 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
         pool = ThreadPoolExecutor(max_workers=state.MAX_WORKERS)
     try:
         futures = {pool.submit(process, r): r for r in candidates}
-        for fut in as_completed(futures):
-            # Fast abort: stop waiting for queued futures when skip/stop fires
+        pending = set(futures.keys())
+        while pending:
+            # Check stop every iteration
             if state.is_skip_city() or (state._STOP_EVENT and state._STOP_EVENT.is_set()):
-                for remaining in futures:
-                    remaining.cancel()
+                for f in pending:
+                    f.cancel()
                 break
-            try:
-                res = fut.result(timeout=60)
-                if res is not None:
-                    results.append(res)
-            except Exception:
-                with _pbar_lock:
-                    pbar.update(1)
+            # Use short timeout so stop checks happen frequently
+            done, pending = _future_wait(pending, timeout=5,
+                                          return_when=concurrent.futures.FIRST_COMPLETED)
+            for fut in done:
+                try:
+                    res = fut.result(timeout=0)
+                    if res is not None:
+                        results.append(res)
+                except Exception:
+                    with _pbar_lock:
+                        pbar.update(1)
     finally:
         if owns_pool:
             pool.shutdown(wait=False)
