@@ -61,8 +61,9 @@ def search_page(
 def parse_feature(feature: dict, query: str) -> dict | None:
     """
     Convert a GeoJSON feature from the Search API into a candidate record.
-    Returns None if the business should be skipped (has a real website, or
-    does not meet quality filters).
+    Returns None only if the business has no name or fails quality filters.
+    Websites are no longer filtered — social links are checked post-enrichment
+    on the Yandex Maps detail page.
     """
     from .extractors import _is_aggregator
 
@@ -76,11 +77,8 @@ def parse_feature(feature: dict, query: str) -> dict | None:
     raw_url    = meta.get("url", "").strip()
     aggregator = ""
 
-    if raw_url:
-        if _is_aggregator(raw_url):
-            aggregator = raw_url
-        else:
-            return None  # real website → skip
+    if raw_url and _is_aggregator(raw_url):
+        aggregator = raw_url
 
     rating_obj  = meta.get("rating") or {}
     rating_val  = float(rating_obj.get("score", 0) or 0) if isinstance(rating_obj, dict) else 0.0
