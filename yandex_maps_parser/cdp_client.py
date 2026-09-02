@@ -230,24 +230,8 @@ def _init_cache():
 
 
 def _cache_get(biz_id: str) -> str | None:
-    if not biz_id or _CACHE_DIR is None:
-        return None
-    path = _CACHE_DIR / f"{biz_id}.html"
-    with _cache_lock:
-        mtime = _cache_index.get(biz_id)
-        if mtime is None:
-            return None
-        if time.time() - mtime > 86400:
-            try:
-                path.unlink()
-            except Exception:
-                pass
-            _cache_index.pop(biz_id, None)
-            return None
-    try:
-        return path.read_text(encoding="utf-8")
-    except Exception:
-        return None
+    # Caching disabled — always return None
+    return None
 
 
 def _cache_maybe_evict():
@@ -279,16 +263,8 @@ def _cache_maybe_evict():
 
 
 def _cache_set(biz_id: str, html: str):
-    if not biz_id or _CACHE_DIR is None:
-        return
-    path = _CACHE_DIR / f"{biz_id}.html"
-    try:
-        path.write_text(html, encoding="utf-8")
-        with _cache_lock:
-            _cache_index[biz_id] = time.time()
-    except Exception:
-        pass
-    _cache_maybe_evict()
+    # Caching disabled — no-op
+    pass
 
 
 # ── Tab pool management ─────────────────────────────────────

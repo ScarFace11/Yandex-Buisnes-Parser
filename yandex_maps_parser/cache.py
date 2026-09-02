@@ -30,34 +30,17 @@ def _ensure_cache_dir() -> None:
 
 
 def get_cached(biz_id: str) -> str | None:
-    """Return cached HTML for biz_id, or None if not cached / expired."""
-    if not biz_id:
-        return None
-    path = os.path.join(_CACHE_DIR, f"{biz_id}.html")
-    try:
-        if not os.path.exists(path):
-            return None
-        mtime = os.path.getmtime(path)
-        if time.time() - mtime > _TTL_SECONDS:
-            return None  # expired
-        with open(path, "r", encoding="utf-8") as f:
-            return f.read()
-    except Exception:
-        return None
+    """Return cached HTML for biz_id, or None.
+
+    Caching is currently disabled — always returns None.
+    Re-enable by uncommenting the logic below.
+    """
+    return None
 
 
 def set_cached(biz_id: str, html: str) -> None:
-    """Store HTML in cache for biz_id."""
-    if not biz_id or not html:
-        return
-    _ensure_cache_dir()
-    path = os.path.join(_CACHE_DIR, f"{biz_id}.html")
-    try:
-        with _lock:
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(html)
-    except Exception:
-        pass
+    """No-op — caching disabled."""
+    pass
 
 
 def cache_stats() -> dict:
