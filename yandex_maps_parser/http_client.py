@@ -291,6 +291,10 @@ _cached_avg: float = 0.0
 _latency_version: int = 0  # incremented on each append
 _latency_cache_version: int = 0  # last version we recomputed from
 
+# RPS calculation
+_rps_start_time: float = 0.0
+_rps_request_count: int = 0
+
 
 def _request_kind(url: str) -> str:
     if "search-maps.yandex" in url:
