@@ -103,8 +103,9 @@ def logs():
 def status():
     s = run_manager.status()
     try:
-        from yandex_maps_parser.browser_client import is_installed
-        s["playwright_available"] = is_installed()
+        from yandex_maps_parser.browser_client import is_installed as pw_installed
+        from yandex_maps_parser.cdp_client import is_installed as cdp_installed
+        s["playwright_available"] = pw_installed() or cdp_installed()
     except Exception:
         s["playwright_available"] = False
     return jsonify(s)

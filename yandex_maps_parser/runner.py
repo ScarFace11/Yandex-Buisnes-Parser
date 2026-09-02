@@ -21,6 +21,7 @@ from yandex_maps_parser.checkpoint import (
 from yandex_maps_parser.enrichment import collect_candidates, enrich
 from yandex_maps_parser.http_client import _worker_client, reset_stats, _init_client_pool
 from yandex_maps_parser.browser_client import init_browser as _init_browser, close_browser as _close_browser, is_available as _browser_ready
+from yandex_maps_parser import cdp_client
 from yandex_maps_parser.exporters import (
     _resolve, load_existing_urls, load_jsonl, dedupe_records,
     save_csv, save_json, save_excel, save_map,
@@ -467,13 +468,20 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None) -> list[str]
     _syslog(f"GRID: enabled={state.USE_GRID}, radius={state.GRID_RADIUS_KM}km, step={state.GRID_STEP_KM}km")
 
     # Initialize browser pool for detail-page fetching (if enabled)
+    # Priority: Playwright > CDP (Chrome DevTools Protocol) > httpx
     if state.USE_BROWSER and state.FETCH_DETAIL:
         browser_ok = _init_browser(pool_size=min(state.MAX_WORKERS, 10))
         if browser_ok:
             _syslog("Browser pool: Playwright initialized — detail pages via browser")
             _weblog("info", "  🌐 Режим: браузер (Playwright) для detail-страниц")
         else:
-            _syslog("Browser pool: Playwright unavailable, fallback to httpx")
+            # Playwright failed — try CDP (works on Python 3.14)
+            cdp_ok = cdp_client.init_browser(pool_size=min(state.MAX_WORKERS, 10))
+            if cdp_ok:
+                _syslog("Browser pool: CDP initialized (Chrome DevTools Protocol)")
+                _weblog("info", "  🌐 Режим: браузер (Chrome CDP) для detail-страниц")
+            else:
+                _syslog("Browser pool: all browser options failed, fallback to httpx")
     # User-friendly config summary
     output_formats = [f for f in ['Excel', 'JSON', 'CSV', 'Карта'] if getattr(state, f'OUTPUT_{f.upper().replace("КАРТА", "MAP")}', False)]
     _weblog("info", f"  Поиск: {len(cities)} город(ов), запросы: {', '.join(state.SEARCH_QUERIES)}")
@@ -550,9 +558,13 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None) -> list[str]
             )
         except Exception:
             pass
-        # Shut down browser pool
+        # Shut down browser pool (Playwright + CDP)
         try:
             _close_browser()
+        except Exception:
+            pass
+        try:
+            cdp_client.close_browser()
         except Exception:
             pass
         # Write final summary to file log

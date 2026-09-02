@@ -22,6 +22,7 @@ from .extractors import (
 from .exporters import record_key
 from . import state
 from . import browser_client
+from . import cdp_client
 
 # tqdm is not thread-safe: in CLI mode several search workers update the
 # shared search/detail progress bars concurrently, so every mutation is
@@ -138,10 +139,14 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
                 _concurrency_semaphore.acquire()
             state.syslog(f"fetch_detail: biz_id={biz_id}, name={biz_name}, raw_socials={len(socials)}")
             detail_url = f"https://yandex.ru/maps/org/{biz_id}"
-            # Try Playwright first (fast, no throttling), fallback to httpx
+            # Try browser first (fast, no throttling), fallback to httpx
+            # Priority: Playwright > CDP > httpx
             html = None
-            if state.USE_BROWSER and browser_client.is_available():
-                html = browser_client.fetch_page(detail_url, biz_id=biz_id)
+            if state.USE_BROWSER:
+                if browser_client.is_available():
+                    html = browser_client.fetch_page(detail_url, biz_id=biz_id)
+                elif cdp_client.is_available():
+                    html = cdp_client.fetch_page(detail_url, biz_id=biz_id)
             if html is None:
                 html = fetch_html(detail_url, biz_id=biz_id)
             if html:
