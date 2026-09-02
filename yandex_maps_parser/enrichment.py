@@ -31,19 +31,22 @@ _pbar_lock = threading.Lock()
 
 # Government institutions almost never have social media.
 # Skip detail fetch for these to save 30-120s per organization.
-_GOV_KEYWORDS = (
-    "поликлиника", "больница", "госпиталь", "клиническая",
-    "муниципальн", "государств", "федеральн", "районн",
-    "областн", "городск", "стоматологическ{}ое отделение",
+# NOTE: Only check NAME — category can contain "поликлиника" for private clinics
+# (e.g. "Смайл" with category "Стоматологическая поликлиника" is PRIVATE).
+_GOV_NAME_KEYWORDS = (
+    "поликлиника", "больница", "госпиталь",
+    "муниципальн", "государств", "федеральн",
     "стоматологическое отделение",
 )
 
 def _is_government_institution(record: dict) -> bool:
-    """Check if a record is likely a government institution (no socials)."""
+    """Check if a record is likely a government institution (no socials).
+
+    Only checks the NAME — a private clinic named "Смайл" with category
+    "Стоматологическая поликлиника" should NOT be skipped.
+    """
     name = record.get("name", "").lower()
-    category = record.get("category", "").lower()
-    combined = name + " " + category
-    return any(kw in combined for kw in _GOV_KEYWORDS)
+    return any(kw in name for kw in _GOV_NAME_KEYWORDS)
 
 # Adaptive concurrency semaphore: starts at MAX_WORKERS, dynamically reduced
 # when p95 latency is high to prevent the "death spiral" of all workers waiting.
@@ -119,14 +122,13 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
         # This avoids downloading 200KB HTML pages for businesses that already
         # clearly have social media — saving ~50% of enrichment time.
         should_fetch = state.FETCH_DETAIL and biz_id and len(socials) < 2
-        if should_fetch and len(socials) >= 2:
-            should_fetch = False  # raw already has enough socials
         # Skip government institutions in with_socials mode — they never have socials
         if should_fetch and state.SOCIAL_MODE == "with_socials" and _is_government_institution(record):
             state.syslog(f"skip_gov: {biz_name} (government institution)")
             should_fetch = False
 
-        # Adaptive concurrency: reduce slots when latency is high
+        # Adaptive concurrency: sleep when latency is very high
+        # This naturally reduces throughput without broken semaphore manipulation.
         if should_fetch and _concurrency_semaphore:
             try:
                 from .http_client import _latency_window, _latency_lock
@@ -134,22 +136,10 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
                     if len(_latency_window) >= 10:
                         sorted_lat = sorted(_latency_window)
                         p95 = sorted_lat[int(len(sorted_lat) * 0.95)]
-                        target = max(2, state.MAX_WORKERS // max(1, int(p95 / 20)))
-                        if target < _effective_workers:
-                            # Release extra slots to reduce concurrency
-                            for _ in range(_effective_workers - target):
-                                try:
-                                    _concurrency_semaphore.release()
-                                except ValueError:
-                                    pass  # already at max
-                            _effective_workers = target
-                            state.syslog(f"concurrency_down: {target} workers (p95={p95:.0f}s)")
-                        elif target > _effective_workers and _effective_workers < state.MAX_WORKERS:
-                            # Re-acquire slots if latency improved
-                            for _ in range(min(target - _effective_workers, state.MAX_WORKERS - _effective_workers)):
-                                if _concurrency_semaphore.acquire(blocking=False):
-                                    _effective_workers += 1
-                            state.syslog(f"concurrency_up: {_effective_workers} workers (p95={p95:.0f}s)")
+                        if p95 > 60.0:
+                            delay = min(5.0, (p95 - 30) / 20)
+                            time.sleep(delay)
+                            state.syslog(f"throttle: sleep {delay:.1f}s (p95={p95:.0f}s)")
             except Exception:
                 pass
 

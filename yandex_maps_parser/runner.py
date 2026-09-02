@@ -476,7 +476,7 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None) -> list[str]
             _weblog("info", "  🌐 Режим: браузер (Playwright) для detail-страниц")
         else:
             # Playwright failed — try CDP (works on Python 3.14)
-            cdp_ok = cdp_client.init_browser(pool_size=min(state.MAX_WORKERS, 10))
+            cdp_ok = cdp_client.init_browser(pool_size=min(state.MAX_WORKERS, 20))
             if cdp_ok:
                 _syslog("Browser pool: CDP initialized (Chrome DevTools Protocol)")
                 _weblog("info", "  🌐 Режим: браузер (Chrome CDP) для detail-страниц")
