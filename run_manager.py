@@ -173,62 +173,22 @@ class RunManager:
                 stop_event = entry["stop_event"]
                 skip_event = entry["skip_event"]
                 files = _parser.run_web(params, _log_to_queue, stop_event, skip_event)
-                # If multiple cities, merge all city JSON files into a combined one
-                json_files = [f for f in files if f.endswith(".json") and not f.startswith("_")]
-                if len(json_files) > 1:
-                    combined = []
-                    for jf in json_files:
-                        try:
-                            fpath = os.path.join(OUTPUT_DIR, jf)
-                            with open(fpath, encoding="utf-8") as fh:
-                                combined.extend(json.load(fh))
-                        except Exception:
-                            pass
-                    if combined:
-                        combined_name = "_combined_results.json"
-                        combined_path = os.path.join(OUTPUT_DIR, combined_name)
-                        with open(combined_path, "w", encoding="utf-8") as fh:
-                            json.dump(combined, fh, ensure_ascii=False, indent=2)
-                        files.insert(0, combined_name)
-                # Always ensure a results JSON exists for the frontend to load.
-                # Check if any user-facing JSON already exists (not internal _ files).
-                user_json = [f for f in files if f.endswith(".json") and not f.startswith("_")]
-                if not user_json:
-                    # No user JSON — create an internal one for the frontend.
-                    all_records = []
-                    # Try reading from xlsx if available
-                    xlsx_files = [f for f in files if f.endswith(".xlsx")]
-                    if xlsx_files:
-                        try:
-                            import openpyxl
-                            xlsx_path = os.path.join(OUTPUT_DIR, xlsx_files[0])
-                            wb = openpyxl.load_workbook(xlsx_path, read_only=True)
-                            ws = wb.active
-                            headers = [str(c.value or "") for c in next(ws.iter_rows(max_row=1))]
-                            for row in ws.iter_rows(min_row=2, values_only=True):
-                                rec = {h: (str(v) if v is not None else "") for h, v in zip(headers, row)}
-                                all_records.append(rec)
-                            wb.close()
-                        except Exception:
-                            pass
-                    # Fallback: check if _combined_results.json exists
-                    if not all_records:
-                        combined_path = os.path.join(OUTPUT_DIR, "_combined_results.json")
-                        if os.path.exists(combined_path):
-                            try:
-                                with open(combined_path, encoding="utf-8") as fh:
-                                    all_records = json.load(fh)
-                            except Exception:
-                                pass
-                    if all_records:
-                        tmp_name = "_results_for_frontend.json"
-                        tmp_path = os.path.join(OUTPUT_DIR, tmp_name)
-                        with open(tmp_path, "w", encoding="utf-8") as fh:
-                            json.dump(all_records, fh, ensure_ascii=False, indent=2)
-                        files.insert(0, tmp_name)
+                # Build the frontend-friendly merged JSON (english keys, all
+                # cities) so the results table and stats render correctly even
+                # when only Excel output was requested. If per-city JSON files
+                # exist they are merged directly; otherwise xlsx is read back
+                # with header labels converted to english field keys.
+                try:
+                    from yandex_maps_parser.exporters import write_frontend_json
+                    ff = write_frontend_json(files, OUTPUT_DIR, params.get("cities"))
+                    if ff and ff not in files:
+                        files.insert(0, ff)
+                except Exception:
+                    pass
                 count = 0
+                # Prefer the merged frontend file; fall back to any user json
                 for f in files:
-                    if f.endswith(".json"):
+                    if f == "_results_for_frontend.json" or (f.endswith(".json") and not f.startswith("_")):
                         try:
                             with open(os.path.join(OUTPUT_DIR, f), encoding="utf-8") as jf:
                                 count = len(json.load(jf))
@@ -245,7 +205,7 @@ class RunManager:
                 # exit after seeing the sentinel, and the SSE endpoint will
                 # deliver the done message to the frontend.
                 # This is the ONLY place done is sent for normal completion.
-                skipped = getattr(_parser.state, '_SKIPPED_CITIES', [])
+                skipped = list(getattr(_parser.state, '_SKIPPED_CITIES', []))
                 mp_queue.put({"type": "done", "files": files, "count": count,
                               "stopped": stop_event.is_set(), "formats": fmts,
                               "skipped_cities": skipped})

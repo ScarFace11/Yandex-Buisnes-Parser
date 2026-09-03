@@ -19,6 +19,7 @@ let _lastCompletedCityIdx = 0;     // track last completed city for notification
 let _cityProgressData = {};        // {cityName: {total, found, status, pct}}
 let _totalCities = 0;              // total cities in current run
 let _currentCityName = '';         // name of city currently being processed
+let _lastSkippedCities = [];       // skipped cities of last run (for stats tab)
 
 // ═══════════════════════════════════════════
 //  Multi-city progress tracking
@@ -341,7 +342,7 @@ function showTab(name) {
   // Re-render stats when switching to stats tab (fixes empty stats panel)
   if (name === 'stats' && allResults.length) {
     const elapsed = (Date.now() - startTime) / 1000;
-    renderStats(allResults, elapsed);
+    renderStats(allResults, elapsed, _lastSkippedCities);
   }
 }
 
@@ -470,6 +471,23 @@ function getParams() {
   };
 }
 
+// Reset everything that belongs to one run (fresh display on new launch,
+// no leftovers from previous runs: city progress, live stats, results).
+function resetRunUI() {
+  _cityProgressData = {};
+  _totalCities = 0;
+  _currentCityName = '';
+  _lastCompletedCityIdx = 0;
+  const listEl = document.getElementById('city-progress-list');
+  if (listEl) listEl.innerHTML = '';
+  const cpEl = document.getElementById('city-progress');
+  if (cpEl) cpEl.style.display = 'none';
+  const lsNum = document.getElementById('ls-found-num');
+  if (lsNum) lsNum.textContent = '0';
+  const lsStage = document.getElementById('ls-stage');
+  if (lsStage) lsStage.textContent = '';
+}
+
 function startRun() {
   const params = getParams();
   if (!params.queries.length) { alert('Введите хотя бы один запрос'); return; }
@@ -487,7 +505,7 @@ function startRun() {
   mapInited = false; if (leafMap) { leafMap.remove(); leafMap = null; }
   document.getElementById('map-container').innerHTML = '';
 
-  _lastCompletedCityIdx = 0;
+  resetRunUI();
   requiredSocials.clear();
   initSocialNetCheckboxes();
   setStatus('running', '⏳ Выполняется');
@@ -711,99 +729,75 @@ function scheduleLiveRender() {
 function onRunDone(msg) {
   const stopped = msg.stopped;
   const skippedCities = msg.skipped_cities || [];
+  _lastSkippedCities = skippedCities;
   setStatus(stopped ? 'stopped' : 'done', stopped ? '⏹ Остановлено' : '✔ Готово');
   document.title = 'Яндекс.Карты — Парсер бизнесов';
   resetBtn();
   hideProgress();
   showDownloads(msg.files || [], msg.formats || []);
   const elapsed = (Date.now() - startTime) / 1000;
-  // Load results: prefer internal frontend file, then combined, then any JSON
-  const jf = (msg.files || []).find(f => f === '_results_for_frontend.json')
-    || (msg.files || []).find(f => f.endsWith('.json') && !f.startsWith('_'));
-  const cityFiles = (msg.files || []).filter(f => f.endsWith('.json') && !f.startsWith('_'));
-  // Always render stats from live-streamed data as immediate fallback
-  if (allResults.length) {
-    renderStats(allResults, elapsed, undefined, skippedCities);
-  }
-  if (jf) {
-    fetch('/results/' + encodeURIComponent(jf))
-      .then(r => r.json())
-      .then(data => {
-        // Only overwrite if server returned actual data; keep live-streamed otherwise
-        if (Array.isArray(data) && data.length > 0) {
-          allResults = data;
-        }
-        _resetTableBadge();
-        loadReviewed();
-        renderTable(allResults);
-        // Re-render stats with server-side data (may include all cities)
-        if (cityFiles.length > 1) {
-          _loadCityStats(cityFiles, elapsed, skippedCities);
-        } else {
-          renderStats(allResults, elapsed, undefined, skippedCities);
-        }
-        if (allResults.length) showTab('table');
-      })
-      .catch(() => {
-        // JSON fetch failed — use live-streamed results
-        _resetTableBadge();
-        renderTable(allResults);
-        renderStats(allResults, elapsed, undefined, skippedCities);
-        if (allResults.length) showTab('table');
-      });
-  } else {
-    _resetTableBadge();
-    // No JSON file — render stats from live-streamed results
-    if (allResults.length) {
-      renderStats(allResults, elapsed, undefined, skippedCities);
-      showTab('table');
-    }
-  }
-  // Compute filtered count for notification
-  const SOCIAL_KEYS = Object.keys(SOCIALS);
-  const filteredCount = allResults.filter(r => {
-    if (socialMode === 'with_socials') {
-      const hasAny = SOCIAL_KEYS.some(k => r[k]) || r.other_socials;
-      if (!hasAny) return false;
-    } else if (socialMode === 'without_socials') {
-      const hasAny = SOCIAL_KEYS.some(k => r[k]) || r.other_socials;
-      if (hasAny) return false;
-    }
-    if (requiredSocials.size > 0) {
-      if (![...requiredSocials].every(key => r[key])) return false;
-    }
-    return true;
-  }).length;
-  // Play completion sound + notification when enabled
-  if (!stopped && notificationsEnabled && Notification && Notification.permission === 'granted') {
-    playDoneSound();
-    // Note: per-city notifications are handled by handleCityDone()
-    const total = allResults.length;
-    const notifText = filteredCount === total
-      ? `Найдено ${total} компаний`
-      : `${filteredCount}/${total} компаний прошли фильтр`;
-    sendNotification('Поиск завершён', notifText);
-  }
-}
 
-// Load stats from individual city JSON files for per-city breakdown
-function _loadCityStats(cityFiles, elapsed, skippedCities) {
-  const cityResults = [];
-  let loaded = 0;
-  cityFiles.forEach(f => {
+  // Which files may carry full records (english keys): the internal merged
+  // frontend file plus any user-facing per-city JSON files.
+  const allFiles = msg.files || [];
+  const mergedFile = allFiles.find(f => f === '_results_for_frontend.json');
+  const cityFiles = allFiles.filter(f => f.endsWith('.json') && !f.startsWith('_'));
+  const candidates = mergedFile ? [mergedFile] : cityFiles;
+
+  const finalize = (data) => {
+    allResults = data;
+    _resetTableBadge();
+    loadReviewed();
+    renderTable(allResults);
+    if (allResults.length) {
+      renderStats(allResults, elapsed, skippedCities);
+      showTab('table');
+    } else {
+      // Completed with nothing found — replace the "waiting…" placeholder
+      document.getElementById('stats-body').innerHTML =
+        '<div class="no-data">Результатов не найдено. Измените запросы, города или фильтры.</div>';
+    }
+    // Notification / sound (only on clean completion)
+    if (!stopped && notificationsEnabled && Notification && Notification.permission === 'granted') {
+      playDoneSound();
+      sendNotification('Поиск завершён', `Найдено ${allResults.length} компаний`);
+    }
+  };
+
+  // Union the live-streamed records (may include a partially-finished city
+  // when the run was stopped) with anything the server wrote to disk, so a
+  // stop never makes the table emptier than what was already collected.
+  const liveFallback = Array.isArray(allResults) ? allResults.slice() : [];
+
+  const union = (a, b) => {
+    const seen = new Set();
+    return a.concat(b).filter(r => {
+      if (!r || typeof r !== 'object') return false;
+      const k = r.yandex_maps_url || (r.name + '|' + r.address);
+      if (!k || seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+  };
+
+  if (!candidates.length) {
+    // No JSON files at all (e.g. stopped before any city finished, or
+    // only Excel output) — live-streamed records are the source of truth.
+    finalize(liveFallback);
+    return;
+  }
+
+  Promise.all(candidates.map(f =>
     fetch('/results/' + encodeURIComponent(f))
       .then(r => r.json())
-      .then(data => {
-        cityResults.push({file: f, data: Array.isArray(data) ? data : []});
-      })
-      .catch(() => cityResults.push({file: f, data: []}))
-      .finally(() => {
-        loaded++;
-        if (loaded >= cityFiles.length) {
-          renderStats(allResults, elapsed, cityResults, skippedCities);
-        }
-      });
-  });
+      .catch(() => null)
+  )).then(arrays => {
+    let data = [];
+    arrays.forEach(a => {
+      if (Array.isArray(a) && a.length) data = data.concat(a);
+    });
+    finalize(union(liveFallback, data));
+  }).catch(() => finalize(liveFallback));
 }
 
 function resetBtn() {
@@ -1083,7 +1077,7 @@ function initMap() {
 // ═══════════════════════════════════════════
 const CAT_COLORS = ['#1A6B3C','#2980b9','#8e44ad','#c0392b','#d35400','#16a085','#2c3e50','#27ae60','#f39c12','#7f8c8d'];
 
-function renderStats(data, elapsed, cityResults, skippedCities) {
+function renderStats(data, elapsed, skippedCities) {
   if (!data.length) return;
   const total  = data.length;
   const withSo = data.filter(r => Object.keys(SOCIALS).some(p => r[p])).length;
@@ -1099,8 +1093,11 @@ function renderStats(data, elapsed, cityResults, skippedCities) {
     {num: dur,     lbl: 'Время'},
   ];
 
-  // Socials breakdown
-  const socialCounts = Object.keys(SOCIALS).map(p => ({
+  const socialKeys = Object.keys(SOCIALS);
+  const hasSocial = r => socialKeys.some(p => r[p]);
+
+  // Socials breakdown (overall, all cities)
+  const socialCounts = socialKeys.map(p => ({
     name: SLABELS[p], count: data.filter(r => r[p]).length, color: SOCIALS[p]
   })).filter(s => s.count > 0).sort((a,b) => b.count - a.count);
 
@@ -1112,35 +1109,37 @@ function renderStats(data, elapsed, cityResults, skippedCities) {
   const cats = Object.entries(catMap).sort((a,b)=>b[1]-a[1]).slice(0,10);
   const maxC = cats[0]?.[1] || 1;
 
-  // Per-city breakdown
-  let cityCardsHtml = '';
-  if (cityResults && cityResults.length > 1) {
-    // Sort by count desc
-    const sorted = cityResults.sort((a,b) => b.data.length - a.data.length);
-    const maxCityCount = sorted[0]?.data.length || 1;
-    cityCardsHtml = `<div class="stat-section"><h3>По городам</h3><div class="stat-city-grid">`;
-    sorted.forEach(cr => {
-      const cd = cr.data;
+  // Per-city breakdown — records carry a city stamp from the backend.
+  const byCity = {};
+  data.forEach(r => {
+    const c = (r.city || '').trim() || '—';
+    (byCity[c] = byCity[c] || []).push(r);
+  });
+  const cityNames = Object.keys(byCity).filter(c => c !== '—');
+  const cityCardsHtml = cityNames.length > 0 ? `<div class="stat-section"><h3>По городам</h3><div class="stat-city-grid">`
+    + cityNames.map(name => {
+      const cd = byCity[name];
       const cityTotal = cd.length;
-      const cityWithSo = cd.filter(r => Object.keys(SOCIALS).some(p => r[p])).length;
-      // Try to extract city name from filename: slug_YYYYMMDD_HHMMSS.json
-      const parts = cr.file.replace('.json', '').split('_');
-      // Remove timestamp (last 2 parts: date_time)
-      const nameParts = parts.slice(0, -2);
-      let cityName = nameParts.join(' ').replace(/_/g, ' ');
-      // Capitalize first letter of each word
-      cityName = cityName.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
-      const pct = Math.round(cityTotal / maxCityCount * 100);
-      cityCardsHtml += `<div class="stat-city-card">
-        <h4>${escapeHtml(cityName)}</h4>
-        <div class="bar-row" style="margin-bottom:8px"><div class="bar-track"><div class="bar-fill" style="width:${pct}%;background:var(--c)"></div></div><div class="bar-val">${cityTotal}</div></div>
+      const cityWithSo = cd.filter(hasSocial).length;
+      const citySocials = socialKeys
+        .map(p => ({p, count: cd.filter(r => r[p]).length}))
+        .filter(s => s.count > 0)
+        .sort((a,b) => b.count - a.count)
+        .slice(0, 6);
+      const chips = citySocials.length
+        ? `<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:3px">`
+          + citySocials.map(s => `<span style="background:${SOCIALS[s.p]};color:#fff;border-radius:10px;font-size:10px;padding:1px 6px;font-weight:600">${SLABELS[s.p]} ${s.count}</span>`).join('')
+          + `</div>`
+        : '';
+      return `<div class="stat-city-card">
+        <h4>${escapeHtml(name)}</h4>
         <div class="stat-mini-row"><span>Всего</span><span>${cityTotal}</span></div>
         <div class="stat-mini-row"><span>С соцсетями</span><span>${cityWithSo}</span></div>
         <div class="stat-mini-row"><span>Без соцсетей</span><span>${cityTotal - cityWithSo}</span></div>
+        ${chips}
       </div>`;
-    });
-    cityCardsHtml += `</div></div>`;
-  }
+    }).join('') + `</div></div>` : '';
+
 
   // Show skipped cities if any
   let skippedHtml = '';

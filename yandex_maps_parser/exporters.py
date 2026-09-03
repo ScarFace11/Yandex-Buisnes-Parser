@@ -125,6 +125,106 @@ def save_json(records: list[dict], path: str, append: bool) -> None:
         json.dump(existing + records, f, ensure_ascii=False, indent=2)
 
 
+# ── Frontend-friendly merged JSON ──────────────────────────────
+#
+# The web UI loads a single "_results_for_frontend.json" after a run so
+# the table / stats render even when the user only enabled Excel output.
+# Records must use ENGLISH field keys (name, category, vk, ...), not the
+# Russian Excel header labels, otherwise every cell renders as a dash.
+
+# Reverse map: Russian Excel header label -> english CSV_FIELDS key
+_LABEL_TO_FIELD = {label: field for field, label in HEADER_LABELS.items()}
+
+
+def _records_from_xlsx(path: str) -> list[dict]:
+    """Read records out of a parser xlsx with correct english keys."""
+    out: list[dict] = []
+    try:
+        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+        ws = wb.active
+        rows = ws.iter_rows(values_only=True)
+        header = [str(c or "").strip() for c in next(rows)]
+        fields = [_LABEL_TO_FIELD.get(h, h) for h in header]
+        for row in rows:
+            rec: dict = {}
+            for f, v in zip(fields, row):
+                if v is None:
+                    continue
+                if f == "reviewed":
+                    rec[f] = bool(v)
+                elif f == "reviews":
+                    try:
+                        rec[f] = int(v)
+                    except (TypeError, ValueError):
+                        rec[f] = v
+                else:
+                    rec[f] = str(v).strip() if not isinstance(v, (int, float)) else v
+            if rec.get("name") or rec.get("yandex_maps_url"):
+                out.append(rec)
+        wb.close()
+    except Exception:
+        pass
+    return out
+
+
+def write_frontend_json(files: list[str], out_dir: str, cities: list[str] | None = None) -> str | None:
+    """
+    Merge per-city JSON / xlsx outputs from a run into one frontend file.
+
+    Returns the new filename ("_results_for_frontend.json") or None when
+    there is nothing to merge. Records come from any user-facing .json files
+    first (they keep english keys + city); falls back to reading .xlsx
+    (headers are converted back to english keys) otherwise.
+    """
+    json_files = [f for f in files if f.endswith(".json") and not f.startswith("_")]
+    merged: list[dict] = []
+    if json_files:
+        for name in json_files:
+            try:
+                with open(os.path.join(out_dir, name), encoding="utf-8") as fh:
+                    data = json.load(fh)
+                if isinstance(data, list):
+                    merged.extend(data)
+            except Exception:
+                pass
+    else:
+        # City name per output file: filenames are "{slug}_{YYYYMMDD}_{HHMMSS}",
+        # where slug is the city name lowercased with non-word chars replaced
+        # by "_" (e.g. "саратов...", "ростов_на_дону..."). Map back to the
+        # real city name so per-city stats work even without JSON output.
+        city_by_slug: dict[str, str] = {}
+        if cities:
+            for c in cities:
+                if c:
+                    city_by_slug.setdefault(re.sub(r"[^\w]", "_", c).lower(), c)
+
+        def _city_from_fname(name: str) -> str:
+            base = name[:-5] if name.endswith(".xlsx") else name
+            # strip trailing timestamp "_YYYYMMDD_HHMMSS"
+            base = re.sub(r"_\d{8}_\d{6}$", "", base)
+            return city_by_slug.get(base, "") or city_by_slug.get(base.lower(), "")
+
+        xlsx_files = [f for f in files if f.endswith(".xlsx") and not f.startswith("~")]
+        for name in xlsx_files:
+            recs = _records_from_xlsx(os.path.join(out_dir, name))
+            city = _city_from_fname(name)
+            for rec in recs:
+                if city and not rec.get("city"):
+                    rec["city"] = city
+            merged.extend(recs)
+    if not merged:
+        return None
+    merged = dedupe_records(merged)
+    fname = "_results_for_frontend.json"
+    try:
+        with open(os.path.join(out_dir, fname), "w", encoding="utf-8") as fh:
+            json.dump(merged, fh, ensure_ascii=False, indent=2)
+        return fname
+    except Exception:
+        return None
+
+
+
 # ── Excel shared styles ──────────────────────────────────────
 
 _THIN        = Side(style="thin",   color="CCCCCC")

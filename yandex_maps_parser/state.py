@@ -239,6 +239,14 @@ def _emit_result(record: dict) -> None:
     start) and pass a JSON string.
     """
     import json as _json
+    # Stamp which city produced this record so the frontend can group
+    # stats both overall and per city (records may span several cities
+    # in one multi-city run).
+    try:
+        if CITY and not record.get("city"):
+            record["city"] = CITY
+    except Exception:
+        pass
     line = _json.dumps(record, ensure_ascii=False, default=str)
     if _RESULT_FILE:
         try:

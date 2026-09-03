@@ -618,7 +618,10 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None) -> list[str]
         state._SYSLOG_FN     = None
         state._TQDM_DISABLE  = False
         state._SKIP_CITY_EVENT = None
-        state._SKIPPED_CITIES  = []
+        # NOTE: _SKIPPED_CITIES intentionally NOT cleared here — callers
+        # (run_process / thread fallback) read it after run_web() returns to
+        # attach the skipped-city list to the "done" message. It is reset at
+        # the start of each run_web() invocation.
 
     return all_files
 
@@ -681,27 +684,20 @@ def run_process(params: dict, mp_queue, stop_file: str | None = None, skip_file:
 
     try:
         files = run_web(params, _q_log, stop_event, skip_event)
-        # If multiple cities, merge all JSON files into a combined one
-        # so the frontend can load all results at once for the map/stats.
-        json_files = [f for f in files if f.endswith(".json") and "_combined" not in f]
-        if len(json_files) > 1:
-            combined = []
-            for jf_name in json_files:
-                try:
-                    fpath = os.path.join(state.OUTPUT_DIR, jf_name)
-                    with open(fpath, encoding="utf-8") as fh:
-                        combined.extend(json.load(fh))
-                except Exception:
-                    pass
-            if combined:
-                combined_name = "_combined_results.json"
-                combined_path = os.path.join(state.OUTPUT_DIR, combined_name)
-                with open(combined_path, "w", encoding="utf-8") as fh:
-                    json.dump(combined, fh, ensure_ascii=False, indent=2)
-                files.insert(0, combined_name)
+        # Build the frontend-friendly merged JSON (english keys, all cities)
+        # so the results table and stats render correctly even when only
+        # Excel output was requested. Per-city JSON files are merged directly;
+        # otherwise xlsx is read back with header labels -> english keys.
+        try:
+            from .exporters import write_frontend_json
+            ff = write_frontend_json(files, state.OUTPUT_DIR, params.get("cities"))
+            if ff and ff not in files:
+                files.insert(0, ff)
+        except Exception:
+            pass
         count = 0
         for f in files:
-            if f.endswith(".json"):
+            if f == "_results_for_frontend.json" or (f.endswith(".json") and not f.startswith("_")):
                 try:
                     with open(os.path.join(state.OUTPUT_DIR, f), encoding="utf-8") as jf:
                         count = len(json.load(jf))
