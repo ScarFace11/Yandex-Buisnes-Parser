@@ -51,6 +51,13 @@ from config import (
 # and whether the frontend filters results by social media presence.
 SOCIAL_MODE = "all"
 
+# Optional output-quality filters (set from the web form).
+# COLLAPSE_CHAINS — merge records of the same business chain (same
+#   normalized name + overlapping phone/social links) into one row.
+# MIN_CONTACT — drop records with neither a phone nor any social link.
+COLLAPSE_CHAINS = False
+MIN_CONTACT = False
+
 # ── Runtime-only state ────────────────────────────────────────
 _LOG_FN = None           # callable(level, msg) set by run_web; None = CLI mode
 _SYSLOG_FN = None        # callable(msg) for file-only system traces (developer logs)

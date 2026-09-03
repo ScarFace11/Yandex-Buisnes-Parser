@@ -306,14 +306,22 @@ def get_stats() -> dict:
 
 
 
-def _abortable_get(client, url, params, timeout, allow_redirects, stop_event, skip_event):
+def _abortable_get(client, url, params, timeout, allow_redirects, stop_event, skip_event, total=None):
     """Run GET in a thread, abort if stop/skip is set during the request.
 
     This allows the search to respond to stop/skip within ~1 second
     even during a long HTTP request (which normally blocks for up to 20s).
+
+    total — optional wall-clock deadline in seconds for the WHOLE request.
+    The per-chunk httpx read timeout alone is not enough: Yandex can drip
+    a response for minutes while staying under the read timeout, which
+    burned 200-300s per page in production. When the deadline passes the
+    request is abandoned and a TimeoutException is raised (the retry loop
+    in _get() then handles it).
     """
     result = [None]  # mutable container for thread result
     error = [None]
+    deadline = time.monotonic() + total if total else None
 
     def _do_request():
         try:
@@ -326,13 +334,19 @@ def _abortable_get(client, url, params, timeout, allow_redirects, stop_event, sk
     t = threading.Thread(target=_do_request, daemon=True)
     t.start()
 
-    # Wait for request to complete OR for stop/skip signal
+    # Wait for request to complete OR for stop/skip signal OR total deadline
     while t.is_alive():
         t.join(timeout=0.5)  # check every 0.5s
         if stop_event and stop_event.is_set():
             return None  # stop requested — abort
         if skip_event and skip_event.is_set():
             return None  # skip requested — abort
+        if deadline is not None and time.monotonic() > deadline:
+            # Abandon the request thread (daemon — it finishes on its own)
+            error[0] = httpx.TimeoutException(
+                f"Total deadline {total}s exceeded: {url[:80]}"
+            )
+            break
 
     if error[0] is not None:
         raise error[0]
@@ -346,10 +360,19 @@ def _get(
     timeout: int | tuple = (8, 20),
     allow_redirects: bool = True,
 ) -> httpx.Response | None:
+    """GET with retries, rate limiting and stop/skip support.
+
+    timeout may be a plain number (all phases), a 2-tuple (connect, read)
+    or a 3-tuple (connect, read, total) where total is a hard wall-clock
+    deadline for the whole request (see _abortable_get).
+    """
     s = session or (_next_client() if state.PROXIES else _main_client)
     net_attempts    = 0
     rate_limit_hits = 0
     _stats_count_request(url)
+
+    # Optional 3rd element: total wall-clock deadline for the request
+    total = timeout[2] if isinstance(timeout, tuple) and len(timeout) >= 3 else None
 
     while True:
         if state._STOP_EVENT and state._STOP_EVENT.is_set():
@@ -362,7 +385,8 @@ def _get(
             state.syslog(f"http_get: {url[:80]}")
             _t0 = time.monotonic()
             r = _abortable_get(s, url, params, timeout, allow_redirects,
-                               state._STOP_EVENT, state._SKIP_CITY_EVENT)
+                               state._STOP_EVENT, state._SKIP_CITY_EVENT,
+                               total=total)
             _elapsed = time.monotonic() - _t0
             _record_latency(_elapsed)
 

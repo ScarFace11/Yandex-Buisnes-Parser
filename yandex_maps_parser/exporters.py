@@ -86,6 +86,110 @@ def dedupe_records(records: list[dict]) -> list[dict]:
     return out
 
 
+# ── Optional output-quality filters (web form) ────────────────
+
+
+def _norm_name(name: str) -> str:
+    """Normalized chain name: lowercase, non-alphanumeric stripped."""
+    return re.sub(r"\W+", "", (name or "").lower())
+
+
+def _socials_of(rec: dict) -> list[str]:
+    """List of social platform keys present on a record."""
+    return [p for p in KNOWN_PLATFORMS if rec.get(p)]
+
+
+def _phone_digits(rec: dict) -> str:
+    return re.sub(r"\D", "", str(rec.get("phone") or ""))
+
+
+def collapse_chains(records: list[dict]) -> list[dict]:
+    """Merge records of the same business chain into one row.
+
+    Two records are treated as the same chain when they belong to the
+    same city, have the same normalized name AND share contact info
+    (an overlapping phone number or at least one identical social URL).
+    The kept row is the one with the most socials; phones and social
+    links from the others are merged into it.
+    """
+    by_key: dict[tuple, list[dict]] = {}
+    for r in records:
+        key = (r.get("city") or "", _norm_name(r.get("name")))
+        if not key[1]:
+            continue
+        by_key.setdefault(key, []).append(r)
+
+    out: list[dict] = []
+    for key, group in by_key.items():
+        if len(group) < 2:
+            out.extend(group)
+            continue
+        # Split the name-group into sub-groups connected by shared contact
+        # info (the same name may be genuinely different businesses).
+        merged: list[list[dict]] = []
+        for r in group:
+            phones = _phone_digits(r)
+            socials = [v for p in KNOWN_PLATFORMS if (v := r.get(p))]
+            slot = None
+            for m in merged:
+                if any(_phone_digits(x) == phones for x in m if phones and _phone_digits(x)):
+                    slot = m
+                    break
+                if socials and any(
+                    x.get(p) == s for x in m for p in KNOWN_PLATFORMS for s in socials
+                ):
+                    slot = m
+                    break
+            if slot is None:
+                merged.append([r])
+            else:
+                slot.append(r)
+        for group in merged:
+            if len(group) < 2:
+                out.extend(group)
+                continue
+            # Keep the richest record, merge phones + socials from the rest
+            base = max(group, key=lambda x: (len(_socials_of(x)), len(_phone_digits(x)), bool(x.get("description"))))
+            phones: list[str] = []
+            socials: dict[str, str] = {}
+            for r in group:
+                for ph in str(r.get("phone") or "").split(","):
+                    ph = ph.strip()
+                    if ph and ph not in phones:
+                        phones.append(ph)
+                for p in KNOWN_PLATFORMS:
+                    v = r.get(p)
+                    if v and not socials.get(p):
+                        socials[p] = v
+            base = dict(base)
+            base["phone"] = ", ".join(phones)
+            base.update(socials)
+            out.append(base)
+    return out
+
+
+def min_contact_filter(records: list[dict]) -> list[dict]:
+    """Drop records with neither a phone nor any social link."""
+    out = []
+    for r in records:
+        if _phone_digits(r) or _socials_of(r) or r.get("other_socials"):
+            out.append(r)
+    return out
+
+
+def apply_output_filters(records: list[dict]) -> list[dict]:
+    """Apply the optional web-form output filters (in place on a copy)."""
+    records = list(records)
+    try:
+        if state.MIN_CONTACT:
+            records = min_contact_filter(records)
+        if state.COLLAPSE_CHAINS:
+            records = collapse_chains(records)
+    except Exception:
+        pass
+    return records
+
+
 def load_existing_urls(csv_path: str) -> set[str]:
     ids: set[str] = set()
     if not os.path.exists(csv_path):
@@ -215,6 +319,7 @@ def write_frontend_json(files: list[str], out_dir: str, cities: list[str] | None
     if not merged:
         return None
     merged = dedupe_records(merged)
+    merged = apply_output_filters(merged)
     fname = "_results_for_frontend.json"
     try:
         with open(os.path.join(out_dir, fname), "w", encoding="utf-8") as fh:

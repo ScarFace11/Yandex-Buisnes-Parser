@@ -469,6 +469,9 @@ function getParams() {
     grid_radius:     +document.getElementById('f-grad').value  || 20,
     grid_step:       +document.getElementById('f-gstep').value || 5,
     validate_socials:document.getElementById('f-validate').checked,
+    resume:          document.getElementById('f-resume').checked,
+    collapse_chains: document.getElementById('f-collapse-chains').checked,
+    min_contact:     document.getElementById('f-min-contact').checked,
     api_key:         document.getElementById('f-apikey').value.trim(),
     social_mode:     socialMode,
     required_socials: [...requiredSocials],
@@ -938,13 +941,73 @@ function renderTable(data) {
   // Show social filter row + dedup button only when there are results
   document.getElementById('social-filter-row').style.display = data.length ? '' : 'none';
   document.getElementById('btn-dedup').classList.toggle('visible', data.length > 0);
-  renderPage();
+  // Re-derive through filterTable so the optional quality filters
+  // (collapse chains / min contact) apply to the final view too.
+  filterTable();
+}
+
+// Client-side mirror of the server's optional output filters
+// ("Объединять филиалы сетей" / "Только с телефоном или соцсетями"),
+// so the live table matches what gets written to files.
+function hasAnySocial(r) {
+  return Object.keys(SOCIALS).some(k => r[k]) || !!r.other_socials;
+}
+
+function collapseChainsClient(rows) {
+  const norm = n => String(n || '').toLowerCase().replace(/[^a-zа-яё0-9]/gi, '');
+  const phoneDigits = p => String(p || '').replace(/\D/g, '');
+  const groups = new Map();
+  for (const r of rows) {
+    const key = (r.city || '') + '|' + norm(r.name);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(r);
+  }
+  const out = [];
+  for (const [key, group] of groups) {
+    if (group.length < 2) { out.push(...group); continue; }
+    // Merge members that share phone digits or a social URL
+    const clusters = [];
+    for (const r of group) {
+      const pd = phoneDigits(r.phone);
+      const socials = Object.keys(SOCIALS).filter(k => r[k]).map(k => r[k]);
+      let slot = null;
+      for (const c of clusters) {
+        if (pd && c.some(x => phoneDigits(x.phone) === pd)) { slot = c; break; }
+        if (socials.length && c.some(x => Object.keys(SOCIALS).some(k => socials.includes(x[k])))) { slot = c; break; }
+      }
+      (slot || (clusters.push([]), clusters[clusters.length-1])).push(r);
+    }
+    for (const c of clusters) {
+      if (c.length < 2) { out.push(...c); continue; }
+      const base = c.reduce((best, r) =>
+        (Object.keys(SOCIALS).filter(k => r[k]).length + (phoneDigits(r.phone)?1:0) >
+         Object.keys(SOCIALS).filter(k => best[k]).length + (phoneDigits(best.phone)?1:0)) ? r : best);
+      const merged = Object.assign({}, base);
+      const phones = [];
+      const soc = {};
+      for (const r of c) {
+        String(r.phone || '').split(',').map(s => s.trim()).forEach(p => { if (p && !phones.includes(p)) phones.push(p); });
+        Object.keys(SOCIALS).forEach(k => { if (r[k] && !soc[k]) soc[k] = r[k]; });
+      }
+      merged.phone = phones.join(', ');
+      Object.assign(merged, soc);
+      out.push(merged);
+    }
+  }
+  return out;
 }
 
 function filterTable() {
   const q = document.getElementById('tbl-search').value.trim().toLocaleLowerCase('ru-RU');
   const SOCIAL_KEYS = Object.keys(SOCIALS);
-  filteredRows = allResults.filter(r => {
+  let source = allResults;
+  // Optional quality filters (mirror of the server-side ones)
+  const collapseChains = document.getElementById('f-collapse-chains');
+  if (collapseChains && collapseChains.checked) source = collapseChainsClient(source);
+  filteredRows = source.filter(r => {
+    // Min-contact filter: hide rows with no phone and no socials
+    const minContact = document.getElementById('f-min-contact');
+    if (minContact && minContact.checked && !r.phone && !hasAnySocial(r)) return false;
     // Search every visible/data field
     const searchable = Object.values(r).some(value =>
       String(value ?? '').toLocaleLowerCase('ru-RU').includes(q)
@@ -1299,6 +1362,9 @@ function getCurrentSettings() {
     grad:     document.getElementById('f-grad').value,
     gstep:    document.getElementById('f-gstep').value,
     validate: document.getElementById('f-validate').checked,
+    resume:   document.getElementById('f-resume').checked,
+    collapseChains: document.getElementById('f-collapse-chains').checked,
+    minContact:     document.getElementById('f-min-contact').checked,
     socialMode: socialMode,
      // API keys are entered for the current run only and are never persisted.
   };
@@ -1323,6 +1389,9 @@ function applySettings(s) {
   if (s.grad     != null) document.getElementById('f-grad').value    = s.grad;
   if (s.gstep    != null) document.getElementById('f-gstep').value   = s.gstep;
   if (s.validate != null) { document.getElementById('f-validate').checked = s.validate; document.getElementById('f-validate').closest('.chk').classList.toggle('on', s.validate); }
+  if (s.resume != null) { document.getElementById('f-resume').checked = s.resume; document.getElementById('f-resume').closest('.chk').classList.toggle('on', s.resume); }
+  if (s.collapseChains != null) { document.getElementById('f-collapse-chains').checked = s.collapseChains; document.getElementById('f-collapse-chains').closest('.chk').classList.toggle('on', s.collapseChains); }
+  if (s.minContact != null) { document.getElementById('f-min-contact').checked = s.minContact; document.getElementById('f-min-contact').closest('.chk').classList.toggle('on', s.minContact); }
   if (s.socialMode) setSocialMode(s.socialMode);
    // Do not restore API keys from browser storage.
 }

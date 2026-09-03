@@ -153,8 +153,12 @@ def fetch_html(url: str, session=None, biz_id: str = "") -> str:
         except Exception:
             pass
 
+    # (connect, read, total): the read timeout is per-chunk, so a page that
+    # drips bytes can stay under it for minutes. The 60s TOTAL is a hard
+    # wall-clock deadline — Yandex throttles plain HTTP hard (p95 was
+    # 187-325s per page), and we'd rather skip a page than burn 5 minutes.
     with state._detail_semaphore:
-        r = _get(url, session=session or _worker_client(), timeout=(8, 15))
+        r = _get(url, session=session or _worker_client(), timeout=(8, 15, 60))
     if not r or r.status_code != 200:
         return ""
     text = r.text

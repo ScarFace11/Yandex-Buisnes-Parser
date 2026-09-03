@@ -19,11 +19,28 @@ from .extractors import (
     extract_reviews_count,
     validate_socials,
     _extract_from_json_blob,
+    _ANTIBOT_MARKERS,
 )
 from .exporters import record_key
 from . import state
 from . import browser_client
 from . import cdp_client
+
+def _looks_like_antiblock(html) -> bool:
+    """True when a fetched page is an anti-bot stub / too short to be real.
+
+    Yandex serves an empty "robot" page (a few hundred bytes) to requests it
+    suspects are bots. Real detail pages are hundreds of KB. Treat anything
+    tiny or containing anti-bot markers as a failed fetch so the caller can
+    retry via a different transport instead of silently extracting nothing.
+    """
+    if not html:
+        return True
+    if len(html) < 5000:
+        return True
+    lower = html[:4000].lower()
+    return any(m in lower for m in _ANTIBOT_MARKERS)
+
 
 # tqdm is not thread-safe: in CLI mode several search workers update the
 # shared search/detail progress bars concurrently, so every mutation is
@@ -169,7 +186,16 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
                 elif cdp_client.is_available():
                     html = cdp_client.fetch_page(detail_url, biz_id=biz_id)
                     _fetch_source = "cdp"
-            if html is None:
+
+            # Anti-bot stub from the browser? Yandex serves an empty/"robot"
+            # page to some requests — retry once via CDP on a fresh tab before
+            # giving up and falling back to the slow throttled httpx path.
+            if _looks_like_antiblock(html) and state.USE_BROWSER and cdp_client.is_available():
+                state.syslog(f"fetch_detail: anti-bot stub for {biz_name}, retrying via CDP fresh tab...")
+                html = cdp_client.fetch_page(detail_url, biz_id=biz_id)
+                _fetch_source = "cdp"
+
+            if _looks_like_antiblock(html):
                 html = fetch_html(detail_url, biz_id=biz_id)
                 _fetch_source = "httpx"
             _fetch_elapsed = time.monotonic() - _fetch_t0
@@ -221,6 +247,11 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
             return None  # skip — no social media found
         if state.SOCIAL_MODE == "without_socials" and has_any_social:
             return None  # skip — has social media, user wants only those without
+
+        # Optional quality filter: drop records with neither phone nor socials
+        if state.MIN_CONTACT and not (record.get("phone") or has_any_social):
+            state.syslog(f"skip_no_contact: {biz_name}")
+            return None
 
         state._inc_found()
         social_list = [f"{p}:{socials[p][:30]}" for p in KNOWN_PLATFORMS if socials.get(p)]

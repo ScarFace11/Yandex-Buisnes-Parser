@@ -12,7 +12,8 @@ import time
 from datetime import datetime
 
 LOGS_DIR = "logs"
-MAX_LOG_DAYS = 30  # auto-cleanup logs older than this
+MAX_LOG_DAYS = 30      # auto-cleanup logs older than this
+MAX_LOG_FILES = 200    # keep at most this many log files (newest wins)
 
 
 class RunLogger:
@@ -20,6 +21,12 @@ class RunLogger:
 
     def __init__(self, run_id: str, cities: list[str], queries: list[str]):
         os.makedirs(LOGS_DIR, exist_ok=True)
+        # Prune old logs at the start of every run (not only at app boot),
+        # so a long-lived server doesn't accumulate logs forever.
+        try:
+            cleanup_old_logs()
+        except Exception:
+            pass
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         city_slug = "_".join(c.replace(" ", "") for c in cities[:3])
         if len(cities) > 3:
@@ -114,19 +121,42 @@ class RunLogger:
 
 
 def cleanup_old_logs() -> int:
-    """Remove log files older than MAX_LOG_DAYS. Returns count of deleted files."""
+    """Remove old log files: older than MAX_LOG_DAYS, or beyond MAX_LOG_FILES.
+
+    Returns count of deleted files.
+    """
     if not os.path.isdir(LOGS_DIR):
         return 0
     cutoff = time.time() - MAX_LOG_DAYS * 86400
     deleted = 0
-    for fname in os.listdir(LOGS_DIR):
-        if not fname.endswith(".log"):
-            continue
-        fpath = os.path.join(LOGS_DIR, fname)
+    try:
+        logs = sorted(
+            (os.path.join(LOGS_DIR, f) for f in os.listdir(LOGS_DIR) if f.endswith(".log")),
+            key=os.path.getmtime,
+        )
+    except Exception:
+        logs = []
+    # 1. Age-based deletion
+    for fpath in logs:
         try:
             if os.path.getmtime(fpath) < cutoff:
                 os.remove(fpath)
                 deleted += 1
+        except Exception:
+            pass
+    # 2. Count-based cap (newest kept)
+    try:
+        remaining = sorted(
+            (os.path.join(LOGS_DIR, f) for f in os.listdir(LOGS_DIR) if f.endswith(".log")),
+            key=os.path.getmtime,
+        )
+    except Exception:
+        remaining = []
+    excess = len(remaining) - MAX_LOG_FILES
+    for fpath in remaining[:excess]:
+        try:
+            os.remove(fpath)
+            deleted += 1
         except Exception:
             pass
     return deleted

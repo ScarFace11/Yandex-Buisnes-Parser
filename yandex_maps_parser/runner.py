@@ -25,7 +25,7 @@ from yandex_maps_parser import cdp_client
 from yandex_maps_parser.exporters import (
     _resolve, load_existing_urls, load_jsonl, dedupe_records,
     save_csv, save_json, save_excel, save_map,
-    _init_excel, _finalize_excel,
+    _init_excel, _finalize_excel, apply_output_filters,
 )
 from yandex_maps_parser.geocoding import geocode_city, build_grid, build_grid_index
 from yandex_maps_parser.stats import print_stats, print_limit_stats
@@ -81,6 +81,12 @@ def run() -> None:
         ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
         base = f"{slug}_{ts}"
 
+    # Resume needs a STABLE checkpoint key across separate runs — the output
+    # base is timestamped, so a fresh run would never find the checkpoint.
+    # The key is per-city (queries are stored inside the completed set, so
+    # resuming with a different query list still works point-by-point).
+    ckpt_key = f"{slug}_resume" if state.RESUME_MODE else base
+
     paths = _resolve(base)
 
     state._reset_found()
@@ -96,7 +102,10 @@ def run() -> None:
         state._RESULT_HANDLE = None
 
     # Start incremental Excel: create workbook with headers on first record
-    if state.OUTPUT_EXCEL:
+    # COLLAPSE_CHAINS needs the whole record set to merge chains, so it can't
+    # append row-by-row — disable the incremental workbook and rebuild Excel
+    # once at the end from the filtered records instead.
+    if state.OUTPUT_EXCEL and not state.COLLAPSE_CHAINS:
         state._EXCEL_APPEND_ENABLED = True
         try:
             _init_excel(paths["xlsx"])
@@ -105,7 +114,7 @@ def run() -> None:
     else:
         state._EXCEL_APPEND_ENABLED = False
 
-    ckpt       = load_checkpoint(base) if state.RESUME_MODE else {"seen_urls": set(), "completed": set()}
+    ckpt       = load_checkpoint(ckpt_key) if state.RESUME_MODE else {"seen_urls": set(), "completed": set()}
     seen_urls  = ckpt["seen_urls"]
     completed  = ckpt["completed"]
 
@@ -283,7 +292,7 @@ def run() -> None:
                         state.syslog(f"csv_append: +{len(records)} records")
 
                     if processed_keys:
-                        save_checkpoint(base, seen_urls, completed)
+                        save_checkpoint(ckpt_key, seen_urls, completed)
                         save_global_seen(seen_urls)
 
                     if state._STOP_EVENT and state._STOP_EVENT.is_set():
@@ -313,10 +322,12 @@ def run() -> None:
                 pass
             state._RESULT_HANDLE = None
         save_global_seen(seen_urls)
+        save_checkpoint(ckpt_key, seen_urls, completed)
 
     # Rebuild the full list from the crash-safe JSONL sidecar.
     jsonl_records = load_jsonl(paths["jsonl"])
     full_records  = dedupe_records(jsonl_records)
+    full_records  = apply_output_filters(full_records)
     state.syslog(f"jsonl_records={len(jsonl_records)}, full_after_dedupe={len(full_records)}")
     if state.APPEND_MODE and os.path.exists(paths["json"]):
         try:
@@ -380,7 +391,7 @@ def run() -> None:
         if state.OUTPUT_MAP:   state.ok(f"  Карта → {paths['map']}")
 
     if len(completed) == total_points:
-        clear_checkpoint(base)
+        clear_checkpoint(ckpt_key)
         state.syslog("checkpoint_cleared: all points processed")
 
     state.ok(f"{'═' * 58}\n")
@@ -398,7 +409,9 @@ def _apply_params(params: dict) -> None:
     state.OUTPUT_MAP      = bool(params.get("output_map", False))
     state.OUTPUT_FILENAME = None
     state.APPEND_MODE     = False
-    state.RESUME_MODE     = False
+    state.RESUME_MODE     = bool(params.get("resume", False))
+    state.COLLAPSE_CHAINS = bool(params.get("collapse_chains", False))
+    state.MIN_CONTACT     = bool(params.get("min_contact", False))
     state.MIN_RATING      = float(params.get("min_rating", 0))
     state.MIN_REVIEWS     = int(params.get("min_reviews", 0))
     state.VALIDATE_SOCIALS = bool(params.get("validate_socials", False))
@@ -578,6 +591,15 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None) -> list[str]
             city_files = _collect_run_files(started_at)
             all_files.extend(city_files)
             _syslog(f"Город {city}: файлы={city_files}, records={records_found}")
+
+            # Refresh the merged frontend JSON after EVERY city, not just at
+            # the end — so the results table / stats stay populated even if
+            # the app is killed or the run is stopped before all cities.
+            try:
+                from .exporters import write_frontend_json
+                write_frontend_json(all_files, state.OUTPUT_DIR, cities)
+            except Exception:
+                pass
 
             if city_files:
                 _weblog("ok", f"  📁 {city}: {', '.join(city_files)}")
