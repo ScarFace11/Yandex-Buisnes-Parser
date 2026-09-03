@@ -168,6 +168,51 @@ function formatPopulation(pop) {
 let selectedCities = [];
 let citySearchText = '';
 
+// ── City search-history meta ────────────────────────────────
+// Map cityName -> {lastTs: number, queries: string[]} built from /history,
+// so the city dropdown can show when a city was last searched and with
+// which keywords. /history returns newest-first entries, so the first
+// entry mentioning a city IS its last search — its timestamp and queries
+// are shown together. Derived from the same store the history tab uses,
+// so clearing history automatically clears these labels too.
+let _cityHistory = {};
+
+function loadCityHistoryMeta() {
+  return fetch('/history?limit=100')
+    .then(r => r.json())
+    .then(data => {
+      const map = {};
+      const hist = data.history || [];
+      for (const e of hist) {
+        const ts = e.timestamp || 0;
+        for (const city of (e.cities || [])) {
+          if (!(city in map)) {
+            map[city] = { lastTs: ts, queries: [...(e.queries || [])] };
+          }
+        }
+      }
+      _cityHistory = map;
+      // If the dropdown is open, re-render so "last searched" lines appear
+      const dd = document.getElementById('city-dropdown');
+      if (dd && dd.classList.contains('open')) updateCityDropdown();
+    })
+    .catch(() => {});
+}
+
+// HTML for the "last searched" line under a city name in the dropdown.
+// Variant Б+В: show up to 3 keywords, "+N" for the rest, full list in a
+// tooltip. Empty string when the city was never searched.
+function cityHistoryLine(name) {
+  const h = _cityHistory[name];
+  if (!h || !h.lastTs) return '';
+  const dateStr = new Date(h.lastTs * 1000).toLocaleDateString('ru-RU'); // ДД.ММ.ГГГГ
+  const qs = h.queries;
+  let kw = qs.slice(0, 3).join(', ');
+  if (qs.length > 3) kw += ` +${qs.length - 3}`;
+  const full = qs.join(', ');
+  return `<div class="city-option-hist" title="Искали: ${escapeHtml(full)} · ${dateStr}">🕒 ${dateStr} · ${escapeHtml(kw)}</div>`;
+}
+
 function initCitySelect() {
   const box = document.getElementById('city-select-box');
   box.innerHTML = '';
@@ -276,6 +321,7 @@ function updateCityDropdown() {
       +   `<span class="city-option-name">${c.name}</span>`
       +   `<span class="city-option-pop">${formatPopulation(c.pop)}</span>`
       + `</div>`
+      + cityHistoryLine(c.name)
       + `<div class="city-option-bar"><div class="city-option-bar-fill" style="width:${pct}%;background:${barColor}"></div></div>`
       + `</div>`;
   }).join('');
@@ -338,6 +384,7 @@ function showTab(name) {
   if (name === 'history') {
     loadHistory();
     loadSeenStatus();
+    loadCityHistoryMeta();
   }
   // Re-render stats when switching to the stats tab. During an active run
   // only finished cities are shown (stable numbers); after the run ends the
@@ -809,6 +856,9 @@ function onRunDone(msg) {
     allResults = data;
     _resetTableBadge();
     loadReviewed();
+    // City dropdown "last searched" labels come from /history — refresh
+    // them now so the date/keywords update right after a finished run.
+    loadCityHistoryMeta();
     renderTable(allResults);
     if (allResults.length) {
       renderStats(allResults, elapsed, skippedCities);
@@ -1996,6 +2046,7 @@ function showUpdateBanner(newVer, changelog, url) {
   // Initialize city combobox — start empty, user picks cities fresh each time
   selectedCities = [];
   initCitySelect();
+  loadCityHistoryMeta();
 
   try {
     const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY));
@@ -2134,8 +2185,19 @@ function rerunSearch(runId) {
 function deleteHistory(runId) {
   if (!confirm('Удалить эту запись из истории?')) return;
   fetch(`/history/${runId}`, { method: 'DELETE' })
-    .then(() => loadHistory())
+    .then(() => { loadHistory(); loadCityHistoryMeta(); })
     .catch(() => {});
+}
+
+function clearAllHistory() {
+  if (!confirm('Удалить ВСЮ историю поисков? Информация о поиске по городам в списке тоже будет стёрта.')) return;
+  fetch('/history/clear', { method: 'POST' })
+    .then(r => r.json())
+    .then(data => {
+      loadHistory();
+      loadCityHistoryMeta();
+    })
+    .catch(err => alert('Ошибка: ' + err.message));
 }
 
 // ── Seen store management ────────────────────────
@@ -2165,6 +2227,9 @@ function clearSeenStore() {
         const el = document.getElementById('seen-status');
         if (el) { el.style.display = 'none'; el.innerHTML = ''; }
         alert(`Кэш очищен: удалено ${data.cleared} бизнесов. Теперь все города будут обработаны заново.`);
+        // Labels are derived from /history — refresh so a cleared store
+        // doesn't leave stale "last searched" lines in the dropdown.
+        loadCityHistoryMeta();
       }
     })
     .catch(err => alert('Ошибка: ' + err.message));
