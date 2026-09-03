@@ -140,87 +140,150 @@ def _cdp_close_tab(port: int, tab_id: str) -> bool:
     return _cdp_put(port, f"/json/close/{tab_id}")
 
 
+# Realistic desktop Chrome UA — Yandex serves an EMPTY anti-bot document to
+# the default "HeadlessChrome" user agent (verified live: 158-byte page body).
+# Pages must be fetched with Network.setUserAgentOverride or the browser path
+# is useless and every fetch falls back to slow, throttled httpx.
+_CDP_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
+
+_CDP_EVAL_ID = 90001  # id for Runtime.evaluate responses on a fresh WS
+
+
+def _cdp_eval(ws, expression: str, deadline: float) -> str | None:
+    """Evaluate `expression` via Runtime.evaluate, bounded by `deadline`."""
+    try:
+        ws.send(json.dumps({
+            "id": _CDP_EVAL_ID,
+            "method": "Runtime.evaluate",
+            "params": {"expression": expression, "returnByValue": True},
+        }))
+        while time.monotonic() < deadline:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                ws.settimeout(min(remaining, 5.0))
+                data = json.loads(ws.recv())
+                if data.get("id") == _CDP_EVAL_ID:
+                    value = data.get("result", {}).get("result", {}).get("value")
+                    return value if isinstance(value, str) else (str(value) if value is not None else None)
+            except Exception:
+                break
+    except Exception:
+        pass
+    return None
+
+
 def _cdp_navigate_and_get_html(ws_url: str, url: str, timeout_s: float = 40) -> str | None:
     """Navigate to URL via CDP WebSocket and return page HTML.
 
-    Uses websocket-client for synchronous CDP communication.
-    Has a hard wall-clock deadline of timeout_s seconds.
+    Why polling instead of waiting on load events:
+      - A desktop Chrome User-Agent override is REQUIRED — Yandex serves an
+        empty anti-bot document (158 bytes) to the default HeadlessChrome UA.
+      - Load events only arrive after Page.enable, and some pages never fire
+        them — waiting on events burns the whole deadline for nothing.
+      - Tabs are reused across fetches, so we must confirm the navigation has
+        actually committed (the org id appears in location.href) before
+        harvesting, otherwise we'd return the PREVIOUS business's HTML.
+
+    Returns the HTML once meaningful content is available, or None on real
+    failures / empty anti-bot stubs so the caller can fall back to httpx.
     """
-    overall_deadline = time.monotonic() + timeout_s
     try:
         import websocket
+    except ImportError:
+        state.syslog("cdp_client: websocket-client not installed")
+        return None
+
+    overall_deadline = time.monotonic() + timeout_s
+    ws = None
+    try:
         ws = websocket.create_connection(ws_url, timeout=min(timeout_s, 10))
-        try:
-            # Navigate
-            msg_id = 1
+
+        msg_seq = {"id": 0}
+
+        def _send(method: str, params: dict | None = None) -> int:
+            msg_seq["id"] += 1
             ws.send(json.dumps({
-                "id": msg_id,
-                "method": "Page.navigate",
-                "params": {"url": url}
+                "id": msg_seq["id"],
+                "method": method,
+                "params": params or {},
             }))
+            return msg_seq["id"]
 
-            # Wait for loadEventFired or hard deadline
-            loaded = False
-            while time.monotonic() < overall_deadline:
-                remaining = overall_deadline - time.monotonic()
-                if remaining <= 0:
+        _send("Page.enable")
+        _send("Network.setUserAgentOverride", {"userAgent": _CDP_USER_AGENT})
+        _send("Page.navigate", {"url": url})
+
+        # Numeric org id from the target URL — appears in the final location.href
+        # even after Yandex rewrites the URL to a slug form.
+        from urllib.parse import urlparse
+        path_segs = [s for s in urlparse(url).path.split("/") if s]
+        token = path_segs[-1] if (path_segs and path_segs[-1].isdigit()) else None
+
+        # Poll until the navigation commits AND readyState == "complete".
+        # Harvesting earlier (e.g. once the doc is merely large) returns a
+        # PARTIAL document — the socials block sits near the end of the
+        # server HTML and was missing in live tests (125KB no-links page).
+        # Expression: href|readyState|len (len kept for debugging).
+        expr = (
+            "location.href + '|' + document.readyState + '|' + "
+            "document.documentElement.outerHTML.length"
+        )
+        started = time.monotonic()
+        committed = token is None  # nothing to match → assume committed
+        while time.monotonic() < overall_deadline:
+            remaining = overall_deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            status = _cdp_eval(ws, expr, min(overall_deadline, time.monotonic() + 6.0))
+            if status:
+                parts = status.split("|")
+                href = parts[0] if parts else ""
+                ready = parts[1] if len(parts) > 1 else ""
+                if token:
+                    if token in href:
+                        committed = True
+                if committed and ready == "complete":
                     break
-                try:
-                    ws.settimeout(min(remaining, 5.0))
-                    raw = ws.recv()
-                    data = json.loads(raw)
-                    if data.get("method") == "Page.loadEventFired":
-                        loaded = True
-                        break
-                    if data.get("method") == "Page.frameStoppedLoading":
-                        loaded = True
-                        break
-                except websocket.WebSocketTimeoutException:
-                    # Check overall deadline before continuing
-                    if time.monotonic() >= overall_deadline:
-                        break
-                    continue
-                except Exception:
+                # Tail of the deadline — harvest whatever exists instead of
+                # burning the whole budget on a page that never reports ready.
+                waited = time.monotonic() - started
+                if remaining <= 8.0 and waited >= timeout_s * 0.6:
                     break
+            time.sleep(min(0.75, remaining))
 
-            if not loaded:
-                # Give JS a moment to render, but respect deadline
-                remaining = overall_deadline - time.monotonic()
-                if remaining > 0.5:
-                    time.sleep(min(1.5, remaining - 0.1))
-
-            # Get HTML content
-            msg_id += 1
-            ws.send(json.dumps({
-                "id": msg_id,
-                "method": "Runtime.evaluate",
-                "params": {"expression": "document.documentElement.outerHTML"}
-            }))
-
-            # Read response — must finish before overall deadline
-            while time.monotonic() < overall_deadline:
-                remaining = overall_deadline - time.monotonic()
-                if remaining <= 0:
-                    break
-                try:
-                    ws.settimeout(min(remaining, 5.0))
-                    raw = ws.recv()
-                    data = json.loads(raw)
-                    if data.get("id") == msg_id:
-                        result = data.get("result", {}).get("result", {})
-                        return result.get("value", "")
-                except Exception:
-                    break
-
-            return None
-        finally:
-            ws.close()
+        # Harvest outerHTML. Retry a few times — content can render just after
+        # the document commits. Bounded by the overall deadline.
+        attempts = 0
+        while attempts < 3 and time.monotonic() < overall_deadline - 1.0:
+            html = _cdp_eval(
+                ws,
+                "document.documentElement.outerHTML",
+                min(overall_deadline, time.monotonic() + 8.0),
+            )
+            if html and len(html) > 800:
+                return html
+            attempts += 1
+            time.sleep(1.0)
+        # Empty / stub page (anti-bot) — let the httpx fallback handle it.
+        return None
     except ImportError:
         state.syslog("cdp_client: websocket-client not installed")
         return None
     except Exception as e:
         state.syslog(f"cdp_client: CDP error: {e}")
         return None
+    finally:
+        if ws is not None:
+            try:
+                ws.close()
+            except Exception:
+                pass
 
 
 # ── Cache ───────────────────────────────────────────────────

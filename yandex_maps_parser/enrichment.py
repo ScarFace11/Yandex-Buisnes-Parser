@@ -34,8 +34,10 @@ _pbar_lock = threading.Lock()
 # Skip detail fetch for these to save 30-120s per organization.
 # NOTE: Only check NAME — category can contain "поликлиника" for private clinics
 # (e.g. "Смайл" with category "Стоматологическая поликлиника" is PRIVATE).
+# Keywords are stems on purpose: government names appear in many case forms
+# ("поликлиника № 4", "…больницы № 3", "госпиталя"), so match on the stem.
 _GOV_NAME_KEYWORDS = (
-    "поликлиника", "больница", "госпиталь",
+    "поликлиник", "больниц", "госпитал",
     "муниципальн", "государств", "федеральн",
     "стоматологическое отделение",
 )

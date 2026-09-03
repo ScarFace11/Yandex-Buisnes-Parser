@@ -10,8 +10,9 @@ import time
 from . import state
 
 # ── Config ──────────────────────────────────────────────────
-_MIN_RPS = 10.0
+_MIN_RPS = 10.0     # resting RPS (reset / steady state)
 _MAX_RPS = 15.0
+_DROP_FLOOR_RPS = 2.0  # absolute floor after repeated drops (never 0)
 _RPS_STEP = 2.0
 _RPS_UP_INTERVAL = 45
 
@@ -39,9 +40,13 @@ def _get_rps() -> float:
 def _rps_drop(reason: str = "429") -> None:
     global _current_rps, _rps_last_up
     with _rps_lock:
-        _current_rps = max(_MIN_RPS, _current_rps / 2)
+        # Halve the current rate. The floor must be BELOW the resting minimum,
+        # otherwise dropping from the default 10 RPS is a no-op (10/2 = 5 < 10
+        # gets clamped straight back to 10) and the adaptive throttle never
+        # actually slows down under load.
+        _current_rps = max(_DROP_FLOOR_RPS, _current_rps / 2)
         _rps_last_up = time.monotonic()
-        state.syslog(f"rps_drop: {_current_rps:.0f} RPS (reason={reason})")
+        state.syslog(f"rps_drop: {_current_rps:.1f} RPS (reason={reason})")
 
 
 def _rps_reset() -> None:
@@ -87,6 +92,13 @@ def _set_cooldown(seconds: float) -> None:
     global _cooldown_until
     with _cooldown_lock:
         _cooldown_until = max(_cooldown_until, time.monotonic() + seconds)
+
+
+def _cooldown_reset() -> None:
+    """Clear any active cooldown (used at run/city start and in tests)."""
+    global _cooldown_until
+    with _cooldown_lock:
+        _cooldown_until = 0.0
 
 
 def _anti_bot_detected() -> None:

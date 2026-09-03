@@ -200,13 +200,14 @@ class TestParseFeature:
         assert rec["lat"] == 55.7
         assert rec["lon"] == 37.6
 
-    def test_skip_with_website(self):
-        """Businesses with real websites should be skipped."""
+    def test_website_not_filtered(self):
+        """Businesses with websites are now kept — socials checked post-enrichment."""
         import yandex_maps_parser.state as state
         state.SOCIAL_MODE = "all"
         feat = self._make_feature(url="https://salon-example.ru")
         rec = parse_feature(feat, "тест")
-        assert rec is None
+        assert rec is not None
+        assert rec["name"] == "Тест"
 
     def test_aggregator_kept(self):
         """Businesses with aggregator links (taplink) should be kept."""
