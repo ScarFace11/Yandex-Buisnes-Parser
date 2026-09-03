@@ -407,14 +407,37 @@ def fetch_page(url: str, timeout_ms: int = 30000, biz_id: str = "") -> str | Non
     max_retries = 2
 
     for attempt in range(max_retries):
+        # Stop/skip must interrupt a blocked acquire — a plain
+        # acquire(timeout=60) would otherwise stall run shutdown for up to
+        # a minute while the pool is saturated. Poll in short slices.
+        if (state._STOP_EVENT and state._STOP_EVENT.is_set()) or state.is_skip_city():
+            return None
         try:
             # Rate-limiting: wait for semaphore slot
             if _rate_semaphore:
-                _rate_semaphore.acquire(timeout=60)
+                _acquire_deadline = time.monotonic() + 60
+                while True:
+                    if (state._STOP_EVENT and state._STOP_EVENT.is_set()) or state.is_skip_city():
+                        return None
+                    if _rate_semaphore.acquire(blocking=False):
+                        break
+                    if time.monotonic() >= _acquire_deadline:
+                        raise TimeoutError("rate semaphore timeout")
+                    time.sleep(0.5)
 
             try:
                 # Borrow a page from the pool (blocks until one is free)
-                page = _page_pool.get(timeout=60)
+                _pool_deadline = time.monotonic() + 60
+                while True:
+                    if (state._STOP_EVENT and state._STOP_EVENT.is_set()) or state.is_skip_city():
+                        return None
+                    try:
+                        page = _page_pool.get_nowait()
+                        break
+                    except queue.Empty:
+                        if time.monotonic() >= _pool_deadline:
+                            raise TimeoutError("page pool timeout")
+                        time.sleep(0.5)
 
                 # Navigate
                 page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)

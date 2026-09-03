@@ -42,6 +42,14 @@ def _looks_like_antiblock(html) -> bool:
     return any(m in lower for m in _ANTIBOT_MARKERS)
 
 
+def _stop_requested() -> bool:
+    """True when stop or skip-city was requested."""
+    return bool(
+        (state._STOP_EVENT and state._STOP_EVENT.is_set())
+        or state.is_skip_city()
+    )
+
+
 # tqdm is not thread-safe: in CLI mode several search workers update the
 # shared search/detail progress bars concurrently, so every mutation is
 # guarded by this lock.
@@ -73,6 +81,28 @@ def _is_government_institution(record: dict) -> bool:
 _concurrency_semaphore: threading.Semaphore | None = None
 _semaphore_lock = threading.Lock()
 _effective_workers: int = 0
+
+
+def _poll_semaphore_acquire(semaphore, timeout: float) -> bool:
+    """Acquire a semaphore, polling stop/skip every 0.5s.
+
+    A plain `acquire(timeout=5)` blocks the full 5s before the caller can
+    check stop/skip, which made the stop button lag up to 5s whenever the
+    worker pool was saturated. Polling in small slices keeps stop/skip
+    responsive (~0.5s) without changing the effective concurrency limit.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        if state._STOP_EVENT and state._STOP_EVENT.is_set():
+            return False
+        if state.is_skip_city():
+            return False
+        if semaphore.acquire(blocking=False):
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(0.5, remaining))
 
 
 def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None = None) -> list[dict]:
@@ -162,15 +192,27 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
                 return None
             if state.is_skip_city():
                 return None
-            # Acquire concurrency slot with timeout so stop can interrupt
+            # Acquire concurrency slot with timeout so stop can interrupt.
+            # Polled in 0.5s slices: a plain acquire(timeout=5) would not
+            # notice a stop for up to 5s while the pool is saturated.
             _sem_acquired = False
             if _concurrency_semaphore:
-                acquired = _concurrency_semaphore.acquire(timeout=5)
+                acquired = _poll_semaphore_acquire(_concurrency_semaphore, 5.0)
                 if not acquired:
-                    # Retry once with stop check
                     if state._STOP_EVENT and state._STOP_EVENT.is_set():
                         return None
-                    acquired = _concurrency_semaphore.acquire(timeout=5)
+                    if state.is_skip_city():
+                        return None
+                    # Retry once more (still no stop — just slow pool)
+                    acquired = _poll_semaphore_acquire(_concurrency_semaphore, 5.0)
+                    if not acquired:
+                        # Failed again: either stop was set mid-retry (in which
+                        # case abort) or the pool stayed saturated — proceed
+                        # without a slot only if no stop/skip was requested.
+                        if state._STOP_EVENT and state._STOP_EVENT.is_set():
+                            return None
+                        if state.is_skip_city():
+                            return None
                 _sem_acquired = acquired
             state.syslog(f"fetch_detail: biz_id={biz_id}, name={biz_name}, raw_socials={len(socials)}")
             detail_url = f"https://yandex.ru/maps/org/{biz_id}"
@@ -190,12 +232,16 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
             # Anti-bot stub from the browser? Yandex serves an empty/"robot"
             # page to some requests — retry once via CDP on a fresh tab before
             # giving up and falling back to the slow throttled httpx path.
-            if _looks_like_antiblock(html) and state.USE_BROWSER and cdp_client.is_available():
+            # NOTE: html may be None because stop/skip aborted the CDP fetch
+            # (fetch_page returns None on stop) — in that case DON'T waste a
+            # retry or a throttled httpx round-trip on a page we're about to
+            # abandon anyway.
+            if not _stop_requested() and _looks_like_antiblock(html) and state.USE_BROWSER and cdp_client.is_available():
                 state.syslog(f"fetch_detail: anti-bot stub for {biz_name}, retrying via CDP fresh tab...")
                 html = cdp_client.fetch_page(detail_url, biz_id=biz_id)
                 _fetch_source = "cdp"
 
-            if _looks_like_antiblock(html):
+            if not _stop_requested() and _looks_like_antiblock(html):
                 html = fetch_html(detail_url, biz_id=biz_id)
                 _fetch_source = "httpx"
             _fetch_elapsed = time.monotonic() - _fetch_t0
@@ -218,7 +264,7 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
                     pass
 
         # Fallback: try aggregator page (with shorter timeout)
-        if agg_url and len(socials) < 2:
+        if not _stop_requested() and agg_url and len(socials) < 2:
             state.syslog(f"fetch_aggregator: {biz_name}, url={agg_url}")
             try:
                 from .http_client import _worker_client as _agg_client
@@ -237,6 +283,14 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
 
         with _pbar_lock:
             pbar.update(1)
+
+        # Post-fetch guard: stop/skip may have been requested while the detail
+        # page was loading. Don't emit a record that would bleed into the next
+        # city or after shutdown.
+        if state._STOP_EVENT and state._STOP_EVENT.is_set():
+            return None
+        if state.is_skip_city():
+            return None
 
         # Backend social mode filtering:
         # "with_socials" — skip businesses that have NO social media at all
@@ -287,8 +341,10 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
                 for f in pending:
                     f.cancel()
                 break
-            # Use short timeout so stop checks happen frequently
-            done, pending = _future_wait(pending, timeout=5,
+            # 1s granularity: stop/skip is noticed within ~1s even when all
+            # in-flight detail fetches are slow to finish (they also abort
+            # early on stop via the CDP/httpx stop checks).
+            done, pending = _future_wait(pending, timeout=1,
                                           return_when=concurrent.futures.FIRST_COMPLETED)
             for fut in done:
                 try:

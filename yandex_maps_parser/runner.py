@@ -179,26 +179,58 @@ def run() -> None:
             )
             batch_thread.start()
 
+        def _join_stop_aware(thread) -> bool:
+            """Join a batch thread, polling stop/skip every 0.25s.
+
+            Enrichment aborts within ~1s of stop/skip (its wait loop checks
+            every second), so normally the thread finishes quickly and its
+            records are collected normally (CSV/checkpoint stay complete).
+            Only if the thread is STILL alive ~2s after stop/skip was
+            requested do we abandon the join — the per-record records were
+            already persisted by state._emit_result() during enrichment
+            (jsonl + Excel + SSE), so nothing on disk is lost.
+
+            Returns True when records were collected, False when abandoned.
+            """
+            if thread is None:
+                return True
+            stop_observed = 0.0
+            while thread.is_alive():
+                if (state._STOP_EVENT and state._STOP_EVENT.is_set()) or state.is_skip_city():
+                    if stop_observed == 0.0:
+                        stop_observed = time.monotonic()
+                    elif time.monotonic() - stop_observed > 2.0:
+                        return False  # abandoned — records already on disk
+                else:
+                    stop_observed = 0.0
+                thread.join(timeout=0.25)
+            return True
+
         def drain_batch() -> None:
-            """Wait for current enrichment batch and collect results."""
+            """Wait for current enrichment batch and collect results.
+
+            Stop/skip aware: when requested, abandon the join immediately —
+            individual records were already emitted to jsonl/Excel/SSE by the
+            enrichment workers, so nothing is lost.
+            """
             nonlocal batch_key, batch_thread
             if batch_thread is not None:
-                batch_thread.join()
-                recs = batch_results.pop(batch_key, [])
-                query_records.extend(recs)
-                processed_keys.append(batch_key)
-                mark_progress(query)
+                if _join_stop_aware(batch_thread):
+                    recs = batch_results.pop(batch_key, [])
+                    query_records.extend(recs)
+                    processed_keys.append(batch_key)
+                    mark_progress(query)
                 batch_thread = None
                 batch_key = None
 
         def join_prev_batch(prev_thread, prev_key) -> None:
             """Join a specific previous batch thread and collect its results."""
             if prev_thread is not None:
-                prev_thread.join()
-                recs = batch_results.pop(prev_key, [])
-                query_records.extend(recs)
-                processed_keys.append(prev_key)
-                mark_progress(query)
+                if _join_stop_aware(prev_thread):
+                    recs = batch_results.pop(prev_key, [])
+                    query_records.extend(recs)
+                    processed_keys.append(prev_key)
+                    mark_progress(query)
 
         # Drain any leftover enrichment from previous city's last query
         drain_batch()

@@ -237,6 +237,11 @@ def _cdp_navigate_and_get_html(ws_url: str, url: str, timeout_s: float = 40) -> 
         started = time.monotonic()
         committed = token is None  # nothing to match → assume committed
         while time.monotonic() < overall_deadline:
+            # Stop/skip must abort a page mid-load, not burn the whole
+            # deadline — otherwise run()'s detail_pool.shutdown(wait=True)
+            # blocks the stop/skip response for up to 40s per in-flight page.
+            if (state._STOP_EVENT and state._STOP_EVENT.is_set()) or state.is_skip_city():
+                return None
             remaining = overall_deadline - time.monotonic()
             if remaining <= 0:
                 break
@@ -258,9 +263,12 @@ def _cdp_navigate_and_get_html(ws_url: str, url: str, timeout_s: float = 40) -> 
             time.sleep(min(0.75, remaining))
 
         # Harvest outerHTML. Retry a few times — content can render just after
-        # the document commits. Bounded by the overall deadline.
+        # the document commits. Bounded by the overall deadline. Stop/skip
+        # aborts here too so a stuck page never delays run shutdown.
         attempts = 0
         while attempts < 3 and time.monotonic() < overall_deadline - 1.0:
+            if (state._STOP_EVENT and state._STOP_EVENT.is_set()) or state.is_skip_city():
+                return None
             html = _cdp_eval(
                 ws,
                 "document.documentElement.outerHTML",
@@ -480,6 +488,48 @@ def init_browser(pool_size: int = 8) -> bool:
                 return False
 
 
+def _stop_requested() -> bool:
+    """True when stop or skip-city was requested."""
+    return bool(
+        (state._STOP_EVENT and state._STOP_EVENT.is_set())
+        or state.is_skip_city()
+    )
+
+
+def _poll_acquire(semaphore, timeout: float) -> bool:
+    """Acquire a semaphore, polling stop/skip every 0.5s.
+
+    Returns True when acquired. False means the caller should re-check
+    stop/skip (and may retry) — the full timeout was NOT necessarily spent
+    when stop is set, so stop/skip interrupts this wait within ~0.5s.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        if _stop_requested():
+            return False
+        if semaphore.acquire(blocking=False):
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(0.5, remaining))
+
+
+def _poll_queue_get(q, timeout: float):
+    """queue.get with stop/skip polling every 0.5s (aborts early on stop)."""
+    deadline = time.monotonic() + timeout
+    while True:
+        if _stop_requested():
+            raise queue.Empty
+        try:
+            return q.get_nowait()
+        except queue.Empty:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise queue.Empty
+            time.sleep(min(0.5, remaining))
+
+
 def fetch_page(url: str, timeout_ms: int = 40000, biz_id: str = "") -> str | None:
     """Fetch a page using Chrome CDP and return HTML."""
     if not is_available():
@@ -507,19 +557,23 @@ def fetch_page(url: str, timeout_ms: int = 40000, biz_id: str = "") -> str | Non
         _rate_acquired = False
         try:
             if _rate_semaphore:
-                if not _rate_semaphore.acquire(timeout=5):
-                    # Timeout — all tabs busy. Check stop before retrying.
+                # Poll in short slices so a stop/skip is noticed within ~0.5s
+                # even while the pool is fully saturated.
+                if not _poll_acquire(_rate_semaphore, 5.0):
                     if state._STOP_EVENT and state._STOP_EVENT.is_set():
                         return None
-                    continue
+                    if state.is_skip_city():
+                        return None
+                    continue  # still busy, no stop — retry the attempt
                 _rate_acquired = True
 
             try:
-                # Short timeout so stop can interrupt
-                ws_url = _tab_pool.get(timeout=5)
+                ws_url = _poll_queue_get(_tab_pool, 5.0)
             except queue.Empty:
                 # Check stop before retrying
                 if state._STOP_EVENT and state._STOP_EVENT.is_set():
+                    return None
+                if state.is_skip_city():
                     return None
                 state.syslog("cdp_client: no free tabs, waiting...")
                 continue

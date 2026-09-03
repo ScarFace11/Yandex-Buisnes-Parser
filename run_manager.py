@@ -24,6 +24,11 @@ _PROCESS_TIMEOUT = 600  # 10 minutes
 # SSE connection before a new queued run starts writing to the same queue.
 _FINISH_DELAY = 3  # seconds
 
+# Grace period for a graceful stop: after the stop file/event is set, the
+# child is allowed this long to unwind (abort fetches, save checkpoint,
+# finalize Excel, send "done") before a background thread force-kills it.
+_STOP_GRACE_SEC = 8  # seconds
+
 # Compiled ANSI escape pattern for stripping colour codes from log lines
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -241,7 +246,15 @@ class RunManager:
         t.start()
 
     def stop_run(self, run_id: str = ""):
-        """Stop a run by ID or the active run."""
+        """Stop a run by ID or the active run.
+
+        GRACEFUL FIRST: the stop event/file is set and the run is allowed to
+        unwind on its own (the in-process stop checks now abort detail
+        fetches within ~1-3s, so a graceful stop is fast). Only if the child
+        process is still alive after _STOP_GRACE_SEC does a background thread
+        force-kill it. This preserves the final checkpoint/Excel writes and
+        lets the child send its "done" message with real file list.
+        """
         with self._lock:
             targets = []
             if run_id and run_id in self._runs:
@@ -255,7 +268,7 @@ class RunManager:
                 stop_ev = entry.get("stop_event")
                 if stop_ev:
                     stop_ev.set()
-                # Create stop file for multiprocessing mode
+                # Create stop file for multiprocessing mode (watched every 0.5s)
                 sf = entry.get("stop_file")
                 if sf:
                     try:
@@ -263,13 +276,31 @@ class RunManager:
                             f.write("stop")
                     except Exception:
                         pass
-                # Force-kill child process if alive
+                # Do NOT terminate() inline — that hard-kills the child before
+                # it can save its checkpoint / finalize Excel / send "done".
+                # Escalate in the background only if it doesn't exit on its own.
                 proc = entry.get("process")
                 if proc and proc.is_alive():
-                    try:
-                        proc.terminate()
-                    except Exception:
-                        pass
+                    def _escalate(proc=proc):
+                        try:
+                            proc.join(timeout=_STOP_GRACE_SEC)
+                        except Exception:
+                            pass
+                        if proc.is_alive():
+                            try:
+                                proc.terminate()
+                            except Exception:
+                                pass
+                            try:
+                                proc.join(timeout=3)
+                            except Exception:
+                                pass
+                            if proc.is_alive():
+                                try:
+                                    proc.kill()
+                                except Exception:
+                                    pass
+                    threading.Thread(target=_escalate, daemon=True).start()
 
     def skip_city(self, run_id: str = ""):
         """Skip the current city in the active run."""
