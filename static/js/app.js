@@ -776,14 +776,11 @@ function scheduleLiveRender() {
       return true;
     });
 
-    // Update count label
-    document.getElementById('tbl-count').textContent =
-      filteredRows.length ? `${filteredRows.length} записей` : '';
-
-    // Re-render only if results tab is active
-    if (document.getElementById('p-table').classList.contains('active')) {
-      renderPage();
-    }
+    // Always re-render (even while the results tab is hidden): the table then
+    // already shows the latest partial rows whenever the user opens it mid-run.
+    // Rendering is throttled and only builds one 50-row page, so the cost of
+    // keeping a hidden panel current is negligible.
+    renderPage();
   }, 250);
 }
 
