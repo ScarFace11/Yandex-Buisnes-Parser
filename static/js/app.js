@@ -339,10 +339,14 @@ function showTab(name) {
     loadHistory();
     loadSeenStatus();
   }
-  // Re-render stats when switching to stats tab (fixes empty stats panel)
+  // Re-render stats when switching to the stats tab. During an active run
+  // only finished cities are shown (stable numbers); after the run ends the
+  // full result set is rendered.
   if (name === 'stats' && allResults.length) {
+    const recs = isRunActive() ? completedCityRecords() : allResults;
+    if (!recs.length) return;
     const elapsed = (Date.now() - startTime) / 1000;
-    renderStats(allResults, elapsed, _lastSkippedCities);
+    renderStats(recs, elapsed, _lastSkippedCities);
   }
 }
 
@@ -478,6 +482,7 @@ function resetRunUI() {
   _totalCities = 0;
   _currentCityName = '';
   _lastCompletedCityIdx = 0;
+  if (_liveStatsTimer) { clearTimeout(_liveStatsTimer); _liveStatsTimer = null; }
   const listEl = document.getElementById('city-progress-list');
   if (listEl) listEl.innerHTML = '';
   const cpEl = document.getElementById('city-progress');
@@ -486,6 +491,7 @@ function resetRunUI() {
   if (lsNum) lsNum.textContent = '0';
   const lsStage = document.getElementById('ls-stage');
   if (lsStage) lsStage.textContent = '';
+  updateStatsBadge();
 }
 
 function startRun() {
@@ -625,11 +631,66 @@ function handleCityDone(raw) {
     appendLog(status === 'skipped' ? 'ok' : 'info', label);
     // Update city progress to completed
     updateCityProgress(name, 100, records, status);
+    // City finished — update the tab badge and render its stats right away
+    // (finished cities only), so per-city numbers are exact while the next
+    // city is still running.
+    updateStatsBadge();
+    refreshLiveStats();
     // Play sound for city completion
     if (notificationsEnabled && Notification && Notification.permission === 'granted') {
       playCityDoneSound(name, idx, total);
     }
   }
+}
+
+// ═══════════════════════════════════════════
+//  Live per-city stats (multi-city runs)
+// ═══════════════════════════════════════════
+function isRunActive() {
+  const btn = document.getElementById('btn-run');
+  return btn ? btn.disabled : false;
+}
+
+// Records belonging to cities whose search already finished (done/skipped).
+// The still-running city is excluded so its partial counts never appear as
+// final numbers in the per-city cards.
+function completedCityRecords() {
+  const done = new Set();
+  for (const [name, d] of Object.entries(_cityProgressData)) {
+    if (d.status === 'done' || d.status === 'skipped') done.add(name);
+  }
+  return allResults.filter(r => r && r.city && done.has(r.city));
+}
+
+let _liveStatsTimer = null;
+
+// Render the stats panel from finished cities only. Called right after each
+// city_done event; the delayed second pass catches a record that was emitted
+// a moment after the event (queue ordering is not strictly guaranteed).
+function refreshLiveStats() {
+  const doRender = () => {
+    _liveStatsTimer = null;
+    const recs = completedCityRecords();
+    if (!recs.length) return;
+    renderStats(recs, (Date.now() - startTime) / 1000, _lastSkippedCities);
+  };
+  doRender();
+  if (_liveStatsTimer) clearTimeout(_liveStatsTimer);
+  _liveStatsTimer = setTimeout(doRender, 1500);
+}
+
+// Show how many cities finished on the «Статистика» tab button, so the user
+// notices stats are ready while the run is still in progress. When no run is
+// active the plain label is restored.
+function updateStatsBadge() {
+  const btn = document.getElementById('t-stats');
+  if (!btn) return;
+  if (!isRunActive()) { btn.innerHTML = 'Статистика'; return; }
+  const cnt = Object.values(_cityProgressData)
+    .filter(d => d.status === 'done' || d.status === 'skipped').length;
+  btn.innerHTML = cnt > 0
+    ? `Статистика <span class="live-badge">${cnt}</span>`
+    : 'Статистика';
 }
 
 function startSSE(runId) {
@@ -806,6 +867,7 @@ function resetBtn() {
   document.getElementById('btn-txt').textContent = 'Запустить';
   document.getElementById('btn-stop').style.display = 'none';
   document.getElementById('btn-skip').style.display = 'none';
+  updateStatsBadge();
 }
 
 // ═══════════════════════════════════════════
