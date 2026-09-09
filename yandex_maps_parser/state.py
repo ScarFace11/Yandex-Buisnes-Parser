@@ -50,6 +50,9 @@ from config import (
 # Set by run_web(); controls whether enrichment fetches detail pages
 # and whether the frontend filters results by social media presence.
 SOCIAL_MODE = "all"
+# «С соцсетями» + выбранные плитки: бизнес обязан иметь ВСЕ эти соцсети.
+# Пустое множество = фильтр выключен (обычный режим «with_socials»).
+REQUIRED_SOCIALS: set[str] = set()
 
 # Optional output-quality filters (set from the web form).
 # COLLAPSE_CHAINS — merge records of the same business chain (same
@@ -57,6 +60,22 @@ SOCIAL_MODE = "all"
 # MIN_CONTACT — drop records with neither a phone nor any social link.
 COLLAPSE_CHAINS = False
 MIN_CONTACT = False
+
+# Parse mode (web form toggle):
+#   "without_website" (default) — only businesses WITHOUT their own website
+#       (link aggregators like taplink/linktree are NOT websites — kept).
+#   "all" — parse every organization regardless of website presence.
+PARSE_MODE = "without_website"
+
+# Data source: "yandex" (default) | "2gis" — set by run_web() from the form.
+SOURCE = "yandex"
+# 2GIS Catalog API key (free demo key: dev.2gis.ru → Platform Manager).
+TWOGIS_API_KEY = ""
+
+# Excel export columns: set of CSV_FIELDS keys to include in the .xlsx.
+# None (default) = all columns. Set from the web form per run; the choice
+# is persisted in the browser (localStorage) and sent with each run.
+EXCEL_COLUMNS = None  # set[str] | None
 
 # ── Runtime-only state ────────────────────────────────────────
 _LOG_FN = None           # callable(level, msg) set by run_web; None = CLI mode
@@ -111,12 +130,25 @@ _RESULT_LOCK = threading.Lock()
 
 # ── Logging helpers ───────────────────────────────────────────
 
+def _cli_write(msg: str) -> None:
+    """CLI-mode console write that never raises.
+
+    A broken Windows console handle (OSError 22 'Invalid argument')
+    must never kill a run just because a cosmetic message couldn't be
+    printed. Web mode uses _LOG_FN and never reaches this path.
+    """
+    try:
+        tqdm.write(msg)
+    except (OSError, ValueError):
+        pass
+
+
 def info(msg: str) -> None:
     """User-facing log: goes to browser + file."""
     if _LOG_FN:
         _LOG_FN("info", msg)
         return
-    tqdm.write(Fore.GREEN + msg + Style.RESET_ALL)
+    _cli_write(Fore.GREEN + msg + Style.RESET_ALL)
 
 
 def warn(msg: str) -> None:
@@ -124,7 +156,7 @@ def warn(msg: str) -> None:
     if _LOG_FN:
         _LOG_FN("warn", "  [!] " + msg)
         return
-    tqdm.write(Fore.YELLOW + "  [!] " + msg + Style.RESET_ALL)
+    _cli_write(Fore.YELLOW + "  [!] " + msg + Style.RESET_ALL)
 
 
 def ok(msg: str) -> None:
@@ -132,7 +164,15 @@ def ok(msg: str) -> None:
     if _LOG_FN:
         _LOG_FN("ok", msg)
         return
-    tqdm.write(Fore.CYAN + msg + Style.RESET_ALL)
+    _cli_write(Fore.CYAN + msg + Style.RESET_ALL)
+
+
+def error(msg: str) -> None:
+    """User-facing error: goes to browser + file."""
+    if _LOG_FN:
+        _LOG_FN("error", msg)
+        return
+    _cli_write(Fore.RED + "  [✖] " + msg + Style.RESET_ALL)
 
 
 def syslog(msg: str) -> None:

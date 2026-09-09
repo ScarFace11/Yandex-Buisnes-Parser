@@ -11,7 +11,12 @@ import threading
 import time
 from datetime import datetime
 
-LOGS_DIR = "logs"
+# Writable dir: next to the .exe when frozen, project root from source
+try:
+    import paths as _paths
+    LOGS_DIR = _paths.logs_dir()
+except Exception:
+    LOGS_DIR = "logs"
 MAX_LOG_DAYS = 30      # auto-cleanup logs older than this
 MAX_LOG_FILES = 200    # keep at most this many log files (newest wins)
 

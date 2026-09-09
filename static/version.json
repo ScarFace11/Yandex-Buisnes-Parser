@@ -1,1 +1,5 @@
-{"version":"2.2.0","min_version":"2.0.0","changelog":"CDP Chrome fetch 2-6s, live per-city stats + results, city search history, quality filters (chains/min-contact), resume from checkpoint, fast stop/skip, graceful stop, per-city JSON, log rotation"}
+{
+  "version": "2.2.1",
+  "min_version": "2.0.0",
+  "changelog": "2GIS source (Catalog API), required-socials tile filter, save both API keys to .env, terminal-style log with clear button, stats always visible with defaults, stepper alignment, UI polish"
+}

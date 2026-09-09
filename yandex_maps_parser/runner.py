@@ -19,6 +19,7 @@ from yandex_maps_parser.checkpoint import (
     load_global_seen, save_global_seen,
 )
 from yandex_maps_parser.enrichment import collect_candidates, enrich
+from yandex_maps_parser.twogis import collect_candidates_2gis, reset_field_fallback as _2gis_reset_fields
 from yandex_maps_parser.http_client import _worker_client, reset_stats, _init_client_pool
 from yandex_maps_parser.browser_client import init_browser as _init_browser, close_browser as _close_browser, is_available as _browser_ready
 from yandex_maps_parser import cdp_client
@@ -31,6 +32,22 @@ from yandex_maps_parser.geocoding import geocode_city, build_grid, build_grid_in
 from yandex_maps_parser.stats import print_stats, print_limit_stats
 
 colorama_init(autoreset=True)
+
+
+def _console_print(*args, **kwargs) -> None:
+    """print() that never raises.
+
+    On Windows the console handle behind sys.stdout (wrapped by colorama
+    at import time) can be invalid or closed — e.g. when the Flask app is
+    started detached or the console window goes away — and any write,
+    even a bare print(), then raises OSError(22, 'Invalid argument').
+    Console output is cosmetic, so swallow the error instead of letting
+    it abort the whole search run.
+    """
+    try:
+        print(*args, **kwargs)
+    except (OSError, ValueError):
+        pass
 
 # Start memory tracking for analytics (if available)
 try:
@@ -56,10 +73,22 @@ def run() -> None:
     state.syslog(f"  validate_socials={state.VALIDATE_SOCIALS}, proxies={len(state.PROXIES)}")
     state.syslog(f"  output: csv={state.OUTPUT_CSV}, json={state.OUTPUT_JSON}, excel={state.OUTPUT_EXCEL}, map={state.OUTPUT_MAP}")
     state.syslog(f"  social_mode={state.SOCIAL_MODE}, fetch_detail={state.FETCH_DETAIL}")
+    state.syslog(f"  source={state.SOURCE}")
 
-    # Web: minimal user-facing header
-    print()
+    if state.SOURCE == "2gis":
+        state.syslog(f"twogis key: {'set (' + str(len(state.TWOGIS_API_KEY)) + ' chars)' if state.TWOGIS_API_KEY else 'MISSING'}")
+    if state.SOURCE == "2gis" and not state.TWOGIS_API_KEY:
+        state.warn("TWOGIS_API_KEY не задан — используется источник «Яндекс.Карты». Добавьте ключ в .env (dev.2gis.ru).")
+        state.SOURCE = "yandex"
+
+    # Web: minimal user-facing header (guarded — a broken Windows
+    # console handle must never kill the run, see _console_print).
+    _console_print()
     state.info(f"  🔍 Поиск в «{state.CITY}» — запросы: {', '.join(state.SEARCH_QUERIES)}")
+    if state.SOURCE == "2gis":
+        state.info("  🗺  Источник: 2GIS (официальный API — соцсети и сайты уже в ответе)")
+    else:
+        state.info("  🗺  Источник: Яндекс.Карты")
 
     state.info(f"  Геокодирую «{state.CITY}»…")
     coords = geocode_city(state.CITY)
@@ -266,10 +295,18 @@ def run() -> None:
 
             pbar_search.set_description(f"«{query}»")
 
-            candidates, found, new_candidates = collect_candidates(
-                query, state.CITY, lat, lon, seen_urls,
-                pbar_search, pbar_detail, seen_lock=seen_lock,
-                search_session=search_session,
+            candidates, found, new_candidates = (
+                collect_candidates_2gis(
+                    query, state.CITY, lat, lon, seen_urls,
+                    pbar_search, pbar_detail, seen_lock=seen_lock,
+                    search_session=search_session,
+                )
+                if state.SOURCE == "2gis"
+                else collect_candidates(
+                    query, state.CITY, lat, lon, seen_urls,
+                    pbar_search, pbar_detail, seen_lock=seen_lock,
+                    search_session=search_session,
+                )
             )
             state.syslog(f"point result: api_found={found}, candidates={len(candidates)}, new={new_candidates}")
 
@@ -455,7 +492,37 @@ def _apply_params(params: dict) -> None:
     state.MAX_PAGES       = max(1, int(params.get("max_pages", 1)))
     state.FETCH_DETAIL    = bool(params.get("fetch_detail", True))
     state.SOCIAL_MODE      = params.get("social_mode", "all")
+    # Требуемые соцсети («С соцсетями» + плитки): бизнес должен иметь ВСЕ выбранные.
+    try:
+        from yandex_maps_parser.constants import KNOWN_PLATFORMS as _KP
+        _rs = params.get("required_socials") or []
+        state.REQUIRED_SOCIALS = {str(p) for p in _rs if str(p) in _KP} if state.SOCIAL_MODE == "with_socials" else set()
+    except Exception:
+        state.REQUIRED_SOCIALS = set()
     state.MAX_CANDIDATES_PER_CITY = max(0, int(params.get("max_candidates", 200)))
+    # Parse mode: "without_website" (only businesses without a website) | "all"
+    _pm = params.get("parse_mode", "without_website")
+    state.PARSE_MODE = _pm if _pm in ("without_website", "all") else "without_website"
+    # Data source: "yandex" | "2gis" (web form toggle)
+    _src = params.get("source", "yandex")
+    state.SOURCE = _src if _src in ("yandex", "2gis") else "yandex"
+    # 2GIS key: form value wins, otherwise the .env / config value.
+    # (state.TWOGIS_API_KEY defaults to "" — without this fallback a key
+    # stored only in .env would never reach the search module and every
+    # 2GIS run would silently fall back to Yandex.)
+    try:
+        from config import TWOGIS_API_KEY as _TGK
+    except Exception:
+        _TGK = ""
+    state.TWOGIS_API_KEY = params.get("twogis_api_key", "").strip() or _TGK or ""
+    # Excel export columns: list of field keys from the form; None = all columns
+    _ec = params.get("excel_columns")
+    if isinstance(_ec, list) and _ec:
+        from yandex_maps_parser.constants import CSV_FIELDS
+        _valid = set(CSV_FIELDS)
+        state.EXCEL_COLUMNS = {str(f) for f in _ec if str(f) in _valid}
+    else:
+        state.EXCEL_COLUMNS = None
     state.USE_BROWSER    = bool(params.get("use_browser", True))
     # When user only wants businesses WITHOUT socials, skip expensive
     # detail-page fetching — we don't need social links at all.
@@ -463,6 +530,16 @@ def _apply_params(params: dict) -> None:
         state.FETCH_DETAIL = False
     if params.get("api_key", "").strip():
         state.YANDEX_API_KEY = params["api_key"].strip()
+    else:
+        # Form field empty — fall back to the config value so a key saved
+        # via the website ("Save" in the API key field writes .env + config
+        # without a restart) is picked up by the very next run.
+        try:
+            from config import YANDEX_API_KEY as _YK
+        except Exception:
+            _YK = ""
+        if _YK:
+            state.YANDEX_API_KEY = _YK
     # Re-create semaphore to match the new MAX_WORKERS setting
     state._detail_semaphore = threading.Semaphore(state.MAX_WORKERS)
 
@@ -477,6 +554,7 @@ def _collect_run_files(started_at: float) -> list[str]:
                 os.path.isfile(fpath)
                 and os.path.getmtime(fpath) >= started_at
                 and not fname.startswith("_")
+                and not fname.startswith(".")
                 and not fname.startswith("~$")
                 and not fname.endswith(".checkpoint.json")
                 and not fname.endswith(".jsonl")
@@ -554,7 +632,17 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None) -> list[str]
 
     # Initialize browser pool for detail-page fetching (if enabled)
     # Priority: Playwright > CDP (Chrome DevTools Protocol) > httpx
-    if state.USE_BROWSER and state.FETCH_DETAIL:
+    # 2GIS: only CDP is used — for the firm-page fallback when the key has
+    # no contacts permission (demo keys strip contact_groups from the API).
+    if state.USE_BROWSER and state.FETCH_DETAIL and state.SOURCE == "2gis":
+        cdp_ok = cdp_client.init_browser(pool_size=min(state.MAX_WORKERS, 10))
+        if cdp_ok:
+            _syslog("Browser pool: CDP initialized (2GIS firm-page fallback)")
+            _weblog("info", "  🌐 2GIS: резервный режим карточек через Chrome CDP")
+        else:
+            _syslog("Browser pool: CDP failed for 2GIS mode")
+            _weblog("warn", "  ⚠ Chrome CDP недоступен: если у ключа 2GIS нет доступа к контактам, соцсети найти не получится")
+    elif state.USE_BROWSER and state.FETCH_DETAIL:
         browser_ok = _init_browser(pool_size=min(state.MAX_WORKERS, 10))
         if browser_ok:
             _syslog("Browser pool: Playwright initialized — detail pages via browser")
@@ -583,6 +671,11 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None) -> list[str]
                 from yandex_maps_parser.http_client import _anti_bot_reset, _rps_reset
                 _anti_bot_reset()
                 _rps_reset()
+            except Exception:
+                pass
+            # 2GIS: re-enable the full field set for the new city
+            try:
+                _2gis_reset_fields()
             except Exception:
                 pass
             _syslog(f"--- Город {city_idx + 1}/{total_cities}: {city} ---")

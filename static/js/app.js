@@ -13,6 +13,8 @@ let mapInited   = false;
 let startTime   = 0;
 let activeSocialFilters = new Set();
 let socialMode = 'all';  // 'all' | 'with_socials' | 'without_socials'
+let parseMode = 'without_website';  // 'without_website' | 'all' — тип организаций
+let dataSource = 'yandex';  // 'yandex' | '2gis' — источник данных
 let notificationsEnabled = false;  // toggle state
 let requiredSocials = new Set();   // AND filter: must have ALL selected socials
 let _lastCompletedCityIdx = 0;     // track last completed city for notification
@@ -68,6 +70,100 @@ document.querySelectorAll('.chk input').forEach(cb => {
 });
 
 // ═══════════════════════════════════════════
+//  Accordion sections (sidebar)
+// ═══════════════════════════════════════════
+function toggleAccordion(hdr) {
+  const sec = hdr.closest('.acc');
+  const open = sec.classList.toggle('open');
+  hdr.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
+// ═══════════════════════════════════════════
+//  Steppers (− value +)
+// ═══════════════════════════════════════════
+function stepValue(btn, dir) {
+  const stp = btn.closest('.stepper');
+  const inp = stp.querySelector('input');
+  const min = parseFloat(stp.dataset.min ?? inp.min ?? 0);
+  const max = parseFloat(stp.dataset.max ?? inp.max ?? Infinity);
+  const step = parseFloat(stp.dataset.step || inp.step || 1);
+  const dec = parseInt(stp.dataset.dec || (String(step).includes('.') ? String(step).split('.')[1].length : 0), 10);
+  let v = parseFloat(inp.value);
+  if (isNaN(v)) v = min;
+  v = Math.min(max, Math.max(min, +(v + dir * step).toFixed(dec + 1)));
+  inp.value = dec ? v.toFixed(dec) : Math.round(v);
+}
+
+// ═══════════════════════════════════════════
+//  Inline field validation helpers
+// ═══════════════════════════════════════════
+function showFieldError(wrapEl, msg) {
+  const inner = wrapEl.querySelector('textarea, input, select, .city-input-wrap');
+  if (inner) inner.classList.add('field-invalid');
+  wrapEl.classList.add('field-invalid');
+  wrapEl.classList.add('shake');
+  setTimeout(() => wrapEl.classList.remove('shake'), 350);
+  let err = wrapEl.querySelector('.field-error');
+  if (!err) {
+    err = document.createElement('div');
+    err.className = 'field-error';
+    wrapEl.appendChild(err);
+  }
+  err.textContent = '⚠ ' + msg;
+}
+
+function clearFieldError(wrapEl) {
+  if (!wrapEl) return;
+  wrapEl.querySelectorAll('.field-error').forEach(e => e.remove());
+  wrapEl.classList.remove('field-invalid');
+  wrapEl.querySelectorAll('.field-invalid').forEach(e => e.classList.remove('field-invalid'));
+}
+
+// Modern confirm dialog — replacement for window.confirm
+function uiConfirm(message, title = 'Подтвердите действие', okLabel = 'Удалить') {
+  return new Promise(resolve => {
+    const overlay = document.createElement('div');
+    overlay.className = 'ui-modal-overlay';
+    overlay.innerHTML = `
+      <div class="ui-modal">
+        <h3>${escapeHtml(title)}</h3>
+        <p>${escapeHtml(message)}</p>
+        <div class="ui-modal-btns">
+          <button type="button" class="m-cancel">Отмена</button>
+          <button type="button" class="m-ok">${escapeHtml(okLabel)}</button>
+        </div>
+      </div>`;
+    const done = val => { overlay.remove(); resolve(val); };
+    overlay.querySelector('.m-cancel').onclick = () => done(false);
+    overlay.querySelector('.m-ok').onclick = () => done(true);
+    overlay.addEventListener('click', e => { if (e.target === overlay) done(false); });
+    overlay.addEventListener('keydown', e => { if (e.key === 'Escape') done(false); });
+    document.body.appendChild(overlay);
+    overlay.querySelector('.m-ok').focus();
+  });
+}
+
+// ═══════════════════════════════════════════
+//  Toast notifications (stacked, top-right)
+// ═══════════════════════════════════════════
+function showToast(message, type) {
+  const cont = document.getElementById('toast-container');
+  if (!cont) { console.log('[' + (type || 'info') + ']', message); return; }
+  const toast = document.createElement('div');
+  toast.className = 'toast ' + (type || 'success');
+  const ok = (type || 'success') !== 'error';
+  toast.innerHTML = `<span class="t-ico">${ok ? '✓' : '✕'}</span><span>${escapeHtml(message)}</span>`;
+  cont.appendChild(toast);
+  requestAnimationFrame(() => requestAnimationFrame(() => toast.classList.add('show')));
+  const hide = () => {
+    toast.classList.remove('show');
+    setTimeout(() => toast.remove(), 350);
+  };
+  toast._autoHide = setTimeout(hide, 3500);
+  toast.onclick = hide;
+}
+
+// ═══════════════════════════════════════════
 //  Social mode toggle (form)
 // ═══════════════════════════════════════════
 function setSocialMode(mode) {
@@ -83,12 +179,87 @@ function setSocialMode(mode) {
     const hints = { all: 'Показывать все найденные бизнесы', with_socials: 'Только бизнесы с найденными соцсетями', without_socials: 'Только бизнесы без соцсетей (быстрее — без загрузки деталей)' };
     hint.textContent = hints[mode] || '';
   }
-  // Show/hide social network filter checkboxes
+  // Smoothly reveal the social network tiles only for «С соцсетями»
   const netFilter = document.getElementById('social-network-filter');
-  if (netFilter) netFilter.style.display = mode === 'with_socials' ? '' : 'none';
-  if (mode !== 'with_socials') requiredSocials.clear();
+  if (netFilter) netFilter.classList.toggle('open', mode === 'with_socials');
+  if (mode !== 'with_socials') {
+    requiredSocials.clear();
+    // Clear the tile visuals too — otherwise stale checks re-appear when
+    // the user switches back to «С соцсетями».
+    document.querySelectorAll('#social-net-chk-grid .soc-tile.on').forEach(t => {
+      t.classList.remove('on');
+      const cb = t.querySelector('input[type=checkbox]');
+      if (cb) cb.checked = false;
+    });
+  }
   // Re-filter table if results exist
   if (allResults.length) filterTable();
+}
+
+// ═══════════════════════════════════════════
+//  Parse-mode toggle: «Только без сайтов» / «Все организации»
+// ═══════════════════════════════════════════
+function setParseMode(mode) {
+  parseMode = mode;
+  document.querySelectorAll('.parse-mode-opt').forEach(el => {
+    const radio = el.querySelector('input[type=radio]');
+    const isActive = radio.value === mode;
+    el.classList.toggle('active', isActive);
+    radio.checked = isActive;
+  });
+  const hint = document.getElementById('parse-mode-hint');
+  if (hint) {
+    hint.textContent = mode === 'all'
+      ? 'Парсить все организации, независимо от наличия сайта'
+      : 'Находить только компании без собственного сайта — ваши потенциальные клиенты';
+  }
+}
+
+// ═══════════════════════════════════════════
+//  Data-source toggle: Яндекс.Карты / 2GIS
+// ═══════════════════════════════════════════
+let _twogisKeyPresent = null;  // null = not yet checked; else bool
+function setDataSource(src) {
+  dataSource = src;
+  document.querySelectorAll('.source-mode-opt').forEach(el => {
+    const radio = el.querySelector('input[type=radio]');
+    const isActive = radio.value === src;
+    el.classList.toggle('active', isActive);
+    radio.checked = isActive;
+  });
+  const hint = document.getElementById('source-hint');
+  if (hint) {
+    const keySpan = '<span class="source-hint-key" id="source-key-state"></span>';
+    hint.innerHTML = src === '2gis'
+      ? `2GIS: официальный API (быстрый поиск). Ключ без доступа к контактам — соцсети добираются с карточек 2ГИС через Chrome<br>${keySpan}`
+      : 'Яндекс.Карты: поиск через Search API, соцсети собираются с карточек организаций (медленнее)';
+  }
+  if (src === '2gis') refreshSourceKeyState();
+}
+
+// Show whether a 2GIS key is available (.env or the advanced-settings field)
+function refreshSourceKeyState() {
+  const el = document.getElementById('source-key-state');
+  if (!el) return;
+  const local = ((document.getElementById('f-2gis-key') || {}).value || '').trim();
+  if (local) {
+    el.textContent = 'Ключ указан в настройках — будет использован он';
+    el.classList.remove('missing');
+    return;
+  }
+  const firstTime = _twogisKeyPresent === null;
+  fetch('/twogis/key-status')
+    .then(r => r.json())
+    .then(j => {
+      _twogisKeyPresent = !!j.present;
+      el.textContent = _twogisKeyPresent
+        ? 'Ключ найден в .env — можно запускать'
+        : 'Ключ не найден: добавьте TWOGIS_API_KEY в .env или поле ниже, иначе поиск пойдёт через Яндекс';
+      el.classList.toggle('missing', !_twogisKeyPresent);
+    })
+    .catch(() => {
+      if (firstTime) el.textContent = '';
+    });
 }
 
 // ═══════════════════════════════════════════
@@ -98,13 +269,22 @@ function initSocialNetCheckboxes() {
   const grid = document.getElementById('social-net-chk-grid');
   if (!grid) return;
   grid.innerHTML = Object.entries(SLABELS).map(([key, label]) =>
-    `<label class="chk"><input type="checkbox" value="${key}" onchange="toggleRequiredSocial('${key}', this.checked)">${label}</label>`
+    `<label class="soc-tile soc-tile-sm" style="--tile:${SOCIALS[key] || '#9aa'}" onclick="event.preventDefault();toggleRequiredSocial('${key}', this)" title="${escapeHtml(SNAMES[key] || label)}">
+       <span class="soc-ico">${label}</span>
+       <span class="soc-name">${SNAMES[key] || label}</span>
+       <span class="soc-mark">✓</span>
+       <input type="checkbox" value="${key}" style="display:none" data-soc-key="${key}">
+     </label>`
   ).join('');
 }
 
-function toggleRequiredSocial(key, checked) {
+function toggleRequiredSocial(key, tileEl) {
+  const cb = tileEl ? tileEl.querySelector('input[type=checkbox]') : null;
+  const checked = cb ? !cb.checked : !requiredSocials.has(key);
+  if (cb) cb.checked = checked;
   if (checked) requiredSocials.add(key);
   else requiredSocials.delete(key);
+  if (tileEl) tileEl.classList.toggle('on', checked);
   if (allResults.length) filterTable();
 }
 
@@ -354,7 +534,7 @@ function removeCity(idx) {
 function toggleNotifications() {
   if (!('Notification' in window)) return;
   if (Notification.permission === 'denied') {
-    alert('Уведомления запрещены браузером. Разрешите их в настройках браузера.');
+    showToast('Уведомления запрещены браузером. Разрешите их в настройках браузера.', 'error');
     return;
   }
   if (notificationsEnabled) {
@@ -422,16 +602,36 @@ function hideProgress() {
 //  Log output
 // ═══════════════════════════════════════════
 const logEl = document.getElementById('log-output');
+// Long runs emit thousands of lines; without a cap the DOM grows unbounded
+// and scrolling/layout gets janky. Keep the newest MAX_LOG_LINES.
+const MAX_LOG_LINES = 1200;
+function _trimLog(el) {
+  while (el.children.length > MAX_LOG_LINES) el.removeChild(el.firstChild);
+}
 function appendLog(level, msg) {
   const ph = document.getElementById('log-ph');
   if (ph) ph.remove();
+  // Remove the «Как это работает» onboarding card once real log lines arrive.
+  const ob = document.getElementById('onboarding-screen');
+  if (ob) ob.remove();
+  // Drop the skeleton loaders — real data has arrived
+  const skel = document.getElementById('log-skeleton');
+  if (skel) skel.remove();
+  // 'sys' → default quiet-grey terminal styling; unknown levels → grey too
+  const cls = (level === 'info' || level === 'ok' || level === 'warn' || level === 'error') ? level : 'sys';
   const d = document.createElement('div');
-  d.className = 'll ' + level;
+  d.className = 'll ' + cls;
   d.textContent = msg.replace(/\x1b\[[0-9;]*m/g, '');
   logEl.appendChild(d);
+  _trimLog(logEl);
   logEl.scrollTop = logEl.scrollHeight;
 }
-function clearLog() { logEl.innerHTML = ''; }
+function clearLog() {
+  logEl.innerHTML = '';
+  const lbl = document.getElementById('term-log-lbl');
+  if (lbl) lbl.textContent = 'Лог очищен — здесь появится ход поиска';
+  renderDefaultStats();
+}
 
 // ═══════════════════════════════════════════
 //  Progress message parsing
@@ -510,6 +710,10 @@ function getParams() {
     max_pages:       +document.getElementById('f-pages').value   || 1,
     max_workers:     +document.getElementById('f-workers').value || 20,
     query_workers:   +document.getElementById('f-query-workers').value || 2,
+    max_candidates:  getMaxCandidates(),
+    parse_mode:      parseMode,
+    source:          dataSource,
+    excel_columns:   getExcelCols(),
     min_rating:      +document.getElementById('f-rating').value  || 0,
     min_reviews:     +document.getElementById('f-reviews').value || 0,
     use_grid:        document.getElementById('f-grid').checked,
@@ -520,9 +724,21 @@ function getParams() {
     collapse_chains: document.getElementById('f-collapse-chains').checked,
     min_contact:     document.getElementById('f-min-contact').checked,
     api_key:         document.getElementById('f-apikey').value.trim(),
+    twogis_api_key:  (document.getElementById('f-2gis-key') || {}).value?.trim() || '',
     social_mode:     socialMode,
     required_socials: [...requiredSocials],
   };
+}
+
+// Лимит организаций на город: защита от некорректного ввода.
+// Пустое/0/отрицательное → 200 (по умолчанию), больше 10000 → 10000.
+function getMaxCandidates() {
+  const el = document.getElementById('f-max-candidates');
+  let v = parseInt(el.value, 10);
+  if (!v || v < 1) v = 200;
+  if (v > 10000) v = 10000;
+  if (el.value !== String(v)) el.value = v;
+  return v;
 }
 
 // Reset everything that belongs to one run (fresh display on new launch,
@@ -546,17 +762,41 @@ function resetRunUI() {
 
 function startRun() {
   const params = getParams();
-  if (!params.queries.length) { alert('Введите хотя бы один запрос'); return; }
-  if (!params.cities.length)  { alert('Введите хотя бы один город'); return; }
+  clearFieldError(document.getElementById('fw-city'));
+  const queriesBox = document.getElementById('f-queries').closest('div');
+  clearFieldError(queriesBox);
+  // Live-clear: errors disappear as soon as the user edits the field again
+  document.getElementById('f-queries').addEventListener('input', () => clearFieldError(queriesBox), { once: true });
+  const _cityInput = document.getElementById('f-city-input');
+  if (_cityInput) _cityInput.addEventListener('input', () => clearFieldError(document.getElementById('fw-city')), { once: true });
+  if (!params.queries.length) {
+    document.getElementById('f-queries').classList.add('field-invalid');
+    showFieldError(queriesBox, 'Введите хотя бы один запрос');
+    showToast('Введите хотя бы один запрос', 'error');
+    return;
+  }
+  if (!params.cities.length) {
+    showFieldError(document.getElementById('fw-city'), 'Введите город');
+    showToast('Введите хотя бы один город', 'error');
+    return;
+  }
 
   clearLog();
+  // Skeleton loaders while the backend spins up — replaced by real log lines
+  logEl.insertAdjacentHTML('beforeend', `
+    <div id="log-skeleton" class="log-skeleton">
+      ${['sk-w20','sk-w65','sk-w35','sk-w80','sk-w50'].map(w =>
+        `<div class="sk-row"><span class="sk-bar sk-ico" style="border-radius:50%"></span><span class="sk-bar ${w}"></span></div>`
+      ).join('')}
+    </div>`);
   allResults = []; filteredRows = [];
   if (_liveRenderTimer) { clearTimeout(_liveRenderTimer); _liveRenderTimer = null; }
   _resetTableBadge();
   document.getElementById('tbl-body').innerHTML =
     '<tr><td colspan="9" class="no-data">Ожидание результатов…</td></tr>';
-  document.getElementById('stats-body').innerHTML =
-    '<div class="no-data">Ожидание результатов…</div>';
+  // Stats keep their default zero cards during the run — numbers fill in
+  // live as cities complete.
+  renderDefaultStats();
   document.getElementById('dl-section').style.display = 'none';
   mapInited = false; if (leafMap) { leafMap.remove(); leafMap = null; }
   document.getElementById('map-container').innerHTML = '';
@@ -592,6 +832,7 @@ function startRun() {
     .then(({ok, status, data}) => {
       if (status === 409 || (data && data.error)) {
         appendLog('warn', '  [!] ' + (data.error || 'Ошибка запуска'));
+        showToast(data.error || 'Ошибка запуска', 'error');
         resetBtn(); setStatus('error','✖ Ошибка'); hideProgress();
         return;
       }
@@ -600,9 +841,18 @@ function startRun() {
         setStatus('queued', '⏳ В очереди');
         document.getElementById('btn-txt').textContent = 'В очереди…';
         setProgress(0, `Очередь: позиция ${data.position}`);
-        // Poll /status and start SSE when our queued run becomes active
+        // Poll /status and start SSE when our queued run becomes active.
+        // A deadline guards against polling forever if the run is cancelled
+        // or the queue is cleared server-side.
         const _queuedRunId = data.run_id;
+        const _pollDeadline = Date.now() + 30 * 60 * 1000; // 30 min
         const _pollInterval = setInterval(() => {
+          if (Date.now() > _pollDeadline) {
+            clearInterval(_pollInterval);
+            appendLog('warn', '  [!] Ожидание в очереди прервано по таймауту. Запустите поиск заново.');
+            resetBtn(); setStatus('stopped', '⏹ Тапмаут очереди'); hideProgress();
+            return;
+          }
           fetch('/status').then(r => r.json()).then(s => {
             if (s.active_run === _queuedRunId || !s.queued) {
               clearInterval(_pollInterval);
@@ -884,7 +1134,10 @@ function onRunDone(msg) {
     const seen = new Set();
     return a.concat(b).filter(r => {
       if (!r || typeof r !== 'object') return false;
-      const k = r.yandex_maps_url || (r.name + '|' + r.address);
+      // Only business-shaped records belong in the table (guards against
+      // stray entries like search-history items with no name/url).
+      if (!r.name && !r.yandex_maps_url && !r.twogis_url) return false;
+      const k = r.yandex_maps_url || r.twogis_url || (r.name + '|' + r.address);
       if (!k || seen.has(k)) return false;
       seen.add(k);
       return true;
@@ -951,6 +1204,8 @@ const SOCIALS = {vk:'#4C75A3',instagram:'#C13584',facebook:'#1877F2',telegram:'#
   youtube:'#FF0000',tiktok:'#010101',ok:'#EE8208',twitter:'#14171A',whatsapp:'#25D366'};
 const SLABELS = {vk:'VK',instagram:'IG',facebook:'FB',telegram:'TG',
   youtube:'YT',tiktok:'TT',ok:'OK',twitter:'TW',whatsapp:'WA'};
+const SNAMES = {vk:'ВКонтакте',instagram:'Instagram',facebook:'Facebook',telegram:'Telegram',
+  youtube:'YouTube',tiktok:'TikTok',ok:'Одноклассники',twitter:'Twitter / X',whatsapp:'WhatsApp'};
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, ch => ({
@@ -1125,7 +1380,7 @@ function renderPage() {
   }
 
   tbody.innerHTML = slice.map((r, i) => {
-    const rawReviewUrl = r.yandex_maps_url || '';
+    const rawReviewUrl = r.yandex_maps_url || r.twogis_url || '';
     const reviewUrl = escapeHtml(rawReviewUrl);
     const isRev = rawReviewUrl && reviewedState[rawReviewUrl];
     return `
@@ -1135,7 +1390,7 @@ function renderPage() {
         data-review-url="${reviewUrl}"
         onchange="toggleReviewed(this.dataset.reviewUrl, this)"></td>
       <td>${start + i + 1}</td>
-      <td><a href="${escapeHtml(safeUrl(r.yandex_maps_url))}" target="_blank" rel="noopener noreferrer" style="color:var(--g);font-weight:600;text-decoration:none">${escapeHtml(r.name || '—')}</a></td>
+      <td><a href="${escapeHtml(safeUrl(r.yandex_maps_url || r.twogis_url))}" target="_blank" rel="noopener noreferrer" style="color:var(--g);font-weight:600;text-decoration:none">${escapeHtml(r.name || '—')}</a></td>
       <td style="color:var(--muted)">${escapeHtml(r.category || '—')}</td>
       <td>${escapeHtml(r.address || '—')}</td>
       <td>${escapeHtml(r.phone || '—')}</td>
@@ -1200,7 +1455,7 @@ function exportFiltered(fmt) {
     a.remove();
     URL.revokeObjectURL(a.href);
   })
-  .catch(e => alert('Ошибка экспорта: ' + e.message));
+  .catch(e => showToast('Ошибка экспорта: ' + e.message, 'error'));
 }
 
 // ═══════════════════════════════════════════
@@ -1232,8 +1487,8 @@ function initMap() {
          ${r.rating   ? `<div style="color:#f5a623">★ ${escapeHtml(r.rating)}${r.reviews ? ' · '+escapeHtml(r.reviews)+' отз.' : ''}</div>` : ''}
          ${r.address  ? `<div style="font-size:11px">📍 ${escapeHtml(r.address)}</div>` : ''}
          ${r.phone    ? `<div style="font-size:11px">📞 ${escapeHtml(r.phone)}</div>`   : ''}
-        ${socials    ? `<div style="margin-top:5px">${socials}</div>`       : ''}
-         ${r.yandex_maps_url ? `<div style="margin-top:6px"><a href="${escapeHtml(safeUrl(r.yandex_maps_url))}" target="_blank" rel="noopener noreferrer" style="font-size:11px;color:#c0392b">Открыть на Я.Картах ↗</a></div>` : ''}
+        ${socials    ? `<div style="margin-top:5px">${socials}</div>`       : ''}          ${r.twogis_url ? `<div style="margin-top:6px"><a href="${escapeHtml(safeUrl(r.twogis_url))}" target="_blank" rel="noopener noreferrer" style="font-size:11px;color:#0d7d4d">Открыть в 2ГИС ↗</a></div>` : ''}
+          ${r.yandex_maps_url ? `<div style="margin-top:6px"><a href="${escapeHtml(safeUrl(r.yandex_maps_url))}" target="_blank" rel="noopener noreferrer" style="font-size:11px;color:#c0392b">Открыть на Я.Картах ↗</a></div>` : ''}
       </div>`;
    L.marker([lat,lon]).addTo(leafMap).bindPopup(popup).bindTooltip(escapeHtml(r.name||''));
   });
@@ -1248,6 +1503,30 @@ function initMap() {
 //  Stats
 // ═══════════════════════════════════════════
 const CAT_COLORS = ['#1A6B3C','#2980b9','#8e44ad','#c0392b','#d35400','#16a085','#2c3e50','#27ae60','#f39c12','#7f8c8d'];
+
+// ═══════════════════════════════════════
+//  Default stats (always visible, even before the first search)
+// ═══════════════════════════════════════
+function renderDefaultStats() {
+  const body = document.getElementById('stats-body');
+  if (!body) return;
+  body.innerHTML = `
+    <div class="stat-cards">
+      <div class="stat-card"><div class="num">0</div><div class="lbl">Всего найдено</div></div>
+      <div class="stat-card"><div class="num">0</div><div class="lbl">С соцсетями</div></div>
+      <div class="stat-card"><div class="num">0</div><div class="lbl">Через taplink</div></div>
+      <div class="stat-card"><div class="num">0</div><div class="lbl">С рейтингом</div></div>
+      <div class="stat-card"><div class="num">—</div><div class="lbl">Время</div></div>
+    </div>
+    <div class="stat-section">
+      <h3>По соцсетям</h3>
+      <div class="no-data" style="padding:18px 12px">Данные появятся после запуска поиска</div>
+    </div>
+    <div class="stat-section">
+      <h3>Топ категорий</h3>
+      <div class="no-data" style="padding:18px 12px">Данные появятся после запуска поиска</div>
+    </div>`;
+}
 
 function renderStats(data, elapsed, skippedCities) {
   if (!data.length) return;
@@ -1406,6 +1685,7 @@ function getCurrentSettings() {
     pages:    document.getElementById('f-pages').value,
     workers:  document.getElementById('f-workers').value,
     queryWorkers: document.getElementById('f-query-workers').value,
+    maxCandidates: document.getElementById('f-max-candidates').value,
     rating:   document.getElementById('f-rating').value,
     reviews:  document.getElementById('f-reviews').value,
     grid:     document.getElementById('f-grid').checked,
@@ -1416,6 +1696,7 @@ function getCurrentSettings() {
     collapseChains: document.getElementById('f-collapse-chains').checked,
     minContact:     document.getElementById('f-min-contact').checked,
     socialMode: socialMode,
+    parseMode: parseMode,
      // API keys are entered for the current run only and are never persisted.
   };
 }
@@ -1433,6 +1714,7 @@ function applySettings(s) {
   if (s.pages    != null) document.getElementById('f-pages').value    = s.pages;
   if (s.workers  != null) document.getElementById('f-workers').value  = s.workers;
   if (s.queryWorkers != null) document.getElementById('f-query-workers').value = s.queryWorkers;
+  if (s.maxCandidates != null) document.getElementById('f-max-candidates').value = s.maxCandidates;
   if (s.rating   != null) document.getElementById('f-rating').value   = s.rating;
   if (s.reviews  != null) document.getElementById('f-reviews').value  = s.reviews;
   if (s.grid     != null) { document.getElementById('f-grid').checked = s.grid; toggleGrid(); document.getElementById('grid-lbl').classList.toggle('on', s.grid); }
@@ -1443,6 +1725,7 @@ function applySettings(s) {
   if (s.collapseChains != null) { document.getElementById('f-collapse-chains').checked = s.collapseChains; document.getElementById('f-collapse-chains').closest('.chk').classList.toggle('on', s.collapseChains); }
   if (s.minContact != null) { document.getElementById('f-min-contact').checked = s.minContact; document.getElementById('f-min-contact').closest('.chk').classList.toggle('on', s.minContact); }
   if (s.socialMode) setSocialMode(s.socialMode);
+  if (s.parseMode) setParseMode(s.parseMode);
    // Do not restore API keys from browser storage.
 }
 
@@ -1602,7 +1885,7 @@ function deduplicateResults() {
   const before = allResults.length;
   const seen = new Set();
   allResults = allResults.filter(r => {
-    const key = r.yandex_maps_url || (r.name + '|' + r.address);
+    const key = r.yandex_maps_url || r.twogis_url || (r.name + '|' + r.address);
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -1692,6 +1975,92 @@ function toggleColDropdown(e) {
   dd.classList.toggle('open');
 }
 
+// ═══════════════════════════════════════════
+//  Excel export columns («Выгрузка Excel» tab)
+//  Mirrors constants.CSV_FIELDS / HEADER_LABELS. Choice persists in
+//  localStorage and is sent with every run (params.excel_columns).
+// ═══════════════════════════════════════════
+const EXCEL_COLS_KEY = 'yp_excel_cols_v1';
+const EXCEL_COLUMN_DEFS = [
+  { f: 'reviewed',       l: '✓ Просмотрено' },
+  { f: 'name',           l: 'Название' },
+  { f: 'category',       l: 'Категория' },
+  { f: 'description',    l: 'Описание' },
+  { f: 'address',        l: 'Адрес' },
+  { f: 'phone',          l: 'Телефон' },
+  { f: 'hours',          l: 'Часы работы' },
+  { f: 'rating',         l: 'Рейтинг' },
+  { f: 'reviews',        l: 'Отзывов' },
+  { f: 'vk',             l: 'ВКонтакте' },
+  { f: 'instagram',      l: 'Instagram' },
+  { f: 'facebook',       l: 'Facebook' },
+  { f: 'telegram',       l: 'Telegram' },
+  { f: 'youtube',        l: 'YouTube' },
+  { f: 'tiktok',         l: 'TikTok' },
+  { f: 'ok',             l: 'Одноклассники' },
+  { f: 'twitter',        l: 'Twitter / X' },
+  { f: 'whatsapp',       l: 'WhatsApp' },
+  { f: 'other_socials',  l: 'Другие соцсети' },
+  { f: 'socials_valid',  l: 'Соцсети активны' },
+  { f: 'aggregator_url', l: 'Taplink / Linktree' },
+  { f: 'yandex_maps_url',l: 'Яндекс.Карты' },
+  { f: 'twogis_url',     l: '2ГИС' },
+  { f: 'query',          l: 'Запрос' },
+  { f: 'parsed_at',      l: 'Дата сбора' },
+];
+let enabledExcelCols = null;  // null = все столбцы; иначе Set выбранных полей
+
+function getExcelCols() {
+  return enabledExcelCols === null ? null : [...enabledExcelCols];
+}
+
+function saveExcelCols() {
+  localStorage.setItem(EXCEL_COLS_KEY,
+    JSON.stringify(enabledExcelCols === null ? null : [...enabledExcelCols]));
+}
+
+function renderExcelCols() {
+  const grid = document.getElementById('excel-cols-grid');
+  if (!grid) return;
+  const all = enabledExcelCols === null;
+  grid.innerHTML = EXCEL_COLUMN_DEFS.map(c => {
+    const on = all || enabledExcelCols.has(c.f);
+    return `<label class="chk ${on ? 'on' : ''}">
+      <input type="checkbox" ${on ? 'checked' : ''}
+        onchange="toggleExcelCol('${c.f}', this.checked)"> ${c.l}</label>`;
+  }).join('');
+  const cnt = document.getElementById('excel-cols-count');
+  if (cnt) {
+    const n = all ? EXCEL_COLUMN_DEFS.length : enabledExcelCols.size;
+    cnt.textContent = `Активно столбцов: ${n} из ${EXCEL_COLUMN_DEFS.length}`;
+  }
+}
+
+function toggleExcelCol(f, on) {
+  if (enabledExcelCols === null) {
+    enabledExcelCols = new Set(EXCEL_COLUMN_DEFS.map(c => c.f));
+  }
+  if (on) enabledExcelCols.add(f); else enabledExcelCols.delete(f);
+  saveExcelCols();
+  renderExcelCols();
+}
+
+function setAllExcelCols(on) {
+  enabledExcelCols = on ? null : new Set();
+  saveExcelCols();
+  renderExcelCols();
+}
+
+function loadExcelCols() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(EXCEL_COLS_KEY));
+    if (saved === null) enabledExcelCols = null;
+    else if (Array.isArray(saved)) enabledExcelCols = new Set(saved);
+    else enabledExcelCols = null;
+  } catch { enabledExcelCols = null; }
+  renderExcelCols();
+}
+
 document.addEventListener('click', e => {
   const wrap = document.querySelector('.col-toggle-wrap');
   if (wrap && !wrap.contains(e.target)) {
@@ -1699,71 +2068,62 @@ document.addEventListener('click', e => {
   }
 });
 
-// ═══════════════════════════════════════════
-//  API key save to .env
-// ═══════════════════════════════════════════
-function saveApiKey() {
+// ═════════════════════════════════════════
+//  API keys → .env (Yandex + 2GIS, one button)
+// ═════════════════════════════════════════
+function saveApiKeys() {
   const btn = document.getElementById('btn-save-key');
-  const apiKey = document.getElementById('f-apikey').value.trim();
+  const yandexKey = document.getElementById('f-apikey').value.trim();
+  const twogisKey = (document.getElementById('f-2gis-key') || {}).value?.trim() || '';
+  const status = document.getElementById('apikey-status');
 
-  if (!apiKey) { showToast('Введите ключ API', 'error'); return; }
+  if (!yandexKey && !twogisKey) {
+    showToast('Введите хотя бы один ключ', 'error');
+    return;
+  }
 
   btn.disabled = true;
-  btn.textContent = '⏳';
+  const orig = btn.textContent;
+  btn.textContent = '⏳ Сохраняю…';
 
-  fetch('/save-api-key', {
+  const show = (ok, msg) => {
+    if (!status) return;
+    status.style.display = 'block';
+    status.className = ok ? 'ok' : 'err';
+    status.textContent = (ok ? '✓ ' : '✕ ') + msg;
+  };
+
+  fetch('/save-api-keys', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({api_key: apiKey})
+    body: JSON.stringify({yandex_api_key: yandexKey, twogis_api_key: twogisKey})
   })
-  .then(r => r.json())
-  .then(data => {
-    if (data.ok) {
-      showToast(data.message || 'Ключ сохранён', 'success');
+  .then(r => r.json().then(d => ({ok: r.ok, data: d})))
+  .then(({ok, data}) => {
+    if (ok && data.ok) {
+      showToast(data.message || 'Ключи сохранены в .env', 'success');
+      show(true, data.message || 'Ключи сохранены в .env');
+      // Empty fields = «использовать сохранённое в .env» — reflect it
+      if (yandexKey) document.getElementById('f-apikey').value = '';
+      if (twogisKey) { document.getElementById('f-2gis-key').value = ''; refreshSourceKeyState(); }
     } else {
       showToast(data.error || 'Ошибка сохранения', 'error');
+      show(false, data.error || 'Ошибка сохранения');
     }
   })
   .catch(e => {
     showToast('Ошибка соединения: ' + e.message, 'error');
+    show(false, 'Ошибка соединения: ' + e.message);
   })
   .finally(() => {
     btn.disabled = false;
-    btn.textContent = '💾 Сохранить';
+    btn.textContent = orig;
   });
 }
 
-// ── Toast notification (slides from top) ──
-let _toastTimer = null;
-function showToast(message, type) {
-  // Remove existing toast and clear its timer
-  const old = document.querySelector('.toast');
-  if (old) {
-    clearTimeout(old._autoHide);
-    old.remove();
-  }
-  clearTimeout(_toastTimer);
-
-  const toast = document.createElement('div');
-  toast.className = 'toast ' + (type || 'success');
-  const icon = type === 'error' ? '✕' : '✓';
-  toast.innerHTML = `<span style="font-size:16px;font-weight:800">${icon}</span> ${message}`;
-  document.body.appendChild(toast);
-
-  // Slide in
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      toast.classList.add('show');
-    });
-  });
-
-  // Auto-hide after 3 seconds
-  toast._autoHide = setTimeout(() => {
-    toast.classList.remove('show');
-    setTimeout(() => toast.remove(), 400);
-  }, 3000);
-  _toastTimer = toast._autoHide;
-}
+// Toast notifications are implemented once, near the top of this file
+// (stacked in #toast-container, top-right). The legacy centered version
+// was removed in the UI redesign.
 
 // ═══════════════════════════════════════════
 //  Dark theme
@@ -1813,6 +2173,7 @@ function appendSendLog(level, msg) {
   d.className = 'll ' + (level || 'info');
   d.textContent = msg.replace(/\x1b\[[0-9;]*m/g, '');
   el.appendChild(d);
+  _trimLog(el);
   el.scrollTop = el.scrollHeight;
 }
 
@@ -1890,9 +2251,21 @@ function startSend() {
   const ltType  = document.getElementById('s-limit-type').value;
   const limitN  = parseInt(document.getElementById('s-limit-n').value) || 10;
 
-  if (!file)    { alert('Выберите Excel-файл с результатами'); return; }
-  if (!token)   { alert('Введите VK access_token'); return; }
-  if (!message) { alert('Шаблон сообщения не может быть пустым'); return; }
+  if (!file) {
+    showFieldError(document.getElementById('fw-send-file'), 'Выберите Excel-файл с результатами');
+    showToast('Выберите Excel-файл с результатами', 'error');
+    return;
+  }
+  if (!token) {
+    showFieldError(document.getElementById('fw-send-token'), 'Введите ключ доступа VK');
+    showToast('Введите VK access_token', 'error');
+    return;
+  }
+  if (!message) {
+    showFieldError(document.getElementById('fw-send-msg'), 'Шаблон сообщения не может быть пустым');
+    showToast('Шаблон сообщения не может быть пустым', 'error');
+    return;
+  }
 
   clearSendLog();
   saveSenderConfig();
@@ -2057,9 +2430,13 @@ function showUpdateBanner(newVer, changelog, url) {
   // Set initial social mode active state + social net checkboxes
   initSocialNetCheckboxes();
   setSocialMode(socialMode);
+  setParseMode(parseMode);
   renderPresets();
+  loadExcelCols();
   loadReviewed();
   loadColState();
+  // Stats tab shows zero cards right away — before any search
+  renderDefaultStats();
   // Initialize notifications toggle state from browser permission
   notificationsEnabled = Notification && Notification.permission === 'granted';
   updateNotifyBtn();
@@ -2092,8 +2469,6 @@ function showUpdateBanner(newVer, changelog, url) {
   // Reload files list when switching to sender tab
   const _origShowTab = showTab;
   showTab = function(name) {
-    document.querySelector('.right-col').classList.add('revealed');
-    document.getElementById('onboarding-screen').style.display = 'none';
     _origShowTab(name);
     if (name === 'sender') loadSenderFiles();
   };
@@ -2117,8 +2492,8 @@ function loadHistory() {
         return;
       }
       el.innerHTML = `
-        <div style="margin-bottom:12px;font-size:12px;color:#666">
-          Всего поисков: ${stats.total} · Найдено записей: ${stats.total_results} · Общее время: ${Math.round(stats.total_time / 60)}мин
+        <div class="hist-summary">
+          Всего поисков: <b>${stats.total}</b> · Найдено записей: <b>${stats.total_results}</b> · Общее время: <b>${Math.round(stats.total_time / 60)}мин</b>
         </div>
         ${history.map(h => renderHistoryEntry(h)).join('')}
       `;
@@ -2128,39 +2503,71 @@ function loadHistory() {
     });
 }
 
+function toggleHistoryCard(btn) {
+  btn.closest('.hist-card').classList.toggle('open');
+}
+
+// Download every file of a run as one ZIP archive
+function downloadRunZip(files) {
+  if (!files || !files.length) { showToast('Нет файлов для скачивания', 'error'); return; }
+  const a = document.createElement('a');
+  a.href = '/download-zip?files=' + encodeURIComponent(files.join('|'));
+  a.download = '';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  showToast(`Архив с ${files.length} файл(ами) готовится…`, 'success');
+}
+
 function renderHistoryEntry(entry) {
   const date = new Date(entry.timestamp * 1000);
   const dateStr = date.toLocaleDateString('ru-RU') + ' ' + date.toLocaleTimeString('ru-RU', {hour: '2-digit', minute: '2-digit'});
-  const statusIcon = entry.status === 'completed' ? '✅' : entry.status === 'stopped' ? '⏹' : '❓';
-  const statusText = entry.status === 'completed' ? 'Завершён' : entry.status === 'stopped' ? 'Остановлен' : entry.status;
+  const isDone = entry.status === 'completed';
+  const statusIcon = isDone ? '✔' : entry.status === 'stopped' ? '⏹' : '?';
+  const statusText = isDone ? 'Завершён' : entry.status === 'stopped' ? 'Остановлен' : (entry.status || '—');
+  const statusCls = isDone ? 'completed' : entry.status === 'stopped' ? 'stopped' : 'unknown';
   const elapsedMin = Math.round(entry.elapsed_sec / 60);
   const elapsedSec = Math.round(entry.elapsed_sec % 60);
   const timeStr = elapsedMin > 0 ? `${elapsedMin}м ${elapsedSec}с` : `${elapsedSec}с`;
+  const userFiles = (entry.files || []).filter(f => !f.startsWith('_'));
 
   return `
-    <div style="background:#f8fffe;border:1px solid #e0e8e5;border-radius:8px;padding:12px 16px;margin-bottom:8px">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
-        <div style="flex:1">
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
-            <span style="font-size:14px">${statusIcon}</span>
-            <span style="font-weight:700;color:#333;font-size:13px">${entry.queries.join(', ')}</span>
-            <span style="font-size:11px;color:#888">${dateStr}</span>
+    <div class="hist-card" data-run="${escapeHtml(entry.run_id || '')}">
+      <button type="button" class="hist-hdr" onclick="toggleHistoryCard(this)" aria-expanded="false">
+        <span class="hist-status ${statusCls}">${statusIcon}</span>
+        <span class="hist-head">
+          <span class="hist-title">${escapeHtml(entry.queries.join(', '))}</span>
+          <span class="hist-meta">
+            <span>🏙 <b>${entry.cities.length}</b> ${entry.cities.length === 1 ? 'город' : 'города'}</span>
+            <span>📊 <b>${entry.results_count}</b> записей</span>
+            <span>⏱ ${timeStr}</span>
+            <span>${dateStr}</span>
+          </span>
+        </span>
+        <span class="hist-chip ${statusCls}">${statusText}</span>
+        <span class="hist-chev"></span>
+      </button>
+      <div class="hist-body"><div>
+        <div class="hist-detail">
+          <div class="hist-sub">
+            <b>Города:</b> ${entry.cities.map(escapeHtml).join(', ')}<br>
+            <b>Режим:</b> ${escapeHtml(entry.social_mode || '—')} · <b>Запросы:</b> ${entry.queries.map(escapeHtml).join(', ')}
           </div>
-          <div style="font-size:12px;color:#555;margin-bottom:4px">
-            🏙 ${entry.cities.join(', ')} · 📊 ${entry.results_count} записей · ⏱ ${timeStr}
+          <div class="hist-dl-row">
+            <span class="hist-dl-lbl">Файлы:</span>
+            ${userFiles.length
+              ? `<a class="hist-dl-all" href="#" data-run-files="${escapeHtml(userFiles.join('|'))}" onclick="event.preventDefault();downloadRunZip(this.dataset.runFiles.split('|'))">⬇ Скачать все разом</a>`
+              : `<span class="hist-dl-lbl" style="text-transform:none;letter-spacing:0">нет файлов</span>`}
+            ${userFiles.map(f =>
+              `<a class="hist-dl" href="/download/${encodeURIComponent(f)}" download>${fileIcon(f)} ${escapeHtml(f.split('_').pop())}</a>`
+            ).join('')}
           </div>
-          <div style="font-size:11px;color:#888">
-            Режим: ${entry.social_mode} · Статус: ${statusText}
+          <div class="hist-dl-row">
+            <button class="hist-btn blue" data-run="${escapeHtml(entry.run_id || '')}" onclick="rerunSearch(this.dataset.run)">🔄 Повторить поиск</button>
+            <button class="hist-btn red" data-run="${escapeHtml(entry.run_id || '')}" onclick="deleteHistory(this.dataset.run)">🗑 Удалить</button>
           </div>
         </div>
-        <div style="display:flex;gap:6px;flex-shrink:0">
-          ${entry.files && entry.files.length ? entry.files.filter(f => !f.startsWith('_')).map(f =>
-            `<a href="/download/${encodeURIComponent(f)}" download style="padding:4px 8px;background:#e8f5e9;color:#2e7d32;border-radius:4px;text-decoration:none;font-size:11px;font-weight:600">📥 ${f.split('_').pop()}</a>`
-          ).join('') : ''}
-          <button onclick="rerunSearch('${entry.run_id}')" style="padding:4px 8px;background:#2196f3;color:white;border:none;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600">🔄 Повтор</button>
-          <button onclick="deleteHistory('${entry.run_id}')" style="padding:4px 8px;background:#f44336;color:white;border:none;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600">🗑</button>
-        </div>
-      </div>
+      </div></div>
     </div>`;
 }
 
@@ -2179,25 +2586,26 @@ function rerunSearch(runId) {
       showTab('log');
       startRun();
     })
-    .catch(err => alert('Ошибка: ' + err.message));
+    .catch(err => showToast('Не удалось повторить поиск: ' + err.message, 'error'));
 }
 
-function deleteHistory(runId) {
-  if (!confirm('Удалить эту запись из истории?')) return;
+async function deleteHistory(runId) {
+  if (!(await uiConfirm('Удалить эту запись из истории?', 'Удалить запись', 'Удалить'))) return;
   fetch(`/history/${runId}`, { method: 'DELETE' })
-    .then(() => { loadHistory(); loadCityHistoryMeta(); })
-    .catch(() => {});
+    .then(() => { loadHistory(); loadCityHistoryMeta(); showToast('Запись удалена', 'success'); })
+    .catch(() => showToast('Не удалось удалить запись', 'error'));
 }
 
-function clearAllHistory() {
-  if (!confirm('Удалить ВСЮ историю поисков? Информация о поиске по городам в списке тоже будет стёрта.')) return;
+async function clearAllHistory() {
+  if (!(await uiConfirm('Удалить ВСЮ историю поисков? Информация о поиске по городам в списке тоже будет стёрта.', 'Очистить историю', 'Очистить всё'))) return;
   fetch('/history/clear', { method: 'POST' })
     .then(r => r.json())
     .then(data => {
       loadHistory();
       loadCityHistoryMeta();
+      showToast('История очищена', 'success');
     })
-    .catch(err => alert('Ошибка: ' + err.message));
+    .catch(err => showToast('Ошибка: ' + err.message, 'error'));
 }
 
 // ── Seen store management ────────────────────────
@@ -2218,19 +2626,19 @@ function loadSeenStatus() {
     .catch(() => {});
 }
 
-function clearSeenStore() {
-  if (!confirm('Очистить кэш бизнесов? Все города будут обработаны заново.')) return;
+async function clearSeenStore() {
+  if (!(await uiConfirm('Очистить кэш бизнесов? Все города будут обработаны заново.', 'Очистить кэш', 'Очистить'))) return;
   fetch('/seen/clear', { method: 'POST' })
     .then(r => r.json())
     .then(data => {
       if (data.ok) {
         const el = document.getElementById('seen-status');
         if (el) { el.style.display = 'none'; el.innerHTML = ''; }
-        alert(`Кэш очищен: удалено ${data.cleared} бизнесов. Теперь все города будут обработаны заново.`);
+        showToast(`Кэш очищен: удалено ${data.cleared} бизнесов. Все города будут обработаны заново.`, 'success');
         // Labels are derived from /history — refresh so a cleared store
         // doesn't leave stale "last searched" lines in the dropdown.
         loadCityHistoryMeta();
       }
     })
-    .catch(err => alert('Ошибка: ' + err.message));
+    .catch(err => showToast('Ошибка: ' + err.message, 'error'));
 }

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Яндекс.Карты — Парсер</title>
+<title>Поиск клиентов — Яндекс.Карты и 2ГИС</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -15,7 +15,7 @@
 
 <!-- ── Header ── -->
 <header>
-  <h1>Яндекс.Карты — поиск новых клиентов</h1>
+  <h1>Поиск клиентов <span class="hdr-sep">·</span> <span class="hdr-src">Яндекс.Карты + 2ГИС</span></h1>
   <div class="hdr-right">
     <span id="app-version">v{{ APP_VERSION }}</span>
     <span id="status-badge">Готово</span>
@@ -40,7 +40,7 @@
     <span style="font-size:15px;font-weight:800;color:var(--grn)" id="ls-found-num">0</span>
     <span style="color:var(--sub);font-weight:600"> найдено</span>
   </span>
-  <span class="live-pill" id="ls-stage" style="color:var(--sub);font-weight:600;font-style:italic" id="ls-stage-txt">—</span>
+  <span class="live-pill" id="ls-stage" style="color:var(--sub);font-weight:600;font-style:italic">—</span>
   <span style="margin-left:auto;display:flex;align-items:center;gap:5px;color:var(--muted);font-size:11.5px;font-weight:600">
     <span class="spin" style="width:10px;height:10px;border-width:1.5px"></span> работает
   </span>
@@ -61,115 +61,252 @@
       <div class="form-body">
         <p class="intro-copy">Находим компании без сайта — чтобы предложить им свои услуги</p>
 
-        <div>
-          <label class="lbl" for="f-queries">Кого будем искать?</label>
-          <textarea id="f-queries" placeholder="кафе&#10;ресторан&#10;парикмахерская">кафе</textarea>
-          <div class="hint">Напишите по одному виду бизнеса в строке</div>
-        </div>
+        <!-- ══ 01 · Основные параметры ══ -->
+        <section class="acc open" id="acc-basic">
+          <button type="button" class="acc-hdr" onclick="toggleAccordion(this)" aria-expanded="true">
+            <span class="acc-num">01</span>
+            <span class="acc-title">Основные параметры</span>
+            <span class="acc-chev" aria-hidden="true"></span>
+          </button>
+          <div class="acc-body">
+            <div class="acc-inner">
+              <div>
+                <label class="lbl" for="f-queries">Кого будем искать?</label>
+                <textarea id="f-queries" placeholder="кафе&#10;ресторан&#10;парикмахерская">кафе</textarea>
+                <div class="hint">Напишите по одному виду бизнеса в строке</div>
+              </div>
 
-        <div>
-          <label class="lbl" for="f-city">Где ищем?</label>
-          <div id="city-select-box"></div>
-          <div class="hint">Выберите города из списка или введите вручную. Поиск пройдёт по каждому городу последовательно</div>
-        </div>
+              <div id="fw-city">
+                <label class="lbl">Где ищем?</label>
+                <div id="city-select-box"></div>
+                <div class="hint">Выберите города из списка или введите вручную. Поиск пройдёт по каждому городу последовательно</div>
+              </div>
 
-        <details class="advanced-settings">
-          <summary>Дополнительные настройки</summary>
-          <div class="dbody">
-            <div>
-              <label class="lbl">Сохранённые настройки</label>
-              <div class="preset-bar" id="preset-bar">
-                <button class="btn-sm" onclick="savePreset()">Сохранить набор</button>
+              <div>
+                <label class="lbl">Источник данных</label>
+                <div class="source-mode-bar">
+                  <label class="source-mode-opt active" data-src="yandex" onclick="setDataSource('yandex')">
+                    <input type="radio" name="data_source" value="yandex" checked style="display:none">
+                    <span class="src-dot"></span><span>Яндекс.Карты</span>
+                  </label>
+                  <label class="source-mode-opt" data-src="2gis" onclick="setDataSource('2gis')">
+                    <input type="radio" name="data_source" value="2gis" style="display:none">
+                    <span class="src-dot"></span><span>2GIS</span>
+                  </label>
+                </div>
+                <div class="hint" id="source-hint">Яндекс.Карты: поиск через Search API, соцсети собираются с карточек организаций (медленнее)</div>
+              </div>
+
+              <div>
+                <label class="lbl">Тип организаций</label>
+                <div class="social-mode-bar">
+                  <label class="parse-mode-opt active" onclick="setParseMode('without_website')">
+                    <input type="radio" name="parse_mode" value="without_website" checked style="display:none">
+                    <span>🚫 Только без сайтов</span>
+                  </label>
+                  <label class="parse-mode-opt" onclick="setParseMode('all')">
+                    <input type="radio" name="parse_mode" value="all" style="display:none">
+                    <span>🌐 Все организации</span>
+                  </label>
+                </div>
+                <div class="hint" id="parse-mode-hint">Находить только компании без собственного сайта — ваши потенциальные клиенты</div>
               </div>
             </div>
-            <div>
-              <div class="sec" style="margin-bottom:8px">Форматы результата</div>
+          </div>
+        </section>
+
+        <!-- ══ 02 · Соцсети и API ══ -->
+        <section class="acc open" id="acc-social">
+          <button type="button" class="acc-hdr" onclick="toggleAccordion(this)" aria-expanded="true">
+            <span class="acc-num">02</span>
+            <span class="acc-title">Соцсети и API</span>
+            <span class="acc-chev" aria-hidden="true"></span>
+          </button>
+          <div class="acc-body">
+            <div class="acc-inner">
+              <div>
+                <label class="lbl">Кого добавить в список</label>
+                <div class="social-mode-bar">
+                  <label class="social-mode-opt" onclick="setSocialMode('all')">
+                    <input type="radio" name="social_mode" value="all" checked style="display:none">
+                    <span>Все</span>
+                  </label>
+                  <label class="social-mode-opt" onclick="setSocialMode('with_socials')">
+                    <input type="radio" name="social_mode" value="with_socials" style="display:none">
+                    <span>С соцсетями</span>
+                  </label>
+                  <label class="social-mode-opt" onclick="setSocialMode('without_socials')">
+                    <input type="radio" name="social_mode" value="without_socials" style="display:none">
+                    <span>Без соцсетей</span>
+                  </label>
+                </div>
+                <div class="hint" id="social-mode-hint">Показывать все найденные бизнесы</div>
+              </div>
+
+              <!-- Social network tiles: revealed only for «С соцсетями» -->
+              <div id="social-network-filter" class="tiles-reveal">
+                <div class="tiles-inner">
+                  <div class="tiles-title">Какие соцсети обязательны</div>
+                  <div class="tiles-grid" id="social-net-chk-grid"></div>
+                  <div class="hint" id="social-net-hint">Отметьте нужные — в список попадут только те, у кого есть ВСЕ отмеченные</div>
+                </div>
+              </div>
+
+              <label class="chk"><input type="checkbox" id="f-validate">
+                Проверять активность соцсетей</label>
+
+              <div>
+                <label class="lbl">API-ключ Яндекса</label>
+                <input type="text" id="f-apikey" placeholder="ваш ключ API (необязательно)">
+              </div>
+              <div>
+                <label class="lbl">API-ключ 2GIS</label>
+                <input type="text" id="f-2gis-key" placeholder="ключ с dev.2gis.ru (для источника 2GIS)">
+                <div class="hint">оба ключа подставятся из .env автоматически, если оставить поля пустыми</div>
+              </div>
+              <button id="btn-save-key" onclick="saveApiKeys()" title="Записать оба ключа в .env — они сохранятся между запусками">💾 Сохранить ключи в .env</button>
+              <div id="apikey-status"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ══ 03 · Форматы результата ══ -->
+        <section class="acc" id="acc-formats">
+          <button type="button" class="acc-hdr" onclick="toggleAccordion(this)" aria-expanded="false">
+            <span class="acc-num">03</span>
+            <span class="acc-title">Форматы результата</span>
+            <span class="acc-chev" aria-hidden="true"></span>
+          </button>
+          <div class="acc-body">
+            <div class="acc-inner">
               <div class="chk-grid">
                 <label class="chk on"><input type="checkbox" id="f-excel" checked> Excel (.xlsx)</label>
                 <label class="chk on"><input type="checkbox" id="f-json" checked> JSON</label>
                 <label class="chk"><input type="checkbox" id="f-csv"> CSV</label>
                 <label class="chk"><input type="checkbox" id="f-map"> HTML-карта</label>
               </div>
-            </div>
-
-            <div class="sec">Точность поиска</div>
-            <div class="row2">
-              <div><label class="lbl">Страниц (×50)</label>
-                <input type="number" id="f-pages"   value="1"  min="1" max="20"></div>
-              <div><label class="lbl">Потоков</label>
-                <input type="number" id="f-workers" value="20" min="1" max="50"></div>
-            </div>
-            <div class="row2">
-              <div><label class="lbl">Параллельных запросов</label>
-                <input type="number" id="f-query-workers" value="2" min="1" max="5"></div>
-              <div class="hint" style="align-self:end">Категории обрабатываются одновременно</div>
-            </div>
-
-            <div class="sec">Кого добавить в список</div>
-            <div class="row2">
-              <div><label class="lbl">Рейтинг ≥</label>
-                <input type="number" id="f-rating"  value="0" min="0" max="5" step="0.1"></div>
-              <div><label class="lbl">Отзывов ≥</label>
-                <input type="number" id="f-reviews" value="0" min="0"></div>
-            </div>
-
-            <div class="sec">Покрытие города</div>
-            <label class="chk" id="grid-lbl">
-              <input type="checkbox" id="f-grid" onchange="toggleGrid()">
-              Покрывать всю площадь города
-            </label>
-            <div id="grid-opts" style="display:none" class="row2">
-              <div><label class="lbl">Радиус (км)</label>
-                <input type="number" id="f-grad" value="20" min="1"></div>
-              <div><label class="lbl">Шаг (км)</label>
-                <input type="number" id="f-gstep" value="5" min="1"></div>
-            </div>
-
-            <div class="sec">Режим поиска</div>
-            <div class="social-mode-bar">
-              <label class="social-mode-opt" onclick="setSocialMode('all')">
-                <input type="radio" name="social_mode" value="all" checked style="display:none">
-                <span>🌐 Все</span>
-              </label>
-              <label class="social-mode-opt" onclick="setSocialMode('with_socials')">
-                <input type="radio" name="social_mode" value="with_socials" style="display:none">
-                <span>📱 С соцсетями</span>
-              </label>
-              <label class="social-mode-opt" onclick="setSocialMode('without_socials')">
-                <input type="radio" name="social_mode" value="without_socials" style="display:none">
-                <span>🚫 Без соцсетей</span>
-              </label>
-            </div>
-            <div class="hint" id="social-mode-hint">Показывать все найденные бизнесы</div>
-            <div id="social-network-filter" style="display:none">
-              <div class="sec" style="margin-top:8px">Только с соцсетями:</div>
-              <div class="chk-grid" id="social-net-chk-grid"></div>
-              <div class="hint" id="social-net-hint">Отметьте нужные — покажем только те, у кого есть ВСЕ отмеченные</div>
-            </div>
-
-            <div class="sec">Дополнительно</div>
-            <label class="chk"><input type="checkbox" id="f-validate">
-              Проверять активность соцсетей</label>
-            <label class="chk"><input type="checkbox" id="f-resume">
-              Продолжить прерванный поиск (чекпоинт)</label>
-            <label class="chk"><input type="checkbox" id="f-collapse-chains">
-              Объединять филиалы сетей</label>
-            <label class="chk"><input type="checkbox" id="f-min-contact">
-              Только с телефоном или соцсетями</label>
-            <div>
-              <label class="lbl">API-ключ Яндекса</label>
-              <div class="apikey-row">
-                <input type="text" id="f-apikey" placeholder="ваш ключ API (необязательно)">
-                <button id="btn-save-key" onclick="saveApiKey()">💾 Сохранить</button>
+              <div>
+                <label class="lbl">Сохранённые настройки</label>
+                <div class="preset-bar" id="preset-bar">
+                  <button class="btn-sm" onclick="savePreset()">Сохранить набор</button>
+                </div>
               </div>
-              <div id="apikey-status"></div>
             </div>
-
           </div>
-        </details>
+        </section>
+
+        <!-- ══ 04 · Глубина поиска (технические параметры) ══ -->
+        <section class="acc" id="acc-tech">
+          <button type="button" class="acc-hdr" onclick="toggleAccordion(this)" aria-expanded="false">
+            <span class="acc-num">04</span>
+            <span class="acc-title">Глубина поиска <span class="acc-sub">технические параметры</span></span>
+            <span class="acc-chev" aria-hidden="true"></span>
+          </button>
+          <div class="acc-body">
+            <div class="acc-inner">
+
+              <div class="tech-box">
+                <div class="tech-box-title">Скорость и объём</div>
+                <p class="tech-box-note">Значения по умолчанию подходят для большинства задач. Увеличивайте, если готовы к более долгому поиску.</p>
+                <div class="row2 row2-align">
+                  <div>
+                    <label class="lbl">Страниц <span class="lbl-note">×50 результатов</span></label>
+                    <div class="stepper" data-min="1" data-max="20" data-step="1">
+                      <button type="button" class="stp-btn" onclick="stepValue(this,-1)" aria-label="Меньше">−</button>
+                      <input type="number" id="f-pages" value="1" min="1" max="20">
+                      <button type="button" class="stp-btn" onclick="stepValue(this,1)" aria-label="Больше">+</button>
+                    </div>
+                  </div>
+                  <div>
+                    <label class="lbl">Потоков</label>
+                    <div class="stepper" data-min="1" data-max="50" data-step="1">
+                      <button type="button" class="stp-btn" onclick="stepValue(this,-1)" aria-label="Меньше">−</button>
+                      <input type="number" id="f-workers" value="20" min="1" max="50">
+                      <button type="button" class="stp-btn" onclick="stepValue(this,1)" aria-label="Больше">+</button>
+                    </div>
+                  </div>
+                </div>
+                <div class="row2 row2-align">
+                  <div>
+                    <label class="lbl">Макс. организаций</label>
+                    <div class="stepper" data-min="1" data-max="10000" data-step="50">
+                      <button type="button" class="stp-btn" onclick="stepValue(this,-1)" aria-label="Меньше">−</button>
+                      <input type="number" id="f-max-candidates" value="200" min="1" max="10000" step="1">
+                      <button type="button" class="stp-btn" onclick="stepValue(this,1)" aria-label="Больше">+</button>
+                    </div>
+                  </div>
+                  <div>
+                    <label class="lbl">Параллельных запросов</label>
+                    <div class="stepper" data-min="1" data-max="5" data-step="1">
+                      <button type="button" class="stp-btn" onclick="stepValue(this,-1)" aria-label="Меньше">−</button>
+                      <input type="number" id="f-query-workers" value="2" min="1" max="5">
+                      <button type="button" class="stp-btn" onclick="stepValue(this,1)" aria-label="Больше">+</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="row2 row2-align">
+                  <div>
+                    <label class="lbl">Рейтинг ≥</label>
+                  <div class="stepper" data-min="0" data-max="5" data-step="0.1" data-dec="1">
+                    <button type="button" class="stp-btn" onclick="stepValue(this,-1)" aria-label="Меньше">−</button>
+                    <input type="number" id="f-rating" value="0" min="0" max="5" step="0.1">
+                    <button type="button" class="stp-btn" onclick="stepValue(this,1)" aria-label="Больше">+</button>
+                  </div>
+                </div>
+                <div>
+                  <label class="lbl">Отзывов ≥</label>
+                  <div class="stepper" data-min="0" data-max="100000" data-step="10">
+                    <button type="button" class="stp-btn" onclick="stepValue(this,-1)" aria-label="Меньше">−</button>
+                    <input type="number" id="f-reviews" value="0" min="0">
+                    <button type="button" class="stp-btn" onclick="stepValue(this,1)" aria-label="Больше">+</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="tech-box">
+                <div class="tech-box-title">Покрытие города</div>
+                <label class="chk" id="grid-lbl">
+                  <input type="checkbox" id="f-grid" onchange="toggleGrid()">
+                  Покрывать всю площадь города
+                </label>
+                <div id="grid-opts" style="display:none" class="row2">
+                  <div>
+                    <label class="lbl">Радиус (км)</label>
+                    <div class="stepper" data-min="1" data-max="100" data-step="1">
+                      <button type="button" class="stp-btn" onclick="stepValue(this,-1)" aria-label="Меньше">−</button>
+                      <input type="number" id="f-grad" value="20" min="1">
+                      <button type="button" class="stp-btn" onclick="stepValue(this,1)" aria-label="Больше">+</button>
+                    </div>
+                  </div>
+                  <div>
+                    <label class="lbl">Шаг (км)</label>
+                    <div class="stepper" data-min="1" data-max="50" data-step="1">
+                      <button type="button" class="stp-btn" onclick="stepValue(this,-1)" aria-label="Меньше">−</button>
+                      <input type="number" id="f-gstep" value="5" min="1">
+                      <button type="button" class="stp-btn" onclick="stepValue(this,1)" aria-label="Больше">+</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <div class="sec">Дополнительно</div>
+                <label class="chk"><input type="checkbox" id="f-resume">
+                  Продолжить прерванный поиск (чекпоинт)</label>
+                <label class="chk"><input type="checkbox" id="f-collapse-chains">
+                  Объединять филиалы сетей</label>
+                <label class="chk"><input type="checkbox" id="f-min-contact">
+                  Только с телефоном или соцсетями</label>
+              </div>
+
+            </div>
+          </div>
+        </section>
 
         <button id="btn-run" onclick="startRun()">
-              <span id="btn-icon">Начать</span>
+              <span id="btn-icon">🚀</span>
               <span id="btn-txt">Найти компании</span>
         </button>
 
@@ -186,24 +323,13 @@
       <code>pip install playwright && playwright install chromium</code>
       <button onclick="this.parentElement.style.display='none'">✕</button>
     </div>
-    <div id="onboarding-screen" class="onboarding">
-      <div class="onboarding-inner">
-        <div class="onboarding-mark">⌕</div>
-        <h2>Как это работает</h2>
-        <p class="onboarding-lead">Три простых шага — от поиска до первого сообщения потенциальному клиенту.</p>
-        <div class="flow-steps">
-          <div class="flow-step"><b>01</b><strong>Напишите запрос и город</strong><span>Например: «стоматологии» и «Ярославль».</span></div>
-          <div class="flow-step"><b>02</b><strong>Нажмите «Найти компании»</strong><span>Мы соберём компании без сайта с Яндекс.Карт.</span></div>
-          <div class="flow-step"><b>03</b><strong>Просмотрите результаты и отправьте сообщения</strong><span>Выберите подходящих клиентов и перейдите к рассылке.</span></div>
-        </div>
-      </div>
-    </div>
     <div class="tab-bar">
       <button class="tab-btn active" onclick="showTab('log')"    id="t-log">Ход поиска</button>
       <button class="tab-btn"        onclick="showTab('table')"  id="t-table">Результаты</button>
       <button class="tab-btn"        onclick="showTab('map')"    id="t-map">На карте</button>
       <button class="tab-btn"        onclick="showTab('stats')"  id="t-stats">Статистика</button>
       <button class="tab-btn"        onclick="showTab('history')" id="t-history">История</button>
+      <button class="tab-btn"        onclick="showTab('excel')"  id="t-excel">Выгрузка Excel</button>
       <button class="tab-btn"        onclick="showTab('sender')" id="t-sender">Отправить в VK</button>
     </div>
 
@@ -213,10 +339,34 @@
         <div class="tab-panel active" id="p-log" style="background:var(--term)">
         <div class="term-top">
           <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
-          <span class="term-lbl">Здесь появится ход поиска</span>
+          <span class="term-lbl" id="term-log-lbl">Здесь появится ход поиска</span>
+          <button class="term-clear" id="btn-clear-log" onclick="clearLog()" title="Очистить окно лога">🧹 Очистить лог</button>
         </div>
         <div id="log-output">
-          <div id="log-ph">Заполните параметры слева — и мы аккуратно соберём список компаний без сайта.</div>
+          <div id="onboarding-screen" class="onboarding">
+            <div class="onboarding-inner">
+              <div class="onboarding-mark">
+                <svg viewBox="0 0 120 96" fill="none" aria-hidden="true">
+                  <rect x="10" y="14" width="100" height="66" rx="8" class="es-map"/>
+                  <path d="M10 36h100M10 58h100M40 14v66M76 14v66" class="es-grid"/>
+                  <path d="M28 62c6-14 14-22 22-22" class="es-route"/>
+                  <circle cx="28" cy="62" r="3.4" class="es-pin-a"/>
+                  <circle cx="50" cy="40" r="3.4" class="es-pin-b"/>
+                  <circle cx="86" cy="30" r="4.4" class="es-pin-c"/>
+                  <path d="M96 44l10 10" class="es-lens-handle"/>
+                  <circle cx="90" cy="38" r="9" class="es-lens"/>
+                  <path d="M31 20l3.2 6.4L41 27.6l-6.8 1.2L31 35l-3.2-6.2-6.8-1.2 6.8-1.2z" class="es-star"/>
+                </svg>
+              </div>
+              <h2>Как это работает</h2>
+              <p class="onboarding-lead">Введите запрос в левой панели, чтобы начать сбор данных. Здесь будет отображаться живой лог вашего поиска и статус обработки городов.</p>
+              <div class="flow-steps">
+                <div class="flow-step"><b>Шаг 01</b><strong>Напишите запрос и город</strong><span>Например: «стоматологии» и «Ярославль».</span></div>
+                <div class="flow-step"><b>Шаг 02</b><strong>Нажмите «Найти компании»</strong><span>Мы соберём компании с Яндекс.Карт или 2ГИС.</span></div>
+                <div class="flow-step"><b>Шаг 03</b><strong>Просмотрите результаты и отправьте сообщения</strong><span>Выберите подходящих клиентов и перейдите к рассылке.</span></div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -302,19 +452,33 @@
 
       <!-- HISTORY -->
       <div class="tab-panel" id="p-history">
-        <div style="padding:16px">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-            <h3 style="margin:0;color:#333">История поисков</h3>
-            <div style="display:flex;gap:8px">
-              <button onclick="loadHistory()" style="padding:6px 12px;background:#2196f3;color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px">🔄 Обновить</button>
-              <button onclick="clearAllHistory()" title="Удалить все записи истории поисков" style="padding:6px 12px;background:#d32f2f;color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px">🗑 Очистить историю</button>
-              <button onclick="clearSeenStore()" title="Сбросить кэш бизнесов — повторно обработать все города" style="padding:6px 12px;background:#ff9800;color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px">🗑 Очистить кэш</button>
+        <div class="history-body">
+          <div class="history-toolbar">
+            <h3>История поисков</h3>
+            <div class="history-actions">
+              <button class="btn-sm" onclick="loadHistory()">🔄 Обновить</button>
+              <button class="btn-sm danger" onclick="clearAllHistory()" title="Удалить все записи истории поисков">🗑 Очистить историю</button>
+              <button class="btn-sm warn" onclick="clearSeenStore()" title="Сбросить кэш бизнесов — повторно обработать все города">🗑 Очистить кэш</button>
             </div>
           </div>
-          <div id="seen-status" style="padding:8px 12px;background:#fff3e0;border-radius:6px;margin-bottom:12px;font-size:12px;color:#e65100;display:none"></div>
+          <div id="seen-status" class="seen-status" style="display:none"></div>
           <div id="history-list">
             <div class="no-data">Загрузка...</div>
           </div>
+        </div>
+      </div>
+
+      <!-- EXCEL EXPORT SETTINGS -->
+      <div class="tab-panel" id="p-excel">
+        <div class="history-body">
+          <h3 class="panel-title">Настройка Excel-выгрузки</h3>
+          <p class="panel-desc">Отметьте столбцы, которые попадут в итоговый Excel-файл. Скрытые столбцы не записываются в файл. Выбор сохраняется автоматически между запусками.</p>
+          <div class="history-actions" style="margin-bottom:12px">
+            <button class="btn-sm" onclick="setAllExcelCols(true)">☑ Выбрать все</button>
+            <button class="btn-sm" onclick="setAllExcelCols(false)">☐ Снять все</button>
+            <span id="excel-cols-count" class="panel-note"></span>
+          </div>
+          <div class="chk-grid" id="excel-cols-grid"></div>
         </div>
       </div>
 
@@ -336,13 +500,7 @@
 
               <div class="sender-part">
                 <div class="sender-part-title">Часть 1 · Кому отправить</div>
-                <div>
-                  <label class="lbl">Соцсеть</label>
-                  <select id="s-social">
-                    <option value="vk">ВКонтакте</option>
-                  </select>
-                </div>
-                <div>
+                <div id="fw-send-file">
                   <label class="lbl">Excel-файл с результатами</label>
                   <select id="s-excel-file">
                     <option value="">— выберите файл —</option>
@@ -351,9 +509,11 @@
               </div>
               <div class="sender-part">
                 <div class="sender-part-title">Часть 2 · Что написать</div>
+                  <div id="fw-send-token">
                   <label class="lbl">Ключ доступа VK <span style="font-weight:400;text-transform:none">(нужны права на сообщения)</span></label>
-                <input type="password" id="s-token" placeholder="vk1.a.xxxxx…" autocomplete="off">
-                <div style="margin-top:10px">
+                  <input type="password" id="s-token" placeholder="vk1.a.xxxxx…" autocomplete="off">
+                  </div>
+                <div id="fw-send-msg">
                   <label class="lbl">Текст сообщения <span style="font-weight:400;text-transform:none">— можно вставить {название_бизнеса}</span></label>
                   <textarea id="s-message" style="min-height:100px" placeholder="Здравствуйте, {название_бизнеса}! …"></textarea>
                 </div>
@@ -386,7 +546,7 @@
 
               <div class="sender-actions">
                   <button id="btn-send-run"  onclick="startSend()">
-                  <span id="send-btn-icon">Начать</span>
+                  <span id="send-btn-icon">📨</span>
                   <span id="send-btn-txt">Отправить сообщения</span>
                 </button>
                 <button id="btn-send-stop" onclick="stopSend()">⏹ Стоп</button>
@@ -421,6 +581,9 @@
   </div><!-- right-col -->
 
 </div><!-- layout -->
+
+<!-- Toast stack (top-right) -->
+<div id="toast-container" aria-live="polite"></div>
 
 <script src="{{ url_for('static', filename='js/app.js') }}"></script>
 </body>

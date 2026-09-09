@@ -80,6 +80,13 @@ def parse_feature(feature: dict, query: str) -> dict | None:
     if raw_url and _is_aggregator(raw_url):
         aggregator = raw_url
 
+    # Parse mode "without_website": skip businesses that have their own
+    # website. Link aggregators (taplink/linktree) are NOT websites — they
+    # are link pages — so they are kept (they count as «без сайта»).
+    # The web-form toggle switches this to "all" to parse everything.
+    if state.PARSE_MODE == "without_website" and raw_url and not aggregator:
+        return None
+
     rating_obj  = meta.get("rating") or {}
     rating_val  = float(rating_obj.get("score", 0) or 0) if isinstance(rating_obj, dict) else 0.0
     reviews_val = int(rating_obj.get("count", 0) or 0)   if isinstance(rating_obj, dict) else 0

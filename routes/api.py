@@ -6,7 +6,12 @@ import json
 
 from flask import Blueprint, request, Response, send_from_directory, jsonify
 
-OUTPUT_DIR = "output"
+# Writable dir: next to the .exe when frozen, project root from source
+try:
+    import paths as _paths
+    OUTPUT_DIR = _paths.output_dir()
+except Exception:
+    OUTPUT_DIR = "output"
 REVIEWED_FILE = os.path.join(OUTPUT_DIR, "_reviewed.json")
 
 bp = Blueprint("api", __name__)
@@ -103,22 +108,86 @@ def download(filename):
     return send_from_directory(OUTPUT_DIR, filename, as_attachment=True)
 
 
+@bp.route("/download-zip")
+def download_zip():
+    """Bundle several output files into one ZIP archive on the fly.
+    Usage: /download-zip?files=name1.xlsx|name2.json (| separated)."""
+    import zipfile
+    from flask import send_file
+    raw = request.args.get("files", "")
+    names = [n.strip() for n in raw.split("|") if n.strip()]
+    if not names:
+        return jsonify({"error": "no files requested"}), 400
+    # Only files that actually exist in OUTPUT_DIR; reject path traversal
+    allowed = os.path.realpath(OUTPUT_DIR)
+    safe_names = []
+    for n in names:
+        p = os.path.realpath(os.path.join(allowed, n))
+        if p.startswith(allowed + os.sep) and os.path.isfile(p):
+            safe_names.append((p, os.path.basename(n)))
+    if not safe_names:
+        return jsonify({"error": "no valid files"}), 404
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for path, base in safe_names:
+            zf.write(path, arcname=base)
+    buf.seek(0)
+    stamp = __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M")
+    return send_file(buf, mimetype="application/zip", as_attachment=True,
+                     download_name=f"parser_results_{stamp}.zip")
+
+
 @bp.route("/save-api-key", methods=["POST"])
 def save_api_key():
-    """Save YANDEX_API_KEY to .env file and reload it."""
-    import re as _re
+    """Save YANDEX_API_KEY to .env file and reload it (legacy single-key form)."""
     data = request.get_json(force=True) or {}
-    api_key = data.get("api_key", "").strip()
-    if not api_key:
-        return jsonify({"ok": False, "error": "Введите ключ API"}), 400
+    return _write_env_keys({"YANDEX_API_KEY": data.get("api_key", "")})
 
-    # Determine .env path — prefer project root
+
+@bp.route("/save-api-keys", methods=["POST"])
+def save_api_keys():
+    """Save YANDEX_API_KEY and/or TWOGIS_API_KEY to .env and hot-reload them.
+
+    One button for both key fields: each non-empty field overwrites its key,
+    empty fields are left untouched (the .env value keeps working).
+    """
+    data = request.get_json(force=True) or {}
+    return _write_env_keys({
+        "YANDEX_API_KEY": data.get("yandex_api_key", ""),
+        "TWOGIS_API_KEY": data.get("twogis_api_key", ""),
+    })
+
+
+def _write_env_keys(keys: dict):
+    """Write the given non-empty KEY=value pairs into .env (create/replace
+    per key), reload them into config so a restart isn't needed.
+    Returns a Flask response."""
     from pathlib import Path
-    project_root = Path(__file__).resolve().parent.parent
-    env_path = project_root / ".env"
+
+    # Sanitize: strip quotes/whitespace, forbid characters that would corrupt
+    # the 'KEY = "value"' line format (quotes, #, newlines).
+    import re as _re_sanitize
+    clean = {}
+    for env_name, raw in keys.items():
+        val = (raw or "").strip().strip("\"'").strip()
+        if not val:
+            continue
+        if _re_sanitize.search(r'[\r\n#"]', val):
+            return jsonify({"ok": False,
+                            "error": f"{env_name}: ключ содержит недопустимые символы (кавычки, # или переводы строк)"}), 400
+        clean[env_name] = val
+    if not clean:
+        return jsonify({"ok": False, "error": "Введите хотя бы один ключ"}), 400
+
+    # .env location: next to the .exe when frozen, project root from source
+    try:
+        import paths as _paths
+        env_path = _paths.env_path()
+    except Exception:
+        project_root = Path(__file__).resolve().parent.parent
+        env_path = project_root / ".env"
     if not env_path.exists():
-        # Also check yandex_maps_parser/ subfolder
-        alt = project_root / "yandex_maps_parser" / ".env"
+        alt = env_path.parent / "yandex_maps_parser" / ".env"
         if alt.exists():
             env_path = alt
 
@@ -129,29 +198,40 @@ def save_api_key():
             with open(env_path, "r", encoding="utf-8") as f:
                 lines = f.readlines()
 
-        # Find and replace or append YANDEX_API_KEY
-        found = False
+        # Replace existing lines or append at the end
+        remaining = dict(clean)
         for i, line in enumerate(lines):
             stripped = line.strip()
-            if stripped.startswith("YANDEX_API_KEY") and "=" in stripped:
-                lines[i] = f'YANDEX_API_KEY = "{api_key}"\n'
-                found = True
-                break
-        if not found:
-            lines.append(f'\nYANDEX_API_KEY = "{api_key}"\n')
+            for env_name in list(remaining):
+                if stripped.startswith(env_name) and "=" in stripped:
+                    lines[i] = f'{env_name} = "{remaining.pop(env_name)}"\n'
+                    break
+        for env_name, val in remaining.items():
+            lines.append(f'\n{env_name} = "{val}"\n')
 
         with open(env_path, "w", encoding="utf-8") as f:
             f.writelines(lines)
 
-        # Reload the key into the running config
-        os.environ["YANDEX_API_KEY"] = api_key
+        # Hot-reload into the running process (no restart needed)
+        for env_name, val in clean.items():
+            os.environ[env_name] = val
         try:
             import config
-            config.YANDEX_API_KEY = api_key
+            if "YANDEX_API_KEY" in clean:
+                config.YANDEX_API_KEY = clean["YANDEX_API_KEY"]
+            if "TWOGIS_API_KEY" in clean:
+                config.TWOGIS_API_KEY = clean["TWOGIS_API_KEY"]
+        except Exception:
+            pass
+        try:
+            from yandex_maps_parser import state as pstate
+            if "TWOGIS_API_KEY" in clean:
+                pstate.TWOGIS_API_KEY = clean["TWOGIS_API_KEY"]
         except Exception:
             pass
 
-        return jsonify({"ok": True, "message": f"Ключ сохранён в {env_path.name}", "path": str(env_path)})
+        saved = ", ".join(sorted(clean))
+        return jsonify({"ok": True, "message": f"Сохранено в {env_path.name}: {saved}", "path": str(env_path)})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
 
@@ -251,6 +331,24 @@ def download_log(filename):
     if not os.path.isfile(fpath):
         return jsonify({"error": "Log not found"}), 404
     return send_from_directory(LOGS_DIR, safe, as_attachment=True)
+
+
+@bp.route("/twogis/key-status")
+def twogis_key_status():
+    """Whether a 2GIS API key is configured (.env / config or state)."""
+    key = ""
+    try:
+        from yandex_maps_parser import state as pstate
+        key = pstate.TWOGIS_API_KEY or ""
+    except Exception:
+        pass
+    if not key:
+        try:
+            from config import TWOGIS_API_KEY
+            key = TWOGIS_API_KEY or ""
+        except Exception:
+            pass
+    return jsonify({"present": bool(key.strip())})
 
 
 @bp.route("/cache/stats")

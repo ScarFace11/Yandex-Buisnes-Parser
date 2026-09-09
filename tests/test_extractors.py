@@ -201,21 +201,32 @@ class TestParseFeature:
         assert rec["lon"] == 37.6
 
     def test_website_not_filtered(self):
-        """Businesses with websites are now kept — socials checked post-enrichment."""
+        """Parse mode «all» keeps businesses with websites."""
         import yandex_maps_parser.state as state
         state.SOCIAL_MODE = "all"
+        state.PARSE_MODE = "all"
         feat = self._make_feature(url="https://salon-example.ru")
         rec = parse_feature(feat, "тест")
         assert rec is not None
         assert rec["name"] == "Тест"
 
-    def test_aggregator_kept(self):
-        """Businesses with aggregator links (taplink) should be kept."""
+    def test_website_filtered_in_without_website_mode(self):
+        """Parse mode «without_website» (default) drops businesses with a website."""
         import yandex_maps_parser.state as state
         state.SOCIAL_MODE = "all"
-        feat = self._make_feature(url="https://taplink.cc/salon")
-        rec = parse_feature(feat, "тест")
-        assert rec is not None
+        state.PARSE_MODE = "without_website"
+        feat = self._make_feature(url="https://salon-example.ru")
+        assert parse_feature(feat, "тест") is None
+
+    def test_aggregator_kept(self):
+        """Businesses with aggregator links (taplink) should be kept in both modes."""
+        import yandex_maps_parser.state as state
+        state.SOCIAL_MODE = "all"
+        for mode in ("without_website", "all"):
+            state.PARSE_MODE = mode
+            feat = self._make_feature(url="https://taplink.cc/salon")
+            rec = parse_feature(feat, "тест")
+            assert rec is not None
         assert rec["aggregator_url"] == "https://taplink.cc/salon"
 
     def test_empty_name_skipped(self):

@@ -2,7 +2,7 @@
 #  КОНФИГУРАЦИЯ парсера Яндекс.Карт
 #  Редактируйте этот файл под свои нужды.
 # ═══════════════════════════════════════════════════════════════
-APP_VERSION = "2.2.0"
+APP_VERSION = "2.2.1"
 
 # ── Запросы ──────────────────────────────────────────────────
 # Один или несколько поисковых запросов. Все выполняются за один запуск.
@@ -23,7 +23,12 @@ SEARCH_QUERIES = [
 CITY = "Ярославль"
 
 # ── Файлы вывода ─────────────────────────────────────────────
-OUTPUT_DIR      = "output"
+# Из frozen-сборки (.exe) output/ указывает на папку рядом с exe.
+try:
+    import paths as _paths
+    OUTPUT_DIR      = _paths.output_dir()
+except Exception:
+    OUTPUT_DIR      = "output"
 OUTPUT_FILENAME = None    # None = авто (город + время)
 APPEND_MODE     = False   # True = дозаписывать в существующий файл
 
@@ -119,11 +124,22 @@ def load_env(file_path=".env"):
         return False
 
 # Загружаем .env сразу при импорте конфига
-load_env()
+# В frozen-сборке .env лежит рядом с exe (paths.env_path), а не в каталоге
+# распаковки — подменяем путь до загрузки.
+try:
+    import paths as _paths
+    load_env(str(_paths.env_path()))
+except Exception:
+    load_env()
 
 # ── Получение переменной из .env ─────────────────────────────
 # Теперь можно получать переменную через os.getenv()
 YANDEX_API_KEY: str = os.getenv("YANDEX_API_KEY", "")
+
+# ── 2GIS (альтернативный источник данных) ────────────────────
+# Бесплатный демо-ключ: https://dev.2gis.ru → Platform Manager → создать ключ.
+# Ключ должен иметь разрешение на Places API (поиск организаций).
+TWOGIS_API_KEY: str = os.getenv("TWOGIS_API_KEY", "")
 
 if not YANDEX_API_KEY:
     import warnings

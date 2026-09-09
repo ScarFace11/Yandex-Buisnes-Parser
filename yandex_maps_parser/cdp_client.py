@@ -13,6 +13,7 @@ Usage:
 import json
 import os
 import queue
+import re
 import socket
 import subprocess
 import sys
@@ -25,13 +26,21 @@ from . import state
 
 # ── Config ──────────────────────────────────────────────────
 _CHROME_PATHS = [
-    # Playwright's bundled Chromium
+    # Windows: Playwright's bundled Chromium
     Path(os.environ.get("LOCALAPPDATA", "")) / "ms-playwright" / "chromium-1234" / "chrome-win64" / "chrome.exe",
-    # Standard Chrome installation
+    # Windows: standard Chrome
     Path("C:/Program Files/Google/Chrome/Application/chrome.exe"),
     Path("C:/Program Files (x86)/Google/Chrome/Application/chrome.exe"),
-    # Edge (Chromium-based)
+    # Windows: Edge (Chromium-based)
     Path("C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"),
+    Path("C:/Program Files/Microsoft/Edge/Application/msedge.exe"),
+    # macOS: app bundles (Chrome / Chromium / Edge)
+    Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+    Path("/Applications/Chromium.app/Contents/MacOS/Chromium"),
+    Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+    # macOS: Playwright's bundled Chromium (Intel + Apple Silicon)
+    Path.home() / "Library/Caches/ms-playwright/chromium-1234/chrome-mac/Chromium.app/Contents/MacOS/Chromium",
+    Path.home() / "Library/Caches/ms-playwright/chromium-1234/chrome-mac-arm64/Chromium.app/Contents/MacOS/Chromium",
 ]
 
 _CDP_PORT = 0  # 0 = auto-detect free port
@@ -47,6 +56,9 @@ _browser_lock = threading.Lock()
 
 # Rate limiting
 _rate_semaphore: threading.Semaphore | None = None
+
+# Warned about the 2GIS "museum" block page this run (once per process).
+_museum_warned = False
 
 # Cache
 _CACHE_DIR = None
@@ -144,9 +156,14 @@ def _cdp_close_tab(port: int, tab_id: str) -> bool:
 # the default "HeadlessChrome" user agent (verified live: 158-byte page body).
 # Pages must be fetched with Network.setUserAgentOverride or the browser path
 # is useless and every fetch falls back to slow, throttled httpx.
+#
+# Version matters: 2GIS redirects outdated UA strings to a "browser not
+# supported" page (2gis.ru/museum) — Chrome/124 is already rejected there.
+# The default here must stay close to the bundled Chromium's real version;
+# init_browser() re-syncs it with the actual running browser at startup.
 _CDP_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
 )
 
 
@@ -225,15 +242,31 @@ def _cdp_navigate_and_get_html(ws_url: str, url: str, timeout_s: float = 40) -> 
         path_segs = [s for s in urlparse(url).path.split("/") if s]
         token = path_segs[-1] if (path_segs and path_segs[-1].isdigit()) else None
 
+        # 2GIS firm pages render contacts via JS after "complete"; harvesting
+        # immediately yields an 11KB shell with no phone/social markup.
+        is_2gis = "2gis.ru" in (url or "")
+        # Expression: href|readyState|len (len kept for debugging).
+        # For 2GIS, also poll hydration markers: contacts render late —
+        # «Сайт» / «Соцсети» appear in body text once the contact block is
+        # mounted. Harvest when either is present; otherwise wait until the
+        # tail of the deadline (capped, Yandex pages skip this entirely).
+        if is_2gis:
+            expr = (
+                "location.href + '|' + document.readyState + '|' + "
+                "document.documentElement.outerHTML.length + '|' + "
+                "String(document.body.innerText.includes('Сайт')) + '|' + "
+                "String(document.body.innerText.includes('Соцсети'))"
+            )
+        else:
+            expr = (
+                "location.href + '|' + document.readyState + '|' + "
+                "document.documentElement.outerHTML.length"
+            )
+
         # Poll until the navigation commits AND readyState == "complete".
         # Harvesting earlier (e.g. once the doc is merely large) returns a
         # PARTIAL document — the socials block sits near the end of the
         # server HTML and was missing in live tests (125KB no-links page).
-        # Expression: href|readyState|len (len kept for debugging).
-        expr = (
-            "location.href + '|' + document.readyState + '|' + "
-            "document.documentElement.outerHTML.length"
-        )
         started = time.monotonic()
         committed = token is None  # nothing to match → assume committed
         while time.monotonic() < overall_deadline:
@@ -253,7 +286,17 @@ def _cdp_navigate_and_get_html(ws_url: str, url: str, timeout_s: float = 40) -> 
                 if token:
                     if token in href:
                         committed = True
-                if committed and ready == "complete":
+                hydrated = False
+                if is_2gis and len(parts) > 3:
+                    has_site = parts[3] == "True"
+                    has_soc  = len(parts) > 4 and parts[4] == "True"
+                    hydrated = has_site or has_soc
+                    # Grace period: cards WITHOUT a website/socials would
+                    # otherwise burn the full deadline (up to ~24s each).
+                    # After 5s, accept whatever has rendered.
+                    if not hydrated and time.monotonic() - started >= 5.0:
+                        hydrated = True
+                if committed and ready == "complete" and (hydrated or not is_2gis):
                     break
                 # Tail of the deadline — harvest whatever exists instead of
                 # burning the whole budget on a page that never reports ready.
@@ -393,12 +436,20 @@ def is_installed() -> bool:
 
 def init_browser(pool_size: int = 8) -> bool:
     """Launch Chrome and create a pool of tabs for parallel fetching."""
-    global _proc, _base_port, _tab_pool, _pool_size, _rate_semaphore
+    global _proc, _base_port, _tab_pool, _pool_size, _rate_semaphore, _CDP_USER_AGENT
+    global _museum_warned
+    _museum_warned = False  # fresh run — allow the block-page warning again
 
     chrome_path = _find_chrome()
     if not chrome_path:
         state.warn("Chrome/Chromium не найден. Установите Google Chrome или Chromium.")
         return False
+
+    # Cap the tab pool: each tab is a separate renderer process (30-250 MB).
+    # 20 tabs ≈ 2.3 GB RAM and 20 simultaneous navigations to the same host
+    # also raise Yandex's bot-detection rate — 12 is a good speed/RAM/
+    # anti-bot balance. 12 tabs ≈ 1.2-1.5 GB.
+    pool_size = min(pool_size, 12)
 
     state.syslog(f"cdp_client: found Chrome at {chrome_path}")
 
@@ -425,6 +476,19 @@ def init_browser(pool_size: int = 8) -> bool:
                             "--disable-gpu",
                             "--disable-dev-shm-usage",
                             "--disable-features=VizDisplayCompositor",
+                            # Memory trim: kill background work (updates, sync,
+                            # extensions, crash dumps) that otherwise adds
+                            # processes and RAM for no benefit in headless.
+                            "--disable-extensions",
+                            "--disable-background-networking",
+                            "--disable-component-update",
+                            "--disable-default-apps",
+                            "--disable-sync",
+                            "--no-first-run",
+                            "--disable-translate",
+                            "--disable-breakpad",
+                            "--disable-domain-reliability",
+                            "--mute-audio",
                             "about:blank",
                         ],
                         stdout=subprocess.DEVNULL,
@@ -452,6 +516,19 @@ def init_browser(pool_size: int = 8) -> bool:
                     return False
 
                 state.syslog(f"cdp_client: Chrome started, version={version.get('Browser', '?')}")
+
+                # Sync the UA override with the REAL browser version — a
+                # stale UA string makes 2GIS serve its "browser not supported"
+                # page instead of the firm card.
+                try:
+                    m_ver = re.search(r"Chrome/(\d+)", str(version.get("Browser") or ""))
+                    if m_ver:
+                        _CDP_USER_AGENT = re.sub(
+                            r"Chrome/\d+", f"Chrome/{m_ver.group(1)}", _CDP_USER_AGENT
+                        )
+                        state.syslog(f"cdp_client: UA override synced to Chrome/{m_ver.group(1)}")
+                except Exception:
+                    pass
 
                 # Create tab pool
                 _tab_pool = queue.Queue()
@@ -532,6 +609,7 @@ def _poll_queue_get(q, timeout: float):
 
 def fetch_page(url: str, timeout_ms: int = 40000, biz_id: str = "") -> str | None:
     """Fetch a page using Chrome CDP and return HTML."""
+    global _museum_warned
     if not is_available():
         return None
 
@@ -593,6 +671,17 @@ def fetch_page(url: str, timeout_ms: int = 40000, biz_id: str = "") -> str | Non
                 ws_url, url, timeout_s=timeout_ms / 1000
             )
             _record_latency(time.monotonic() - t_req)
+
+            # 2GIS "browser not supported" block page — warn once so a
+            # stale UA or new 2GIS check doesn't silently produce 0 socials.
+            if html and "2gis.ru/museum" in html:
+                if not _museum_warned:
+                    _museum_warned = True
+                    state.warn(
+                        "2GIS отклонил браузер (страница-заглушка) — соцсети недоступны. "
+                        "Обновите приложение или сообщите разработчику."
+                    )
+                html = None  # stub — let the caller treat it as a miss
 
             with _stats_lock:
                 _stats["pages_fetched"] += 1

@@ -20,6 +20,7 @@ openpyxl>=3.1
 folium>=0.15
 
 # Geocoding (built-in, uses httpx)
+# 2GIS source (built-in, uses httpx — no extra deps)
 
 # Dev / Testing
 # pytest>=7.0

@@ -26,6 +26,18 @@ from .constants import (
 )
 from . import state
 
+# 2GIS source adds a twogis_url column; keep CSV_FIELDS stable for the
+# Yandex path by appending dynamically when a 2GIS record is present.
+if "twogis_url" not in CSV_FIELDS:
+    CSV_FIELDS.append("twogis_url")
+    HEADER_LABELS["twogis_url"] = "2ГИС"
+    COL_WIDTHS["twogis_url"] = 36
+
+
+# Column-name lookup for record_key(): first non-empty map URL wins.
+def _map_url_of(rec: dict) -> str:
+    return str(rec.get("yandex_maps_url") or rec.get("twogis_url") or "").strip()
+
 
 # ── Path resolution ───────────────────────────────────────────
 
@@ -59,9 +71,9 @@ def load_jsonl(path: str) -> list[dict]:
 def record_key(rec: dict) -> str:
     """
     Stable dedup key for a business record.
-    Priority: yandex_maps_url -> phone digits -> normalized name+address.
+    Priority: yandex/2gis map URL -> phone digits -> normalized name+address.
     """
-    url = str(rec.get("yandex_maps_url") or "").strip()
+    url = _map_url_of(rec)
     if url:
         return "u|" + url
     digits = re.sub(r"\D", "", str(rec.get("phone") or ""))
@@ -190,13 +202,29 @@ def apply_output_filters(records: list[dict]) -> list[dict]:
     return records
 
 
+def _dict_rows(f) -> list[dict]:
+    """Read CSV rows with delimiter auto-detection.
+
+    Newer files are ';' (RU Excel), older ones were ','. Sniff the header;
+    fall back through candidates so both formats keep parsing.
+    """
+    sample = f.readline()
+    f.seek(0)
+    delim = ";"
+    try:
+        delim = csv.Sniffer().sniff(sample, delimiters=";,\t").delimiter
+    except csv.Error:
+        pass
+    return list(csv.DictReader(f, delimiter=delim))
+
+
 def load_existing_urls(csv_path: str) -> set[str]:
     ids: set[str] = set()
     if not os.path.exists(csv_path):
         return ids
     try:
         with open(csv_path, encoding="utf-8-sig") as f:
-            for row in csv.DictReader(f):
+            for row in _dict_rows(f):
                 if u := row.get("yandex_maps_url", ""):
                     ids.add(u)
     except Exception:
@@ -207,9 +235,11 @@ def load_existing_urls(csv_path: str) -> set[str]:
 # ── CSV ───────────────────────────────────────────────────────
 
 def save_csv(records: list[dict], path: str, append: bool) -> None:
+    # Delimiter is ';' — Russian-locale Excel splits columns on ';' by
+    # default, so a comma-separated file would open as a single column.
     mode = "a" if append and os.path.exists(path) else "w"
     with open(path, mode, newline="", encoding="utf-8-sig") as f:
-        w = csv.DictWriter(f, fieldnames=CSV_FIELDS, extrasaction="ignore")
+        w = csv.DictWriter(f, fieldnames=CSV_FIELDS, extrasaction="ignore", delimiter=";")
         if mode == "w":
             w.writeheader()
         w.writerows(records)
@@ -280,15 +310,26 @@ def write_frontend_json(files: list[str], out_dir: str, cities: list[str] | None
     first (they keep english keys + city); falls back to reading .xlsx
     (headers are converted back to english keys) otherwise.
     """
-    json_files = [f for f in files if f.endswith(".json") and not f.startswith("_")]
+    json_files = [f for f in files if f.endswith(".json") and not f.startswith(("_", "."))]
     merged: list[dict] = []
+
+    def _business_records(data) -> list[dict]:
+        """Keep only dicts shaped like business records.
+
+        Guards against non-record JSON (e.g. a search-history entry with
+        run_id/queries keys) sneaking into the merged frontend file and
+        rendering as garbage rows in the results table.
+        """
+        if not isinstance(data, list):
+            return []
+        return [r for r in data if isinstance(r, dict) and (r.get("name") or r.get("yandex_maps_url") or r.get("twogis_url"))]
+
     if json_files:
         for name in json_files:
             try:
                 with open(os.path.join(out_dir, name), encoding="utf-8") as fh:
                     data = json.load(fh)
-                if isinstance(data, list):
-                    merged.extend(data)
+                merged.extend(_business_records(data))
             except Exception:
                 pass
     else:
@@ -318,6 +359,7 @@ def write_frontend_json(files: list[str], out_dir: str, cities: list[str] | None
             merged.extend(recs)
     if not merged:
         return None
+    merged = _business_records(merged)
     merged = dedupe_records(merged)
     merged = apply_output_filters(merged)
     fname = "_results_for_frontend.json"
@@ -345,13 +387,24 @@ URL_RE       = re.compile(r"https?://", re.I)
 
 _EXCEL_LOCK = threading.Lock()  # guards _Excel state below
 
-NUM_COLS = len(CSV_FIELDS)  # cached column count
+
+def _enabled_fields() -> list[str]:
+    """Excel columns for this run: all CSV_FIELDS or the user-selected subset.
+
+    state.EXCEL_COLUMNS (set of field keys) is set from the web form's
+    «Настройка Excel-выгрузки» tab and persisted in the browser. Ordering
+    always follows CSV_FIELDS so the file layout stays stable.
+    """
+    cols = getattr(state, "EXCEL_COLUMNS", None)
+    if not cols:
+        return list(CSV_FIELDS)
+    return [f for f in CSV_FIELDS if f in cols]
 
 
 def _write_row(ws, ri: int, record: dict) -> None:
     """Write a single business record to worksheet row ri (1=header, 2+=data)."""
     alt = ri % 2 == 0
-    for ci, field in enumerate(CSV_FIELDS, 1):
+    for ci, field in enumerate(_enabled_fields(), 1):
         val  = record.get(field, "")
         cell = ws.cell(row=ri, column=ci)
 
@@ -365,7 +418,7 @@ def _write_row(ws, ri: int, record: dict) -> None:
             cell.font      = Font(color="1155CC", underline="single", size=10)
         elif field in SOCIAL_COLORS and not val:
             cell.value = ""
-        elif field in ("aggregator_url", "yandex_maps_url") and isinstance(val, str) and URL_RE.match(val):
+        if field in ("aggregator_url", "yandex_maps_url", "twogis_url") and isinstance(val, str) and URL_RE.match(val):
             cell.hyperlink = val
             cell.value     = val
             cell.font      = Font(color="1155CC", underline="single", size=10)
@@ -390,7 +443,8 @@ def _write_row(ws, ri: int, record: dict) -> None:
 
 def _write_headers(ws) -> None:
     """Write styled header row to an empty worksheet."""
-    for ci, field in enumerate(CSV_FIELDS, 1):
+    fields = _enabled_fields()
+    for ci, field in enumerate(fields, 1):
         c = ws.cell(row=1, column=ci, value=HEADER_LABELS.get(field, field))
         c.font      = HDR_FONT
         c.fill      = HDR_FILL
@@ -398,14 +452,14 @@ def _write_headers(ws) -> None:
         c.border    = HEAD_BORDER
     ws.row_dimensions[1].height = 32
     ws.freeze_panes = "B2"
-    for ci, field in enumerate(CSV_FIELDS, 1):
+    for ci, field in enumerate(fields, 1):
         ws.column_dimensions[get_column_letter(ci)].width = COL_WIDTHS.get(field, 16)
     ws.sheet_properties.pageSetUpPr.fitToPage = True
     ws.page_setup.fitToWidth  = 1
     ws.page_setup.fitToHeight = 0
     ws.page_setup.orientation = "landscape"
     ws.print_title_rows = "1:1"
-    ws.auto_filter.ref = f"A1:{get_column_letter(NUM_COLS)}1"
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(fields))}1"
 
 
 def _apply_conditional_formatting(ws) -> None:
@@ -413,8 +467,12 @@ def _apply_conditional_formatting(ws) -> None:
     ws.conditional_formatting._cf_rules.clear()
     if ws.max_row < 2:
         return
-    rating_col  = get_column_letter(CSV_FIELDS.index("rating")  + 1)
-    reviews_col = get_column_letter(CSV_FIELDS.index("reviews") + 1)
+    fields = _enabled_fields()
+    # Only format columns that are actually present in the export.
+    if "rating" not in fields or "reviews" not in fields:
+        return
+    rating_col  = get_column_letter(fields.index("rating")  + 1)
+    reviews_col = get_column_letter(fields.index("reviews") + 1)
     ws.conditional_formatting.add(
         f"{rating_col}2:{rating_col}{ws.max_row}",
         ColorScaleRule(
@@ -486,7 +544,7 @@ def _append_excel(record: dict) -> None:
         _excel._dirty += 1
         # Batched save: only write to disk periodically
         if _excel._dirty >= _EXCEL_BATCH_SIZE:
-            ws.auto_filter.ref = f"A1:{get_column_letter(NUM_COLS)}{ws.max_row}"
+            ws.auto_filter.ref = f"A1:{get_column_letter(len(_enabled_fields()))}{ws.max_row}"
             try:
                 _excel.wb.save(_excel.path)
             except Exception:
@@ -509,7 +567,7 @@ def _finalize_excel(records: list[dict]) -> None:
 
         # Autofilter
         last_row = max(ws.max_row, 2)
-        ws.auto_filter.ref = f"A1:{get_column_letter(NUM_COLS)}{last_row}"
+        ws.auto_filter.ref = f"A1:{get_column_letter(len(_enabled_fields()))}{last_row}"
         ws.freeze_panes = "B2"
 
         # CRITICAL: Save the workbook with data FIRST.
@@ -565,7 +623,7 @@ def save_excel(all_records: list[dict], path: str) -> None:
         _write_row(ws, ri, record)
 
     last_row = max(ws.max_row, 2)
-    ws.auto_filter.ref = f"A1:{get_column_letter(NUM_COLS)}{last_row}"
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(_enabled_fields()))}{last_row}"
 
     _apply_conditional_formatting(ws)
 

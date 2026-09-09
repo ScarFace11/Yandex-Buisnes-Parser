@@ -7,7 +7,12 @@ import threading
 from flask import Blueprint, request, jsonify
 
 OUTPUT_DIR = "output"
-SENDER_CONFIG_FILE = "sender_config.json"
+# Config lives next to the .exe when frozen, in the project root from source
+try:
+    import paths as _paths
+    SENDER_CONFIG_FILE = str(_paths.sender_config_path())
+except Exception:
+    SENDER_CONFIG_FILE = "sender_config.json"
 
 bp = Blueprint("sender", __name__)
 

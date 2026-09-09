@@ -24,6 +24,7 @@ build/
 .eggs/
 pip-wheel-metadata/
 *.spec
+!parser.spec
 
 # Virtual environments
 venv/

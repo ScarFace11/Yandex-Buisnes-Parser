@@ -14,7 +14,12 @@ import time
 import uuid
 import multiprocessing
 
-OUTPUT_DIR = "output"
+# Writable dir: next to the .exe when frozen, project root from source
+try:
+    import paths as _paths
+    OUTPUT_DIR = _paths.output_dir()
+except Exception:
+    OUTPUT_DIR = "output"
 
 # Max time a process can run before we force-kill it (seconds)
 _PROCESS_TIMEOUT = 600  # 10 minutes

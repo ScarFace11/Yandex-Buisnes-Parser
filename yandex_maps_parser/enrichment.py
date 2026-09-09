@@ -3,6 +3,7 @@ Business-record enrichment: fetch detail pages, extract socials, deduplicate.
 """
 import json
 import random
+import re
 import threading
 import time
 import concurrent.futures
@@ -12,6 +13,7 @@ from datetime import datetime
 from tqdm import tqdm
 
 from .constants import KNOWN_PLATFORMS
+from .constants import SOCIAL_DOMAINS as _SOCIAL_DOMAINS, EXCLUDE_URLS as _EXCLUDE_URLS
 from .extractors import (
     fetch_html,
     extract_socials,
@@ -19,6 +21,7 @@ from .extractors import (
     extract_reviews_count,
     validate_socials,
     _extract_from_json_blob,
+    _is_aggregator as _is_aggregator_url,
     _ANTIBOT_MARKERS,
 )
 from .exporters import record_key
@@ -30,13 +33,19 @@ def _looks_like_antiblock(html) -> bool:
     """True when a fetched page is an anti-bot stub / too short to be real.
 
     Yandex serves an empty "robot" page (a few hundred bytes) to requests it
-    suspects are bots. Real detail pages are hundreds of KB. Treat anything
-    tiny or containing anti-bot markers as a failed fetch so the caller can
-    retry via a different transport instead of silently extracting nothing.
+    suspects are bots. Real detail pages are usually tens of KB.
+
+    NOTE: the size bar is intentionally LOW (800 bytes — same floor the CDP
+    harvest loop uses). Many small businesses (ateliers, one-master shops)
+    have genuinely small pages (2-20 KB) that were being misclassified as
+    anti-bot stubs at the old 5000-byte threshold — each false positive then
+    burned a wasted CDP retry + up to 3 throttled httpx attempts (60s each)
+    before the record was emitted. Only the real anti-bot markers, or a page
+    so empty it can't be real, should trigger the expensive fallback ladder.
     """
     if not html:
         return True
-    if len(html) < 5000:
+    if len(html) < 800:
         return True
     lower = html[:4000].lower()
     return any(m in lower for m in _ANTIBOT_MARKERS)
@@ -128,6 +137,7 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
         biz_id  = record.pop("_biz_id", "")
         raw     = record.pop("_raw_feature", {})
         agg_url = record.pop("_aggregator_url", "")
+        detail_url_override = record.pop("_detail_url", "")  # 2GIS: 2gis.ru/firm/<id>
         biz_name = record.get("name", "?")
 
         if state._STOP_EVENT and state._STOP_EVENT.is_set():
@@ -167,7 +177,16 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
         # already has >= 2 social platforms, skip the expensive detail fetch.
         # This avoids downloading 200KB HTML pages for businesses that already
         # clearly have social media — saving ~50% of enrichment time.
-        should_fetch = state.FETCH_DETAIL and biz_id and len(socials) < 2
+        # EXCEPTION: when required social tiles are selected, raw data may miss
+        # one of them — the detail page is the only place to find it.
+        _raw_missing_required = bool(state.REQUIRED_SOCIALS) and not all(
+            socials.get(p) for p in state.REQUIRED_SOCIALS
+        )
+        should_fetch = (
+            state.FETCH_DETAIL and biz_id
+            and (len(socials) < 2 or _raw_missing_required)
+            and not record.pop("_skip_detail", False)
+        )
         # Skip government institutions in with_socials mode — they never have socials
         if should_fetch and state.SOCIAL_MODE == "with_socials" and _is_government_institution(record):
             state.syslog(f"skip_gov: {biz_name} (government institution)")
@@ -215,7 +234,7 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
                             return None
                 _sem_acquired = acquired
             state.syslog(f"fetch_detail: biz_id={biz_id}, name={biz_name}, raw_socials={len(socials)}")
-            detail_url = f"https://yandex.ru/maps/org/{biz_id}"
+            detail_url = detail_url_override or f"https://yandex.ru/maps/org/{biz_id}"
             # Try browser first (fast, no throttling), fallback to httpx
             # Priority: Playwright > CDP > httpx
             html = None
@@ -255,6 +274,33 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
                     review_count = extract_reviews_count(html)
                     if review_count:
                         record["reviews"] = int(review_count)
+                # 2GIS fallback pages: harvest the org's website so the
+                # «только без сайтов» filter can be enforced post-fetch
+                # (the demo key hides websites at search time). Skip social
+                # links, 2GIS/Yandex self-links, mail.ru counters and
+                # facebook pixel CDN URLs — only a real external site counts.
+                if detail_url_override and not record.get("website"):
+                    _site_skip = re.compile(
+                        r'2gis\.(ru|com)|(^|\.)mail\.ru|connect\.facebook\.net'
+                        r'|google\.(ru|com)|mozilla\.org|opera\.com'
+                        r'|yandex\.(ru|com)|facebook\.com|apple\.com|microsoft\.com',
+                        re.I,
+                    )
+                    for m_site in re.finditer(
+                        r'https?://[^\s"\'<>\)\\]+', html, re.I,
+                    ):
+                        cand = m_site.group(0)
+                        if _site_skip.search(cand) or _EXCLUDE_URLS.search(cand):
+                            continue
+                        if any(p.search(cand) for p in _SOCIAL_DOMAINS.values()):
+                            continue
+                        if _is_aggregator_url(cand):
+                            # aggregators (taplink etc.) are NOT websites —
+                            # record as aggregator instead
+                            record.setdefault("aggregator_url", cand[:300])
+                            continue
+                        record["website"] = cand[:300]
+                        break
             state.syslog(f"fetch_detail done: {biz_name}, socials_after={list(socials.keys())}, source={_fetch_source}, time={_fetch_elapsed:.1f}s")
             # Release concurrency slot (only if acquired)
             if _sem_acquired and _concurrency_semaphore:
@@ -301,6 +347,23 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
             return None  # skip — no social media found
         if state.SOCIAL_MODE == "without_socials" and has_any_social:
             return None  # skip — has social media, user wants only those without
+
+        # Требуемые соцсети (плитки в шаге 02): оставить только бизнесы,
+        # у которых найдены ВСЕ выбранные платформы.
+        if state.REQUIRED_SOCIALS:
+            missing = [p for p in sorted(state.REQUIRED_SOCIALS) if not socials.get(p)]
+            if missing:
+                state.syslog(f"skip_required_socials: {biz_name} — нет {', '.join(missing)}")
+                return None
+
+        # 2GIS fallback: the demo key returns no contacts, so the firm-page
+        # fetch is where the website first becomes visible. Enforce
+        # «только без сайтов» here — at search time the website was unknown.
+        if detail_url_override and state.PARSE_MODE == "without_website":
+            site = (record.get("website") or "").strip()
+            if site:
+                state.syslog(f"skip_has_website(2gis): {biz_name} — {site[:60]}")
+                return None
 
         # Optional quality filter: drop records with neither phone nor socials
         if state.MIN_CONTACT and not (record.get("phone") or has_any_social):

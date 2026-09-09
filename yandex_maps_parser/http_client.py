@@ -359,16 +359,23 @@ def _get(
     session: httpx.Client | None = None,
     timeout: int | tuple = (8, 20),
     allow_redirects: bool = True,
+    retries: int | None = None,
 ) -> httpx.Response | None:
     """GET with retries, rate limiting and stop/skip support.
 
     timeout may be a plain number (all phases), a 2-tuple (connect, read)
     or a 3-tuple (connect, read, total) where total is a hard wall-clock
     deadline for the whole request (see _abortable_get).
+
+    retries overrides state.RETRY_COUNT (total attempts). The detail-page
+    fallback passes 2 — Yandex throttles plain-HTTP hard (p95 100-325s per
+    page), so a second 60s-deadline attempt rarely beats the first one and
+    burning a third costs another minute per anti-bot page for nothing.
     """
     s = session or (_next_client() if state.PROXIES else _main_client)
     net_attempts    = 0
     rate_limit_hits = 0
+    max_attempts    = state.RETRY_COUNT if retries is None else retries
     _stats_count_request(url)
 
     # Optional 3rd element: total wall-clock deadline for the request
@@ -427,9 +434,9 @@ def _get(
             # 5xx
             net_attempts += 1
             _stats_add("retries")
-            state.syslog(f"http_5xx: status={r.status_code}, url={url[:100]}, attempt={net_attempts}/{state.RETRY_COUNT}")
-            state.warn(f"⚠ HTTP {r.status_code} — повтор {net_attempts}/{state.RETRY_COUNT}")
-            if net_attempts >= state.RETRY_COUNT:
+            state.syslog(f"http_5xx: status={r.status_code}, url={url[:100]}, attempt={net_attempts}/{max_attempts}")
+            state.warn(f"⚠ HTTP {r.status_code} — повтор {net_attempts}/{max_attempts}")
+            if net_attempts >= max_attempts:
                 return None
             if _interruptible_sleep(state.RETRY_DELAY * net_attempts, quiet=True):
                 return None
@@ -441,8 +448,8 @@ def _get(
             # Drop RPS on connection errors (SSL timeout = Yandex is throttling us)
             _rps_drop(reason=f"error:{type(e).__name__}")
             state.syslog(f"http_error: {type(e).__name__}: {e}, url={url[:100]}, attempt={net_attempts}")
-            state.warn(f"⚠ Сеть: {type(e).__name__} — повтор {net_attempts}/{state.RETRY_COUNT}")
-            if net_attempts >= state.RETRY_COUNT:
+            state.warn(f"⚠ Сеть: {type(e).__name__} — повтор {net_attempts}/{max_attempts}")
+            if net_attempts >= max_attempts:
                 return None
             if _interruptible_sleep(state.RETRY_DELAY * net_attempts, quiet=True):
                 return None

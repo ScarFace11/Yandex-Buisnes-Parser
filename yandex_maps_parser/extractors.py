@@ -35,7 +35,8 @@ _IG_NON_PROFILE = re.compile(
 )
 _FB_NON_PROFILE = re.compile(
     r'facebook\.com/(permalink|share|dialog|plugins|login|photo|video|'
-    r'events|groups(?=/[0-9])|pages/create|sharer)\b',
+    r'events|groups(?=/[0-9])|pages/create|sharer|tr\b|ads\b|pixel|'
+    r'watch|gaming|marketplace|policies|privacy|business|settings|recover|reg)\b',
     re.I,
 )
 _YOUTUBE_NON_PROFILE = re.compile(
@@ -58,7 +59,8 @@ _TWITTER_NON_PROFILE = re.compile(
 )
 
 _JSON_BLOB_RE = re.compile(
-    r'(?:window\.__(?:NUXT|INITIAL_STATE|SERVER_STATE|DATA|STATE)__'
+    r'(?:window\.(?:__)?(?:NUXT|INITIAL_STATE|SERVER_STATE|PRELOADED_STATE|'
+    r'APP_STATE|REDUX_STATE|DATA|STATE)(?:__)?'
     r'|window\.serverState'
     r'|<script[^>]+type=["\']application/json["\'][^>]*>)\s*[=]*(\{)',
     re.I,
@@ -157,8 +159,10 @@ def fetch_html(url: str, session=None, biz_id: str = "") -> str:
     # drips bytes can stay under it for minutes. The 60s TOTAL is a hard
     # wall-clock deadline — Yandex throttles plain HTTP hard (p95 was
     # 187-325s per page), and we'd rather skip a page than burn 5 minutes.
+    # retries=2 (not the global 3): a second 60s-deadline attempt rarely
+    # beats the first, and the third costs another minute per throttled page.
     with state._detail_semaphore:
-        r = _get(url, session=session or _worker_client(), timeout=(8, 15, 60))
+        r = _get(url, session=session or _worker_client(), timeout=(8, 15, 60), retries=2)
     if not r or r.status_code != 200:
         return ""
     text = r.text

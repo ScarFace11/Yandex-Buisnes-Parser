@@ -2,13 +2,25 @@
 
 All routes are organized in blueprints under routes/.
 Run management is in run_manager.py.
+
+Supports running from source (python app.py) and as a frozen PyInstaller
+bundle (paths.py resolves templates/static/writable dirs accordingly).
 """
 import sys
 import multiprocessing
 
-# On Windows, ensure multiprocessing uses the correct Python executable.
-if sys.platform == "win32":
-    multiprocessing.set_executable(sys.executable)
+# MUST run before anything else when frozen: without this, a PyInstaller exe
+# relaunches the whole application for every multiprocessing child.
+multiprocessing.freeze_support()
+
+import os
+
+# Frozen exe: chdir to a writable dir so relative paths (output/, logs/)
+# land next to the .exe instead of the read-only extraction dir.
+import paths
+
+if paths.is_frozen():
+    os.chdir(paths.user_dir())
 
 from flask import Flask
 
@@ -19,7 +31,11 @@ from routes.public_api import bp as public_api_bp
 
 
 def create_app() -> Flask:
-    app = Flask(__name__)
+    app = Flask(
+        __name__,
+        template_folder=paths.template_dir(),
+        static_folder=paths.static_dir(),
+    )
     try:
         from config import APP_VERSION
     except ImportError:
