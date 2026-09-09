@@ -1,6 +1,20 @@
 {
   "version": "2.2.1.1",
   "min_version": "2.0.0",
-  "changelog": "Manual «Проверить обновления» button in the header, 30-minute background update checks, in-app self-update for the .exe build (download → install → restart)",
-  "download_url": "https://github.com/ScarFace11/Yandex-Buisnes-Parser/releases/latest/download/YandexBusinessParser-windows-x64.zip"
+  "changelog": "Manual «Проверить обновления» button in the header, 30-minute background update checks, pulsing «доступно обновление» dot, «Что нового» changelog viewer, in-app self-update for the .exe build (download → install → restart)",
+  "download_url": "https://github.com/ScarFace11/Yandex-Buisnes-Parser/releases/latest/download/YandexBusinessParser-windows-x64.zip",
+  "history": [
+    {
+      "version": "2.2.1.1",
+      "changelog": "Кнопка «Проверить обновления» в шапке, фоновая проверка каждые 30 минут, индикатор «доступно обновление», просмотрщик «Что нового», авто-обновление из exe в один клик"
+    },
+    {
+      "version": "2.2.1",
+      "changelog": "Источник 2GIS (Catalog API), фильтр по обязательным соцсетям (плитки), сохранение обоих API-ключей в .env одной кнопкой, лог в виде терминала с очисткой, статистика всегда доступна, выравнивание счётчиков, сборка в .exe"
+    },
+    {
+      "version": "2.2.0",
+      "changelog": "Быстрая загрузка карточек через Chrome CDP (2-6 сек), живая статистика по городам, история поиска в списке городов, фильтры качества, чекпоинт-возобновление, быстрая остановка"
+    }
+  ]
 }

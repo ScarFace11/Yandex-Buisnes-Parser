@@ -131,6 +131,28 @@ def update_status():
     return jsonify(out)
 
 
+@bp.route("/update/changelog")
+def update_changelog():
+    """version.json from GitHub (version, changelog, history) for the
+    «Что нового» modal. Falls back to the bundled copy when offline."""
+    from config import APP_VERSION
+    try:
+        meta = _remote_meta()
+    except Exception:
+        # Offline: serve the bundled static/version.json so the modal
+        # still opens and shows at least the current version's notes.
+        try:
+            import json as _json
+            bundled = (paths.resource_dir() if paths else Path(__file__).resolve().parent.parent) / "static" / "version.json"
+            meta = _json.loads(bundled.read_text(encoding="utf-8-sig"))
+            meta["offline"] = True
+        except Exception:
+            meta = {"version": APP_VERSION, "changelog": ""}
+    meta.setdefault("version", APP_VERSION)
+    meta["current"] = APP_VERSION
+    return jsonify(meta)
+
+
 @bp.route("/update/download", methods=["POST"])
 def update_download():
     """Stream the release zip to _update/update.zip."""

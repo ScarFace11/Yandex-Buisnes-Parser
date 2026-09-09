@@ -875,6 +875,25 @@ details[open].sender-advanced summary::before{content:"▼  "}
 #update-dot.on{opacity:1;transform:scale(1);animation:dot-pulse 1.8s ease infinite}
 @keyframes dot-pulse{0%,100%{box-shadow:0 0 0 0 rgba(232,150,13,.55)}55%{box-shadow:0 0 0 6px rgba(232,150,13,0)}}
 
+/* ── Changelog viewer modal («Что нового») ── */
+.changelog-modal{max-width:520px}
+.changelog-modal h3{display:flex;align-items:center;gap:7px}
+.cl-list{max-height:52vh;overflow-y:auto;display:flex;flex-direction:column;gap:10px;padding-right:4px}
+.cl-entry{
+  border:1.5px solid var(--bdr);border-radius:9px;padding:11px 13px;
+  background:#f8fbfc;display:flex;flex-direction:column;gap:5px;
+}
+.cl-entry.cl-latest{border-color:var(--c);background:var(--cl)}
+.cl-ver{font-size:13px;font-weight:800;color:var(--c);display:flex;align-items:center;gap:7px}
+.cl-tag{
+  font-size:10px;font-weight:800;padding:1px 8px;border-radius:20px;
+  background:var(--c);color:#fff;letter-spacing:.02em;
+}
+.cl-tag.cl-yours{background:var(--grn)}
+.cl-text{font-size:12.5px;color:var(--sub);line-height:1.55}
+[data-theme="dark"] .cl-entry{background:#121e28}
+[data-theme="dark"] .cl-entry.cl-latest{background:#0c2530}
+
 /* ════════════════════════════════
    DESIGN POLISH
    ════════════════════════════════ */

@@ -2474,12 +2474,49 @@ function showUpdateBanner(newVer, changelog, url) {
   const banner = document.createElement('div');
   banner.id = 'update-banner';
   banner.innerHTML = `
-    <span class="ub-text">🔄 Доступна новая версия <b>v${newVer}</b>${changelog ? ' — ' + changelog : ''}</span>
+    <span class="ub-text">🔄 Доступна новая версия <b>v${newVer}</b>${changelog ? ' — ' + escapeHtml(changelog) : ''}</span>
+    <button class="ub-btn" id="ub-changelog" onclick="showChangelog()" title="Подробнее об изменениях в новой версии">📄 Что нового</button>
     <button class="ub-btn" id="ub-self-update" onclick="selfUpdate()" title="Скачать и установить прямо из приложения">⬆ Обновить сейчас</button>
     <a class="ub-btn" href="${url}" target="_blank" rel="noopener noreferrer" title="Страница релизов на GitHub">GitHub ↗</a>
     <button class="ub-close" onclick="this.parentElement.remove()">✕</button>
   `;
   document.body.prepend(banner);
+}
+
+// ── Changelog viewer: full version.json (whats-new) in a modal ──
+let _changelogCache = null;
+
+function showChangelog() {
+  const close = () => document.getElementById('changelog-overlay')?.remove();
+  const render = (meta, err) => {
+    const cur = (document.getElementById('app-version') || {}).textContent || '';
+    const rows = (meta && meta.history ? meta.history : [])
+      .map(h => `
+        <div class="cl-entry ${h.version === (meta.version || '') ? 'cl-latest' : ''}">
+          <div class="cl-ver">v${escapeHtml(h.version || '?')}${h.version === (meta.version || '') ? '<span class="cl-tag">новейшая</span>' : ''}${cur.includes(h.version) ? '<span class="cl-tag cl-yours">у вас</span>' : ''}</div>
+          <div class="cl-text">${escapeHtml(h.changelog || '—')}</div>
+        </div>`).join('')
+      || `<div class="cl-entry"><div class="cl-text">${err ? 'Не удалось загрузить список изменений — проверьте интернет.' : escapeHtml((meta && meta.changelog) || '—')}</div></div>`;
+    const overlay = document.createElement('div');
+    overlay.id = 'changelog-overlay';
+    overlay.className = 'ui-modal-overlay';
+    overlay.innerHTML = `
+      <div class="ui-modal changelog-modal">
+        <h3>📄 Что нового</h3>
+        <div class="cl-list">${rows}</div>
+        <div class="ui-modal-btns">
+          <button type="button" class="m-cancel" onclick="document.getElementById('changelog-overlay').remove()">Закрыть</button>
+        </div>
+      </div>`;
+    overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+    overlay.addEventListener('keydown', e => { if (e.key === 'Escape') close(); });
+    document.body.appendChild(overlay);
+  };
+  if (_changelogCache) { render(_changelogCache); return; }
+  fetch('/update/changelog')
+    .then(r => r.json())
+    .then(meta => { _changelogCache = meta; render(meta); })
+    .catch(() => render(null, true));
 }
 
 // ── Self-update: download → apply → the app restarts itself ──
