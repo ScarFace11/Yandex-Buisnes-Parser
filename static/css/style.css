@@ -863,6 +863,18 @@ details[open].sender-advanced summary::before{content:"▼  "}
 .ub-close:hover{color:#fff}
 [data-theme="dark"] #update-banner{background:linear-gradient(135deg,#1a5c30,#249260)}
 
+/* «Update available» dot on the header button */
+#btn-updates{position:relative}
+#update-dot{
+  position:absolute;top:-3px;right:-3px;
+  width:10px;height:10px;border-radius:50%;
+  background:#e8960d;border:2px solid var(--c);
+  opacity:0;transform:scale(.4);pointer-events:none;
+  transition:opacity .2s,transform .2s;
+}
+#update-dot.on{opacity:1;transform:scale(1);animation:dot-pulse 1.8s ease infinite}
+@keyframes dot-pulse{0%,100%{box-shadow:0 0 0 0 rgba(232,150,13,.55)}55%{box-shadow:0 0 0 6px rgba(232,150,13,0)}}
+
 /* ════════════════════════════════
    DESIGN POLISH
    ════════════════════════════════ */

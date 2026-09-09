@@ -2398,8 +2398,10 @@ function checkForUpdates(silent) {
       if (data.newer) {
         showUpdateBanner(data.latest, data.changelog || '',
           data.download_url || 'https://github.com/ScarFace11/Yandex-Buisnes-Parser/releases/latest');
+        setUpdateDot(true, data.latest);
         return { newer: true, version: data.latest };
       }
+      setUpdateDot(false);
       return { newer: false, version: data.latest || data.current };
     })
     .catch(() => {
@@ -2409,8 +2411,10 @@ function checkForUpdates(silent) {
         .then(data => {
           if (data.newer) {
             showUpdateBanner(data.remote, data.changelog || '', data.download_url || '');
+            setUpdateDot(true, data.remote);
             return { newer: true, version: data.remote };
           }
+          setUpdateDot(false);
           return { newer: false, version: data.current };
         })
         .catch(() => ({ newer: false, error: true }));
@@ -2440,6 +2444,27 @@ function manualUpdateCheck(btn) {
 
 // Periodic background check (silent — banner only, no toasts)
 setInterval(() => checkForUpdates(true), UPDATE_CHECK_INTERVAL);
+
+// ── «Update available» dot on the header button ──
+// Orange dot + pulse while a newer version exists; hidden once the user
+// updates or the check reports up-to-date.
+function setUpdateDot(on, version) {
+  const btn = document.getElementById('btn-updates');
+  if (!btn) return;
+  let dot = document.getElementById('update-dot');
+  if (on) {
+    if (!dot) {
+      dot = document.createElement('span');
+      dot.id = 'update-dot';
+      dot.title = 'Доступно обновление';
+      btn.appendChild(dot);
+    }
+    dot.dataset.version = version || '';
+    dot.classList.add('on');
+  } else if (dot) {
+    dot.classList.remove('on');
+  }
+}
 
 function showUpdateBanner(newVer, changelog, url) {
   // Remove existing banner if any
