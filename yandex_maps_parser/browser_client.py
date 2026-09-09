@@ -72,36 +72,63 @@ def _try_import_playwright():
 
 
 def _auto_install_playwright() -> bool:
-    """Try to install Playwright automatically.
-
-    Returns True if installation succeeded, False otherwise.
-    """
+    """Установка Playwright для .exe с использованием встроенных браузеров"""
     state.syslog("browser_client: playwright not found, attempting auto-install...")
+
+    # Определяем базовую директорию
+    if getattr(sys, 'frozen', False):
+        # Запущено как .exe
+        base_dir = os.path.dirname(sys.executable)
+    else:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+
+    # Устанавливаем путь для браузеров ВНУТРИ папки с .exe
+    browsers_path = os.path.join(base_dir, 'browsers')
+    os.environ['PLAYWRIGHT_BROWSERS_PATH'] = browsers_path
+
     try:
-        # Install playwright package
-        subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", "playwright"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=120,
-        )
-        # Install chromium browser
-        subprocess.check_call(
-            [sys.executable, "-m", "playwright", "install", "chromium"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=300,
-        )
+        # Для .exe используем другой подход
+        if getattr(sys, 'frozen', False):
+            # Используем встроенный Python (если есть в системе)
+            python_exe = _find_system_python()
+            if not python_exe:
+                state.syslog("browser_client: Python not found in system")
+                return False
+
+            # Устанавливаем в папку с .exe
+            subprocess.check_call(
+                [python_exe, "-m", "pip", "install", "playwright"],
+                timeout=120
+            )
+            subprocess.check_call(
+                [python_exe, "-m", "playwright", "install", "chromium"],
+                timeout=300
+            )
+        else:
+            # Обычная установка для скрипта
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", "playwright"],
+                timeout=120
+            )
+            subprocess.check_call(
+                [sys.executable, "-m", "playwright", "install", "chromium"],
+                timeout=300
+            )
+
         state.syslog("browser_client: playwright auto-installed successfully")
-        # Force reimport
-        import importlib
-        importlib.invalidate_caches()
-        global _playwright_mod
-        _playwright_mod = None
-        return _try_import_playwright() is not None
+        return True
     except Exception as e:
         state.syslog(f"browser_client: auto-install failed: {e}")
         return False
+
+def _find_system_python():
+    """Находит системный Python для .exe"""
+    import shutil
+    for cmd in ['python', 'python3']:
+        python_path = shutil.which(cmd)
+        if python_path:
+            return python_path
+    return None
 
 
 def _init_cache():
