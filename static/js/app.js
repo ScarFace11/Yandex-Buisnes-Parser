@@ -2385,26 +2385,61 @@ function showLogsModal() {
 // ═══════════════════════════════════════════
 //  Version check from GitHub
 // ═══════════════════════════════════════════
-function checkForUpdates() {
+// Poll GitHub every 30 minutes while the page stays open; the header button
+// re-uses the same check on demand.
+const UPDATE_CHECK_INTERVAL = 30 * 60 * 1000;
+
+function checkForUpdates(silent) {
   // Frozen build: /update/status also reports latest version + whether the
   // in-app updater is available. Source runs fall back to /check-version.
-  fetch('/update/status')
+  return fetch('/update/status')
     .then(r => r.json())
     .then(data => {
       if (data.newer) {
         showUpdateBanner(data.latest, data.changelog || '',
           data.download_url || 'https://github.com/ScarFace11/Yandex-Buisnes-Parser/releases/latest');
+        return { newer: true, version: data.latest };
       }
+      return { newer: false, version: data.latest || data.current };
     })
     .catch(() => {
-      fetch('/check-version')
+      // /update/status unavailable — legacy /check-version fallback
+      return fetch('/check-version')
         .then(r => r.json())
         .then(data => {
-          if (data.newer) showUpdateBanner(data.remote, data.changelog || '', data.download_url || '');
+          if (data.newer) {
+            showUpdateBanner(data.remote, data.changelog || '', data.download_url || '');
+            return { newer: true, version: data.remote };
+          }
+          return { newer: false, version: data.current };
         })
-        .catch(() => {});
+        .catch(() => ({ newer: false, error: true }));
+    })
+    .then(res => {
+      if (silent) return res;
+      if (res.error) showToast('Не удалось связаться с GitHub — проверьте интернет', 'error');
+      else if (res.newer) showToast(`Новая версия v${res.version} — обновите через баннер сверху`, 'success');
+      else showToast('Вы на последней версии ✓', 'success');
+      return res;
     });
 }
+
+// Header button: manual re-check with visual feedback
+function manualUpdateCheck(btn) {
+  if (!btn || btn.dataset.busy) return;
+  btn.dataset.busy = '1';
+  const orig = btn.innerHTML;
+  btn.innerHTML = '<span class="spin" style="width:11px;height:11px;border-width:1.5px"></span> Проверяю…';
+  checkForUpdates(false)
+    .catch(() => {})
+    .finally(() => {
+      delete btn.dataset.busy;
+      btn.innerHTML = orig;
+    });
+}
+
+// Periodic background check (silent — banner only, no toasts)
+setInterval(() => checkForUpdates(true), UPDATE_CHECK_INTERVAL);
 
 function showUpdateBanner(newVer, changelog, url) {
   // Remove existing banner if any
