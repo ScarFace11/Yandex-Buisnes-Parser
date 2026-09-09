@@ -2386,14 +2386,24 @@ function showLogsModal() {
 //  Version check from GitHub
 // ═══════════════════════════════════════════
 function checkForUpdates() {
-  fetch('/check-version')
+  // Frozen build: /update/status also reports latest version + whether the
+  // in-app updater is available. Source runs fall back to /check-version.
+  fetch('/update/status')
     .then(r => r.json())
     .then(data => {
       if (data.newer) {
-        showUpdateBanner(data.remote, data.changelog || '', data.download_url || '');
+        showUpdateBanner(data.latest, data.changelog || '',
+          data.download_url || 'https://github.com/ScarFace11/Yandex-Buisnes-Parser/releases/latest');
       }
     })
-    .catch(() => {});
+    .catch(() => {
+      fetch('/check-version')
+        .then(r => r.json())
+        .then(data => {
+          if (data.newer) showUpdateBanner(data.remote, data.changelog || '', data.download_url || '');
+        })
+        .catch(() => {});
+    });
 }
 
 function showUpdateBanner(newVer, changelog, url) {
@@ -2405,10 +2415,50 @@ function showUpdateBanner(newVer, changelog, url) {
   banner.id = 'update-banner';
   banner.innerHTML = `
     <span class="ub-text">🔄 Доступна новая версия <b>v${newVer}</b>${changelog ? ' — ' + changelog : ''}</span>
-    <a class="ub-btn" href="${url}" target="_blank" rel="noopener noreferrer">Скачать обновление</a>
+    <button class="ub-btn" id="ub-self-update" onclick="selfUpdate()" title="Скачать и установить прямо из приложения">⬆ Обновить сейчас</button>
+    <a class="ub-btn" href="${url}" target="_blank" rel="noopener noreferrer" title="Страница релизов на GitHub">GitHub ↗</a>
     <button class="ub-close" onclick="this.parentElement.remove()">✕</button>
   `;
   document.body.prepend(banner);
+}
+
+// ── Self-update: download → apply → the app restarts itself ──
+let _selfUpdating = false;
+
+async function selfUpdate() {
+  if (_selfUpdating) return;
+  const btn = document.getElementById('ub-self-update');
+  const txt = el => { if (btn) btn.textContent = el; };
+  _selfUpdating = true;
+  try {
+    txt('⏳ Скачиваю…');
+    const dl = await fetch('/update/download', { method: 'POST' })
+      .then(r => r.json());
+    if (!dl.ok) throw new Error(dl.error || 'Ошибка скачивания');
+
+    txt('⏳ Устанавливаю…');
+    const ap = await fetch('/update/apply', { method: 'POST' })
+      .then(r => r.json());
+    if (!ap.ok) throw new Error(ap.error || 'Ошибка установки');
+
+    if (typeof showToast === 'function') showToast(ap.message || 'Обновление установлено, перезапускаюсь…', 'success');
+    txt('✓ Перезапуск…');
+    // The backend stops itself and the updater .bat restarts the exe.
+    // Poll /update/status — as soon as the server answers again with a
+    // fresh version, reload the page.
+    const deadline = Date.now() + 60000;
+    const poll = setInterval(async () => {
+      try {
+        const s = await fetch('/update/status', { cache: 'no-store' }).then(r => r.json());
+        clearInterval(poll);
+        location.reload();
+      } catch (e) { if (Date.now() > deadline) { clearInterval(poll); location.reload(); } }
+    }, 1500);
+  } catch (e) {
+    _selfUpdating = false;
+    txt('⬆ Обновить сейчас');
+    if (typeof showToast === 'function') showToast('Не удалось обновиться: ' + e.message, 'error');
+  }
 }
 (function init() {
   // Theme

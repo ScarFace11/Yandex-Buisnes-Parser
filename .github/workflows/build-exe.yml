@@ -88,6 +88,26 @@ jobs:
           Compress-Archive -Path dist/YandexBusinessParser/* `
             -DestinationPath dist/YandexBusinessParser-windows-x64.zip
 
+      # Stamp the exe asset URL into version.json so the app's built-in
+      # auto-updater downloads the release zip from inside the running exe.
+      - name: Stamp download_url into version.json (release assets only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $p = 'static/version.json'
+          $j = Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json
+          $j | Add-Member -Force -NotePropertyName download_url `
+            -NotePropertyValue 'https://github.com/${{ github.repository }}/releases/latest/download/YandexBusinessParser-windows-x64.zip'
+          $j | ConvertTo-Json -Depth 5 | Set-Content $p -Encoding UTF8
+          Write-Host "version.json -> $($j.version), download_url = $($j.download_url)"
+          # version.json is served raw from main; keep the stamped value in
+          # the repo so /check-version always returns a working URL.
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add $p
+          git commit -m "chore(ci): stamp download_url for v$($j.version) [skip ci]" || Write-Host 'nothing to commit'
+          git push origin HEAD:main || Write-Host 'push failed (non-fatal)'
+
       - name: Attach exe to the GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2

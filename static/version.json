@@ -1,5 +1,6 @@
 {
   "version": "2.2.1",
   "min_version": "2.0.0",
-  "changelog": "2GIS source (Catalog API), required-socials tile filter, save both API keys to .env, terminal-style log with clear button, stats always visible with defaults, stepper alignment, UI polish"
+  "changelog": "2GIS source (Catalog API), required-socials tile filter, save both API keys to .env, terminal-style log with clear button, stats always visible with defaults, stepper alignment, UI polish",
+  "download_url": "https://github.com/ScarFace11/Yandex-Buisnes-Parser/releases/latest/download/YandexBusinessParser-windows-x64.zip"
 }

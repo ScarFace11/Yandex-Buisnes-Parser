@@ -28,6 +28,7 @@ from routes.parser import bp as parser_bp
 from routes.sender import bp as sender_bp
 from routes.api   import bp as api_bp
 from routes.public_api import bp as public_api_bp
+from routes.update  import bp as update_bp
 
 
 def create_app() -> Flask:
@@ -46,6 +47,7 @@ def create_app() -> Flask:
     app.register_blueprint(sender_bp)
     app.register_blueprint(api_bp)
     app.register_blueprint(public_api_bp)
+    app.register_blueprint(update_bp)
     return app
 
 
