@@ -12,7 +12,7 @@ colorama>=0.4
 
 # Browser automation (Playwright for detail pages, or CDP fallback)
 playwright>=1.40
-websocket-client>=1.6  # CDP WebSocket for Chrome DevTools Protocol
+websocket-client>=1.9.2  # CDP WebSocket for Chrome DevTools Protocol
 
 # Excel export
 openpyxl>=3.1
