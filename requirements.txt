@@ -8,7 +8,7 @@ httpx[http2]>=0.27
 curl-cffi>=0.16      # HTTP engine with Chrome TLS/JA3 impersonation (anti-bot); httpx used as fallback
 requests>=2.31
 tqdm>=4.65
-colorama>=0.4
+colorama>=0.4.6
 
 # Browser automation (Playwright for detail pages, or CDP fallback)
 playwright>=1.40
