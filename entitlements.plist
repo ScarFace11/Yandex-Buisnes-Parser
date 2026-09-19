@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements для подписи .app-бандла (Developer ID + hardened runtime).
+
+  * allow-unsigned-executable-memory и allow-dyld-environment-variables
+    нужны загрузчику PyInstaller: без них подписанный бандл падает при
+    старте («killed: 9» / «code signature invalid»).
+  * allow-jit: часть расширений CPython использует JIT.
+  * disable-library-validation: подгружаются бинарные колеси, подписанные
+    не тем же Team ID.
+
+  Используется автоматически в .github/workflows/build-macos.yml, когда в
+  секретах репозитория задан сертификат Developer ID; без секретов сборка
+  остаётся ad-hoc подписанной (Gatekeeper попросит подтверждение при первом
+  запуске — см. README, «Как настроить подпись macOS»).
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+</dict>
+</plist>

@@ -73,9 +73,16 @@ class RunLogger:
           sys          — system/developer traces (file only)
           result       — single enriched record summary
         """
+        # Structured statistics are a UI payload (JSON), not a log line — the
+        # file gets a compact «stats: …» record from state.syslog instead.
+        if level == "stats":
+            return
+        # Absolute wall-clock stamp [HH:MM:SS] — it survives restarts and
+        # resume; the elapsed delta from the run start rides along in the
+        # sys record so timings stay reconstructable.
         ts = time.time() - self._started_at
         mins, secs = divmod(int(ts), 60)
-        timestamp = f"[{mins:02d}:{secs:02d}]"
+        timestamp = f"[{datetime.now().strftime('%H:%M:%S')} +{mins}:{secs:02d}]"
         prefix = {"info": "ℹ", "warn": "⚠", "ok": "✔", "result": "→", "sys": "⚙"}.get(level, "·")
 
         if level == "result":
@@ -109,8 +116,15 @@ class RunLogger:
         self._write(f"  ✅ {city}: {status} — {records} записей")
         self._write("─" * 60)
 
-    def finish(self, total_results: int, files: list[str], stopped: bool = False) -> None:
-        """Write final summary."""
+    def finish(self, total_results: int, files: list[str], stopped: bool = False,
+               paused: bool = False) -> None:
+        """Write final summary.
+
+        A pause unwinds through the same graceful path as a stop, but its
+        summary must not read «Остановлено пользователем»: the run is waiting
+        to be continued, and the wrong wording made the pause look like the
+        end of the search.
+        """
         elapsed = time.time() - self._started_at
         mins, secs = divmod(int(elapsed), 60)
         self._write("")
@@ -119,7 +133,9 @@ class RunLogger:
         self._write(f"  Время: {mins}м {secs}с")
         self._write(f"  Найдено записей: {total_results}")
         self._write(f"  Файлы: {', '.join(files) if files else 'нет'}")
-        if stopped:
+        if paused:
+            self._write(f"  ⏸ Поставлен на паузу — прогресс сохранён, можно продолжить")
+        elif stopped:
             self._write(f"  ⏹ Остановлено пользователем")
         self._write(f"  Лог: {self._path}")
         self._write("═" * 60)

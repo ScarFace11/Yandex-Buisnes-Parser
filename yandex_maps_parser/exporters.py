@@ -33,6 +33,17 @@ if "twogis_url" not in CSV_FIELDS:
     HEADER_LABELS["twogis_url"] = "2ГИС"
     COL_WIDTHS["twogis_url"] = 36
 
+# Map-link columns: a run only ever fills the one that belongs to its
+# source, so the other one showed up as an empty column in every export
+# (a 2GIS run had a blank «Яндекс.Карты» and vice versa). Only the column
+# matching state.SOURCE is exported now — the map link is always there,
+# without the empty twin.
+_MAP_FIELDS = ("yandex_maps_url", "twogis_url")
+
+# Extra columns that files need but reports don't show (raw files keep the
+# website so stage 2 can re-apply «только без сайтов» without re-crawling).
+INTERNAL_FIELDS = ("website",)
+
 
 # Column-name lookup for record_key(): first non-empty map URL wins.
 def _map_url_of(rec: dict) -> str:
@@ -115,26 +126,97 @@ def _phone_digits(rec: dict) -> str:
     return re.sub(r"\D", "", str(rec.get("phone") or ""))
 
 
-def collapse_chains(records: list[dict]) -> list[dict]:
+# ── Chain-merge strategies («Объединять филиалы сетей») ───────
+# The dropdown in the UI maps 1:1 onto these keys:
+#   name_city — same normalized name within one city (default)
+#   name      — same normalized name across ALL cities
+#   phone     — records sharing any phone digit-string
+#   email     — records sharing any e-mail address
+CHAIN_KEYS = ("name_city", "name", "phone", "email")
+
+
+def collapse_chains_chain_keys() -> tuple:
+    """Valid merge strategies for the UI dropdown / API validation."""
+    return CHAIN_KEYS
+
+
+def _chain_key_fn(strategy: str):
+    """Return record → group-key mapping for the merge strategy.
+
+    Pure name keys group strictly by name (name_city keeps each city
+    apart); contact-based keys (phone/email) group purely by the contact —
+    records sharing the same number/address are one chain regardless of
+    name, since a shared working contact is the stronger signal.
+    """
+    def _emails(rec: dict) -> list[str]:
+        raw = str(rec.get("email") or "")
+        if not raw:
+            return []
+        # The field may carry several comma-separated addresses.
+        return [e.strip().lower() for e in raw.split(",") if e.strip()]
+
+    if strategy == "name":
+        def key(rec: dict):
+            name = _norm_name(rec.get("name"))
+            return ("n", name) if name else None
+        return key
+    if strategy == "phone":
+        def key(rec: dict):
+            # One record may expose several phones → one key per number.
+            ks = set()
+            for ph in str(rec.get("phone") or "").split(","):
+                digits = re.sub(r"\D", "", ph)
+                if digits:
+                    ks.add(("p", digits))
+            return ks or None
+        return key
+    if strategy == "email":
+        def key(rec: dict):
+            ks = {("e", e) for e in _emails(rec)}
+            return ks or None
+        return key
+    # default: name + city
+    def key(rec: dict):
+        name = _norm_name(rec.get("name"))
+        city = (rec.get("city") or "").strip().lower()
+        return ("nc", city, name) if name else None
+    return key
+
+
+def collapse_chains(records: list[dict], strategy: str = "name_city") -> list[dict]:
     """Merge records of the same business chain into one row.
 
-    Two records are treated as the same chain when they belong to the
-    same city, have the same normalized name AND share contact info
-    (an overlapping phone number or at least one identical social URL).
-    The kept row is the one with the most socials; phones and social
-    links from the others are merged into it.
+    strategy selects the grouping (see CHAIN_KEYS); after grouping, the
+    name_city groups are additionally split by shared contact info, so
+    same-named but genuinely different businesses stay apart. Rows without
+    the strategy's key pass through unchanged. The kept row is the one with
+    the most socials; phones and social links from the others are merged
+    into it.
     """
+    key_fn = _chain_key_fn(strategy)
     by_key: dict[tuple, list[dict]] = {}
-    for r in records:
-        key = (r.get("city") or "", _norm_name(r.get("name")))
-        if not key[1]:
-            continue
-        by_key.setdefault(key, []).append(r)
-
+    # Records without the strategy's key (no name, no phone, no email) must
+    # survive untouched — dropping them silently emptied whole result sets
+    # when «Правило объединения» was switched to phone/email.
     out: list[dict] = []
-    for key, group in by_key.items():
+    for r in records:
+        key = key_fn(r)
+        if key is None:
+            out.append(r)
+            continue
+        for k in (key if isinstance(key, set) else (key,)):
+            by_key.setdefault(k, []).append(r)
+
+    for _key, group in by_key.items():
         if len(group) < 2:
             out.extend(group)
+            continue
+        # Only the strict «Название + Город» key needs the extra split by
+        # shared contacts: a pure-name key merges the chain across cities by
+        # definition, and phone/email keys are already contact-tight.
+        if strategy != "name_city":
+            for base in _merge_group(group):
+                out.append(base)
             continue
         # Split the name-group into sub-groups connected by shared contact
         # info (the same name may be genuinely different businesses).
@@ -156,50 +238,96 @@ def collapse_chains(records: list[dict]) -> list[dict]:
                 merged.append([r])
             else:
                 slot.append(r)
-        for group in merged:
-            if len(group) < 2:
-                out.extend(group)
-                continue
-            # Keep the richest record, merge phones + socials from the rest
-            base = max(group, key=lambda x: (len(_socials_of(x)), len(_phone_digits(x)), bool(x.get("description"))))
-            phones: list[str] = []
-            socials: dict[str, str] = {}
-            for r in group:
-                for ph in str(r.get("phone") or "").split(","):
-                    ph = ph.strip()
-                    if ph and ph not in phones:
-                        phones.append(ph)
-                for p in KNOWN_PLATFORMS:
-                    v = r.get(p)
-                    if v and not socials.get(p):
-                        socials[p] = v
-            base = dict(base)
-            base["phone"] = ", ".join(phones)
-            base.update(socials)
-            out.append(base)
+        for sub in merged:
+            for base in _merge_group(sub):
+                out.append(base)
     return out
 
 
-def min_contact_filter(records: list[dict]) -> list[dict]:
-    """Drop records with neither a phone nor any social link."""
-    out = []
-    for r in records:
-        if _phone_digits(r) or _socials_of(r) or r.get("other_socials"):
-            out.append(r)
-    return out
+def _merge_group(group: list[dict]) -> list[dict]:
+    """Collapse one connected group into a single (richest) row.
+
+    Phones and social links of the branches are merged into the kept
+    record; a singleton passes through untouched.
+    """
+    if len(group) < 2:
+        return list(group)
+    # Keep the richest record, merge phones + socials from the rest
+    base = max(group, key=lambda x: (len(_socials_of(x)), len(_phone_digits(x))))
+    phones: list[str] = []
+    socials: dict[str, str] = {}
+    for r in group:
+        for ph in str(r.get("phone") or "").split(","):
+            ph = ph.strip()
+            if ph and ph not in phones:
+                phones.append(ph)
+        for p in KNOWN_PLATFORMS:
+            v = r.get(p)
+            if v and not socials.get(p):
+                socials[p] = v
+    base = dict(base)
+    base["phone"] = ", ".join(phones)
+    base.update(socials)
+    return [base]
 
 
-def apply_output_filters(records: list[dict]) -> list[dict]:
-    """Apply the optional web-form output filters (in place on a copy)."""
+def apply_output_filters(records: list[dict], chain_key: str = "name_city") -> list[dict]:
+    """Apply the optional web-form output filters (in place on a copy).
+
+    Stage-2 filters only: chain merge first, then record-level filters —
+    merging before filtering keeps every contact from dropped branches.
+    chain_key selects the chain-merge strategy (see CHAIN_KEYS).
+    """
     records = list(records)
     try:
-        if state.MIN_CONTACT:
-            records = min_contact_filter(records)
         if state.COLLAPSE_CHAINS:
-            records = collapse_chains(records)
+            records = collapse_chains(records, chain_key)
     except Exception:
         pass
     return records
+
+
+def collapse_chains_name_city(records: list[dict]) -> list[dict]:
+    """Stage-2 chain merge with the strict «Название + Город» key.
+
+    Unlike collapse_chains() (which additionally splits groups by shared
+    contact info), this merges every same-named business in a city into
+    one row — exactly the stage-2 acceptance criterion. The kept row is
+    the richest one; phones and social links of the branches are merged.
+    """
+    by_key: dict[tuple, list[dict]] = {}
+    for r in records:
+        name = _norm_name(r.get("name"))
+        key = ((r.get("city") or "").strip().lower(), name)
+        if not name:
+            continue
+        by_key.setdefault(key, []).append(r)
+
+    out: list[dict] = []
+    for _key, group in by_key.items():
+        if len(group) < 2:
+            out.extend(group)
+            continue
+        base = max(
+            group,
+            key=lambda x: (len(_socials_of(x)), len(_phone_digits(x))),
+        )
+        base = dict(base)
+        phones: list[str] = []
+        socials: dict[str, str] = {}
+        for r in group:
+            for ph in str(r.get("phone") or "").split(","):
+                ph = ph.strip()
+                if ph and ph not in phones:
+                    phones.append(ph)
+            for p in KNOWN_PLATFORMS:
+                v = r.get(p)
+                if v and not socials.get(p):
+                    socials[p] = v
+        base["phone"] = ", ".join(phones)
+        base.update(socials)
+        out.append(base)
+    return out
 
 
 def _dict_rows(f) -> list[dict]:
@@ -286,11 +414,6 @@ def _records_from_xlsx(path: str) -> list[dict]:
                     continue
                 if f == "reviewed":
                     rec[f] = bool(v)
-                elif f == "reviews":
-                    try:
-                        rec[f] = int(v)
-                    except (TypeError, ValueError):
-                        rec[f] = v
                 else:
                     rec[f] = str(v).strip() if not isinstance(v, (int, float)) else v
             if rec.get("name") or rec.get("yandex_maps_url"):
@@ -388,23 +511,57 @@ URL_RE       = re.compile(r"https?://", re.I)
 _EXCEL_LOCK = threading.Lock()  # guards _Excel state below
 
 
-def _enabled_fields() -> list[str]:
+def _map_field(records: list[dict] | None = None) -> str:
+    """Which of the two map columns this file gets.
+
+    A run only fills the column of its own source, so exporting both left an
+    empty «2ГИС» column in every Yandex export (and vice versa). Prefer the
+    column that actually carries data in `records` — the review-mark store
+    keys records by card URL, so a file without the right column could not be
+    matched back — and fall back to the run's source when there is no data
+    yet (incremental writes write headers before the first record).
+    """
+    src = "twogis_url" if getattr(state, "SOURCE", "yandex") == "2gis" else "yandex_maps_url"
+    if records:
+        have = [f for f in _MAP_FIELDS if any(str((r or {}).get(f) or "").strip() for r in records)]
+        return src if src in have else (have[0] if have else src)
+    return src
+
+
+def _enabled_fields(extra: tuple[str, ...] = (), records: list[dict] | None = None) -> list[str]:
     """Excel columns for this run: all CSV_FIELDS or the user-selected subset.
 
     state.EXCEL_COLUMNS (set of field keys) is set from the web form's
     «Настройка Excel-выгрузки» tab and persisted in the browser. Ordering
     always follows CSV_FIELDS so the file layout stays stable.
+
+    `extra` forces columns in regardless of the selection — used by raw
+    exports, which must carry the website for stage 2 (INTERNAL_FIELDS).
     """
+    fields = list(CSV_FIELDS)
+    for f in extra:
+        if f not in fields:
+            fields.append(f)
+    # Only the map column of the current source is exported.
+    keep_map = _map_field(records)
+    fields = [f for f in fields if f not in _MAP_FIELDS or f == keep_map]
+
     cols = getattr(state, "EXCEL_COLUMNS", None)
     if not cols:
-        return list(CSV_FIELDS)
-    return [f for f in CSV_FIELDS if f in cols]
+        return fields
+    sel = set(cols)
+    # Either card-link column stands for «the map link» — a selection made on
+    # a 2GIS run must still export the Yandex column of a Yandex file.
+    if sel & set(_MAP_FIELDS):
+        sel.add(keep_map)
+    out = [f for f in fields if f in sel or f in extra]
+    return out or fields          # never hand out a header-less workbook
 
 
-def _write_row(ws, ri: int, record: dict) -> None:
+def _write_row(ws, ri: int, record: dict, fields: list[str] | None = None) -> None:
     """Write a single business record to worksheet row ri (1=header, 2+=data)."""
     alt = ri % 2 == 0
-    for ci, field in enumerate(_enabled_fields(), 1):
+    for ci, field in enumerate(fields if fields is not None else _enabled_fields(), 1):
         val  = record.get(field, "")
         cell = ws.cell(row=ri, column=ci)
 
@@ -424,26 +581,18 @@ def _write_row(ws, ri: int, record: dict) -> None:
             cell.font      = Font(color="1155CC", underline="single", size=10)
             if alt:
                 cell.fill = ALT_FILL
-        elif field == "reviews":
-            try:
-                cell.value = int(str(val).replace("\xa0", "").replace(" ", "")) if val not in ("", None) else 0
-            except (TypeError, ValueError):
-                cell.value = 0
-            cell.number_format = '#,##0'
-            if alt:
-                cell.fill = ALT_FILL
         else:
             cell.value = val
             if alt and field not in SOCIAL_COLORS:
                 cell.fill = ALT_FILL
 
-        cell.alignment = Alignment(vertical="top", wrap_text=(field == "description"))
+        cell.alignment = Alignment(vertical="top")
         cell.border    = CELL_BORDER
 
 
-def _write_headers(ws) -> None:
+def _write_headers(ws, fields: list[str] | None = None) -> None:
     """Write styled header row to an empty worksheet."""
-    fields = _enabled_fields()
+    fields = fields if fields is not None else _enabled_fields()
     for ci, field in enumerate(fields, 1):
         c = ws.cell(row=1, column=ci, value=HEADER_LABELS.get(field, field))
         c.font      = HDR_FONT
@@ -463,28 +612,9 @@ def _write_headers(ws) -> None:
 
 
 def _apply_conditional_formatting(ws) -> None:
-    """Add color-scale (rating) and data-bar (reviews) conditional formatting."""
+    """(no-op hook — rating/reviews columns were removed from the export)."""
     ws.conditional_formatting._cf_rules.clear()
-    if ws.max_row < 2:
-        return
-    fields = _enabled_fields()
-    # Only format columns that are actually present in the export.
-    if "rating" not in fields or "reviews" not in fields:
-        return
-    rating_col  = get_column_letter(fields.index("rating")  + 1)
-    reviews_col = get_column_letter(fields.index("reviews") + 1)
-    ws.conditional_formatting.add(
-        f"{rating_col}2:{rating_col}{ws.max_row}",
-        ColorScaleRule(
-            start_type="min", start_color="F8696B",
-            mid_type="percentile", mid_value=50, mid_color="FFEB84",
-            end_type="max", end_color="63BE7B",
-        ),
-    )
-    ws.conditional_formatting.add(
-        f"{reviews_col}2:{reviews_col}{ws.max_row}",
-        DataBarRule(start_type="min", end_type="max", color="5B9BD5", showValue=True),
-    )
+
 
 
 # ── Excel incremental (web mode) ─────────────────────────────
@@ -610,20 +740,25 @@ def _finalize_excel(records: list[dict]) -> None:
 
 # ── Excel (batch / CLI) ──────────────────────────────────────
 
-def save_excel(all_records: list[dict], path: str) -> None:
-    """Create a complete Excel file from scratch (used by CLI)."""
+def save_excel(all_records: list[dict], path: str, extra_fields: tuple[str, ...] = ()) -> None:
+    """Create a complete Excel file from scratch (used by CLI).
+
+    `extra_fields` adds columns that are not part of the user's report but
+    are needed on disk (see INTERNAL_FIELDS).
+    """
+    fields = _enabled_fields(extra_fields, all_records)
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "\u0411\u0438\u0437\u043d\u0435\u0441\u044b"
     ws.sheet_view.showGridLines = False
 
-    _write_headers(ws)
+    _write_headers(ws, fields)
 
     for ri, record in enumerate(all_records, 2):
-        _write_row(ws, ri, record)
+        _write_row(ws, ri, record, fields)
 
     last_row = max(ws.max_row, 2)
-    ws.auto_filter.ref = f"A1:{get_column_letter(len(_enabled_fields()))}{last_row}"
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(fields))}{last_row}"
 
     _apply_conditional_formatting(ws)
 
@@ -651,10 +786,8 @@ def _fill_legend_sheet(ws) -> None:
         c.alignment = Alignment(horizontal="center")
 
     labels = {
-        "vk": "\u0412\u041a\u043e\u043d\u0442\u0430\u043a\u0442\u0435", "instagram": "Instagram", "facebook": "Facebook",
-        "telegram": "Telegram", "youtube": "YouTube", "tiktok": "TikTok",
-        "ok": "\u041e\u0434\u043d\u043e\u043a\u043b\u0430\u0441\u0441\u043d\u0438\u043a\u0438", "twitter": "Twitter / X", "whatsapp": "WhatsApp",
-        "other_socials": "\u0414\u0440\u0443\u0433\u0438\u0435 \u0441\u043e\u0446\u0441\u0435\u0442\u0438",
+        "vk": "\u0412\u041a\u043e\u043d\u0442\u0430\u043a\u0442\u0435", "instagram": "Instagram",
+        "telegram": "Telegram", "whatsapp": "WhatsApp",
     }
     for ri, (platform, hex_color) in enumerate(SOCIAL_COLORS.items(), 2):
         ws.cell(row=ri, column=1, value=labels.get(platform, platform)).border = brd
@@ -722,11 +855,8 @@ def _fill_stats_sheet(ws, records, hfill, hfont, border, alt_fill) -> None:
     row += 1
     for label, val in [
         ("\u0412\u0441\u0435\u0433\u043e \u043d\u0430\u0439\u0434\u0435\u043d\u043e",            len(records)),
-        ("\u0421 \u043e\u043f\u0438\u0441\u0430\u043d\u0438\u0435\u043c",              sum(1 for r in records if r.get("description"))),
-        ("\u0421 \u0440\u0435\u0439\u0442\u0438\u043d\u0433\u043e\u043c",              sum(1 for r in records if r.get("rating"))),
-        ("\u0421 \u043a\u043e\u043b\u0438\u0447\u0435\u0441\u0442\u0432\u043e\u043c \u043e\u0442\u0437\u044b\u0432\u043e\u0432",    sum(1 for r in records if r.get("reviews") not in ("", None, 0))),
         ("\u0427\u0435\u0440\u0435\u0437 taplink/linktree",   sum(1 for r in records if r.get("aggregator_url"))),
-        ("\u0421 \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u043e\u0439 \u0441\u043e\u0446\u0441\u0435\u0442\u0435\u0439",     sum(1 for r in records if r.get("socials_valid"))),
+        ("\u0421 \u043e\u0446\u0441\u0435\u0442\u044f\u043c\u0438",                 sum(1 for r in records if any(r.get(p) for p in KNOWN_PLATFORMS))),
     ]:
         cell(row, 1, label, row % 2 == 0)
         cell(row, 2, val,   row % 2 == 0)
@@ -780,11 +910,8 @@ def _popup_html(r: dict, idx: int) -> str:
     category = r.get("category", "")
     address  = r.get("address", "")
     phone    = r.get("phone", "")
-    rating   = r.get("rating", "")
-    reviews  = r.get("reviews", "")
     maps_url = r.get("yandex_maps_url", "")
     agg_url  = r.get("aggregator_url", "")
-    hours    = r.get("hours", "")
 
     badges = ""
     for p in KNOWN_PLATFORMS:
@@ -799,33 +926,10 @@ def _popup_html(r: dict, idx: int) -> str:
                 f'font-size:11px;font-weight:bold;text-decoration:none">'
                 f'{label}</a>'
             )
-    other = r.get("other_socials", "")
-    if other:
-        for u in other.split(", "):
-            u = u.strip()
-            if u:
-                badges += (
-                    f'<a href="{u}" target="_blank" style="'
-                    f'display:inline-block;margin:2px 3px 2px 0;padding:2px 7px;'
-                    f'background:#9C27B0;color:#fff;border-radius:4px;'
-                    f'font-size:11px;font-weight:bold;text-decoration:none">\u2026</a>'
-                )
-
-    rating_str = ""
-    if rating:
-        stars = "\u2605" * round(float(rating)) + "\u2606" * (5 - round(float(rating)))
-        rating_str = (
-            f'<div style="margin:4px 0;color:#f5a623;font-size:13px">'
-            f'{stars} <span style="color:#555;font-size:12px">'
-            f'{rating}{(" \u00b7 " + reviews + " \u043e\u0442\u0437.") if reviews else ""}</span></div>'
-        )
-
     rows = ""
     if category:  rows += f'<div style="color:#888;font-size:11px;margin-bottom:3px">{category}</div>'
-    if rating_str: rows += rating_str
     if address:   rows += f'<div style="margin:3px 0;font-size:12px">\U0001f4cd {address}</div>'
     if phone:     rows += f'<div style="margin:3px 0;font-size:12px">\U0001f4de <a href="tel:{phone}">{phone}</a></div>'
-    if hours:     rows += f'<div style="margin:3px 0;font-size:12px;color:#555">\U0001f550 {hours}</div>'
     if agg_url:
         rows += (
             f'<div style="margin:4px 0;font-size:12px">'

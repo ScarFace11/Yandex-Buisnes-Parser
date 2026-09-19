@@ -1,5 +1,12 @@
 """In-app self-update for the frozen Windows build.
 
+The swap step is Windows-only: it waits for the process to exit and replaces
+files with a generated updater.bat. On macOS the app is a .app bundle that a
+signed/quarantined copy of the running process cannot safely overwrite, so
+there the app only REPORTS that a newer version exists and the UI points at
+the release page (auto_apply=false). Everything else (frozen? dev? which
+version is newer) works the same on both platforms.
+
 Flow (all triggered from the web UI):
   GET  /update/status   — frozen? current vs latest version? update available?
   GET  /update/download — stream the release zip to a temp file
@@ -43,6 +50,44 @@ _DETACHED = {"creationflags": getattr(subprocess, "DETACHED_PROCESS", 0), "close
 
 def _is_frozen() -> bool:
     return bool(paths and paths.is_frozen())
+
+
+def _self_update_supported() -> bool:
+    """Менять файлы на диске умеет только Windows-сборка (updater.bat + exe).
+
+    macOS-версия — .app-бандл: подмена файлов запущенного бандла ломает
+    подпись, а сам он может лежать в /Applications без права на запись.
+    Поэтому там авто-обновление не предлагается — показываем «Доступна новая
+    версия» и ссылку на страницу релизов.
+    """
+    import sys
+    return sys.platform.startswith("win")
+
+
+def _platform_refusal() -> dict:
+    return {"ok": False,
+            "error": "Авто-обновление доступно только в сборке для Windows. "
+                     "Скачайте новую версию со страницы релизов."}
+
+
+def _is_dev() -> bool:
+    """Сборка разработчика: авто-обновление отключено целиком.
+
+    Публичный релиз не должен затирать dev-сборку (и наоборот), поэтому в
+    dev-режиме мы даже не ходим на GitHub за версией: ни баннера, ни кнопки
+    «Обновить сейчас», ни замены файлов.
+    """
+    try:
+        from config import is_dev_build
+        return bool(is_dev_build())
+    except Exception:
+        return False
+
+
+def _dev_refusal() -> dict:
+    return {"ok": False,
+            "error": "Это DEV-сборка: авто-обновление отключено. "
+                     "Публичный релиз ставится из обычной сборки."}
 
 
 def _user_dir() -> Path:
@@ -109,16 +154,22 @@ def _ver_tuple(v: str):
 @bp.route("/update/status")
 def update_status():
     from config import APP_VERSION
+    import sys
     out = {
         "frozen": _is_frozen(),
+        "dev": _is_dev(),
         "current": APP_VERSION,
         "latest": None,
         "newer": False,
         "changelog": "",
         "download_url": "",
+        # false → в баннере нет кнопки «Обновить сейчас» (macOS/исходники).
+        "auto_apply": _is_frozen() and _self_update_supported(),
+        "platform": sys.platform,
         "state": _state(),
     }
-    if not _is_frozen():
+    # DEV-сборка: за версией не ходим — обновление ей не предлагается.
+    if out["dev"] or not _is_frozen():
         return jsonify(out)
     try:
         meta = _remote_meta()
@@ -156,8 +207,12 @@ def update_changelog():
 @bp.route("/update/download", methods=["POST"])
 def update_download():
     """Stream the release zip to _update/update.zip."""
+    if _is_dev():
+        return jsonify(_dev_refusal()), 400
     if not _is_frozen():
         return jsonify({"ok": False, "error": "Доступно только в сборке .exe"}), 400
+    if not _self_update_supported():
+        return jsonify(_platform_refusal()), 400
 
     meta = _state()
     url = (request.get_json(silent=True) or {}).get("url") or meta.get("download_url")
@@ -192,8 +247,12 @@ def update_download():
 @bp.route("/update/apply", methods=["POST"])
 def update_apply():
     """Extract the downloaded zip, verify it, schedule the swap, restart."""
+    if _is_dev():
+        return jsonify(_dev_refusal()), 400
     if not _is_frozen():
         return jsonify({"ok": False, "error": "Доступно только в сборке .exe"}), 400
+    if not _self_update_supported():
+        return jsonify(_platform_refusal()), 400
 
     st = _state()
     zip_path = Path(st.get("download", {}).get("file") or (_work_dir() / "update.zip"))

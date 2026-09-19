@@ -1,0 +1,313 @@
+name: Build macOS .app
+
+# Сборка .app для macOS (Apple Silicon и Intel).
+#
+#  * push тега v*         → публичная сборка, .zip и .dmg прикрепляются к тому
+#                           же GitHub Release, что и Windows .exe
+#                           (build-exe.yml создаёт релиз, мы ждём его и доливаем
+#                            файлы — так два workflow не дерутся за релиз);
+#  * push ветки dev       → сборка разработчика (артефакт, без релиза);
+#  * workflow_dispatch    → вручную, переключателем «dev» можно собрать
+#                           сборку разработчика.
+#
+# Подпись: если в секретах задан MACOS_CERTIFICATE_P12 (+ APPLE_ID,
+# APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID) — бандл подписывается
+# Developer ID с hardened runtime и нотаризуется: Gatekeeper запускает
+# приложение без предупреждений. Без секретов — ad-hoc подпись и
+# подтверждение при первом запуске (как включить: README, «Как настроить
+# подпись macOS»).
+
+on:
+  push:
+    tags:
+      - 'v*'
+    branches:
+      - dev
+  workflow_dispatch:
+    inputs:
+      dev:
+        description: 'Собрать сборку разработчика (APP_VERSION с суффиксом -dev)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write   # gh release upload на тегах
+
+jobs:
+  guard:
+    name: Guard — версия и тег
+    # Только для публичной сборки: dev-сборка как раз и живёт на версии -dev,
+    # поэтому при push в dev и при включённом переключателе «dev» шаг пропускаем.
+    if: ${{ !((github.event_name == 'push' && github.ref == 'refs/heads/dev') || inputs.dev == true) }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Guard — публичный релиз не собирается из dev-версии
+        env:
+          YANDEX_API_KEY: ci-dummy-key
+        run: |
+          python - <<'PY'
+          import sys
+          import config
+          print('APP_VERSION =', config.APP_VERSION)
+          if config.is_dev_build():
+              print('::error::APP_VERSION содержит суффикс -dev: это сборка '
+                    'разработчика. Для релиза уберите суффикс в config.py.')
+              sys.exit(1)
+          PY
+
+      - name: Guard — тег и version.json совпадают с версией
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          YANDEX_API_KEY: ci-dummy-key
+          TAG: ${{ github.ref_name }}
+        run: |
+          python - <<'PY'
+          import json, os, sys
+          import config
+          v = config.APP_VERSION
+          tag = os.environ['TAG']
+          with open('static/version.json', encoding='utf-8-sig') as fh:
+              jv = json.load(fh).get('version', '')
+          problems = []
+          if tag != 'v' + v:
+              problems.append(f'тег {tag} не совпадает с APP_VERSION v{v}')
+          if jv != v:
+              problems.append(f'static/version.json {jv} != APP_VERSION {v}')
+          if problems:
+              print('::error::' + '; '.join(problems))
+              sys.exit(1)
+          print(f'OK: {tag}, APP_VERSION {v}, version.json {jv}')
+          PY
+
+  build-macos:
+    name: Build ${{ matrix.label }}
+    needs: guard
+    # needs пропускается, если guard отфильтрован — поэтому проверяем сами.
+    if: ${{ always() && (needs.guard.result == 'success' || needs.guard.result == 'skipped') }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macos-13 (Intel) снят с поддержки в декабре 2025 — x86_64 теперь
+          # только macos-15-intel (заявлен последним Intel-образом, до 2027).
+          - runner: macos-15          # Apple Silicon (arm64)
+            label: macOS arm64
+            arch: arm64
+            asset_arch: arm64
+          - runner: macos-15-intel    # Intel (x86_64)
+            label: macOS x64
+            arch: x86_64
+            asset_arch: x64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Decide the build flavour
+        id: flavour
+        run: |
+          DEV=0
+          if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref }}" = "refs/heads/dev" ]; then DEV=1; fi
+          if [ "${{ inputs.dev }}" = "true" ]; then DEV=1; fi
+          echo "dev=$DEV" >> "$GITHUB_OUTPUT"
+          # Публичная сборка на macOS слушает 5050: 5000 занят AirPlay Receiver
+          # у самой системы (см. config.MAC_PORT).
+          if [ "$DEV" = "1" ]; then
+            echo "name=YandexBusinessParserDev" >> "$GITHUB_OUTPUT"
+            echo "port=5010" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=YandexBusinessParser" >> "$GITHUB_OUTPUT"
+            echo "port=5050" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build the .app bundle (parser-mac.spec)
+        env:
+          YP_DEV: ${{ steps.flavour.outputs.dev == '1' && '1' || '' }}
+          YP_ARCH: ${{ matrix.arch }}
+          # Минимальная система — macOS 11 (Big Sur): иначе бандл, собранный
+          # на свежем образе, откажется запускаться на Mac постарше.
+          MACOSX_DEPLOYMENT_TARGET: '11.0'
+        run: |
+          rm -rf build dist-mac
+          python -m PyInstaller parser-mac.spec --noconfirm --distpath dist-mac
+
+      - name: Decide the signing flavour
+        id: signing
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+        run: |
+          if [ -n "$MACOS_CERTIFICATE_P12" ]; then
+            echo "mode=developer-id" >> "$GITHUB_OUTPUT"
+            echo "Подпись Developer ID: секрет MACOS_CERTIFICATE_P12 задан."
+          else
+            echo "mode=adhoc" >> "$GITHUB_OUTPUT"
+            echo "::warning::Секреты MACOS_CERTIFICATE_P12/MACOS_CERTIFICATE_PASSWORD не заданы — сборка будет подписана ad-hoc. Пользователи macOS увидят предупреждение Gatekeeper при первом запуске. Как включить подпись: README, раздел «Как настроить подпись macOS»."
+          fi
+
+      - name: Sign with Developer ID and notarize
+        # Полная цепочка: сертификат во временную keychain → подпись Developer ID
+        # с hardened runtime и entitlements → нотаризация notarytool → stapler.
+        # После этого Gatekeeper запускает приложение без предупреждений.
+        if: steps.signing.outputs.mode == 'developer-id'
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          NAME: ${{ steps.flavour.outputs.name }}
+        run: |
+          set -euo pipefail
+          APP="dist-mac/$NAME.app"
+
+          # 1. Сертификат (base64 P12) — во временную keychain
+          WORK="$(mktemp -d)"
+          CERT="$WORK/cert.p12"
+          printf '%s' "$MACOS_CERTIFICATE_P12" | base64 --decode > "$CERT"
+          KC="$WORK/build.keychain-db"
+          KC_PASS="$(uuidgen)"
+          security create-keychain -p "$KC_PASS" "$KC"
+          security unlock-keychain -p "$KC_PASS" "$KC"
+          security import "$CERT" -k "$KC" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -k "$KC_PASS" "$KC"
+
+          # 2. Подпись Developer ID + hardened runtime (обязателен для нотаризации)
+          IDENTITY="$(security find-identity -v -p codesigning "$KC" | awk -F'"' '/Developer ID Application/{print $2; exit}')"
+          test -n "$IDENTITY" || { echo "::error::В keychain нет идентичности «Developer ID Application»"; exit 1; }
+          echo "Подписываем идентичностью: $IDENTITY"
+          codesign --force --deep --sign "$IDENTITY" --options runtime \
+            --entitlements entitlements.plist --timestamp \
+            --keychain "$KC" "$APP"
+          codesign --verify --deep --strict "$APP"
+
+          # 3. Нотаризация: zip с бандлом отправляется в Apple, ждём verdict
+          xcrun notarytool store-credentials YP_NOTARY \
+            --apple-id "$APPLE_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID"
+          NOTARY_ZIP="$WORK/$NAME-notary.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "$NOTARY_ZIP"
+          xcrun notarytool submit "$NOTARY_ZIP" --keychain-profile YP_NOTARY --wait
+
+          # 4. Stapler пришивает тикет Apple к бандлу — офлайн-проверка проходит
+          xcrun stapler staple "$APP"
+          xcrun stapler validate "$APP"
+          echo "Подписано и нотаризовано: $APP"
+
+      - name: Ad-hoc sign the bundle
+        # Без сертификата Apple: Apple Silicon запускает только подписанный код,
+        # PyInstaller подписывает ad-hoc сам, здесь доводим и проверяем.
+        if: steps.signing.outputs.mode == 'adhoc'
+        run: |
+          APP="dist-mac/${{ steps.flavour.outputs.name }}.app"
+          test -d "$APP" || { echo "::error::bundle not found: $APP"; exit 1; }
+          codesign --force --deep --sign - "$APP"
+          codesign --verify --deep --strict "$APP"
+          echo "Ad-hoc подпись в порядке: $APP"
+
+      - name: Smoke test the bundle
+        # Запускаем бандл как пользователь (двойной клик) и ждём HTTP 200.
+        # YP_OPEN_BROWSER=0 — на раннере браузер не нужен.
+        run: |
+          set -euo pipefail
+          NAME="${{ steps.flavour.outputs.name }}"
+          PORT="${{ steps.flavour.outputs.port }}"
+          BIN="dist-mac/$NAME.app/Contents/MacOS/$NAME"
+          test -x "$BIN" || { echo "::error::bundle executable missing: $BIN"; exit 1; }
+          YP_OPEN_BROWSER=0 "$BIN" > /tmp/app.log 2>&1 &
+          PID=$!
+          ok=0
+          for i in $(seq 1 30); do
+            sleep 2
+            if curl -fsS --max-time 5 "http://127.0.0.1:$PORT/" | grep -q "Поиск клиентов"; then ok=1; break; fi
+          done
+          kill "$PID" 2>/dev/null || true
+          if [ "$ok" != "1" ]; then
+            echo "::error::smoke test failed: no HTTP 200 on $PORT"
+            tail -60 /tmp/app.log || true
+            exit 1
+          fi
+          echo "Smoke test passed: $NAME ответил на 127.0.0.1:$PORT"
+          # Данные на macOS живут в Application Support, а не внутри бандла
+          test -d "$HOME/Library/Application Support/$NAME" \
+            && echo "Каталог данных создан: ~/Library/Application Support/$NAME"
+
+      - name: Package the .zip (ditto keeps symlinks and permissions)
+        run: |
+          NAME="${{ steps.flavour.outputs.name }}"
+          ARCH="${{ matrix.asset_arch }}"
+          ditto -c -k --sequesterRsrc --keepParent \
+            "dist-mac/$NAME.app" "dist-mac/$NAME-macos-$ARCH.zip"
+          ls -lh dist-mac/*.zip
+
+      - name: Build the .dmg
+        run: |
+          NAME="${{ steps.flavour.outputs.name }}"
+          ARCH="${{ matrix.asset_arch }}"
+          STAGE="$(mktemp -d)"
+          cp -R "dist-mac/$NAME.app" "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
+          hdiutil create -volname "$NAME" -srcfolder "$STAGE" -ov -format UDZO \
+            "dist-mac/$NAME-macos-$ARCH.dmg"
+          rm -rf "$STAGE"
+          ls -lh dist-mac/*.dmg
+
+      - name: Verify the bundle layout
+        # Данные (templates/, static/) и библиотеки обязаны лежать внутри
+        # бандла: иначе .app заработает только рядом с исходниками.
+        run: |
+          NAME="${{ steps.flavour.outputs.name }}"
+          APP="dist-mac/$NAME.app"
+          test -d "$APP/Contents/Frameworks" \
+            || { echo "::error::$APP без Contents/Frameworks — собран неверно"; exit 1; }
+          find "$APP/Contents" -name 'index.html' -path '*templates*' | grep -q . \
+            || { echo "::error::в бандле нет templates/index.html"; exit 1; }
+          find "$APP/Contents" -name 'app.js' -path '*static*' | grep -q . \
+            || { echo "::error::в бандле нет static/js/app.js"; exit 1; }
+          echo "Layout в порядке: $APP"
+
+      - name: Upload the artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.flavour.outputs.name }}-macos-${{ matrix.asset_arch }}
+          path: |
+            dist-mac/*.zip
+            dist-mac/*.dmg
+          retention-days: 30
+
+      - name: Attach to the GitHub Release
+        # Релиз создаёт build-exe.yml (Windows). Ждём его и доливаем файлы:
+        # два workflow, создающих один релиз одновременно, конфликтуют.
+        if: startsWith(github.ref, 'refs/tags/v') && steps.flavour.outputs.dev == '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.ref_name }}"
+          for i in $(seq 1 40); do
+            if gh release view "$TAG" >/dev/null 2>&1; then break; fi
+            echo "Ждём релиз $TAG (Windows-сборка создаёт его первой)… $i/40"
+            sleep 15
+          done
+          gh release upload "$TAG" dist-mac/*.zip dist-mac/*.dmg --clobber
+          gh release view "$TAG" --json assets --jq '.assets[].name'

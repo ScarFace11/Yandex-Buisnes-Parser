@@ -3,7 +3,6 @@ Business-record enrichment: fetch detail pages, extract socials, deduplicate.
 """
 import json
 import random
-import re
 import threading
 import time
 import concurrent.futures
@@ -13,15 +12,12 @@ from datetime import datetime
 from tqdm import tqdm
 
 from .constants import KNOWN_PLATFORMS
-from .constants import SOCIAL_DOMAINS as _SOCIAL_DOMAINS, EXCLUDE_URLS as _EXCLUDE_URLS
 from .extractors import (
+    extract_rating_reviews,
+    extract_phone,
     fetch_html,
     extract_socials,
-    extract_description,
-    extract_reviews_count,
-    validate_socials,
     _extract_from_json_blob,
-    _is_aggregator as _is_aggregator_url,
     _ANTIBOT_MARKERS,
 )
 from .exporters import record_key
@@ -269,38 +265,30 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
                     socials.setdefault(k, v)
                 for k, v in extract_socials(html).items():
                     socials.setdefault(k, v)
-                record["description"] = extract_description(html)
-                if not record.get("reviews"):
-                    review_count = extract_reviews_count(html)
-                    if review_count:
-                        record["reviews"] = int(review_count)
-                # 2GIS fallback pages: harvest the org's website so the
-                # «только без сайтов» filter can be enforced post-fetch
-                # (the demo key hides websites at search time). Skip social
-                # links, 2GIS/Yandex self-links, mail.ru counters and
-                # facebook pixel CDN URLs — only a real external site counts.
-                if detail_url_override and not record.get("website"):
-                    _site_skip = re.compile(
-                        r'2gis\.(ru|com)|(^|\.)mail\.ru|connect\.facebook\.net'
-                        r'|google\.(ru|com)|mozilla\.org|opera\.com'
-                        r'|yandex\.(ru|com)|facebook\.com|apple\.com|microsoft\.com',
-                        re.I,
-                    )
-                    for m_site in re.finditer(
-                        r'https?://[^\s"\'<>\)\\]+', html, re.I,
-                    ):
-                        cand = m_site.group(0)
-                        if _site_skip.search(cand) or _EXCLUDE_URLS.search(cand):
-                            continue
-                        if any(p.search(cand) for p in _SOCIAL_DOMAINS.values()):
-                            continue
-                        if _is_aggregator_url(cand):
-                            # aggregators (taplink etc.) are NOT websites —
-                            # record as aggregator instead
-                            record.setdefault("aggregator_url", cand[:300])
-                            continue
-                        record["website"] = cand[:300]
-                        break
+                # Rating/reviews live in the same blob as the socials, so this
+                # is free. Values already present (2GIS API payload) win.
+                if not record.get("rating") or not record.get("reviews_count"):
+                    _rating, _reviews = extract_rating_reviews(html)
+                    if _rating and not record.get("rating"):
+                        record["rating"] = _rating
+                    if _reviews and not record.get("reviews_count"):
+                        record["reviews_count"] = _reviews
+                # Phone: the 2GIS Search API returns it only inside
+                # contact_groups (needs a permission demo keys don't have) and
+                # the Yandex Search API sometimes omits it — the card page has
+                # it as a tel: link, and we already downloaded the page.
+                if not str(record.get("phone") or "").strip():
+                    _phone = extract_phone(html)
+                    if _phone:
+                        record["phone"] = _phone
+                        state.syslog(f"phone_from_page: {biz_name} → {_phone}")
+                # NOTE: 2GIS firm pages used to be scraped for "the first
+                # https URL" as the org's website. That picked the analytics
+                # script shared by every page (st.top100.ru/top100/top100.js),
+                # so 100% of rows got the same fake site and the
+                # «только без сайтов» filter dropped everything. The site is
+                # only trustworthy when the API returns it as a contact
+                # (see twogis._website_from_contacts) — no HTML guessing.
             state.syslog(f"fetch_detail done: {biz_name}, socials_after={list(socials.keys())}, source={_fetch_source}, time={_fetch_elapsed:.1f}s")
             # Release concurrency slot (only if acquired)
             if _sem_acquired and _concurrency_semaphore:
@@ -338,23 +326,11 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
         if state.is_skip_city():
             return None
 
-        # Backend social mode filtering:
-        # "with_socials" — skip businesses that have NO social media at all
-        # "without_socials" — skip businesses that HAVE social media
-        # "all" — include everything (default)
-        has_any_social = any(socials.get(p) for p in KNOWN_PLATFORMS) or bool(socials.get("other_socials"))
-        if state.SOCIAL_MODE == "with_socials" and not has_any_social:
-            return None  # skip — no social media found
-        if state.SOCIAL_MODE == "without_socials" and has_any_social:
-            return None  # skip — has social media, user wants only those without
-
-        # Требуемые соцсети (плитки в шаге 02): оставить только бизнесы,
-        # у которых найдены ВСЕ выбранные платформы.
-        if state.REQUIRED_SOCIALS:
-            missing = [p for p in sorted(state.REQUIRED_SOCIALS) if not socials.get(p)]
-            if missing:
-                state.syslog(f"skip_required_socials: {biz_name} — нет {', '.join(missing)}")
-                return None
+        # NOTE: socials are NOT used to drop records here any more. The
+        # «с/без соцсетей» choice and the required-network tiles are stage-2
+        # filters (processing.apply_filters): dropping records during the
+        # crawl lost them before they ever reached output/raw/, so a
+        # different social slice required a full re-crawl.
 
         # 2GIS fallback: the demo key returns no contacts, so the firm-page
         # fetch is where the website first becomes visible. Enforce
@@ -365,11 +341,6 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
                 state.syslog(f"skip_has_website(2gis): {biz_name} — {site[:60]}")
                 return None
 
-        # Optional quality filter: drop records with neither phone nor socials
-        if state.MIN_CONTACT and not (record.get("phone") or has_any_social):
-            state.syslog(f"skip_no_contact: {biz_name}")
-            return None
-
         state._inc_found()
         social_list = [f"{p}:{socials[p][:30]}" for p in KNOWN_PLATFORMS if socials.get(p)]
         # File-only: detailed trace per business
@@ -377,16 +348,6 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
         for platform in KNOWN_PLATFORMS:
             record[platform] = socials.get(platform, "")
 
-        # Deduplicate "other" socials by domain
-        other_seen: set[str] = set()
-        other: list[str] = []
-        for k, v in socials.items():
-            if k not in KNOWN_PLATFORMS and v not in other_seen:
-                other_seen.add(v)
-                other.append(v)
-        record["other_socials"] = ", ".join(other)
-
-        record["socials_valid"] = validate_socials(socials, pool) if state.VALIDATE_SOCIALS else ""
         record["parsed_at"]     = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         state._emit_result(record)
         state.inc_city_record()

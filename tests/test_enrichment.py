@@ -4,6 +4,7 @@ Run with: python -m pytest tests/test_enrichment.py -v
 """
 import sys
 import os
+import types
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
@@ -75,3 +76,42 @@ class TestIsGovernmentInstitution:
             "стоматологическое отделение",
         }
         assert set(_GOV_NAME_KEYWORDS) == expected_keywords
+
+
+class TestCrawlKeepsEveryRecord:
+    """Socials are a STAGE-2 filter (processing.apply_filters), not a crawl
+    filter: dropping records during collection lost them before they reached
+    output/raw/, so a different social slice required a full re-crawl."""
+
+    @staticmethod
+    def _pbar():
+        return types.SimpleNamespace(update=lambda *a, **k: None)
+
+    @staticmethod
+    def _prepare(monkeypatch, **overrides):
+        from yandex_maps_parser import state
+        monkeypatch.setattr(state, "FETCH_DETAIL", False, raising=False)
+        monkeypatch.setattr(state, "PARSE_MODE", "all", raising=False)
+        monkeypatch.setattr(state, "MAX_WORKERS", 2, raising=False)
+        monkeypatch.setattr(state, "SOCIAL_MODE", "all", raising=False)
+        monkeypatch.setattr(state, "REQUIRED_SOCIALS", set(), raising=False)
+        for key, val in overrides.items():
+            monkeypatch.setattr(state, key, val, raising=False)
+        return state
+
+    def test_record_without_socials_is_still_emitted(self, monkeypatch):
+        from yandex_maps_parser import enrichment
+        self._prepare(monkeypatch, SOCIAL_MODE="with_socials", REQUIRED_SOCIALS={"vk"})
+        out = enrichment.enrich(
+            [{"name": "Без соцсетей", "city": "Уфа", "query": "кафе"}], self._pbar())
+        assert [r["name"] for r in out] == ["Без соцсетей"]
+        assert out[0]["vk"] == ""
+
+    def test_record_with_social_is_emitted_with_its_link(self, monkeypatch):
+        from yandex_maps_parser import enrichment
+        self._prepare(monkeypatch, SOCIAL_MODE="with_socials")
+        out = enrichment.enrich(
+            [{"name": "С ВК", "city": "Уфа", "query": "кафе",
+              "_raw_feature": {"url": "https://vk.com/somecafe"}}], self._pbar())
+        assert [r["name"] for r in out] == ["С ВК"]
+        assert out[0]["vk"].startswith("https://vk.com")

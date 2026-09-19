@@ -1,0 +1,41 @@
+# Dependabot: автоматические PR на обновление зависимостей.
+#
+# Патчи и минорные версии приходят одним групповым PR (их можно вливать
+# пачкой), мажорные — отдельными: их нужно читать глазами, потому что
+# прокси/TLS/парсинг в этом проекте чувствительны к мажорам.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+    groups:
+      python-minor:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # PyInstaller собирает .app/.exe — мажоры ломают spec'и, обновляем вручную
+      - dependency-name: pyinstaller
+        update-types:
+          - version-update:semver-major
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - ci
+    groups:
+      actions:
+        applies-to: version-updates
+        patterns:
+          - "*"

@@ -7,6 +7,7 @@ sender_config.json
 # Runtime/generated data
 output/
 logs/
+app.log
 *.jsonl
 *.xlsx
 *.csv
@@ -20,11 +21,14 @@ __pycache__/
 *.egg
 *.egg-info/
 dist/
+dist-dev/
+dist-mac/
 build/
 .eggs/
 pip-wheel-metadata/
 *.spec
 !parser.spec
+!parser-mac.spec
 
 # Virtual environments
 venv/
@@ -39,6 +43,7 @@ ENV/
 *.zip
 *.tar.gz
 *.rar
+*.dmg
 
 # IDE / OS
 .idea/

@@ -5,13 +5,12 @@ import pytest
 from yandex_maps_parser import state
 from yandex_maps_parser.exporters import (
     collapse_chains,
-    min_contact_filter,
     apply_output_filters,
 )
 
 
 def _rec(city, name, phone="", **socials):
-    r = {"city": city, "name": name, "phone": phone, "other_socials": ""}
+    r = {"city": city, "name": name, "phone": phone}
     r.update(socials)
     return r
 
@@ -56,44 +55,72 @@ class TestCollapseChains:
         recs = [_rec("Минск", "Один бар", "+375 29 333-33-33", vk="https://vk.ru/o")]
         assert collapse_chains(recs) == recs
 
+    # ── Merge strategies («Правило объединения» dropdown) ──
 
-class TestMinContact:
-    def test_drops_no_contact(self):
+    def test_strategy_name_merges_across_cities(self):
         recs = [
-            _rec("Минск", "Бар", ""),
-            _rec("Минск", "Бар", "+375 29 123-45-67"),
-            _rec("Минск", "Бар", "", vk="https://vk.ru/x"),
+            _rec("Уфа", "Сеть А", "+7 111", vk="https://vk.ru/a1"),
+            _rec("Москва", "Сеть А", "+7 222"),
+            _rec("Казань", "Другое дело", "+7 333"),
         ]
-        out = min_contact_filter(recs)
-        assert len(out) == 2
-        assert all(r.get("phone") or r.get("vk") for r in out)
+        out = collapse_chains(recs, "name")
+        assert len(out) == 2          # Сеть А merged, «Другое дело» apart
+        assert sum(1 for r in out if r["name"] == "Сеть А") == 1
 
-    def test_keeps_other_socials(self):
-        recs = [_rec("Минск", "Бар", "", other_socials="https://site.example")]
-        assert len(min_contact_filter(recs)) == 1
+    def test_strategy_phone_merges_by_shared_number(self):
+        recs = [
+            _rec("Уфа", "Филиал №1", "+7 900 111-22-33"),
+            _rec("Стерлитамак", "Филиал №2", "+7 900 111-22-33"),
+            _rec("Уфа", "Другая сеть", "+7 900 999-88-77"),
+        ]
+        out = collapse_chains(recs, "phone")
+        assert len(out) == 2          # same number → one row
+        phones = [r["phone"] for r in out if "+7 900 111-22-33" in r["phone"]]
+        assert len(phones) == 1 and "+7 900 111-22-33, +7 900 111-22-33" not in phones[0]
+
+    def test_strategy_email_merges_by_shared_email(self):
+        recs = [
+            _rec("Уфа", "Кафе Луна", "", email="luna@mail.ru"),
+            _rec("Москва", "Кафе Луна", "", email="luna@mail.ru"),
+            _rec("Уфа", "Бар Соль", "", email="sol@mail.ru"),
+        ]
+        out = collapse_chains(recs, "email")
+        assert len(out) == 2
+
+    def test_strategy_email_without_contact_never_merges(self):
+        recs = [
+            _rec("Уфа", "Кафе Луна", "+7 111"),
+            _rec("Уфа", "Кафе Луна", "+7 222"),
+        ]
+        out = collapse_chains(recs, "email")
+        assert len(out) == 2          # no email on either record
+
+    def test_strategy_name_city_keeps_cities_apart(self):
+        recs = [
+            _rec("Уфа", "Сеть А", "+7 111"),
+            _rec("Москва", "Сеть А", "+7 222"),
+        ]
+        out = collapse_chains(recs, "name_city")
+        assert len(out) == 2
 
 
 class TestApplyOutputFilters:
-    def test_flags_respected(self):
+    def test_collapse_flag_respected(self):
         recs = [
-            _rec("Минск", "Бар", ""),  # dropped by min_contact
             _rec("Саратов", "Буфет ФМ", "+7 (8452) 60-31-60", vk="https://vk.ru/a"),
             _rec("Саратов", "Буфет ФМ", "+7 (8452) 60-31-60", telegram="https://t.me/b"),
         ]
         state.COLLAPSE_CHAINS = True
-        state.MIN_CONTACT = True
         try:
             out = apply_output_filters(recs)
         finally:
             state.COLLAPSE_CHAINS = False
-            state.MIN_CONTACT = False
         assert len(out) == 1
         assert out[0]["vk"] and out[0]["telegram"]
 
     def test_off_by_default(self):
         recs = [_rec("Минск", "Бар", ""), _rec("Минск", "Бар", "+7 111")]
         state.COLLAPSE_CHAINS = False
-        state.MIN_CONTACT = False
         assert apply_output_filters(recs) == recs
 
 

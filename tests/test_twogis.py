@@ -35,10 +35,10 @@ class TestSocialsFromContacts:
         s = _socials_from_contacts(groups)
         assert "whatsapp" in s
 
-    def test_unknown_social_goes_to_other(self):
+    def test_unknown_social_ignored(self):
         groups = [{"contacts": [{"type": "social_network", "url": "https://example.org/profile"}]}]
         s = _socials_from_contacts(groups)
-        assert "other_socials_list" in s
+        assert s == {}  # only VK/TG/IG/WA are tracked; other networks are dropped
 
     def test_website_type_is_not_social(self):
         groups = [{"contacts": [{"type": "website", "url": "https://cafe.ru"}]}]
@@ -91,8 +91,6 @@ def _item(**over):
 class TestParseItem:
     def setup_method(self):
         state.PARSE_MODE = "all"
-        state.MIN_RATING = 0.0
-        state.MIN_REVIEWS = 0
         twogis._contacts_available = True  # key returns contacts by default in tests
 
     def teardown_method(self):
@@ -103,9 +101,6 @@ class TestParseItem:
         assert rec is not None
         assert rec["name"] == "Бар «Пивная миля»"
         assert rec["address"] == "улица Свободы, 32"
-        assert rec["rating"] == "4.5"
-        assert rec["reviews"] == 87
-        assert rec["hours"] == "Ежедневно 12:00-02:00"
         assert "+7 4852 30-00-00" in rec["phone"]
         assert rec["twogis_url"] == "https://2gis.ru/firm/70000001029535674"
         assert rec["yandex_maps_url"] == ""
@@ -121,18 +116,38 @@ class TestParseItem:
         assert rec["_skip_detail"] is False
         assert rec["_detail_url"] == "https://2gis.ru/firm/70000001029535674"
 
-    def test_reviews_shape_org_review_count(self):
-        # Real API shape: {"org_review_count_with_stars": N, ...}
-        item = _item(reviews={"org_review_count_with_stars": 12, "is_reviewable": True})
-        rec = parse_item(item, "Бар")
-        assert rec["reviews"] == 12
-
-    def test_reviews_plain_number(self):
-        rec = parse_item(_item(reviews=5), "Бар")
-        assert rec["reviews"] == 5
-
     def test_no_name_rejected(self):
         assert parse_item(_item(name=""), "Бар") is None
+
+    # ── rating / reviews (Lead Score inputs) ──
+
+    def test_rating_and_reviews_come_from_the_api_payload(self):
+        rec = parse_item(_item(), "Бар")
+        assert rec["rating"] == 4.5
+        assert rec["reviews_count"] == 87
+
+    def test_missing_rating_stays_empty(self):
+        # No value must never become a fake 0.0 — the score treats empty
+        # as «unknown», a zero would read as «rated terribly».
+        item = _item()
+        item.pop("rating")
+        item.pop("reviews")   # the fixture's reviews key
+        rec = parse_item(item, "Бар")
+        assert rec["rating"] == ""
+        assert rec["reviews_count"] == ""
+
+    def test_zero_reviews_is_kept_as_zero(self):
+        item = _item(reviews={"count": 0}, rating={"value": 5.0})
+        rec = parse_item(item, "Бар")
+        assert rec["reviews_count"] == 0
+        assert rec["rating"] == 5.0
+
+    def test_malformed_rating_objects_do_not_crash(self):
+        item = _item(rating="4.5", reviews=[{"count": 1}])
+        rec = parse_item(item, "Бар")
+        assert rec is not None
+        assert rec["rating"] == ""
+        assert rec["reviews_count"] == ""
 
     def test_parse_mode_without_website_keeps_no_site(self):
         state.PARSE_MODE = "without_website"
@@ -159,17 +174,65 @@ class TestParseItem:
         assert rec["aggregator_url"] == "https://taplink.cc/bar"
         assert rec["website"] == ""
 
-    def test_rating_filter(self):
-        state.MIN_RATING = 4.0
-        item = _item(rating={"value": 3.5})
-        assert parse_item(item, "Бар") is None
+    def test_name_and_category_from_name_ex(self):
+        # Regression: the export used to show the brand twice
+        # (name="Шашлыкоff, гриль-бар", category="Шашлыкоff") — the category
+        # must be the business TYPE, never the brand.
+        item = _item(
+            name="Шашлыкоff, гриль-бар",
+            name_ex={"primary": "Шашлыкоff", "extension": "гриль-бар"},
+        )
+        rec = parse_item(item, "кафе")
+        assert rec["name"] == "Шашлыкоff"
+        assert rec["category"] == "гриль-бар"
 
-    def test_reviews_filter(self):
-        state.MIN_REVIEWS = 100
-        item = _item(reviews={"count": 87})
-        assert parse_item(item, "Бар") is None
+    def test_name_strips_trailing_extension_without_name_ex(self):
+        rec = parse_item(_item(name="Zavarka coffee, кофейня"), "кафе")
+        assert rec["name"] == "Zavarka coffee"
+        assert rec["category"] == "кофейня"
 
-    def test_category_from_name_ex(self):
-        item = _item(name_ex={"primary": "Бар"})
-        rec = parse_item(item, "Бар")
-        assert rec["category"] == "Бар"
+    def test_category_falls_back_to_primary_rubric(self):
+        item = _item(
+            name="Пивная миля",
+            rubrics=[
+                {"kind": "additional", "name": "Кафе"},
+                {"kind": "primary", "name": "Бары"},
+            ],
+        )
+        rec = parse_item(item, "бар")
+        assert rec["name"] == "Пивная миля"
+        assert rec["category"] == "Бары"
+
+    def test_display_name_tail_wins_over_rubric(self):
+        item = _item(name="Бар, бар", rubrics=[{"kind": "primary", "name": "Бары"}])
+        rec = parse_item(item, "бар")
+        assert rec["name"] == "Бар"
+        assert rec["category"] == "бар"
+
+    def test_socials_from_outbound_wrapper_unwrapped(self):
+        # 2GIS hands out link.2gis.ru redirects — the column must contain the
+        # real profile, not a dead 2GIS link.
+        groups = [{"contacts": [
+            {"type": "social_network",
+             "url": "http://link.2gis.ru/1.2/44C9D33B/online/project4/1/null/tok?https://vk.com/lakomkacafe"},
+            {"type": "social_network",
+             "url": "http://link.2gis.ru/1.2/C642693E/online/project4/1/null/tok?https://t.me/mo_na_co22"},
+        ]}]
+        s = _socials_from_contacts(groups)
+        assert s["vk"] == "https://vk.com/lakomkacafe"
+        assert s["telegram"] == "https://t.me/mo_na_co22"
+        assert "link.2gis.ru" not in s["vk"]
+
+    def test_wrapper_without_target_is_dropped(self):
+        groups = [{"contacts": [
+            {"type": "social_network",
+             "url": "http://link.2gis.ru/1.2/44C9D33B/online/project4/1/null/tok"},
+        ]}]
+        assert _socials_from_contacts(groups) == {}
+
+    def test_website_contact_unwrapped(self):
+        groups = [{"contacts": [
+            {"type": "website",
+             "url": "http://link.2gis.ru/1.2/A/online/project4/1/null/tok?https://cafe.ru/menu"},
+        ]}]
+        assert _website_from_contacts(groups) == "https://cafe.ru/menu"

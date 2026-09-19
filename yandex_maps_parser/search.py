@@ -6,6 +6,18 @@ from .http_client import _get
 from . import state
 
 
+def _human_search_error(status: int, query: str, city: str, body: str = "") -> str:
+    """Plain-language version of a Search API failure (details → tech channel)."""
+    if status == 403:
+        return ("API-ключ Яндекса отклонён или лимит исчерпан — проверьте ключ "
+                "и квоты в кабинете разработчика Яндекса.")
+    if status == 404:
+        return (f"В {city or 'городе'} по запросу «{query}» ничего не найдено — "
+                "попробуйте другой запрос.")
+    return (f"Сервис Яндекс.Карт временно вернул ошибку (код {status}) — "
+            "поиск продолжится.")
+
+
 def search_page(
     query: str, city: str, lat: float, lon: float, skip: int, session=None
 ) -> tuple[list[dict], int | None]:
@@ -30,21 +42,24 @@ def search_page(
         },
     )
     if not r:
-        state.warn("Нет ответа от Search API — проверьте сеть или прокси.")
+        state.warn("Нет ответа от сервиса поиска — проверьте подключение к интернету.")
+        state.tech("search: empty response from Search API")
         return [], None
     if r.status_code == 403:
-        state.warn(
-            "Search API вернул 403 — ключ недействителен или лимит исчерпан. "
-            "Проверьте YANDEX_API_KEY в config.py и квоты в кабинете разработчика."
-        )
+        state.tech(f"search: HTTP 403, body={r.text[:300]!r}")
+        state.warn(_human_search_error(403, query, city))
         return [], None
     if r.status_code != 200:
-        state.warn(f"Search API вернул {r.status_code}: {r.text[:200]}")
+        state.tech(f"search: HTTP {r.status_code}, body={r.text[:300]!r}")
+        state.warn(_human_search_error(r.status_code, query, city, r.text[:200]))
         return [], None
     try:
         data = r.json()
         if "error" in data:
-            state.warn(f"Search API ошибка: {data['error']} — {data.get('message', '')}")
+            state.tech(f"search: API error payload: {str(data)[:300]!r}")
+            state.warn(_human_search_error(
+                int(data.get("statusCode", 0) or 0), query, city,
+                str(data.get("message", ""))))
             return [], None
         found = None
         try:
@@ -87,12 +102,7 @@ def parse_feature(feature: dict, query: str) -> dict | None:
     if state.PARSE_MODE == "without_website" and raw_url and not aggregator:
         return None
 
-    rating_obj  = meta.get("rating") or {}
-    rating_val  = float(rating_obj.get("score", 0) or 0) if isinstance(rating_obj, dict) else 0.0
-    reviews_val = int(rating_obj.get("count", 0) or 0)   if isinstance(rating_obj, dict) else 0
 
-    if state.MIN_RATING  > 0 and rating_val  < state.MIN_RATING:  return None
-    if state.MIN_REVIEWS > 0 and reviews_val < state.MIN_REVIEWS: return None
 
     coords = feature.get("geometry", {}).get("coordinates", [])
     phones = ", ".join(
@@ -109,15 +119,12 @@ def parse_feature(feature: dict, query: str) -> dict | None:
         "reviewed":      "",
         "name":          name,
         "category":      ", ".join(c.get("name", "") for c in meta.get("Categories", [])),
-        "description":   "",
         "address":       meta.get("address", ""),
         "phone":         phones,
-        "hours":         meta.get("Hours", {}).get("text", ""),
-        # Keep the review count numeric all the way to Excel.  A string value
-        # makes Excel sort it lexicographically ("9" before "100") instead of
-        # by the actual number of reviews.
-        "rating":        str(rating_val) if rating_val else "",
-        "reviews":       reviews_val,
+        # Rating/reviews are not in the Search API payload — enrich() fills
+        # them from the detail page JSON when cards are being fetched.
+        "rating":        "",
+        "reviews_count": "",
         "aggregator_url": aggregator,
         "lat":           coords[1] if len(coords) > 1 else "",
         "lon":           coords[0] if len(coords) > 1 else "",

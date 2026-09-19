@@ -43,7 +43,11 @@ def search():
     {
         "queries": ["кафе", "ресторан"],      // required
         "cities": ["Москва", "Санкт-Петербург"], // required
-        "social_mode": "with_socials",          // optional: all|with_socials|without_socials
+        "social_mode": "with_socials",          // optional STAGE-2 filter:
+        //   all|with_socials|without_socials — applied to the raw records,
+        //   so a different slice needs no re-crawl (collection keeps all)
+        "required_socials": ["vk"],             // optional: business must have ALL of them
+        "fetch_detail": true,                   // optional: collect socials from cards
         "max_pages": 15,                        // optional: 1-50
         "max_workers": 10,                      // optional: 1-20
         "output_formats": ["excel", "json"],    // optional
@@ -73,7 +77,6 @@ def search():
         "use_grid": bool(data.get("use_grid", False)),
         "grid_radius": int(data.get("grid_radius", 20)),
         "grid_step": int(data.get("grid_step", 5)),
-        "validate_socials": bool(data.get("validate_socials", False)),
         "use_browser": bool(data.get("use_browser", True)),
         "fetch_detail": bool(data.get("fetch_detail", True)),
         "api_key": data.get("api_key", ""),

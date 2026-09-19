@@ -405,6 +405,21 @@ def _create_tab() -> str | None:
     return ws_url
 
 
+def _close_dead_tab(ws_url: str) -> None:
+    """Close a Chrome tab that failed the health check so it does not leak.
+
+    Dead/unresponsive tabs previously stayed open in Chrome forever (each
+    holding a renderer process); over a long run they accumulate. The tab id
+    is the trailing path segment of the WebSocket debugger URL.
+    """
+    try:
+        tab_id = ws_url.rstrip("/").rsplit("/", 1)[-1]
+        if tab_id:
+            _cdp_close_tab(_base_port, tab_id)
+    except Exception:
+        pass
+
+
 def _is_tab_alive(ws_url: str) -> bool:
     """Quick check if a tab's WebSocket is reachable."""
     ws = None
@@ -659,6 +674,7 @@ def fetch_page(url: str, timeout_ms: int = 40000, biz_id: str = "") -> str | Non
             # Check tab health
             if not _is_tab_alive(ws_url):
                 state.syslog(f"cdp_client: tab dead, creating replacement...")
+                _close_dead_tab(ws_url)   # free the Chrome tab, don't leak it
                 ws_url = _create_tab()
                 if not ws_url:
                     return None
@@ -704,6 +720,8 @@ def fetch_page(url: str, timeout_ms: int = 40000, biz_id: str = "") -> str | Non
                 try:
                     new_ws = _create_tab()
                     if new_ws:
+                        if ws_url:
+                            _close_dead_tab(ws_url)  # don't leak the old tab
                         ws_url = new_ws
                 except Exception:
                     pass

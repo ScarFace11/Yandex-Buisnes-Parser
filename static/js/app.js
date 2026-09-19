@@ -11,12 +11,16 @@ const PAGE_SIZE = 50;
 let leafMap     = null;
 let mapInited   = false;
 let startTime   = 0;
+// Когда поиск завершился (Date.now() на done) — «Время» в статистике замирает
+// на фактической длительности и не растёт при каждом открытии вкладки.
+let _runEnd     = null;
 let activeSocialFilters = new Set();
 let socialMode = 'all';  // 'all' | 'with_socials' | 'without_socials'
 let parseMode = 'without_website';  // 'without_website' | 'all' — тип организаций
 let dataSource = 'yandex';  // 'yandex' | '2gis' — источник данных
 let notificationsEnabled = false;  // toggle state
 let requiredSocials = new Set();   // AND filter: must have ALL selected socials
+let vkMode = 'all';                 // 'all' | 'active_semi' | 'active' — VK activity filter
 let _lastCompletedCityIdx = 0;     // track last completed city for notification
 let _cityProgressData = {};        // {cityName: {total, found, status, pct}}
 let _totalCities = 0;              // total cities in current run
@@ -36,6 +40,7 @@ function initCityProgress(totalCities) {
   } else {
     el.style.display = 'none';
   }
+  updateTermProgress();
 }
 
 function updateCityProgress(cityName, pct, found, status) {
@@ -48,18 +53,38 @@ function renderCityProgress() {
   const list = document.getElementById('city-progress-list');
   if (!list) return;
   const entries = Object.entries(_cityProgressData);
+  // Progress bar = % of the city's own work completed; the found count lives
+  // in parentheses — the two metrics no longer share one slot.
+  const meta = {
+    running:  { icon: '⏳', color: '#007E8C' },
+    done:     { icon: '✓',  color: '#2e9e5b' },
+    skipped:  { icon: '⏭',  color: '#ff9800' },
+    queued:   { icon: '⏸',  color: '#9aa5ad' },
+    error:    { icon: '⚠️', color: '#e05252' },
+  };
   list.innerHTML = entries.map(([name, data]) => {
-    const statusIcon = data.status === 'done' ? '✅' : data.status === 'skipped' ? '⏭' : '⏳';
-    const barColor = data.status === 'done' ? '#4caf50' : data.status === 'skipped' ? '#ff9800' : '#2196f3';
-    return `<div style="display:flex;align-items:center;gap:6px;min-width:180px">
-      <span style="font-size:12px">${statusIcon}</span>
-      <span style="font-weight:600;color:#333;font-size:11px;min-width:80px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${name}">${name}</span>
-      <div style="flex:1;height:6px;background:#e0e0e0;border-radius:3px;min-width:60px;max-width:120px">
-        <div style="height:100%;width:${data.pct}%;background:${barColor};border-radius:3px;transition:width 0.3s"></div>
-      </div>
-      <span style="font-size:10px;color:#666;min-width:30px;text-align:right">${data.found > 0 ? data.found + ' найд.' : data.pct + '%'}</span>
+    const m = meta[data.status] || meta.queued;
+    const foundTxt = data.found > 0 ? ` (${data.found} найд.)` : (data.status === 'queued' ? ' (ожидание)' : '');
+    return `<div class="cp-item cp-${data.status}">
+      <span class="cp-ico">${m.icon}</span>
+      <span class="cp-name" title="${name}">${name}</span>
+      <div class="cp-bar"><div class="cp-fill" style="width:${data.pct}%;background:${m.color}"></div></div>
+      <span class="cp-val">${data.pct}%<span class="cp-found">${foundTxt}</span></span>
     </div>`;
   }).join('');
+  updateTermProgress();
+  // Summary line: «Городов обработано: X из Y»
+  const wrap = document.getElementById('city-progress');
+  if (wrap) {
+    const done = entries.filter(([, d]) => d.status === 'done' || d.status === 'skipped').length;
+    let sumEl = document.getElementById('cp-summary');
+    if (!sumEl) {
+      sumEl = document.createElement('div');
+      sumEl.id = 'cp-summary';
+      wrap.insertBefore(sumEl, list);
+    }
+    sumEl.innerHTML = `Городов обработано: <b>${done}</b> из <b>${entries.length}</b>`;
+  }
 }
 
 // ═══════════════════════════════════════════
@@ -76,6 +101,8 @@ function toggleAccordion(hdr) {
   const sec = hdr.closest('.acc');
   const open = sec.classList.toggle('open');
   hdr.setAttribute('aria-expanded', open ? 'true' : 'false');
+  // Summary under «Основные параметры» reflects edits made while open/closed
+  if (sec.id === 'acc-basic') updateBasicSummary();
 }
 
 // ═══════════════════════════════════════════
@@ -120,7 +147,7 @@ function clearFieldError(wrapEl) {
 }
 
 // Modern confirm dialog — replacement for window.confirm
-function uiConfirm(message, title = 'Подтвердите действие', okLabel = 'Удалить') {
+function uiConfirm(message, title = 'Подтвердите действие', okLabel = 'Удалить', danger = true) {
   return new Promise(resolve => {
     const overlay = document.createElement('div');
     overlay.className = 'ui-modal-overlay';
@@ -130,7 +157,7 @@ function uiConfirm(message, title = 'Подтвердите действие', o
         <p>${escapeHtml(message)}</p>
         <div class="ui-modal-btns">
           <button type="button" class="m-cancel">Отмена</button>
-          <button type="button" class="m-ok">${escapeHtml(okLabel)}</button>
+          <button type="button" class="m-ok${danger ? ' danger' : ''}">${escapeHtml(okLabel)}</button>
         </div>
       </div>`;
     const done = val => { overlay.remove(); resolve(val); };
@@ -174,26 +201,41 @@ function setSocialMode(mode) {
     el.classList.toggle('active', isActive);
     radio.checked = isActive;
   });
-  const hint = document.getElementById('social-mode-hint');
-  if (hint) {
-    const hints = { all: 'Показывать все найденные бизнесы', with_socials: 'Только бизнесы с найденными соцсетями', without_socials: 'Только бизнесы без соцсетей (быстрее — без загрузки деталей)' };
-    hint.textContent = hints[mode] || '';
-  }
-  // Smoothly reveal the social network tiles only for «С соцсетями»
+  updateSocialFilterHint();
+  // Reveal the network tiles only for «С соцсетями»; leaving the mode clears
+  // the selection so a hidden filter can never stay active.
   const netFilter = document.getElementById('social-network-filter');
   if (netFilter) netFilter.classList.toggle('open', mode === 'with_socials');
-  if (mode !== 'with_socials') {
+  if (mode !== 'with_socials' && requiredSocials.size) {
     requiredSocials.clear();
-    // Clear the tile visuals too — otherwise stale checks re-appear when
-    // the user switches back to «С соцсетями».
     document.querySelectorAll('#social-net-chk-grid .soc-tile.on').forEach(t => {
       t.classList.remove('on');
       const cb = t.querySelector('input[type=checkbox]');
       if (cb) cb.checked = false;
     });
+    updateSocialFilterHint();
   }
   // Re-filter table if results exist
   if (allResults.length) filterTable();
+}
+
+// Hint under the social radios: names EXACTLY which organizations survive.
+// The tiles only exist in «С соцсетями», so they can never look ignored.
+function updateSocialFilterHint() {
+  const hint = document.getElementById('social-mode-hint');
+  if (!hint) return;
+  const nets = [...requiredSocials]
+    .map(k => (typeof SNAMES !== 'undefined' && SNAMES[k]) || SLABELS[k] || k)
+    .join(', ');
+  if (socialMode === 'without_socials') {
+    hint.textContent = 'Останутся только организации без соцсетей';
+  } else if (nets) {
+    hint.textContent = `Останутся организации, у которых есть все отмеченные сети: ${nets}`;
+  } else {
+    hint.textContent = socialMode === 'with_socials'
+      ? 'Останутся только организации с любой найденной соцсетью'
+      : 'Попадут все организации из сырых данных';
+  }
 }
 
 // ═══════════════════════════════════════════
@@ -231,11 +273,47 @@ function setDataSource(src) {
   if (hint) {
     const keySpan = '<span class="source-hint-key" id="source-key-state"></span>';
     hint.innerHTML = src === '2gis'
-      ? `2GIS: официальный API (быстрый поиск). Ключ без доступа к контактам — соцсети добираются с карточек 2ГИС через Chrome<br>${keySpan}`
-      : 'Яндекс.Карты: поиск через Search API, соцсети собираются с карточек организаций (медленнее)';
+      ? `<b>Быстрее.</b> Контакты и соцсети — только через Chrome. <b>Ключ</b> автоматически подтягивается из .env.<br>${keySpan}`
+      : '<b>Медленнее.</b> Соцсети собираются с карточек организаций. <b>Требует</b> API-ключ Яндекса.';
   }
   if (src === '2gis') refreshSourceKeyState();
+  updateBasicSummary();
+  updatePagesCapNote();
+  // 2GIS has a 50-orgs-per-point cap → the default coverage should be the
+  // overlap-friendly 4×1 ratio; refresh the hint (it embeds token estimates
+  // only for 2GIS) and, on first switch to 2GIS, nudge sliders to it.
+  onGridSlider();
+  if (src === '2gis' && !_grid2gisNudged) {
+    _grid2gisNudged = true;
+    if (_gridMode === 'manual') {
+      const grad = document.getElementById('f-grad'), gstep = document.getElementById('f-gstep');
+      if (grad && gstep && (+gstep.value > +grad.value / 4 + 1)) {
+        gstep.value = Math.max(1, Math.round(+grad.value / 4));
+        onGridSlider();
+      }
+    }
+  }
 }
+let _grid2gisNudged = false;
+
+// 2GIS never returns more than 5 pages per search point (5 × 10 = 50 orgs).
+// The «Страниц» stepper still allows 1–20, so when 2GIS is active and the
+// value exceeds the cap we say so right under the stepper instead of
+// silently wasting the user's setting.
+function updatePagesCapNote() {
+  const note = document.getElementById('pages-cap-note');
+  if (!note) return;
+  const pages = +document.getElementById('f-pages')?.value || 1;
+  const capped = dataSource === '2gis' && pages > 5;
+  note.hidden = !capped;
+  if (capped) note.textContent = `2GIS отдаёт максимум 5 страниц (50 организаций с точки) — значение будет ограничено с ${pages} до 5`;
+}
+
+// Grid coverage mode ('whole' | 'manual') — single source of truth for
+// use_grid: the old f-grid checkbox no longer exists in the markup.
+let _gridMode = 'whole';
+// Live 2GIS Places quota (tokens spent this run), streamed via progress events.
+let _twogisQuotaLive = 0;
 
 // Show whether a 2GIS key is available (.env or the advanced-settings field)
 function refreshSourceKeyState() {
@@ -285,15 +363,155 @@ function toggleRequiredSocial(key, tileEl) {
   if (checked) requiredSocials.add(key);
   else requiredSocials.delete(key);
   if (tileEl) tileEl.classList.toggle('on', checked);
+  updateSocialFilterHint();
   if (allResults.length) filterTable();
 }
 
 // ═══════════════════════════════════════════
-//  Grid toggle
+//  Grid toggle (legacy hook — the markup now uses radio modes)
 // ═══════════════════════════════════════════
 function toggleGrid() {
-  document.getElementById('grid-opts').style.display =
-    document.getElementById('f-grid').checked ? 'grid' : 'none';
+  // Legacy checkbox support (e.g. restored presets) — maps to radio mode.
+  setGridMode(document.getElementById('f-grid')?.checked ? 'manual' : 'whole');
+}
+
+// ── Grid coverage mode: «Весь город» / «Настроить вручную» ─────
+// The hidden checkbox f-grid stays the single source of truth for the
+// backend contract (use_grid), and the hidden number inputs f-grad/f-gstep
+// keep their ids so getParams()/presets work unchanged.
+function setGridMode(mode) {
+  const row = document.getElementById('grid-mode-row');
+  if (row) {
+    row.querySelectorAll('.grid-mode-opt').forEach(el => {
+      const radio = el.querySelector('input[type=radio]');
+      const isActive = el.dataset.mode === mode;
+      el.classList.toggle('active', isActive);
+      if (radio) radio.checked = isActive;
+    });
+  }
+  const manual = mode === 'manual';
+  _gridMode = mode;
+  const opts = document.getElementById('grid-opts');
+  if (opts) opts.style.display = manual ? '' : 'none';
+  const lbl = document.getElementById('grid-lbl');
+  if (lbl) lbl.classList.toggle('on', manual);
+  if (manual) onGridSlider();
+}
+
+// Slider UI: values out, live ratio hint, 2GIS token estimate, sync into
+// the hidden inputs (f-grad/f-gstep are the values getParams() reads).
+// Step is hard-linked to Radius: max(Шаг) = Радиус (ideal ceiling R/2), so a
+// sparse layout is impossible to configure — the slider simply won't go there.
+function onGridSlider() {
+  const grad = document.getElementById('f-grad');
+  const gstep = document.getElementById('f-gstep');
+  const rOut = document.getElementById('grid-radius-out');
+  const sOut = document.getElementById('grid-step-out');
+  const sScale = document.getElementById('grid-step-scale');
+  const hint = document.getElementById('grid-hint');
+  if (!grad || !gstep) return;
+  let r = +grad.value, s = +gstep.value;
+  // ── Link: Шаг never exceeds Радиус; ceiling R/2 as the overlap limit ──
+  const stepMax = Math.max(1, r);              // hard cap = radius itself
+  if (+gstep.max !== stepMax) gstep.max = stepMax;
+  if (s > stepMax) { s = stepMax; gstep.value = s; }
+  if (sOut) sOut.textContent = s;
+  if (sScale) {                                // keep the right scale label in sync
+    sScale.children[0].textContent = '1 км';
+    sScale.children[1].textContent = Math.round(stepMax / 2) + ' км';
+    sScale.children[2].textContent = stepMax + ' км';
+  }
+  if (rOut) rOut.textContent = r;
+  // Paint the filled part of the track (webkit gradient var)
+  const paint = el => {
+    const min = +el.min || 0, max = +el.max || 100;
+    el.style.setProperty('--fill', Math.round(((+el.value - min) / (max - min)) * 100) + '%');
+  };
+  paint(grad); paint(gstep);
+  if (!hint) return;
+
+  const is2gis = dataSource === '2gis';
+  const nQueries = (document.getElementById('f-queries')?.value || '').split('\n').map(x=>x.trim()).filter(Boolean).length || 1;
+  const pages = Math.min(5, Math.max(1, +document.getElementById('f-pages')?.value || 1));
+
+  // ── 1) Coverage state — three bands around the 1:4 ratio ──────────
+  // 2GIS circles each point at ~1.5×step (twogis.py), so neighbours always
+  // overlap; its real risk is the 50-orgs-per-point cap in dense districts.
+  // Yandex has no per-point radius: step > R/2 can leave "holes" between
+  // search areas — parts of the city go unsearched. 1:4 keeps overlap
+  // generous for both sources.
+  const ratio4 = s / Math.max(1, r);            // step : radius, 0.25 = ideal
+  let stateTxt, tone;
+  if (s > r / 2) {
+    stateTxt = is2gis
+      ? 'Слишком редко — в плотных районах упрётесь в лимит 50 организаций на точку'
+      : 'Слишком редко — между точками будут «дыры». Вы пропустите часть компаний. Уменьшите шаг';
+    tone = 'sparse';
+  } else if (ratio4 < 0.125) {
+    if (ratio4 < 0.0625) {
+      stateTxt = 'Избыточно плотно — поиск займёт много времени и запросов, хотя данные почти не улучшатся';
+      tone = 'dense2';
+    } else {
+      stateTxt = 'Плотно — запросов заметно больше нужного, покрытие уже полное';
+      tone = 'dense';
+    }
+  } else {
+    stateTxt = 'Оптимально — ячейки слегка перекрываются. Покрытие полное';
+    tone = 'ok';
+  }
+
+  // ── 2) Token forecast (backend formula: π(R/шаг)²·0.64 + 1) ──────
+  // Corrected: radius-based, not diameter (was overestimating ~3.5×).
+  const cells = Math.max(1, Math.round(Math.PI * Math.pow(r / Math.max(1, s), 2) * 0.64) + 1);
+  const tokens = cells * nQueries * pages;
+  const tokenPct = Math.round(tokens / 10);     // % of the 1000-request free tier
+  const tokCls = tokenPct > 100 ? 'tok-crit' : tokenPct > 50 ? 'tok-warn' : 'tok-ok';
+  const tokFmt = n => n >= 10000 ? Math.round(n / 1000) + ' тыс.' : n.toLocaleString('ru-RU');
+  const tokWord = n => (n % 10 === 1 && n % 100 !== 11) ? 'точка'
+    : ([2,3,4].includes(n % 10) && ![12,13,14].includes(n % 100)) ? 'точки' : 'точек';
+
+  // ── 3) Render: line 1 = state, line 2 = forecast; color only the fragments ──
+  hint.classList.remove('sparse', 'dense', 'dense2', 'ok', 'warn');
+  if (tone) hint.classList.add(tone);
+  const recTxt = `Рекомендуемое соотношение: 1:4 · Текущее: ${s} : ${r}`;
+  const line1 = `<span class="hint-state">${tone === 'ok' ? '✅ ' : tone === 'sparse' ? '⚠️ ' : 'ℹ️ '}${stateTxt}</span>`
+    + ` <span class="hint-rec">${recTxt}</span>`;
+  const forecast = `Прогноз: ~${tokFmt(cells)} ${tokWord(cells)}, ~${tokFmt(tokens)} запросов к API`
+    + ` (~${tokFmt(tokens * 10)} организаций, ${tokenPct}% бесплатного тарифа)`;
+  const line2 = is2gis
+    ? `<span class="hint-tok ${tokCls}">${forecast}</span>`
+    : `<span class="hint-tok tok-src">Прогноз: ~${tokFmt(cells)} ${tokWord(cells)}, ~${tokFmt(tokens)} запросов · без лимита тарифа</span>`;
+  hint.innerHTML = `<div class="hint-line">${line1}</div><div class="hint-line">${line2}</div>`;
+}
+
+// ── «Волшебная палочка»: auto-tune coverage to the recommended pair ──
+// Radius = 20 km, Step = Radius/4 (5 km) — the overlap-safe default for
+// both sources. Animates the sliders smoothly so the user sees the values,
+// the track fill and the hint color settle together.
+function gridAutoTune() {
+  const grad = document.getElementById('f-grad');
+  const gstep = document.getElementById('f-gstep');
+  if (!grad || !gstep) return;
+  setGridMode('manual');                       // reveal sliders if hidden
+  const from = { r: +grad.value, s: +gstep.value };
+  const to   = { r: 20, s: 5 };                // 20/4 = 5 → ratio 1:4
+  if (from.r === to.r && from.s === to.s) {    // nothing to change — pulse the hint
+    const hint = document.getElementById('grid-hint');
+    if (hint) { hint.classList.add('wand-ok'); setTimeout(() => hint.classList.remove('wand-ok'), 700); }
+    return;
+  }
+  const DUR = 450, t0 = performance.now();
+  const ease = t => 1 - Math.pow(1 - t, 3);    // easeOutCubic
+  const step = now => {
+    const t = Math.min(1, (now - t0) / DUR);
+    const k = ease(t);
+    grad.value  = Math.round(from.r + (to.r - from.r) * k);
+    gstep.value = Math.round(from.s + (to.s - from.s) * k);
+    onGridSlider();                            // repaint fill + hint every frame
+    if (t < 1) requestAnimationFrame(step);
+    else { grad.value = to.r; gstep.value = to.s; onGridSlider(); }
+  };
+  requestAnimationFrame(step);
 }
 
 // ═══════════════════════════════════════════
@@ -426,9 +644,11 @@ function initCitySelect() {
   box.appendChild(wrap);
 
   // ── Dropdown ──
+  // Appended to document.body with position:fixed so no accordion overflow
+  // can clip it (the list used to be cut at the accordion border).
   const dd = document.createElement('div');
   dd.className = 'city-dropdown'; dd.id = 'city-dropdown';
-  box.appendChild(dd);
+  document.body.appendChild(dd);
 
   // ── Events (attached once) ──
   inp.addEventListener('input', e => {
@@ -439,6 +659,7 @@ function initCitySelect() {
   inp.addEventListener('focus', () => { updateCityDropdown(); });
   inp.addEventListener('blur', () => {
     setTimeout(() => {
+      if (dd.contains(document.activeElement)) return; // focus moved into the dropdown
       dd.classList.remove('open');
       if (citySearchText.trim()) {
         const match = _citiesByName.get(citySearchText.trim().toLowerCase());
@@ -466,6 +687,35 @@ function initCitySelect() {
   renderCityTags();
 }
 
+// ── Fixed positioning for the body-level dropdown ────────────
+// Anchors the dropdown to the input's on-screen rect. Runs on open and on
+// window scroll/resize so the list follows the input while either panel scrolls.
+function positionCityDropdown() {
+  const inp = document.getElementById('f-city-input');
+  const dd  = document.getElementById('city-dropdown');
+  if (!inp || !dd) return;
+  if (!dd.classList.contains('open')) return;
+  const r = inp.getBoundingClientRect();
+  dd.style.position = 'fixed';
+  dd.style.top = (r.bottom + 4) + 'px';
+  dd.style.left = r.left + 'px';
+  dd.style.width = r.width + 'px';
+  dd.style.maxHeight = Math.max(120, window.innerHeight - r.bottom - 16) + 'px';
+  dd.style.zIndex = '9999';
+}
+
+// Close on outside click (mousedown so it fires before blur's timeout)
+document.addEventListener('mousedown', e => {
+  const dd  = document.getElementById('city-dropdown');
+  const inp = document.getElementById('f-city-input');
+  if (!dd) return;
+  if (dd.classList.contains('open') && !dd.contains(e.target) && e.target !== inp) {
+    dd.classList.remove('open');
+  }
+});
+window.addEventListener('scroll', positionCityDropdown, true);  // capture: panel scrolls
+window.addEventListener('resize', positionCityDropdown);
+
 function renderCityTags() {
   const tagsRow = document.getElementById('city-tags-row');
   if (!tagsRow) return;
@@ -475,6 +725,277 @@ function renderCityTags() {
   // Update placeholder
   const inp = document.getElementById('f-city-input');
   if (inp) inp.placeholder = selectedCities.length ? 'Добавить город…' : 'Начните вводить название города…';
+  updateCityCount();
+  updateClearAllBtn();
+  updateBasicSummary();
+  updateRunBtnState();
+}
+
+// ═══════════════════════════════════════════
+//  Sidebar counters / clear-all / accordion summary (01 · Основные параметры)
+// ═══════════════════════════════════════════
+// Russian plural: 1 → one, 2-4 → few, 5-20 → many (n%10, n%100 rules).
+function _pluralRu(n, one, few, many) {
+  const m10 = n % 10, m100 = n % 100;
+  if (m10 === 1 && m100 !== 11) return one;
+  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
+  return many;
+}
+
+// Count non-empty (trimmed) lines of the queries textarea.
+function _countQueries() {
+  const el = document.getElementById('f-queries');
+  if (!el) return 0;
+  return (el.value || '').split('\n').map(s => s.trim()).filter(Boolean).length;
+}
+
+// «Будет выполнен 1 запрос / Будет выполнено N запросов» — hidden when empty;
+// capped at «10+» so the UI never gets crowded (edge case 3).
+function updateQueriesCounter() {
+  const el = document.getElementById('queries-count');
+  if (!el) return;
+  const n = _countQueries();
+  if (!n) { el.hidden = true; return; }
+  const shown = n >= 10 ? '10+' : String(n);
+  el.textContent = `• Будет выполнен${n === 1 ? '' : 'о'} ${shown} ${_pluralRu(n, 'запрос', 'запроса', 'запросов')}`;
+  el.hidden = false;
+  updateRunBtnState();
+}
+
+// «(3 города)» next to the «Где ищем?» label — 1 город / 2-4 города / 5+ городов.
+function updateCityCount() {
+  const el = document.getElementById('city-count');
+  if (!el) return;
+  const n = selectedCities.length;
+  if (!n) { el.hidden = true; return; }
+  el.textContent = `(${n} ${_pluralRu(n, 'город', 'города', 'городов')})`;
+  el.hidden = false;
+}
+
+// ── Run-button readiness / state ─────────────────────────────
+// The «Найти компании» button is always visible (sticky dock) and must
+// communicate what is missing: grey while there are no cities or no queries,
+// teal when the search can start, red while a run is in progress.
+function isRunReady() {
+  const queries = document.getElementById('f-queries');
+  const hasQueries = !!(queries && (queries.value || '').split('\n').map(s => s.trim()).filter(Boolean).length);
+  return hasQueries && selectedCities.length > 0;
+}
+
+// Repaints #btn-run according to its current state:
+//   ready      → teal (run-ready class)
+//   not ready  → grey via :disabled + not-allowed cursor
+//   run active → red (run-active class; the button becomes the pause control)
+function updateRunBtnState() {
+  const btn = document.getElementById('btn-run');
+  if (!btn) return;
+  // Mid-run the red «⏸ Пауза» state is owned by
+  // setRunBtnActive()/resetBtn() — never flip it back to grey/teal.
+  if (btn.classList.contains('run-active')) return;
+  if (btn.classList.contains('run-paused')) return;
+  btn.disabled = !isRunReady();
+  btn.classList.toggle('run-ready', isRunReady());
+}
+
+// While the run is live the dock button reads red «⏸ Пауза» and clicking it
+// pauses the search (graceful unwind + checkpoint); the small ⏹ button next
+// to it stops the run entirely after a confirmation.
+function setRunBtnActive() {
+  const btn = document.getElementById('btn-run');
+  if (!btn) return;
+  btn.hidden = false;
+  btn.disabled = false;
+  btn.onclick = pauseRun;
+  btn.classList.remove('run-ready');
+  btn.classList.remove('run-paused');
+  btn.classList.add('run-active');
+  const icon = document.getElementById('btn-icon');
+  if (icon) icon.textContent = '⏸';
+  const txt = document.getElementById('btn-txt');
+  if (txt) txt.textContent = 'Пауза';
+  const stopBtn = document.getElementById('btn-stop');
+  if (stopBtn) { stopBtn.hidden = false; stopBtn.disabled = false; stopBtn.onclick = stopRunWithConfirm; }
+}
+
+// ⏸ Pause: graceful unwind that remembers the run. The server answers
+// immediately; the real paused state arrives with the done SSE message.
+function pauseRun() {
+  const btn = document.getElementById('btn-run');
+  const txt = document.getElementById('btn-txt');
+  if (btn) {
+    btn.disabled = true;
+    // Город добивается до конца (graceful): кнопка честно говорит об этом.
+    if (txt) txt.textContent = '⏳ Завершаем город…';
+  }
+  const backToIdle = () => {
+    // Нечего было паузить (запуск уже завершился) — иначе кнопка висела бы
+    // в «Ставим на паузу…» до конца сессии.
+    resetBtn();
+    setStatus('done', 'Готово');
+    setRunIndicator(false);
+    showToast('Поиск уже завершился — продолжать нечего', 'info');
+  };
+  try {
+    fetch('/stop?pause=1', {method: 'POST'})
+      .then(r => r.json().catch(() => ({})))
+      .then(d => {
+        // Сервер отвечает, какой запуск действительно остановлен: пустой
+        // список = паузить было нечего.
+        if (Array.isArray(d.targets) && !d.targets.length) { backToIdle(); return; }
+        showToast('⏸ Пауза. Завершаем текущий город…', 'info');
+      })
+      .catch(() => {});
+  } catch (e) { /* network errors surface via SSE onerror */ }
+}
+
+// ⏹ Stop: the destructive option — ask before unwinding the run without
+// a checkpoint resume point.
+async function stopRunWithConfirm() {
+  const ok = await uiConfirm(
+    'Поиск будет остановлен полностью. Прогресс точки будет потерян для продолжения, но уже собранные данные сохранятся.',
+    'Остановить поиск?',
+    'Остановить'
+  );
+  if (!ok) return;
+  stopRun();
+}
+
+// ⏸ Paused state (after the done message with paused=true): the dock
+// shows ONE orange button that resumes the run; stop stays available.
+function enterPausedState(resume) {
+  _pausedRun = resume || null;
+  const btn = document.getElementById('btn-run');
+  // Where the search stopped + quota spent so far (2GIS) → tooltip + toast.
+  const pos = (resume && resume.position) || {};
+  const quota = (resume && resume.quota) || null;
+  let posTxt = '';
+  if (pos.city) {
+    posTxt = 'Остановились: ' + pos.city;
+    if (pos.cities_total) posTxt += ' (город ' + (pos.city_idx || '?') + ' из ' + pos.cities_total + ')';
+    if (pos.query) posTxt += ' • запрос «' + pos.query + '»';
+    if (pos.points_total) posTxt += ' • точка ' + (pos.point || '?') + '/' + pos.points_total;
+    if (pos.records) posTxt += ' • найдено ' + pos.records;
+  }
+  let quotaTxt = '';
+  if (quota && quota.cap) {
+    const left = Math.max(0, quota.cap - (quota.used || 0));
+    quotaTxt = ' • осталось запросов к 2GIS: ' + left;
+  }
+  const title = posTxt
+    ? 'Продолжить поиск с места паузы. ' + posTxt + quotaTxt
+    : 'Продолжить поиск с сохранённого места';
+  if (btn) {
+    btn.hidden = false;
+    btn.disabled = false;
+    btn.onclick = resumeRun;
+    btn.classList.remove('run-active');
+    btn.classList.add('run-paused');
+    btn.title = title;
+  }
+  const stopBtn = document.getElementById('btn-stop');
+  if (stopBtn) stopBtn.hidden = true;
+  const icon = document.getElementById('btn-icon');
+  if (icon) icon.textContent = '▶';
+  const txt = document.getElementById('btn-txt');
+  if (txt) txt.textContent = 'Продолжить поиск';
+  setRunIndicator(false);
+  setStatus('paused', '⏸ Пауза');
+  if (posTxt) {
+    appendLog('info', '  📍 ' + posTxt + quotaTxt);
+  }
+  showToast(posTxt ? '⏸ ' + posTxt + quotaTxt : 'Поиск на паузе — прогресс сохранён', 'info');
+}
+
+// ▶ Resume: relaunch the paused run with the SAME params + resume=true.
+// The checkpoint/global seen-cache make the parser skip finished points
+// and cities, so nothing is parsed twice.
+function resumeRun() {
+  if (!_pausedRun) { showToast('Нет данных для продолжения — запустите поиск заново', 'error'); return; }
+  const params = Object.assign({}, _pausedRun.params || {});
+  // Belt-and-braces: the resume payload carries queries + cities twice (as
+  // convenience fields and inside params). Fall back to them if a payload
+  // ever arrives without the full params — the button must never be a no-op.
+  if (!Array.isArray(params.queries) || !params.queries.length) {
+    params.queries = (_pausedRun.queries || []).slice();
+  }
+  if (!Array.isArray(params.cities) || !params.cities.length) {
+    // «Продолжить» гоняет только оставшиеся города (текущий недобранный —
+    // с начала, без дублей за счёт seen-cache); all_cities — запасной путь.
+    params.cities = (Array.isArray(_pausedRun.remaining_cities) && _pausedRun.remaining_cities.length)
+      ? _pausedRun.remaining_cities.slice()
+      : (_pausedRun.all_cities || []).slice();
+  }
+  if (!params.queries.length || !params.cities.length) {
+    showToast('Не удалось восстановить параметры поиска — запустите его заново', 'error');
+    return;
+  }
+  params.resume = true;
+  _pausedRun = null;
+  const btn = document.getElementById('btn-run');
+  if (btn) {
+    btn.classList.remove('run-paused');
+    btn.title = 'Продолжить поиск с сохранённого места';
+  }
+  _startRunWithParams(params);
+}
+
+let _pausedRun = null;
+
+// 🗑 «Очистить города» is visible only while there is something to clear:
+// selected cities or city search text. Queries are NOT cleared by this
+// button (see clearAllInputs), so queries alone don't make it appear.
+function updateClearAllBtn() {
+  const btn = document.getElementById('clear-all-btn');
+  if (!btn) return;
+  btn.hidden = !(selectedCities.length || (citySearchText || '').trim());
+}
+
+// Instant clear without alert(): chips fade out via .chip-out, then everything
+// in «Основные параметры» resets (cities + city input + queries).
+// «Очистить города»: removes selected cities + city input text. The queries
+// textarea is deliberately NOT cleared — the button is labeled «города» and
+// erasing the user's search queries here would destroy their work.
+function clearAllInputs() {
+  selectedCities = [];
+  citySearchText = '';
+  const inp = document.getElementById('f-city-input');
+  if (inp) inp.value = '';
+  const clr = document.querySelector('.city-clear');
+  if (clr) clr.classList.remove('visible');
+  const dd = document.getElementById('city-dropdown');
+  if (dd) { dd.classList.remove('open'); dd.innerHTML = ''; }
+  const tagsRow = document.getElementById('city-tags-row');
+  if (tagsRow) {
+    tagsRow.querySelectorAll('.city-tag').forEach(t => t.classList.add('chip-out'));
+    setTimeout(() => { renderCityTags(); }, 190);
+    return; // renderCityTags refreshes counters + summary + run button
+  }
+  updateCityCount();
+  updateClearAllBtn();
+  updateBasicSummary();
+  updateRunBtnState();
+}
+
+// Queries summary line for the collapsed «Основные параметры» accordion:
+// «Кого ищем: кафе, ресторан, парикмахерская • Городов: 3 • Источник: 2GIS».
+// Long query lists are trimmed to the first 3 words + «…»; empty → placeholder.
+function updateBasicSummary() {
+  const el = document.getElementById('acc-basic-summary');
+  if (!el) return;
+  const queries = (document.getElementById('f-queries')?.value || '')
+    .split('\n').map(s => s.trim()).filter(Boolean);
+  const summaryHidden = !queries.length && !selectedCities.length;
+  el.style.display = summaryHidden ? 'none' : '';
+  if (summaryHidden) return;
+  let qPart = 'Кого ищем: не задано';
+  if (queries.length) {
+    const words = queries.join(' ').split(/\s+/).filter(Boolean);
+    const text = words.length > 3 ? words.slice(0, 3).join(', ') + ', …' : words.join(', ');
+    qPart = `Кого ищем: ${text}`;
+  }
+  const cPart = selectedCities.length ? `Городов: ${selectedCities.length}` : 'Городов: не выбрано';
+  const sPart = `Источник: ${dataSource === '2gis' ? '2GIS' : 'Яндекс'}`;
+  el.textContent = `${qPart} • ${cPart} • ${sPart}`;
 }
 
 function getFilteredCities() {
@@ -494,7 +1015,10 @@ function updateCityDropdown() {
   dd.innerHTML = cities.map(c => {
     const pct = Math.round(c.pop / MAX_POP * 100);
     const hue = Math.round(pct * 1.2); // 0=red, 120=green
-    const barColor = `hsl(${hue}, 65%, 42%)`;
+    // Приглушённые оттенки (терракота/охра/шалфей): насыщенность −40% и
+    // светлота +13% — цвет читается как индикатор, а не кричит. Контраст
+    // к фону сохраняется в обеих темах.
+    const barColor = `hsl(${hue}, 38%, 55%)`;
     const safeName = c.name.replace(/'/g, "\\'");
     return `<div class="city-option" onmousedown="addCity('${safeName}')">`
       + `<div class="city-option-top">`
@@ -506,6 +1030,7 @@ function updateCityDropdown() {
       + `</div>`;
   }).join('');
   dd.classList.add('open');
+  positionCityDropdown();
 }
 
 function addCity(name) {
@@ -553,6 +1078,13 @@ function toggleNotifications() {
   }
 }
 
+// Прошло времени поиска: во время прогона — живое, после завершения —
+// зафиксированное (_runEnd ставится в onRunDone и сбрасывается при новом запуске).
+function _runElapsed() {
+  const end = _runEnd || Date.now();
+  return Math.max(0, (end - (startTime || end)) / 1000);
+}
+
 function showTab(name) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
@@ -560,6 +1092,11 @@ function showTab(name) {
   document.getElementById('p-' + name).classList.add('active');
   if (name === 'map' && allResults.length && !mapInited) initMap();
   if (name === 'map' && leafMap) setTimeout(() => leafMap.invalidateSize(), 50);
+  // Results tab: refresh city tabs + bulk counters (cheap, data may be stale)
+  if (name === 'table') {
+    if (allResults.length) renderCityTabs(_lastCities);
+    updateBulkStats();
+  }
   // Load history when switching to history tab
   if (name === 'history') {
     loadHistory();
@@ -572,8 +1109,7 @@ function showTab(name) {
   if (name === 'stats' && allResults.length) {
     const recs = isRunActive() ? completedCityRecords() : allResults;
     if (!recs.length) return;
-    const elapsed = (Date.now() - startTime) / 1000;
-    renderStats(recs, elapsed, _lastSkippedCities);
+    renderStats(recs, _runElapsed(), _lastSkippedCities);
   }
 }
 
@@ -598,6 +1134,58 @@ function hideProgress() {
   if (ls) ls.style.display = 'none';
 }
 
+// ── Aggregate run progress above the log ────────────────────────
+// The bar shows the share of the WHOLE run (finished cities + the running
+// one's own %), the label counts CITIES — the two metrics never share a slot.
+function updateTermProgress() {
+  const wrap = document.getElementById('term-progress');
+  if (!wrap) return;
+  const total = _totalCities || 0;
+  if (total < 2) { wrap.hidden = true; return; }   // single city → header panel is hidden too
+  const entries = Object.entries(_cityProgressData);
+  const done = entries.filter(([, d]) => d.status === 'done' || d.status === 'skipped').length;
+  const running = entries.reduce((s, [, d]) => s + (d.status === 'running' ? (d.pct || 0) / 100 : 0), 0);
+  const frac = Math.min(1, (done + running) / total);
+  wrap.hidden = false;
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  set('tp-done', done);
+  set('tp-total', total);
+  // Which city is being worked on right now — «3 из 12» alone never said it.
+  const runningEntry = entries.find(([, d]) => d.status === 'running');
+  set('tp-city', (runningEntry && runningEntry[0]) || _currentCityName || '—');
+  const fill = document.getElementById('tp-fill');
+  if (fill) fill.style.width = (frac * 100).toFixed(1) + '%';
+  const eta = document.getElementById('tp-eta');
+  if (eta) eta.textContent = (typeof isRunActive === 'function' && isRunActive()) ? _etaText(frac) : '';
+  // One mini bar per city: the aggregate bar can't explain a stalled run.
+  const chips = document.getElementById('tp-cities');
+  if (chips) {
+    chips.innerHTML = entries.map(([name, d]) => {
+      const pct = (d.status === 'done' || d.status === 'skipped') ? 100 : (d.pct || 0);
+      const cls = d.status === 'running' ? 'tp-chip running' : (d.status === 'queued' ? 'tp-chip queued' : 'tp-chip');
+      const tip = `${name}: ${pct}%` + (d.found ? ` · ${d.found} ${pluralRecords(d.found)}` : '');
+      return `<span class="${cls}" title="${escapeHtml(tip)}">`
+        + `<span class="tp-chip-name">${escapeHtml(name)}</span>`
+        + `<span class="tp-chip-track"><span class="tp-chip-fill" style="width:${pct}%"></span></span>`
+        + `</span>`;
+    }).join('');
+  }
+}
+
+function _etaText(frac) {
+  const elapsed = (Date.now() - (startTime || Date.now())) / 1000;
+  if (!frac || frac < 0.03 || elapsed < 5) return '';
+  const left = Math.round(elapsed * (1 - frac) / frac);
+  if (left < 60) return `Осталось ≈ ${Math.max(1, left)} с`;
+  return `Осталось ≈ ${Math.ceil(left / 60)} мин`;
+}
+
+// Pulsing dot in the «Ход поиска» tab while a run is active.
+function setRunIndicator(on) {
+  const dot = document.getElementById('tab-log-dot');
+  if (dot) dot.hidden = !on;
+}
+
 // ═══════════════════════════════════════════
 //  Log output
 // ═══════════════════════════════════════════
@@ -605,10 +1193,145 @@ const logEl = document.getElementById('log-output');
 // Long runs emit thousands of lines; without a cap the DOM grows unbounded
 // and scrolling/layout gets janky. Keep the newest MAX_LOG_LINES.
 const MAX_LOG_LINES = 1200;
-function _trimLog(el) {
-  while (el.children.length > MAX_LOG_LINES) el.removeChild(el.firstChild);
+let _showTechDetails = false;   // «Технические детали» toggle state
+let _lastLogMsg = '';           // last emitted text — consecutive-duplicate guard
+
+// Elapsed stamp [MM:SS] counted from the run start — the same shape as the
+// prefix in logs/*.log, so UI and file can be read side by side.
+// Absolute wall-clock stamp [HH:MM:SS] — restart/resume-proof and directly
+// comparable with the file log. The elapsed delta from the run start stays
+// available in the line's title (hover) and in _elapsedStamp().
+function logStamp() {
+  const d = new Date();
+  const p = n => String(n).padStart(2, '0');
+  return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
 }
+// [+m:ss] since the run started — shown as the hover title of each line.
+function _elapsedStamp() {
+  const t0 = (typeof startTime === 'number' && startTime) ? startTime : 0;
+  const sec = t0 ? Math.max(0, Math.floor((Date.now() - t0) / 1000)) : 0;
+  return '+' + Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0');
+}
+
+// ── Log panel state ─────────────────────────────────────────────────────
+// One object instead of a pile of top-level variables: filter, autoscroll,
+// city blocks and the counters behind «Ошибок нет». Read through _ls() so
+// every helper here stays self-contained (the same code runs in the page and
+// in the Node DOM-stub tests).
+function _ls() {
+  const g = globalThis;
+  if (!g._logState) {
+    g._logState = {
+      filter: 'all',    // all | important | errors | tech
+      follow: true,     // autoscroll follows the tail
+      below: 0,         // lines that arrived while the user scrolled up
+      block: -1,        // index of the city block currently accepting lines
+      lastSec: '',      // last rendered HH:MM:SS — repeats are dimmed
+      collapsed: {},    // {blockIdx: true} — collapsed city blocks
+      meta: [],         // per-line {noise,err,tech} — counters + trimming
+      stats: {total: 0, noise: 0, err: 0, tech: 0},
+    };
+  }
+  return g._logState;
+}
+
+// ── Autoscroll + «К последней строке» ───────────────────────────────────
+// The tail is followed until the user scrolls up; then the floating button
+// counts what arrived and jumps back. Nothing is silently lost.
+function _scrollLogIfFollowing() {
+  if (!logEl) return;
+  if (_ls().follow) logEl.scrollTop = logEl.scrollHeight;
+}
+function _onLogScroll() {
+  if (!logEl) return;
+  const S = _ls();
+  const near = (logEl.scrollHeight - logEl.scrollTop - (logEl.clientHeight || 0)) <= 48;
+  S.follow = near;
+  if (near) S.below = 0;
+  _updateLogJump();
+}
+function _updateLogJump() {
+  const btn = document.getElementById('log-jump');
+  if (!btn) return;
+  const S = _ls();
+  const show = !S.follow && S.below > 0;
+  btn.hidden = !show;
+  const n = document.getElementById('log-jump-n');
+  if (n) n.textContent = S.below > 99 ? '99+' : String(S.below);
+}
+function logJumpToBottom() {
+  const S = _ls();
+  S.follow = true;
+  S.below = 0;
+  if (logEl) logEl.scrollTop = logEl.scrollHeight;
+  _updateLogJump();
+}
+if (logEl && logEl.addEventListener) logEl.addEventListener('scroll', _onLogScroll);
+
+function _trimLog(el) {
+  const S = _ls();
+  while (el.children.length > MAX_LOG_LINES) {
+    const meta = S.meta.shift();
+    if (meta) {
+      S.stats.total--;
+      if (meta.noise) S.stats.noise--;
+      if (meta.err)   S.stats.err--;
+      if (meta.tech)  S.stats.tech--;
+    }
+    const first = el.firstChild || el.children[0];
+    if (!first) break;
+    el.removeChild(first);
+  }
+}
+
+// ── Levels and hierarchy ────────────────────────────────────────────────
+// ✅ успех → зелёный, 📡/🔍 инфо → бирюза, ⚠ → оранжевый, [!]/🚨 → красный.
+// Уровень решает класс; текст — только запасной признак для источников,
+// которые шлют всё как «info».
+function _logLevel(level, text) {
+  if (level === 'tech') return 'tech';
+  if (level === 'error' || /\[✖\]|\[!\]|🚨/.test(text)) return 'error';
+  if (level === 'warn' || /^\s*⚠/.test(text)) return 'warn';
+  if (level === 'ok' || /✅|✔/.test(text)) return 'ok';
+  if (level === 'info') return 'info';
+  return 'sys';
+}
+// Механика, которая интересна только при отладке: геокодинг, сырые
+// координаты, старт запросов («── Запрос …: начало поиска»), страницы и
+// HTTP-детали, внутренние трейсы клиентов (cdp/browser/http).
+// РЕЗУЛЬТАТЫ при этом остаются видимыми: «🔍 Поиск в», «🗺 Источник»,
+// «✅ …: N записей», «📦 Raw», «🎯 Processed», файлы, ошибки.
+const LOG_NOISE_RE = /геокодирую|→ координаты|запрос начат|начало поиска\s*$|───\s*Запрос|page \d+\/\d+|HTTP \d{3}|api_hits|\[SYS\]|http_client|rate_limit|cdp_client|browser_client|checkpoint/i;
+function _logIsNoise(lvl, text) {
+  return lvl === 'tech' || lvl === 'sys' || LOG_NOISE_RE.test(text);
+}
+const LOG_CITY_RE = /🏙|Город\s+\d+\s*\/\s*\d+/i;
+// Подстроки конфигурации идут под шапкой города с отступом.
+const LOG_SUBLINE_RE = /^\s{4,}\S|^\s*(?:queries|grid|workers|checkpoint|proxies|output|social_mode|source|radius)\s*=[\s\S]*$/i;
+function _logIsCity(text) { return LOG_CITY_RE.test(text); }
+function _logIndent(text) { return LOG_SUBLINE_RE.test(text) ? 1 : 0; }
+// Drop consecutive identical lines: re-entrant warnings and city headers
+// must not paint the log with visually duplicated rows. The comparison is
+// normalized (case, whitespace, emoji stripped) so «Поиск: 1 город» vs
+// "Поиск: 1 город " variants still count as one line.
+function _logNorm(msg) {
+  return String(msg)
+    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]/gu, '')
+    .replace(/[\s\u00A0]+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+function _isDup(msg) { return _logNorm(msg) === _logNorm(_lastLogMsg); }
 function appendLog(level, msg) {
+  const clean = msg.replace(/\x1b\[[0-9;]*m/g, '');
+  const S = _ls();
+  const lvl = _logLevel(level, clean);
+  const tech = lvl === 'tech';
+  // Developer traces never participate in the duplicate guard (they repeat
+  // legitimately), and they are kept even while hidden: the «Технические»
+  // filter and the 🔧 toggle can only show what was stored.
+  if (!tech && _isDup(clean)) return;
+  if (!tech) _lastLogMsg = clean;
   const ph = document.getElementById('log-ph');
   if (ph) ph.remove();
   // Remove the «Как это работает» onboarding card once real log lines arrive.
@@ -617,19 +1340,237 @@ function appendLog(level, msg) {
   // Drop the skeleton loaders — real data has arrived
   const skel = document.getElementById('log-skeleton');
   if (skel) skel.remove();
-  // 'sys' → default quiet-grey terminal styling; unknown levels → grey too
-  const cls = (level === 'info' || level === 'ok' || level === 'warn' || level === 'error') ? level : 'sys';
+  const noise = _logIsNoise(lvl, clean);
+  const err = lvl === 'error' || lvl === 'warn';
+  const isCity = _logIsCity(clean);
+  // Quota warnings (2GIS Places и др.) get louder visual treatment:
+  // 🚨 → red banner, ⚠ + «израсходовано» → amber banner.
+  let extraCls = '';
+  if (/🚨/.test(clean) || (/⚠/.test(clean) && /израсходовано|квота|лимит .*запросов/i.test(clean))) {
+    extraCls = /🚨/.test(clean) ? 'quota-critical' : 'quota-warn';
+  }
+  // A city header opens a new foldable block; every later line joins it.
+  let blk = -1;
+  if (isCity) S.block += 1;
+  blk = S.block;
+  let cls = lvl + (noise ? ' noise' : '') + (_logIndent(clean) ? ' ind-1' : '');
+  if (isCity) cls += ' city';
   const d = document.createElement('div');
-  d.className = 'll ' + cls;
-  d.textContent = msg.replace(/\x1b\[[0-9;]*m/g, '');
+  d.className = 'll ' + cls + (extraCls ? ' ' + extraCls : '');
+  d._lvl = lvl;
+  d._city = isCity;
+  d._blk = blk;
+  d._txt = clean;      // raw text — «Сохранить лог» / «Копировать» read this
+  d.title = _elapsedStamp();
+  // The stamp column shows the time only when the second changes — a long run
+  // would otherwise repeat «14:30:15» fifty times. The exact time of every
+  // line stays in the hover title, and the column keeps its width so the
+  // lines stay aligned.
+  const stamp = logStamp();
+  const sameSec = stamp === S.lastSec;
+  S.lastSec = stamp;
+  d._stamp = stamp;
+  const caret = isCity ? '<span class="ll-caret">▼</span>' : '';
+  d.innerHTML = `<span class="ll-time${sameSec ? ' same' : ''}">[${stamp}]</span>${caret}${escapeHtml(clean)}`;
+  if (isCity) {
+    d._blk = blk;
+    d.onclick = () => toggleLogBlock(blk);
+  }
   logEl.appendChild(d);
+  // Lines of an already-collapsed city must not pop open that block.
+  if (!isCity && blk >= 0 && S.collapsed[blk] && d.style) d.style.display = 'none';
+  S.meta.push({noise, err, tech});
+  S.stats.total++;
+  if (noise) S.stats.noise++;
+  if (err)   S.stats.err++;
+  if (tech)  S.stats.tech++;
   _trimLog(logEl);
-  logEl.scrollTop = logEl.scrollHeight;
+  if (S.follow) {
+    _scrollLogIfFollowing();
+  } else if (!tech) {
+    S.below++;
+    _updateLogJump();
+  }
+  _refreshLogFilter();
+  // Quota banners also pop a toast — they're easy to miss in a scrolling log.
+  if (extraCls === 'quota-critical') {
+    showToast(clean.replace(/^\s*\[!?\*?\]?\s*/, ''), 'error');
+  }
 }
+
+// ── Log filters ────────────────────────────────────────────────────────
+// The filter is one class on the container: hiding is pure CSS, so switching
+// «Все / Важные / Ошибки / Технические» never re-renders or loses a line.
+const LOG_FILTERS = {
+  all:       () => ({ok: true, msg: ''}),
+  important: () => ({ok: _ls().stats.total - _ls().stats.noise > 0,
+                     msg: 'Важных сообщений нет — включите «Все»'}),
+  errors:    () => ({ok: _ls().stats.err > 0, msg: '✅ Ошибок нет'}),
+  tech:      () => ({ok: _ls().stats.tech > 0, msg: 'Технических записей нет'}),
+};
+function setLogFilter(name) {
+  const S = _ls();
+  S.filter = Object.prototype.hasOwnProperty.call(LOG_FILTERS, name) ? name : 'all';
+  const btns = document.querySelectorAll ? document.querySelectorAll('[data-lfilter]') : [];
+  for (let i = 0; i < btns.length; i++) {
+    const b = btns[i];
+    const on = b.getAttribute && b.getAttribute('data-lfilter') === S.filter;
+    if (b.classList) b.classList.toggle('active', on);
+  }
+  _refreshLogFilter();
+}
+function _refreshLogFilter() {
+  const S = _ls();
+  if (logEl && logEl.classList) {
+    ['all', 'important', 'errors', 'tech'].forEach(f => logEl.classList.remove('f-' + f));
+    logEl.classList.add('f-' + S.filter);
+  }
+  // Badge on «Ошибки»: how many error/warning lines are in the panel right now.
+  const badge = document.getElementById('log-err-count');
+  if (badge) {
+    badge.textContent = String(S.stats.err);
+    badge.hidden = S.stats.err === 0;
+  }
+  const spec = (LOG_FILTERS[S.filter] || LOG_FILTERS.all)();
+  const empty = document.getElementById('log-filter-empty');
+  if (empty) {
+    empty.textContent = spec.msg;
+    empty.hidden = spec.ok;
+  }
+}
+
+// ── Collapsible city blocks ────────────────────────────────────────────
+// Cities are the backbone of a long run: everything between two «🏙 Город …»
+// headers belongs to that city and can be folded away.
+function toggleLogBlock(idx) {
+  const S = _ls();
+  if (idx === undefined || idx === null || idx < 0) return;
+  const collapsed = !S.collapsed[idx];
+  S.collapsed[idx] = collapsed;
+  if (!logEl || !logEl.children) return;
+  for (let i = 0; i < logEl.children.length; i++) {
+    const el = logEl.children[i];
+    if (!el || el._blk !== idx) continue;
+    if (el._city) {
+      if (el.classList) el.classList.toggle('collapsed', collapsed);
+      el.title = collapsed ? 'Развернуть город' : 'Свернуть город';
+    } else if (el.style) {
+      el.style.display = collapsed ? 'none' : '';
+    }
+  }
+}
+
+// ── Лог целиком: сохранить / скопировать ──────────────────────────────
+function _logPlainText() {
+  const out = [];
+  if (logEl && logEl.children) {
+    for (let i = 0; i < logEl.children.length; i++) {
+      const el = logEl.children[i];
+      if (!el || !el._lvl) continue;          // placeholder / stats card
+      const raw = String(el._txt !== undefined ? el._txt : (el.textContent || ''));
+      const txt = raw.replace(/\s+$/, '');
+      if (txt) out.push(el._stamp ? `[${el._stamp}] ${txt}` : txt);
+    }
+  }
+  return out.join('\n');
+}
+function saveLogFile() {
+  const text = _logPlainText();
+  if (!text) { showToast('Лог пуст — сохранять нечего', 'error'); return; }
+  try {
+    const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+    const blob = new Blob([text], {type: 'text/plain;charset=utf-8'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `yp-log-${ts}.log`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    showToast('Лог сохранён', 'ok');
+  } catch (e) {
+    showToast('Не удалось сохранить лог: ' + e.message, 'error');
+  }
+}
+async function copyLogText() {
+  const text = _logPlainText();
+  if (!text) { showToast('Лог пуст — копировать нечего', 'error'); return; }
+  const ok = await copyText(text);
+  showToast(ok ? 'Лог скопирован в буфер обмена' : 'Не удалось скопировать лог',
+            ok ? 'ok' : 'error');
+}
+
+// Show/hide developer-detail lines collected behind the toggle.
+function toggleTechDetails() {
+  _showTechDetails = !_showTechDetails;
+  const btn = document.getElementById('btn-tech-details');
+  if (btn) {
+    btn.textContent = _showTechDetails ? '🙈 Скрыть детали' : '🔧 Технические детали';
+    btn.classList.toggle('active', _showTechDetails);
+  }
+  const logPanel = document.getElementById('log-output');
+  if (logPanel) logPanel.classList.toggle('show-tech', _showTechDetails);
+  _refreshLogFilter();
+}
+// Structured stats card (stats.py emits a JSON payload instead of ASCII bars).
+// Rendered as real rows with bars so it reads at a glance in both themes.
+function renderLogStats(payload) {
+  let d;
+  try { d = typeof payload === 'string' ? JSON.parse(payload) : payload; } catch (e) { return; }
+  if (!d || !d.total) return;
+  const rows = (items, withBar) => {
+    const max = Math.max(1, ...items.map(x => x.count));
+    return items.map(it => {
+      // Normalized against the max + 5px floor for tiny values (<3),
+      // same rules as the «Статистика» tab bars.
+      const min = withBar && it.count < 3 ? 'min-width:5px;' : '';
+      return `
+      <div class="log-stats-row">
+        <span class="log-stats-label" title="${escapeHtml(it.label)}">${escapeHtml(it.label)}</span>
+        ${withBar ? `<span class="log-stats-track"><span class="log-stats-bar" style="${min}width:${Math.round(it.count / max * 100)}%"></span></span>` : ''}
+        <span class="log-stats-value">${it.count}${withBar ? '' : ' шт.'}</span>
+      </div>`;
+    }).join('');
+  };
+  const section = (title, items, withBar) =>
+    (items && items.length)
+      ? `<div class="log-stats-section"><div class="log-stats-title">${title}</div>${rows(items, withBar)}</div>`
+      : '';
+  const card = document.createElement('div');
+  card.className = 'log-stats';
+  card.innerHTML =
+    `<div class="log-stats-head">📊 Статистика <span>${d.total} ${pluralRecords(d.total)}</span></div>`
+    + section('По соцсетям', d.by_social, true)
+    + section('По запросам', d.by_query, true)
+    + section('Топ категорий', d.top_categories, false);
+  const ph = document.getElementById('log-ph');
+  if (ph) ph.remove();
+  logEl.appendChild(card);
+  _trimLog(logEl);
+  _scrollLogIfFollowing();
+}
+
 function clearLog() {
+  const S = _ls();
   logEl.innerHTML = '';
-  const lbl = document.getElementById('term-log-lbl');
-  if (lbl) lbl.textContent = 'Лог очищен — здесь появится ход поиска';
+  _lastLogMsg = '';
+  // Counters, folds and the stamp memory describe lines that no longer exist.
+  S.meta = [];
+  S.stats = {total: 0, noise: 0, err: 0, tech: 0};
+  S.block = -1;
+  S.collapsed = {};
+  S.lastSec = '';
+  S.below = 0;
+  S.follow = true;
+  _updateLogJump();
+  // No header caption any more — the empty state lives inside the log itself.
+  const ph = document.createElement('div');
+  ph.className = 'log-empty';
+  ph.id = 'log-ph';
+  ph.textContent = 'Лог очищен — новые записи появятся здесь';
+  logEl.appendChild(ph);
+  _refreshLogFilter();
   renderDefaultStats();
 }
 
@@ -641,6 +1582,18 @@ function handleProgress(raw) {
   // City completion event: city_done|idx|total|name|status|records
   if (raw.startsWith('city_done|')) {
     handleCityDone(raw);
+    return;
+  }
+  // Full city queue (emitted once at run start): city_list|A/B/C
+  if (raw.startsWith('city_list|')) {
+    const names = raw.slice('city_list|'.length).split('/').map(s => s.trim()).filter(Boolean);
+    if (names.length > 1) {
+      initCityProgress(names.length);
+      names.forEach(n => {
+        if (!_cityProgressData[n]) updateCityProgress(n, 0, 0, 'queued');
+      });
+      renderCityProgress();
+    }
     return;
   }
   // City transition event: city/idx/total/name
@@ -664,6 +1617,12 @@ function handleProgress(raw) {
     const cur = parseInt(parts[0]), tot = parseInt(parts[1]);
     const stage = parts[2] || '';
     const found = parts.length >= 4 ? parseInt(parts[3]) : 0;
+    // 5th segment (optional): 2GIS Places quota used this run (child process
+    // streams it via progress events because /status can't see the child).
+    if (parts.length >= 5) {
+      const q = parseInt(parts[4]);
+      if (!isNaN(q) && q > 0) { _twogisQuotaLive = q; renderQuotaCard(); }
+    }
     const pct = tot > 0 ? Math.round(cur / tot * 100) : 0;
     const elapsedSec = (Date.now() - startTime) / 1000;
 
@@ -714,19 +1673,31 @@ function getParams() {
     parse_mode:      parseMode,
     source:          dataSource,
     excel_columns:   getExcelCols(),
-    min_rating:      +document.getElementById('f-rating').value  || 0,
-    min_reviews:     +document.getElementById('f-reviews').value || 0,
-    use_grid:        document.getElementById('f-grid').checked,
+    use_grid:        _gridMode === 'manual',
     grid_radius:     +document.getElementById('f-grad').value  || 20,
     grid_step:       +document.getElementById('f-gstep').value || 5,
-    validate_socials:document.getElementById('f-validate').checked,
-    resume:          document.getElementById('f-resume').checked,
+    // Соцсети с карточек собираются всегда: без них не работают ни фильтр
+    // по соцсетям, ни оценка лида (шаг 03).
+    fetch_detail:    true,
     collapse_chains: document.getElementById('f-collapse-chains').checked,
-    min_contact:     document.getElementById('f-min-contact').checked,
+    chain_key:       (document.getElementById('f-chain-key') || {}).value || 'name_city',
+    // Two-stage pipeline: the web app always collects raw (stage 1);
+    // parse_mode is applied afterwards (stage 2).
+    pipeline:        'raw',
+    raw_mode:        (document.getElementById('f-raw-mode') || {}).value || 'keep',
+    continue_cities: document.getElementById('f-continue')?.checked || false,
+    continue_limit:  parseInt((document.getElementById('f-continue-limit')||{}).value, 10) || 0,
     api_key:         document.getElementById('f-apikey').value.trim(),
     twogis_api_key:  (document.getElementById('f-2gis-key') || {}).value?.trim() || '',
     social_mode:     socialMode,
     required_socials: [...requiredSocials],
+    // Stage-2 lead scoring / VK activity (accordion «Фильтрация результата»).
+    vk_check:         !!(document.getElementById('f-vk-check')||{}).checked,
+    vk_mode:          vkMode,
+    vk_max_post_days: parseInt((document.getElementById('f-vk-max-days')||{}).value, 10) || 0,
+    vk_min_followers: parseInt((document.getElementById('f-vk-min-followers')||{}).value, 10) || 0,
+    min_lead_score:   parseInt((document.getElementById('f-min-score')||{}).value, 10) || 0,
+    sort_by_score:    (document.getElementById('f-sort-score')||{}).checked !== false,
   };
 }
 
@@ -739,6 +1710,14 @@ function getMaxCandidates() {
   if (v > 10000) v = 10000;
   if (el.value !== String(v)) el.value = v;
   return v;
+}
+
+// ♾ Continuation mode: show the limit stepper only when enabled.
+function onContinueToggle() {
+  const cb = document.getElementById('f-continue');
+  const row = document.getElementById('continue-limit-row');
+  if (!cb || !row) return;
+  row.style.display = cb.checked ? '' : 'none';
 }
 
 // Reset everything that belongs to one run (fresh display on new launch,
@@ -757,16 +1736,23 @@ function resetRunUI() {
   if (lsNum) lsNum.textContent = '0';
   const lsStage = document.getElementById('ls-stage');
   if (lsStage) lsStage.textContent = '';
+  updateTermProgress();
   updateStatsBadge();
 }
 
 function startRun() {
   const params = getParams();
+  // Belt-and-braces: the button is normally disabled when not ready, but a
+  // stale state must never start an empty run.
+  if (!params.queries.length || !params.cities.length) updateRunBtnState();
   clearFieldError(document.getElementById('fw-city'));
   const queriesBox = document.getElementById('f-queries').closest('div');
   clearFieldError(queriesBox);
   // Live-clear: errors disappear as soon as the user edits the field again
-  document.getElementById('f-queries').addEventListener('input', () => clearFieldError(queriesBox), { once: true });
+  document.getElementById('f-queries').addEventListener('input', e => {
+    clearFieldError(queriesBox);
+    updateQueriesCounter();   // keeps the «Будет выполнено N запросов» counter live
+  });
   const _cityInput = document.getElementById('f-city-input');
   if (_cityInput) _cityInput.addEventListener('input', () => clearFieldError(document.getElementById('fw-city')), { once: true });
   if (!params.queries.length) {
@@ -801,19 +1787,37 @@ function startRun() {
   mapInited = false; if (leafMap) { leafMap.remove(); leafMap = null; }
   document.getElementById('map-container').innerHTML = '';
 
+  _startRunWithParams(params);
+}
+
+// Core launch used by both startRun() (fresh form params) and resumeRun()
+// (paused run params + resume:true): pre-launch UI state + POST /run + SSE.
+function _startRunWithParams(params) {
   resetRunUI();
+  // A resumed run keeps the tiles the user had chosen (they are part of the
+  // saved params) — only a fresh launch starts from an empty selection.
   requiredSocials.clear();
   initSocialNetCheckboxes();
+  if (Array.isArray(params.required_socials) && params.required_socials.length) {
+    params.required_socials.forEach(k => {
+      const inp = document.querySelector('#social-net-chk-grid input[data-soc-key="' + k + '"]');
+      const tile = inp ? inp.closest('.soc-tile') : null;
+      if (tile) toggleRequiredSocial(k, tile);
+    });
+  }
+  updateSocialFilterHint();
+  setRunIndicator(true);
   setStatus('running', '⏳ Выполняется');
   setProgress(0, 'Запуск…');
-  document.getElementById('btn-run').disabled = true;
-  document.getElementById('btn-icon').innerHTML = '<span class="spin"></span>';
-  document.getElementById('btn-txt').textContent = 'Выполняется…';
-  document.getElementById('btn-stop').style.display = 'inline-block';
-  if (params.cities.length > 1) {
+  setRunBtnActive();
+  // `cities` is always present on a fresh launch; a resumed payload is
+  // server-built, so never assume the array exists (a throw here used to
+  // leave the button dead — «продолжить» did nothing at all).
+  if ((params.cities || []).length > 1) {
     document.getElementById('btn-skip').style.display = 'inline-block';
   }
   startTime = Date.now();
+  _runEnd = null;   // новый поиск — таймер «Время» снова живой
   // Show live stats strip and reset counters
   const ls = document.getElementById('live-stats');
   if (ls) { ls.style.display = 'flex'; }
@@ -859,6 +1863,7 @@ function startRun() {
               if (s.active_run === _queuedRunId) {
                 // Our run is now active — connect SSE
                 startTime = Date.now();
+                _runEnd = null;
                 startSSE();
               }
             }
@@ -972,7 +1977,7 @@ function refreshLiveStats() {
     _liveStatsTimer = null;
     const recs = completedCityRecords();
     if (!recs.length) return;
-    renderStats(recs, (Date.now() - startTime) / 1000, _lastSkippedCities);
+    renderStats(recs, _runElapsed(), _lastSkippedCities);
   };
   doRender();
   if (_liveStatsTimer) clearTimeout(_liveStatsTimer);
@@ -1001,6 +2006,7 @@ function startSSE(runId) {
     if (msg.type === 'ping') return;      if (msg.type === 'log') {
       if (msg.level === 'progress') { handleProgress(msg.msg); return; }
       if (msg.level === 'analytics') { /* analytics handled by renderStats */ return; }
+      if (msg.level === 'stats') { renderLogStats(msg.msg); return; }
       appendLog(msg.level, msg.msg);
     } else if (msg.type === 'result') {
       onLiveResult(msg.data);
@@ -1032,7 +2038,6 @@ function onLiveResult(rec) {
   if (allResults.length === 1) {
     document.querySelector('.right-col').classList.add('revealed');
     document.getElementById('social-filter-row').style.display = '';
-    document.getElementById('btn-dedup').classList.add('visible');
     const exportWrap = document.getElementById('export-sel-wrap');
     if (exportWrap) exportWrap.style.display = 'flex';
   }
@@ -1060,10 +2065,10 @@ function scheduleLiveRender() {
       if (q && !searchable) return false;
       // Social mode filter
       if (socialMode === 'with_socials') {
-        const hasAny = SOCIAL_KEYS.some(k => r[k]) || r.other_socials;
+        const hasAny = SOCIAL_KEYS.some(k => r[k]);
         if (!hasAny) return false;
       } else if (socialMode === 'without_socials') {
-        const hasAny = SOCIAL_KEYS.some(k => r[k]) || r.other_socials;
+        const hasAny = SOCIAL_KEYS.some(k => r[k]);
         if (hasAny) return false;
       }
       // Required socials AND filter
@@ -1088,12 +2093,28 @@ function onRunDone(msg) {
   const stopped = msg.stopped;
   const skippedCities = msg.skipped_cities || [];
   _lastSkippedCities = skippedCities;
+  // ⏸ Paused run: keep the dock in paused mode and keep the SSE/UI state —
+  // the user continues with one click instead of reconfiguring the search.
+  if (msg.paused) {
+    enterPausedState(msg.resume || null);
+    appendLog('ok', '  ⏸ Поиск на паузе — прогресс сохранён. Нажмите «Продолжить поиск».');
+    showToast('Поиск на паузе — прогресс сохранён', 'info');
+    return;                                   // no resetBtn / no downloads UI churn
+  }
   setStatus(stopped ? 'stopped' : 'done', stopped ? '⏹ Остановлено' : '✔ Готово');
   document.title = 'Яндекс.Карты — Парсер бизнесов';
   resetBtn();
   hideProgress();
+  // Фиксируем момент завершения: «Время» в статистике больше не растёт.
+  if (!_runEnd) _runEnd = Date.now();
   showDownloads(msg.files || [], msg.formats || []);
-  const elapsed = (Date.now() - startTime) / 1000;
+  // «Всё уже спарсено раньше»: сервер сообщает, что поиск вернул организации,
+  // но все они уже были в кэше — файлы при этом не создаются. Без этого
+  // сообщения повторный запуск выглядел как «нашлось 0» без причины.
+  if (msg.all_seen && !stopped) {
+    showToast('Все найденные организации уже парсились ранее — новых нет. Кэш: «История» → 🗑 Очистить кэш', 'warning');
+  }
+  const elapsed = _runElapsed();
 
   // Which files may carry full records (english keys): the internal merged
   // frontend file plus any user-facing per-city JSON files.
@@ -1114,9 +2135,15 @@ function onRunDone(msg) {
       renderStats(allResults, elapsed, skippedCities);
       showTab('table');
     } else {
-      // Completed with nothing found — replace the "waiting…" placeholder
+      // Completed with nothing found — replace the "waiting…" placeholder.
+      // «Уже парсились ранее» must be told apart from «ничего не подошло»:
+      // the first one is fixed by clearing the seen cache, not by filters.
+      const emptyMsg = msg.all_seen
+        ? 'Ничего нового: все организации этого города уже были спарсены ранее. '
+          + 'Файлы не создавались. Чтобы пройти город заново — вкладка «История» → «🗑 Очистить кэш».'
+        : 'Результатов не найдено. Измените запросы, города или фильтры.';
       document.getElementById('stats-body').innerHTML =
-        '<div class="no-data">Результатов не найдено. Измените запросы, города или фильтры.</div>';
+        `<div class="no-data">${emptyMsg}</div>`;
     }
     // Notification / sound (only on clean completion)
     if (!stopped && notificationsEnabled && Notification && Notification.permission === 'granted') {
@@ -1165,17 +2192,147 @@ function onRunDone(msg) {
 }
 
 function resetBtn() {
-  document.getElementById('btn-run').disabled = false;
+  const btn = document.getElementById('btn-run');
+  if (btn) {
+    btn.disabled = false;
+    btn.onclick = startRun;                    // back to the run control
+    btn.classList.remove('run-active');
+    btn.classList.remove('run-paused');
+    btn.hidden = false;
+    btn.title = '';
+
+  }
+  const stopBtn = document.getElementById('btn-stop');
+  if (stopBtn) { stopBtn.hidden = true; stopBtn.onclick = null; }
+  _pausedRun = null;
+  setRunIndicator(false);
   document.getElementById('btn-icon').textContent = '🚀';
-  document.getElementById('btn-txt').textContent = 'Запустить';
-  document.getElementById('btn-stop').style.display = 'none';
+  document.getElementById('btn-txt').textContent = 'Найти компании';
   document.getElementById('btn-skip').style.display = 'none';
+  // Run finished → back to ready/grey depending on what is filled in.
+  updateRunBtnState();
   updateStatsBadge();
 }
 
 // ═══════════════════════════════════════════
 //  Downloads
 // ═══════════════════════════════════════════
+// ═════════════════════════════════════════
+//  Results view: raw / processed / all (two-stage pipeline)
+// ═════════════════════════════════════════
+let _resultsView = 'raw';
+// «Текущий результат» — срез ПОСЛЕДНЕГО поиска, а не всей папки: файлы
+// прошлых запусков живут в «Истории файлов» (scope=all — явный показ всего).
+let _resultsScope = 'current';
+// Номер последнего запроса: ответы отменённых переключений игнорируются,
+// иначе медленный ответ «Сырых данных» перетирал уже показанные
+// «Обработанные» — в таблице оставались данные не той вкладки.
+let _resultsReqSeq = 0;
+
+function updateScopeButton() {
+  const b = document.getElementById('btn-scope-all');
+  if (!b) return;
+  const on = _resultsScope === 'all';
+  b.classList.toggle('active', on);
+  b.textContent = (on ? '☑' : '☐') + ' Все поиски';
+  b.title = on
+    ? 'Показаны файлы всех поисков в папке. Нажмите, чтобы вернуться к текущему поиску.'
+    : 'Показаны только результаты текущего поиска. Нажмите, чтобы увидеть все файлы в папке (прошлые поиски).';
+}
+
+function toggleScopeAll() {
+  _resultsScope = _resultsScope === 'all' ? 'current' : 'all';
+  try { localStorage.setItem(SCOPE_KEY, _resultsScope); } catch (e) {}
+  updateScopeButton();
+  setResultsView(_resultsView);
+}
+
+function setResultsView(view) {
+  if (!['raw', 'processed', 'all'].includes(view)) view = 'raw';
+  _resultsView = view;
+  document.querySelectorAll('#results-toggle .rt-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.view === view));
+  const body = document.getElementById('tbl-body');
+  if (body) body.innerHTML = '<tr><td colspan="7" class="no-data">Загрузка…</td></tr>';
+  currentFileNote = _resultsScope === 'all' ? ' · все файлы в папке' : '';
+  currentFile = '';
+  const seq = ++_resultsReqSeq;
+  const scope = _resultsScope;
+  fetch('/results-view?view=' + encodeURIComponent(view) + '&scope=' + encodeURIComponent(scope))
+    .then(r => r.json())
+    .then(data => {
+      if (seq !== _resultsReqSeq) return;   // устаревший ответ — вкладку уже переключили
+      allResults = data.records || [];
+      _lastCities = data.cities || [];
+      _resetTableBadge();
+      loadReviewed();
+      renderTable(allResults);
+      if (!allResults.length) {
+        let msg = view === 'processed'
+          ? 'Ничего не найдено по заданным фильтрам. Измените настройки.'
+          : 'Нет данных. Запустите сбор — сырые результаты появятся здесь.';
+        if (scope === 'current') {
+          msg += ' Файлы прошлых поисков — в «Истории файлов» (или включите «Все поиски»).';
+        }
+        document.getElementById('tbl-body').innerHTML =
+          `<tr><td colspan="7" class="no-data">${msg}</td></tr>`;
+      }
+      updateBulkStats();
+      if (typeof updateStatsBadge === 'function') updateStatsBadge();
+    })
+    .catch(() => {
+      if (seq !== _resultsReqSeq) return;
+      document.getElementById('tbl-body').innerHTML =
+        '<tr><td colspan="7" class="no-data">Ошибка загрузки данных</td></tr>';
+    });
+}
+
+// 🔄 Re-run stage 2 (filtering) on the saved raw data — no new crawling.
+function refilterNow() {
+  const btn = document.getElementById('btn-refilter');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Обработка…'; }
+  const formats = [];
+  if (document.getElementById('f-excel')?.checked) formats.push('excel');
+  if (document.getElementById('f-json')?.checked)  formats.push('json');
+  if (document.getElementById('f-csv')?.checked)   formats.push('csv');
+  if (document.getElementById('f-map')?.checked)   formats.push('html');
+  if (!formats.length) formats.push('excel');
+  const body = {
+    formats,
+    collapse_chains: document.getElementById('f-collapse-chains')?.checked || false,
+    chain_key:       (document.getElementById('f-chain-key') || {}).value || 'name_city',
+    parse_mode:      parseMode || 'all',
+    social_mode:     socialMode || 'all',
+    required_socials:[...requiredSocials],
+    raw_mode:        (document.getElementById('f-raw-mode')||{}).value || 'keep',
+  };
+  fetch('/process-filters', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (!data.ok) {
+        showToast(data.error || 'Ошибка обработки', 'error');
+        appendLog('warn', '  [!] ' + (data.error || 'Ошибка обработки'));
+        return;
+      }
+      if (data.empty) {
+        showToast('Ничего не найдено по заданным фильтрам. Измените настройки', 'warn');
+        appendLog('warn', '  ⚠ Ничего не найдено по заданным фильтрам. Измените настройки.');
+        return;
+      }
+      showToast(`Готово: ${data.count} организаций → ${data.files.length} файлов`, 'success');
+      appendLog('ok', `  📦 Обработано: ${data.count} организаций → ${data.files.length} файлов в output/processed/`);
+      setResultsView(_resultsView === 'raw' ? 'processed' : _resultsView);
+    })
+    .catch(() => showToast('Ошибка обработки', 'error'))
+    .finally(() => {
+      if (btn) { btn.disabled = false; btn.textContent = '🔄 Применить фильтры заново'; }
+    });
+}
+
 const ICONS = {xlsx:'📊', json:'📋', csv:'📄', html:'🗺'};
 function fileIcon(n) { for (const [ext,ic] of Object.entries(ICONS)) if (n.endsWith('.'+ext)) return ic; return '📁'; }
 
@@ -1200,12 +2357,13 @@ function showDownloads(files, formats) {
 // ═══════════════════════════════════════════
 //  Table
 // ═══════════════════════════════════════════
-const SOCIALS = {vk:'#4C75A3',instagram:'#C13584',facebook:'#1877F2',telegram:'#2CA5E0',
-  youtube:'#FF0000',tiktok:'#010101',ok:'#EE8208',twitter:'#14171A',whatsapp:'#25D366'};
-const SLABELS = {vk:'VK',instagram:'IG',facebook:'FB',telegram:'TG',
-  youtube:'YT',tiktok:'TT',ok:'OK',twitter:'TW',whatsapp:'WA'};
-const SNAMES = {vk:'ВКонтакте',instagram:'Instagram',facebook:'Facebook',telegram:'Telegram',
-  youtube:'YouTube',tiktok:'TikTok',ok:'Одноклассники',twitter:'Twitter / X',whatsapp:'WhatsApp'};
+// Only four client-facing networks are collected/coloured (backend parity).
+// Brand chip colours — read from the shared CSS tokens so the same rule works
+// in both themes and white initials always keep WCAG AA contrast (the raw
+// WhatsApp/Telegram greens were far too light for white text).
+const SOCIALS = {vk:'var(--vk)',instagram:'var(--ig)',telegram:'var(--tg)',whatsapp:'var(--wa)'};
+const SLABELS = {vk:'VK',instagram:'IG',telegram:'TG',whatsapp:'WA'};
+const SNAMES = {vk:'ВКонтакте',instagram:'Instagram',telegram:'Telegram',whatsapp:'WhatsApp'};
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, ch => ({
@@ -1228,11 +2386,102 @@ function socialsHTML(row) {
     const url = row[p];
     if (url) h += `<a class="social-badge" style="background:${color}" href="${escapeHtml(safeUrl(url))}" target="_blank" rel="noopener noreferrer">${SLABELS[p]}</a>`;
   }
-  if (row.other_socials) row.other_socials.split(',').forEach(u => {
-    u = u.trim();
-    if (u) h += `<a class="social-badge" style="background:#9C27B0" href="${escapeHtml(safeUrl(u))}" target="_blank" rel="noopener noreferrer">…</a>`;
-  });
   return h || '—';
+}
+
+// ── Lead score breakdown ─────────────────────────────────────
+// Зеркало yandex_maps_parser/lead_score.py: те же шесть бонусов, чтобы
+// подсказка называла именно те критерии, которые сработали у этой записи.
+const SCORE_MAX = 90;
+const SCORE_AGGREGATORS = /taplink|linktree|linktr\.ee|becons\.ai|illions\.app/i;
+// Дорогие категории — копия EXPENSIVE_CATEGORY_KEYWORDS из constants.py.
+const SCORE_EXPENSIVE = [
+  'стоматолог', 'dent', 'клиник', 'медицин', 'косметолог',
+  'недвижим', 'агентств недвижим', 'застройщик', 'риелтор',
+  'автосервис', 'автосалон', 'автомойк', 'шиномонтаж', 'автошкол',
+  'строитель', 'ремонт квартир', 'отделк', 'кровл', 'окн', 'натяжн',
+  'юрист', 'юридическ', 'адвокат', 'бухгалтер', 'аудит',
+  'мебел', 'кухн', 'шкаф',
+  'туризм', 'турагентств', 'отел', 'гостиниц',
+  'банкетн', 'ресторан', 'свадебн', 'event',
+];
+
+function scoreNum(value) {
+  const v = parseFloat(String(value == null ? '' : value).replace(',', '.'));
+  return isFinite(v) ? v : 0;
+}
+
+function scoreOwnWebsite(r) {
+  const site = String(r.website || r.aggregator_url || '').trim();
+  if (!site) return false;
+  return !SCORE_AGGREGATORS.test(site);
+}
+
+function scoreRating(r) {
+  let v = scoreNum(r.rating);
+  if (v > 5) v = v / 10;         // некоторые источники отдают 0..50
+  return v;
+}
+
+// Каждое правило: сколько даёт, когда сработало, и что писать, когда нет.
+// `no`: null = строку вообще не показываем (альтернатива уже заняла место).
+const SCORE_RULES = [
+  { pts: 30, hit: r => !scoreOwnWebsite(r),
+    yes: () => 'Нет сайта', no: () => 'Сайт есть' },
+  { pts: 20, hit: r => String(r.vk_activity || '').toLowerCase() === 'active',
+    yes: () => 'Активный ВК',
+    no: r => String(r.vk_activity || '').toLowerCase() === 'semi' ? null : 'ВК не активен' },
+  { pts: 10, hit: r => String(r.vk_activity || '').toLowerCase() === 'semi',
+    yes: () => 'Полуактивный ВК',
+    no: r => String(r.vk_activity || '').toLowerCase() === 'active' ? null : 'Полуактивный ВК — нет' },
+  { pts: 15, hit: r => scoreRating(r) >= 4.5,
+    yes: r => `Рейтинг ${scoreRating(r)}`,
+    no: r => scoreRating(r) > 0 ? `Рейтинг ${scoreRating(r)} < 4.5` : 'Рейтинг — нет данных' },
+  { pts: 15, hit: r => scoreNum(r.reviews_count) >= 50,
+    yes: r => `Отзывов ${Math.round(scoreNum(r.reviews_count))}`,
+    no: r => scoreNum(r.reviews_count) > 0
+      ? `Отзывов ${Math.round(scoreNum(r.reviews_count))} < 50` : 'Отзывов — нет данных' },
+  { pts: 5, hit: r => !!String(r.phone || '').trim(),
+    yes: () => 'Есть телефон', no: () => 'Телефон — не указан' },
+  { pts: 5, hit: r => SCORE_EXPENSIVE.some(w => String(r.category || '').toLowerCase().includes(w)),
+    yes: () => 'Дорогая категория', no: () => 'Дорогая категория — нет' },
+];
+
+// { sum, lines } — сумма сработавших правил и готовые строки подсказки.
+function scoreBreakdown(r) {
+  const lines = [];
+  let sum = 0;
+  for (const rule of SCORE_RULES) {
+    if (rule.hit(r)) {
+      sum += rule.pts;
+      lines.push(`✅ ${rule.yes(r)} +${rule.pts}`);
+    } else {
+      const miss = rule.no(r);
+      if (miss) lines.push(`❌ ${miss}`);
+    }
+  }
+  return { sum, lines };
+}
+
+// Подсказка отвечает на вопрос «почему именно столько»: только сработавшие
+// критерии, остальные — как промахи, внизу сумма.
+function scoreWhyText(r, v) {
+  const { sum, lines } = scoreBreakdown(r);
+  const head = lines.length ? lines.join('\n') : 'Ни один критерий не сработал';
+  const tail = sum === v
+    ? `Итого: ${v} (макс. ${SCORE_MAX})`
+    : `Итого: ${v} (макс. ${SCORE_MAX}) — оценка сохранена при поиске,\nпо текущим данным критерии дают ${sum}`;
+  return head + '\n' + '─'.repeat(20) + '\n' + tail;
+}
+
+// Lead score badge: green ≥ 70 (горячий), amber ≥ 45, grey below. «—» means
+// the score was never computed (file written before this feature).
+function scoreHTML(r) {
+  const raw = r.lead_score;
+  if (raw == null || raw === '') return '<span class="score-na">—</span>';
+  const v = +raw || 0;
+  const cls = v >= 70 ? 'hot' : v >= 45 ? 'warm' : 'cold';
+  return `<span class="score-badge ${cls}" title="${escapeHtml(scoreWhyText(r, v))}">${v}</span>`;
 }
 
 function renderTable(data) {
@@ -1242,22 +2491,20 @@ function renderTable(data) {
   filteredRows = [...data];
   curPage = 1; sortCol = -1;
   document.getElementById('tbl-search').value = '';
-  document.querySelectorAll('#results-table th').forEach(th => th.className = '');
-  // Show social filter row + dedup button only when there are results
+  resetSortHeaders();
+  // Show the social filter row only when there are results
   document.getElementById('social-filter-row').style.display = data.length ? '' : 'none';
-  document.getElementById('btn-dedup').classList.toggle('visible', data.length > 0);
+  // City tabs + bulk counters follow the freshly loaded data
+  renderCityTabs(_lastCities);
+  updateBulkStats();
   // Re-derive through filterTable so the optional quality filters
   // (collapse chains / min contact) apply to the final view too.
   filterTable();
 }
 
 // Client-side mirror of the server's optional output filters
-// ("Объединять филиалы сетей" / "Только с телефоном или соцсетями"),
-// so the live table matches what gets written to files.
-function hasAnySocial(r) {
-  return Object.keys(SOCIALS).some(k => r[k]) || !!r.other_socials;
-}
-
+// ("Объединять филиалы сетей"), so the live table matches what gets
+// written to files.
 function collapseChainsClient(rows) {
   const norm = n => String(n || '').toLowerCase().replace(/[^a-zа-яё0-9]/gi, '');
   const phoneDigits = p => String(p || '').replace(/\D/g, '');
@@ -1310,9 +2557,10 @@ function filterTable() {
   const collapseChains = document.getElementById('f-collapse-chains');
   if (collapseChains && collapseChains.checked) source = collapseChainsClient(source);
   filteredRows = source.filter(r => {
-    // Min-contact filter: hide rows with no phone and no socials
-    const minContact = document.getElementById('f-min-contact');
-    if (minContact && minContact.checked && !r.phone && !hasAnySocial(r)) return false;
+    // City tab ('' = все города)
+    if (activeCity && cityOf(r) !== activeCity) return false;
+    // «Только непросмотренные»
+    if (unviewedOnly && isReviewed(r)) return false;
     // Search every visible/data field
     const searchable = Object.values(r).some(value =>
       String(value ?? '').toLocaleLowerCase('ru-RU').includes(q)
@@ -1320,10 +2568,10 @@ function filterTable() {
     if (q && !searchable) return false;
     // Social mode filter (form-level toggle)
     if (socialMode === 'with_socials') {
-      const hasAny = SOCIAL_KEYS.some(k => r[k]) || r.other_socials;
+      const hasAny = SOCIAL_KEYS.some(k => r[k]);
       if (!hasAny) return false;
     } else if (socialMode === 'without_socials') {
-      const hasAny = SOCIAL_KEYS.some(k => r[k]) || r.other_socials;
+      const hasAny = SOCIAL_KEYS.some(k => r[k]);
       if (hasAny) return false;
     }
     // Required socials (AND filter): must have ALL checked socials
@@ -1336,26 +2584,60 @@ function filterTable() {
       const hasSocial = [...activeSocialFilters].some(key => r[key]);
       if (!hasSocial) return false;
     }
+    // Lead-score threshold (mirror of the server-side stage-2 filter)
+    if (minScoreThreshold() && (+r.lead_score || 0) < minScoreThreshold()) return false;
     return true;
   });
+  // «Сначала горячие» — same ordering the processed files get.
+  const sortCb = document.getElementById('f-sort-score');
+  if (sortCb && sortCb.checked && filteredRows.some(r => r.lead_score != null && r.lead_score !== '')) {
+    filteredRows = filteredRows.slice().sort((a, b) => (+b.lead_score || 0) - (+a.lead_score || 0));
+  }
   curPage = 1;
   renderPage();
 }
 
+function minScoreThreshold() {
+  const el = document.getElementById('f-min-score');
+  return el ? (parseInt(el.value, 10) || 0) : 0;
+}
+
+// col 1 — это «#», порядковый номер строки в текущем отображении, а не поле
+// данных: сортировать его бессмысленно (номера всё равно идут 1,2,3…), поэтому
+// колонка не кликабельна и стрелку не показывает.
+const NOSORT_COLS = new Set([0, 1]);
+
+// Перерисовка стирает классы заголовков — «#» должен остаться без стрелок.
+function resetSortHeaders() {
+  const ths = document.querySelectorAll('#results-table th');
+  ths.forEach(t => t.className = '');
+  if (ths[1]) ths[1].className = 'nosort';
+}
+
 function sortTable(col) {
+  if (NOSORT_COLS.has(col)) return;
   const th = document.querySelectorAll('#results-table th')[col];
+  if (!th) return;
   if (sortCol === col) { sortAsc = !sortAsc; }
   else { sortCol = col; sortAsc = true; }
-  document.querySelectorAll('#results-table th').forEach(t => t.className = '');
+  // Score is a number — compare it as one, not as a string.
+  if (col === 6) {
+    resetSortHeaders();
+    document.querySelectorAll('#results-table th')[col].className = sortAsc ? 'asc' : 'desc';
+    filteredRows.sort((a, b) => {
+      const va = +a.lead_score || 0, vb = +b.lead_score || 0;
+      return sortAsc ? va - vb : vb - va;
+    });
+    renderPage();
+    return;
+  }
+  resetSortHeaders();
   th.className = sortAsc ? 'asc' : 'desc';
-  // col 0 = ✓ (not sortable), col 1 = #, col 2 = name, ...
-  const keys = ['', '_idx', 'name', 'category', 'address', 'phone', 'rating', 'reviews'];
+  // col 0 = ✓ и col 1 = # — не сортируются, col 2 = name, ...
+  const keys = ['', '', 'name', 'category', 'address', 'phone', 'lead_score'];
   const key = keys[col];
   filteredRows.sort((a, b) => {
-    let va = col === 1 ? filteredRows.indexOf(a) : (a[key] || '');
-    let vb = col === 1 ? filteredRows.indexOf(b) : (b[key] || '');
-    if (col === 6) { va = parseFloat(va) || 0; vb = parseFloat(vb) || 0; }
-    if (col === 7) { va = parseInt(va, 10) || 0; vb = parseInt(vb, 10) || 0; }
+    const va = a[key] || '', vb = b[key] || '';
     return sortAsc ? (va < vb ? -1 : va > vb ? 1 : 0) : (va < vb ? 1 : va > vb ? -1 : 0);
   });
   renderPage();
@@ -1368,7 +2650,7 @@ function renderPage() {
   const start = (curPage - 1) * PAGE_SIZE;
   const slice = filteredRows.slice(start, start + PAGE_SIZE);
 
-  document.getElementById('tbl-count').textContent = total ? `${total} записей` : '';
+  document.getElementById('tbl-count').textContent = total ? `${total} записей${currentFileNote}` : '';
   const exportWrap = document.getElementById('export-sel-wrap');
   if (exportWrap) exportWrap.style.display = total ? 'flex' : 'none';
 
@@ -1380,9 +2662,10 @@ function renderPage() {
   }
 
   tbody.innerHTML = slice.map((r, i) => {
-    const rawReviewUrl = r.yandex_maps_url || r.twogis_url || '';
+    // Same key as the backend _review_key(): card URL, else name|city|address.
+    const rawReviewUrl = reviewKey(r);
     const reviewUrl = escapeHtml(rawReviewUrl);
-    const isRev = rawReviewUrl && reviewedState[rawReviewUrl];
+    const isRev = isReviewed(r);
     return `
     <tr class="${isRev ? 'is-reviewed' : ''}">
       <td style="text-align:center"><input type="checkbox" class="rev-cb"
@@ -1394,8 +2677,7 @@ function renderPage() {
       <td style="color:var(--muted)">${escapeHtml(r.category || '—')}</td>
       <td>${escapeHtml(r.address || '—')}</td>
       <td>${escapeHtml(r.phone || '—')}</td>
-      <td>${r.rating ? '★ ' + escapeHtml(r.rating) : '—'}</td>
-      <td>${r.reviews !== undefined && r.reviews !== null && r.reviews !== '' ? escapeHtml(r.reviews) : '0'}</td>
+      <td>${scoreHTML(r)}</td>
       <td>${socialsHTML(r)}</td>
     </tr>`;
   }).join('');
@@ -1418,13 +2700,14 @@ function loadReviewed() {
   fetch('/reviewed').then(r => r.json()).then(data => {
     reviewedState = data || {};
     if (filteredRows.length) renderPage();
+    updateBulkStats();          // «Осталось непросмотренных» зависит от отметок
   }).catch(() => {});
 }
 
 function toggleReviewed(url, cb) {
   if (!url) return;
   const checked = cb.checked;
-  reviewedState[url] = checked;
+  if (checked) reviewedState[url] = true; else delete reviewedState[url];
   const row = cb.closest('tr');
   if (row) row.classList.toggle('is-reviewed', checked);
   fetch('/reviewed', {
@@ -1432,13 +2715,872 @@ function toggleReviewed(url, cb) {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({url, reviewed: checked})
   }).catch(() => {});
+  markReviewedDirty();
+  updateBulkStats();
+}
+
+// ══════════════════════════════════════════════════════════════
+//  Results tab: sub-tabs, city tabs, bulk outreach, file browser
+// ══════════════════════════════════════════════════════════════
+const SUBTAB_KEY    = 'yp_results_subtab';   // current | history
+const CITY_TAB_KEY  = 'yp_results_city_tab';  // '' = все города
+const BULK_OPEN_KEY = 'yp_bulk_open';         // 1 | 0 — панель развёрнута
+const SCOPE_KEY     = 'yp_results_scope';     // current | all (текущий поиск | вся папка)
+const BULK_MAX_TABS = 50;                     // предел вкладок за один клик
+
+const BULK_SOCIALS = ['vk', 'telegram', 'whatsapp', 'instagram'];
+
+let activeCity = '';            // выбранная вкладка города ('' = все)
+let _lastCities = [];           // города текущего вида (от /results-view)
+let unviewedOnly = false;       // фильтр «только непросмотренные»
+let currentFileNote = '';       // «· файл: …» когда таблица показывает один файл
+let currentFile = '';           // rel-путь файла, открытого из «Истории файлов»
+let bulkBusy = false;
+let bulkState = { social: 'vk', opened: 0, blocked: 0, keys: new Set(), copied: new Set() };
+let filesLoaded = false;
+let filesData = { raw: [], processed: [], archive: [] };
+let filesFilter = '';
+let filesSearchTimer = null;
+
+// Mirrors the backend _review_key() — keep both in sync.
+function reviewKey(r) {
+  if (!r) return '';
+  const y = String(r.yandex_maps_url || '').trim();
+  if (y) return y;
+  const t = String(r.twogis_url || '').trim();
+  if (t) return t;
+  const name = String(r.name || '').trim();
+  const addr = String(r.address || '').trim();
+  if (!name && !addr) return '';
+  return 'n:' + [name, String(r.city || '').trim(), addr].join('|');
+}
+
+function isReviewed(r) {
+  const k = reviewKey(r);
+  return !!(k && reviewedState[k]);
+}
+
+// Перерисовать таблицу и счётчики после изменения отметок
+// (нужно и когда включён фильтр «только непросмотренные» —
+//  помеченные строки должны из него исчезнуть).
+function refreshReviewedUI() {
+  updateBulkStats();
+  if (unviewedOnly) { curPage = 1; filterTable(); }
+  else if (filteredRows.length) renderPage();
+}
+
+function safeSocialUrl(u) {
+  const s = String(u || '').trim();
+  return /^https?:\/\//i.test(s) ? s : '';
+}
+
+// ── Массовое открытие вкладок ────────────────────────────────
+// window.open ПОСЛЕ await теряет user-activation, поэтому браузер отдавал
+// только первую вкладку из пяти. Схема, которая работает: пустые вкладки
+// открываются СИНХРОННО прямо в обработчике клика, а URL-ы из ответа сервера
+// подставляются в них уже потом.
+function openBlankTabs(n) {
+  const wins = [];
+  for (let i = 0; i < n; i++) {
+    let w = null;
+    try { w = window.open('about:blank', '_blank'); } catch (e) { w = null; }
+    wins.push(w || null);          // null = вкладку заблокировал браузер
+  }
+  return wins;
+}
+
+// Направить уже открытую вкладку на URL профиля. false = вкладка потеряна
+// (заблокирована или закрыта), тогда показываем fallback «Скопировать ссылки».
+function fillTab(win, url) {
+  if (!win) return false;
+  try {
+    win.location.href = url;
+    try { win.opener = null; } catch (e) { /* cross-origin после навигации */ }
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+function closeTab(win) {
+  if (!win) return;
+  try { win.close(); } catch (e) { /* уже закрыта */ }
+}
+
+function clampInt(v, lo, hi) {
+  const n = parseInt(v, 10);
+  if (isNaN(n)) return lo;
+  return Math.max(lo, Math.min(hi, n));
+}
+
+function pluralNum(n, one, few, many) {
+  const m10 = n % 10, m100 = n % 100;
+  if (m10 === 1 && m100 !== 11) return one;
+  if (m10 >= 2 && m10 <= 4 && (m100 < 10 || m100 >= 20)) return few;
+  return many;
+}
+
+function pluralRecords(n) { return pluralNum(n, 'запись', 'записи', 'записей'); }
+function pluralProfiles(n) { return pluralNum(n, 'профиль', 'профиля', 'профилей'); }
+function pluralFiles(n) { return pluralNum(n, 'файл', 'файла', 'файлов'); }
+
+function fmtBytes(n) {
+  n = Number(n) || 0;
+  if (n < 1024) return n + ' Б';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(n / 1024 < 10 ? 1 : 0) + ' КБ';
+  return (n / 1048576).toFixed(1) + ' МБ';
+}
+
+function basenameOf(p) { return String(p || '').split('/').pop(); }
+
+function postJSON(url, body) {
+  return fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body || {}),
+  }).then(async r => {
+    let data = {};
+    try { data = await r.json(); } catch (e) { data = {}; }
+    if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+    return data;
+  });
+}
+
+// ── Sub-tabs: «Текущий результат» / «История файлов» ─────────
+function setResultsSubTab(name) {
+  const showCurrent = name !== 'history';
+  document.querySelectorAll('#results-subtabs .subt-tab').forEach(b =>
+    b.classList.toggle('active', (b.dataset.sub === 'history') === !showCurrent));
+  const rc = document.getElementById('rs-current');
+  const rh = document.getElementById('rs-history');
+  if (rc) rc.hidden = !showCurrent;
+  if (rh) rh.hidden = showCurrent;
+  try { localStorage.setItem(SUBTAB_KEY, showCurrent ? 'current' : 'history'); } catch (e) {}
+  if (!showCurrent) {
+    // Уходим из таблицы — самый удобный момент дописать отметки в файлы.
+    autoPersistReviewed();
+    if (!filesLoaded) loadFilesPanel();
+    else renderFiles();
+  }
+}
+
+// ── City tabs ───────────────────────────────────────────────
+function cityOf(r) { return String((r && r.city) || '').trim() || 'Без города'; }
+
+function bulkScopeRows() {
+  if (!activeCity) return allResults;
+  return allResults.filter(r => cityOf(r) === activeCity);
+}
+
+function renderCityTabs(cities) {
+  const box = document.getElementById('city-tabs');
+  if (!box) return;
+  const list = Array.isArray(cities) ? cities : [];
+  if (list.length < 2) {            // один город — вкладки не нужны
+    box.innerHTML = '';
+    box.hidden = true;
+    activeCity = '';
+    return;
+  }
+  if (activeCity && !list.some(c => c.city === activeCity)) activeCity = '';
+  box.hidden = false;
+  const total = list.reduce((s, c) => s + (Number(c.count) || 0), 0);
+  const tabs = [
+    `<button class="city-tab${activeCity ? '' : ' active'}" data-city="" onclick="setCityTab('')">Все <span class="city-count">(${total})</span></button>`,
+  ].concat(list.map(c =>
+    `<button class="city-tab${c.city === activeCity ? ' active' : ''}" data-city="${escapeHtml(c.city)}" onclick="setCityTab(this.dataset.city)">${escapeHtml(c.city)} <span class="city-count">(${c.count})</span></button>`
+  ));
+  box.innerHTML = tabs.join('');
+}
+
+function setCityTab(city) {
+  activeCity = String(city || '');
+  try { localStorage.setItem(CITY_TAB_KEY, activeCity); } catch (e) {}
+  document.querySelectorAll('#city-tabs .city-tab').forEach(b =>
+    b.classList.toggle('active', (b.dataset.city || '') === activeCity));
+  curPage = 1;
+  filterTable();
+  updateBulkStats();
+}
+
+// ── «Только непросмотренные» ─────────────────────────────────
+function toggleUnviewedOnly() {
+  unviewedOnly = !unviewedOnly;
+  const b = document.getElementById('btn-unviewed');
+  if (b) {
+    b.classList.toggle('active', unviewedOnly);
+    b.textContent = (unviewedOnly ? '☑' : '☐') + ' Непросмотренные';
+  }
+  curPage = 1;
+  filterTable();
+}
+
+// ── Bulk outreach panel ─────────────────────────────────────
+function toggleBulkPanel() {
+  const body = document.getElementById('bulk-body');
+  const arrow = document.getElementById('bulk-collapse');
+  if (!body) return;
+  const open = body.hidden;
+  body.hidden = !open;
+  if (arrow) arrow.textContent = open ? '▾' : '▸';
+  try { localStorage.setItem(BULK_OPEN_KEY, open ? '1' : '0'); } catch (e) {}
+}
+
+function setBulkCount(n) {
+  const inp = document.getElementById('bulk-count');
+  if (inp) inp.value = clampInt(n, 1, BULK_MAX_TABS);
+  updateBulkStats();
+}
+
+// Сколько всего непросмотренных в текущем городе и сколько из них
+// доступны по каждой соцсети (skip_viewed учитывается в by_social).
+function bulkScopeStats() {
+  const rows = bulkScopeRows();
+  const skip = !!(document.getElementById('bulk-skip-viewed') || {}).checked;
+  const stats = { unviewed: 0, with_social: {}, by_social: {} };
+  BULK_SOCIALS.forEach(s => { stats.with_social[s] = 0; stats.by_social[s] = 0; });
+  for (const r of rows) {
+    const rev = isReviewed(r);
+    if (!rev) stats.unviewed++;
+    for (const s of BULK_SOCIALS) {
+      if (!safeSocialUrl(r[s])) continue;
+      stats.with_social[s]++;
+      if (!(skip && rev)) stats.by_social[s]++;
+    }
+  }
+  return stats;
+}
+
+// Сколько профилей выбранной соцсети ещё не просмотрено — ровно это число
+// ограничивает следующий клик. Кнопка активна, пока оно больше нуля.
+function bulkOpenable() {
+  const sel = document.getElementById('bulk-social');
+  const stats = bulkScopeStats();
+  return stats.by_social[(sel && sel.value) || 'vk'] || 0;
+}
+
+// Сколько вкладок откроет клик: сколько запросили, но не больше остатка
+// непросмотренных и жёсткого лимита BULK_MAX_TABS.
+function bulkWillOpen(requested) {
+  return Math.max(0, Math.min(clampInt(requested, 1, BULK_MAX_TABS), bulkOpenable()));
+}
+
+function updateBulkStats() {
+  const panel = document.getElementById('bulk-panel');
+  if (!panel) return;
+  const stats = bulkScopeStats();
+  const sel = document.getElementById('bulk-social');
+  const social = (sel && sel.value) || 'vk';
+
+  const cnt = document.getElementById('unviewed-count');
+  if (cnt) cnt.textContent = String(stats.unviewed);
+  const note = document.getElementById('bulk-stats-note');
+  if (note) note.textContent = ` · с ${SNAMES[social] || social}: ${stats.by_social[social] || 0}`;
+
+  if (sel) {
+    [...sel.options].forEach(o => {
+      const base = o.dataset.base || o.textContent;
+      o.dataset.base = base;
+      o.textContent = `${base} — ${stats.by_social[o.value] || 0}`;
+    });
+  }
+
+  const inp = document.getElementById('bulk-count');
+  const count = clampInt(inp ? inp.value : 5, 1, BULK_MAX_TABS);
+  document.querySelectorAll('#bulk-panel .bulk-preset').forEach(b =>
+    b.classList.toggle('active', Number(b.dataset.count) === count));
+
+  const btn = document.getElementById('bulk-open-btn');
+  if (btn) {
+    const openable = stats.by_social[social] || 0;
+    const willOpen = Math.min(count, openable, BULK_MAX_TABS);
+    if (bulkBusy) {
+      btn.disabled = true;
+      btn.textContent = '⏳ Открываем…';
+    } else if (!openable) {
+      // Обход закончен: непросмотренных с этой соцсетью больше нет.
+      btn.disabled = true;
+      btn.textContent = '✅ Все просмотрены';
+    } else {
+      // Кнопка обещает ровно то, что откроется этим кликом.
+      btn.disabled = false;
+      btn.textContent = `🚀 Открыть ${willOpen} ${pluralProfiles(willOpen)}`;
+    }
+  }
+  renderBulkProgress();
+}
+
+function renderBulkProgress() {
+  const box = document.getElementById('bulk-progress');
+  if (!box) return;
+  if (!bulkState.opened && !bulkState.blocked) { box.hidden = true; return; }
+  box.hidden = false;
+  // Знаменатель — сколько всего оставалось непросмотренным с этой соцсетью
+  // плюс уже открытое за сессию: процент не зависит от размера пачки.
+  const total = bulkState.opened + bulkState.blocked + bulkOpenable();
+  const pct = total ? Math.min(100, Math.round((bulkState.opened / total) * 100)) : 0;
+  const fill = document.getElementById('bulk-progress-fill');
+  if (fill) fill.style.width = pct + '%';
+  const txt = document.getElementById('bulk-progress-txt');
+  if (txt) {
+    txt.textContent = `Открыто ${bulkState.opened} из ${total}`
+      + (bulkState.blocked ? ` · заблокировано ${bulkState.blocked}` : '');
+  }
+}
+
+function resetBulkProgress() {
+  bulkState = { social: bulkState.social, opened: 0, blocked: 0, keys: new Set(), copied: new Set() };
+  hideBulkWarn();
+  updateBulkStats();
+}
+
+function showBulkWarn(msg) {
+  const box = document.getElementById('bulk-warn');
+  if (!box) return;
+  box.hidden = false;
+  box.innerHTML = msg;
+}
+
+function hideBulkWarn() {
+  const box = document.getElementById('bulk-warn');
+  if (box) { box.hidden = true; box.innerHTML = ''; }
+}
+
+function bulkParams() {
+  const sel = document.getElementById('bulk-social');
+  return {
+    view: _resultsView,
+    scope: _resultsScope,       // обход идёт по тому же срезу, что и таблица
+    file: currentFile,          // обход идёт по открытому файлу, если он открыт
+    city: activeCity,
+    social: (sel && sel.value) || 'vk',
+    skip_viewed: !!(document.getElementById('bulk-skip-viewed') || {}).checked,
+    mark_viewed: !!(document.getElementById('bulk-mark-viewed') || {}).checked,
+  };
+}
+
+async function bulkOpenBatch() {
+  if (bulkBusy) return;
+  const p = bulkParams();
+  const inp = document.getElementById('bulk-count');
+  const requested = clampInt(inp ? inp.value : 5, 1, BULK_MAX_TABS);
+
+  // Другая соцсеть — начинаем сессию обхода заново.
+  if (bulkState.social !== p.social) {
+    bulkState = { social: p.social, opened: 0, blocked: 0, keys: new Set(), copied: new Set() };
+    hideBulkWarn();
+  }
+
+  // Пустые вкладки открываются СИНХРОННО, до запроса к серверу: после await
+  // браузер уже не считает их частью клика и блокирует всё, кроме первой.
+  const wanted = Math.min(requested, BULK_MAX_TABS);
+  const tabs = openBlankTabs(wanted);
+
+  bulkBusy = true;
+  updateBulkStats();
+  try {
+    const data = await postJSON('/bulk/urls', {
+      view: p.view, scope: p.scope, file: p.file, city: p.city, social: p.social,
+      count: wanted, skip_viewed: p.skip_viewed, exclude_keys: [...bulkState.keys],
+    });
+    const list = (data.urls || []).filter(i => i && i.url);
+    if (!list.length) {
+      // Очередь пуста — предварительно открытые вкладки закрываем, чтобы
+      // у пользователя не остались пустые.
+      tabs.forEach(closeTab);
+      showToast('Нет непросмотренных компаний с этой соцсетью', 'warning');
+      return;
+    }
+
+    // Заполняем уже открытые вкладки и закрываем лишние (сервер мог отдать
+    // меньше, чем мы запросили, если очередь закончилась).
+    const openedItems = [];
+    let blocked = 0;
+    for (let i = 0; i < tabs.length; i++) {
+      const item = list[i];
+      if (!item) { closeTab(tabs[i]); continue; }
+      if (fillTab(tabs[i], item.url)) openedItems.push(item); else blocked++;
+    }
+
+    if (openedItems.length) {
+      bulkState.opened += openedItems.length;
+      openedItems.forEach(i => { if (i.key) bulkState.keys.add(i.key); });
+      if (p.mark_viewed) await markReviewedBatch(openedItems.map(i => i.key), true);
+    }
+    bulkState.blocked += blocked;
+    if (blocked) {
+      showBulkWarn(`⚠ Открыто ${openedItems.length} из ${list.length}: браузер заблокировал ${blocked} ${pluralProfiles(blocked)}. Разрешите всплывающие окна для этого сайта — или нажмите «📋 Скопировать ссылки» и откройте их вручную.`);
+      showToast(`Открыто ${openedItems.length} из ${list.length}. Разрешите всплывающие окна`, 'warning');
+    } else {
+      hideBulkWarn();
+      showToast(`Открыто ${openedItems.length} ${pluralProfiles(openedItems.length)}`, 'success');
+    }
+  } catch (e) {
+    // Запрос упал — открытые пустые вкладки не должны висеть у пользователя.
+    tabs.forEach(closeTab);
+    showToast('Ошибка обхода: ' + e.message, 'error');
+  } finally {
+    bulkBusy = false;
+    updateBulkStats();
+    if (allResults.length) refreshReviewedUI();
+  }
+}
+
+async function markReviewedBatch(keys, val) {
+  const clean = [...new Set((keys || []).filter(Boolean))];
+  if (!clean.length) return;
+  const before = {};
+  clean.forEach(k => {
+    before[k] = !!reviewedState[k];
+    // снятая отметка = ключа нет (не false), чтобы состояние совпадало с _reviewed.json
+    if (val) reviewedState[k] = true; else delete reviewedState[k];
+  });
+  try {
+    await postJSON('/reviewed/batch', { keys: clean, reviewed: val });
+  } catch (e) {
+    clean.forEach(k => { if (before[k]) reviewedState[k] = true; else delete reviewedState[k]; });
+    showToast('Не удалось сохранить отметки: ' + e.message, 'error');
+    refreshReviewedUI();
+    return;
+  }
+  // Сервер отметки принял — теперь их надо дописать в xlsx.
+  markReviewedDirty();
+  refreshReviewedUI();
+}
+
+// ══════════════════════════════════════════════════════════════
+//  Автосохранение отметок «Просмотрено»
+// ══════════════════════════════════════════════════════════════
+// Отметки сразу уходят в _reviewed.json (таблица и обход их видят), но в
+// xlsx их надо переписать отдельным запросом. Раньше это делала только
+// кнопка, о которой все забывали — и отметки не доживали до следующей
+// сессии. Теперь пишем сами: через 5 с после последнего клика, при уходе со
+// страницы, при переключении на «Историю файлов» и перед экспортом.
+const REVIEWED_AUTOSAVE_MS = 5000;
+let reviewedDirty = false;      // есть отметки, ещё не записанные в xlsx
+let reviewedSaveError = false;  // последняя запись не удалась
+let reviewedSaveTimer = null;
+let reviewedPersistBusy = false;
+
+function markReviewedDirty() {
+  reviewedDirty = true;
+  reviewedSaveError = false;
+  updateReviewedSaveStatus();
+  if (reviewedSaveTimer) clearTimeout(reviewedSaveTimer);
+  reviewedSaveTimer = setTimeout(() => {
+    reviewedSaveTimer = null;
+    autoPersistReviewed();
+  }, REVIEWED_AUTOSAVE_MS);
+}
+
+function updateReviewedSaveStatus() {
+  const el = document.getElementById('reviewed-save-status');
+  if (!el) return;
+  let cls, txt;
+  if (reviewedPersistBusy) {
+    cls = 'busy'; txt = '⏳ Записываю отметки в файлы…';
+  } else if (reviewedSaveError) {
+    cls = 'err'; txt = '⚠ Отметки не записаны — нажмите «Сохранить сейчас»';
+  } else if (reviewedDirty) {
+    cls = 'dirty'; txt = '⏳ Есть несохранённые отметки — запишутся сами через пару секунд';
+  } else {
+    cls = 'ok'; txt = '✅ Все отметки сохранены';
+  }
+  el.textContent = txt;
+  el.className = 'rev-save-status ' + cls;
+}
+
+// force = сохранить даже без изменений (ручная кнопка). Возвращает ответ
+// сервера или null, если запись не удалась.
+async function autoPersistReviewed(force) {
+  if (!force && !reviewedDirty) return null;
+  if (reviewedPersistBusy) return null;
+  reviewedPersistBusy = true;
+  reviewedSaveError = false;
+  updateReviewedSaveStatus();
+  try {
+    const d = await postJSON('/reviewed/persist', { view: _resultsView, scope: _resultsScope });
+    reviewedDirty = false;
+    reviewedSaveError = false;
+    return d;
+  } catch (e) {
+    reviewedSaveError = true;
+    return null;
+  } finally {
+    reviewedPersistBusy = false;
+    updateReviewedSaveStatus();
+  }
+}
+
+// Закрытие вкладки: sendBeacon отдаёт запрос даже когда страница умирает.
+function persistReviewedOnLeave() {
+  if (!reviewedDirty) return;
+  const nav = (typeof navigator !== 'undefined') ? navigator : null;
+  if (!nav || typeof nav.sendBeacon !== 'function') return;
+  try {
+    const body = new Blob(
+      [JSON.stringify({ view: _resultsView, scope: _resultsScope })],
+      { type: 'application/json' },
+    );
+    nav.sendBeacon('/reviewed/persist', body);
+    reviewedDirty = false;
+  } catch (e) { /* отметки останутся в _reviewed.json — потеряем только колонку */ }
+}
+
+async function bulkCopyLinks() {
+  const p = bulkParams();
+  const inp = document.getElementById('bulk-count');
+  const count = clampInt(inp ? inp.value : 10, 1, 50);
+  try {
+    const data = await postJSON('/bulk/urls', {
+      view: p.view, scope: p.scope, file: p.file, city: p.city, social: p.social,
+      count, skip_viewed: p.skip_viewed, exclude_keys: [...bulkState.keys, ...bulkState.copied],
+    });
+    const list = data.urls || [];
+    if (!list.length) { showToast('Нет непросмотренных компаний с этой соцсетью', 'warning'); return; }
+    list.forEach(i => { if (i.key) bulkState.copied.add(i.key); });
+    showLinksModal(list, SNAMES[p.social] || p.social);
+  } catch (e) {
+    showToast('Ошибка: ' + e.message, 'error');
+  }
+}
+
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (e) { /* fall through to execCommand */ }
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.left = '-9999px';
+  document.body.appendChild(ta);
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+  ta.remove();
+  return ok;
+}
+
+function showLinksModal(items, label) {
+  const links = (items || []).map(i => i.url).filter(Boolean);
+  const keys = (items || []).map(i => i.key).filter(Boolean);
+  const overlay = document.createElement('div');
+  overlay.className = 'ui-modal-overlay';
+  const text = links.join('\n');
+  overlay.innerHTML = `
+    <div class="ui-modal links-modal">
+      <h3>${links.length} ${pluralNum(links.length, 'ссылка', 'ссылки', 'ссылок')} — ${escapeHtml(label)}</h3>
+      <p>Список можно вставить в заметки или открывать по одной. Когда свяжетесь с этими компаниями — поставьте им отметки кнопкой ниже, и они уйдут из очереди обхода.</p>
+      <textarea readonly rows="10">${escapeHtml(text)}</textarea>
+      <div class="ui-modal-btns">
+        <button type="button" class="m-cancel">Закрыть</button>
+        <button type="button" class="m-mark">✓ Пометить просмотренными (${keys.length})</button>
+        <button type="button" class="m-ok neutral">📋 Скопировать все</button>
+      </div>
+    </div>`;
+  const done = () => overlay.remove();
+  overlay.querySelector('.m-cancel').onclick = done;
+  overlay.querySelector('.m-mark').onclick = async () => {
+    if (!keys.length) { showToast('Нет записей для отметки', 'warning'); return; }
+    await markReviewedBatch(keys, true);
+    keys.forEach(k => bulkState.keys.add(k));
+    showToast(`Отмечено просмотренными: ${keys.length}`, 'success');
+    done();
+  };
+  overlay.querySelector('.m-ok').onclick = async () => {
+    const ok = await copyText(text);
+    showToast(ok ? 'Ссылки скопированы в буфер обмена' : 'Не удалось скопировать — выделите текст вручную', ok ? 'success' : 'warning');
+  };
+  overlay.addEventListener('click', e => { if (e.target === overlay) done(); });
+  document.body.appendChild(overlay);
+  const ta = overlay.querySelector('textarea');
+  if (ta) { ta.focus(); ta.select(); }
+}
+
+// Ручная кнопка «Сохранить сейчас» — тот же путь, что и автосохранение,
+// только сразу и с отчётом, сколько ячеек записали.
+async function persistReviewedMarks() {
+  const btn = document.getElementById('bulk-persist-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Записываю…'; }
+  try {
+    const d = await autoPersistReviewed(true);
+    if (!d) { showToast('Не удалось записать отметки — попробуйте ещё раз', 'error'); return; }
+    const extra = d.skipped ? ` · без колонки «Просмотрено»: ${d.skipped}` : '';
+    const scope = { raw: 'сырые (RAW)', processed: 'обработанные', all: 'RAW + обработанные' }[_resultsView] || _resultsView;
+    showToast(`Отметки записаны в ${scope}: ${d.updated} ячеек, ${d.files} ${pluralFiles(d.files)}${extra}`, 'success');
+    if (d.errors && d.errors.length) {
+      showToast(`Не удалось записать ${d.errors.length} ${pluralFiles(d.errors.length)}: ${d.errors[0].file}`, 'error');
+    }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '💾 Сохранить сейчас'; }
+  }
+}
+
+// ── File browser («История файлов») ─────────────────────────
+function onFilesSearchInput() {
+  clearTimeout(filesSearchTimer);
+  filesSearchTimer = setTimeout(() => {
+    const el = document.getElementById('files-search');
+    filesFilter = (el ? el.value : '').trim().toLowerCase();
+    renderFiles();
+  }, 300);
+}
+
+async function loadFilesPanel(force) {
+  if (filesLoaded && !force) { renderFiles(); return; }
+  const box = document.getElementById('history-raw');
+  if (box && !filesLoaded) box.innerHTML = '<div class="no-data">Загрузка…</div>';
+  try {
+    const d = await fetch('/files/list').then(r => r.json());
+    filesData = { raw: d.raw || [], processed: d.processed || [], archive: d.archive || [] };
+    filesLoaded = true;
+    // Drop selections for files that no longer exist anywhere.
+    const alive = new Set([...filesData.raw, ...filesData.processed, ...filesData.archive].map(it => it.path));
+    _selectedFiles = new Set([..._selectedFiles].filter(p => alive.has(p)));
+    updateBulkDeleteBtn();
+    renderFiles();
+  } catch (e) {
+    ['raw', 'processed', 'archive'].forEach(s => {
+      const el = document.getElementById('history-' + s);
+      if (el) el.innerHTML = '<div class="no-data">Не удалось загрузить список файлов. Нажмите «Обновить».</div>';
+    });
+    showToast('Ошибка загрузки списка файлов', 'error');
+  }
+}
+
+function fileCardHTML(section, it) {
+  const meta = it.error
+    ? `⚠ ${it.error}`
+    : `${it.records} ${pluralRecords(it.records)} • ${fmtBytes(it.size)} • ${it.modified}`;
+  const icon = ICONS[it.ext] || '📁';
+  // Архивные файлы не архивируем повторно, но даём вернуть на место.
+  const archiveBtn = section === 'archive'
+    ? `<button class="file-btn" data-act="restore" data-path="${escapeHtml(it.path)}" title="Вернуть файл в рабочую папку">↩</button>`
+    : `<button class="file-btn" data-act="archive" data-path="${escapeHtml(it.path)}" title="Убрать в архив (файл можно вернуть)">📦</button>`;
+  return `
+    <div class="file-card">
+      <div class="file-info">
+        <input type="checkbox" class="file-cb" data-path="${escapeHtml(it.path)}"
+          ${_selectedFiles.has(it.path) ? 'checked' : ''}
+          onchange="onFileSelect(this)" title="Выбрать для массового удаления">
+        <span class="file-icon">${icon}</span>
+        <div class="file-text">
+          <div class="file-name" title="${escapeHtml(it.path)}">${escapeHtml(it.name)}</div>
+          <div class="file-meta">${escapeHtml(meta)}</div>
+        </div>
+      </div>
+      <div class="file-actions">
+        <button class="file-btn" data-act="open" data-path="${escapeHtml(it.path)}" title="Открыть в таблице">📊</button>
+        <button class="file-btn" data-act="download" data-path="${escapeHtml(it.path)}" title="Скачать">📥</button>
+        ${archiveBtn}
+        <button class="file-btn danger" data-act="delete" data-path="${escapeHtml(it.path)}" title="Удалить навсегда">🗑</button>
+      </div>
+    </div>`;
+}
+
+// ── Bulk selection («Удалить выбранные») ─────────────────────
+let _selectedFiles = new Set();
+
+function onFileSelect(cb) {
+  if (cb.checked) _selectedFiles.add(cb.dataset.path);
+  else _selectedFiles.delete(cb.dataset.path);
+  updateBulkDeleteBtn();
+}
+
+function updateBulkDeleteBtn() {
+  const btn = document.getElementById('btn-files-bulk-delete');
+  const n = document.getElementById('files-bulk-n');
+  if (n) n.textContent = _selectedFiles.size;
+  if (btn) btn.hidden = _selectedFiles.size === 0;
+}
+
+async function bulkDeleteSelected() {
+  const paths = [..._selectedFiles];
+  if (!paths.length) return;
+  const ok = await uiConfirm(
+    `Будет безвозвратно удалено файлов: ${paths.length}. Отменить это нельзя.`,
+    'Удалить выбранные файлы?',
+    `Удалить (${paths.length})`
+  );
+  if (!ok) return;
+  try {
+    const d = await postJSON('/files/action', { paths, action: 'delete', confirm: true });
+    const errs = (d.errors || []).length;
+    showToast(`Удалено: ${(d.deleted || []).length}${errs ? ` · ошибок: ${errs}` : ''}`, errs ? 'warn' : 'success');
+    _selectedFiles.clear();
+    updateBulkDeleteBtn();
+    loadFilesPanel(true);
+    setResultsView(_resultsView);   // открытый файл мог удалиться
+  } catch (e) {
+    showToast('Ошибка массового удаления: ' + e.message, 'error');
+  }
+}
+
+function renderFiles() {
+  const nRaw = (filesData.raw || []).length;
+  const nProc = (filesData.processed || []).length;
+  const nArch = (filesData.archive || []).length;
+  const total = nRaw + nProc + nArch;
+  const cnt = document.getElementById('files-count');
+  if (cnt) {
+    // Colored badges instead of one run-on line: the three sections are
+    // actually distinguishable at a glance.
+    cnt.innerHTML = total
+      ? `<span>${total} ${pluralFiles(total)}</span>
+         <span class="files-badge raw">RAW ${nRaw}</span>
+         <span class="files-badge processed">PROCESSED ${nProc}</span>
+         <span class="files-badge archive">ARCHIVE ${nArch}</span>`
+      : '';
+  }
+  let shown = 0;
+  for (const section of ['raw', 'processed', 'archive']) {
+    const box = document.getElementById('history-' + section);
+    if (!box) continue;
+    const all = filesData[section] || [];
+    const items = filesFilter ? all.filter(it => it.name.toLowerCase().includes(filesFilter)) : all;
+    shown += items.length;
+    if (!items.length) {
+      const hint = filesFilter
+        ? 'Ничего не найдено по фильтру'
+        : (section === 'raw'
+            ? 'Сырых файлов пока нет — запустите сбор данных'
+            : 'Пусто — файлы появятся после обработки');
+      box.innerHTML = `<div class="no-data">${hint}</div>`;
+      continue;
+    }
+    box.innerHTML = items.map(it => fileCardHTML(section, it)).join('');
+  }
+  // «Найдено: X из Y» only while a filter is active — otherwise it is noise.
+  const found = document.getElementById('files-found');
+  if (found) found.textContent = filesFilter ? `Найдено: ${shown} из ${total}` : '';
+}
+
+function openFileInTable(rel) {
+  if (!rel) return;
+  setResultsSubTab('current');
+  const body = document.getElementById('tbl-body');
+  if (body) body.innerHTML = '<tr><td colspan="7" class="no-data">Загрузка…</td></tr>';
+  const seq = ++_resultsReqSeq;      // перебивает незавершённую загрузку общего вида
+  fetch('/results-view?view=' + encodeURIComponent(_resultsView) + '&file=' + encodeURIComponent(rel))
+    .then(r => r.json())
+    .then(d => {
+      if (seq !== _resultsReqSeq) return;
+      if (d.error) throw new Error(d.error);
+      const recs = d.records || [];
+      activeCity = '';
+      _lastCities = [];          // вкладки городов для одного файла не нужны
+      currentFile = rel;
+      loadReviewed();
+      // renderTable() перечитывает данные через filterTable → источник
+      // должен быть обновлён до вызова.
+      allResults = recs;
+      renderTable(recs);
+      currentFileNote = ` · файл: ${basenameOf(rel)}`;
+      renderPage();              // перерисовать счётчик с именем файла
+      showToast(`${recs.length} ${pluralRecords(recs.length)} · ${basenameOf(rel)}`, 'success');
+    })
+    .catch(() => {
+      currentFileNote = '';
+      currentFile = '';
+      if (body) body.innerHTML = '<tr><td colspan="7" class="no-data">Файл не найден. Возможно, он был удалён.</td></tr>';
+      showToast('Файл не найден. Обновите список.', 'error');
+    });
+}
+
+function downloadResultsFile(rel) {
+  if (!rel) return;
+  const url = '/download/' + String(rel).split('/').map(encodeURIComponent).join('/');
+  window.location.href = url;
+}
+
+async function archiveResultsFile(rel) {
+  const ok = await uiConfirm(
+    `Файл «${rel}» переедет в output/_archive/ (папка сегодняшнего дня). Оттуда его можно вернуть.`,
+    'Убрать файл в архив?', 'В архив');
+  if (ok) await fileAction(rel, 'archive');
+}
+
+async function restoreResultsFile(rel) {
+  const ok = await uiConfirm(
+    `Файл «${rel}» вернётся туда, откуда был убран (RAW или output/processed/excel/).`,
+    'Вернуть файл из архива?', 'Вернуть');
+  if (ok) await fileAction(rel, 'restore');
+}
+
+async function deleteResultsFile(rel) {
+  const ok = await uiConfirm(
+    `Файл «${rel}» будет удалён без возможности восстановления.`,
+    'Удалить файл навсегда?', 'Удалить навсегда');
+  if (ok) await fileAction(rel, 'delete');
+}
+
+async function fileAction(rel, action) {
+  try {
+    const d = await postJSON('/files/action', {
+      path: rel, action, confirm: action === 'delete',
+    });
+    const done = {
+      archive: `Файл в архиве: ${d.moved_to}`,
+      restore: `Файл возвращён: ${d.restored_to}`,
+      delete: 'Файл удалён',
+    }[action] || 'Готово';
+    showToast(done, 'success');
+    loadFilesPanel(true);
+    // Если в таблице был открыт именно этот файл — сбрасываем на общий вид
+    if (currentFile === rel) setResultsView(_resultsView);
+  } catch (e) {
+    showToast('Ошибка: ' + e.message, 'error');
+  }
+}
+
+// ── Init of the results panel ───────────────────────────────
+function initResultsPanel() {
+  let sub = 'current';
+  try { if (localStorage.getItem(SUBTAB_KEY) === 'history') sub = 'history'; } catch (e) {}
+  try { activeCity = localStorage.getItem(CITY_TAB_KEY) || ''; } catch (e) { activeCity = ''; }
+  try { if (localStorage.getItem(SCOPE_KEY) === 'all') _resultsScope = 'all'; } catch (e) {}
+  updateScopeButton();
+  try {
+    if (localStorage.getItem(BULK_OPEN_KEY) === '0') {
+      const body = document.getElementById('bulk-body');
+      const arrow = document.getElementById('bulk-collapse');
+      if (body) body.hidden = true;
+      if (arrow) arrow.textContent = '▸';
+    }
+  } catch (e) {}
+
+  const sel = document.getElementById('bulk-social');
+  if (sel) [...sel.options].forEach(o => { o.dataset.base = o.textContent; });
+
+  // File actions via delegation — paths are never interpolated into JS code.
+  const hist = document.getElementById('rs-history');
+  if (hist) hist.addEventListener('click', e => {
+    const btn = e.target.closest('.file-btn');
+    if (!btn) return;
+    const rel = btn.dataset.path || '';
+    const act = btn.dataset.act;
+    if (!rel) return;
+    if (act === 'open') openFileInTable(rel);
+    else if (act === 'download') downloadResultsFile(rel);
+    else if (act === 'archive') archiveResultsFile(rel);
+    else if (act === 'restore') restoreResultsFile(rel);
+    else if (act === 'delete') deleteResultsFile(rel);
+  });
+
+  setResultsSubTab(sub);
+  updateBulkStats();
 }
 
 // ═══════════════════════════════════════════
 //  Export filtered rows
 // ═══════════════════════════════════════════
-function exportFiltered(fmt) {
+async function exportFiltered(fmt) {
   if (!filteredRows.length) return;
+  // Выгрузка должна нести актуальные отметки, а не те, что были до батча.
+  await autoPersistReviewed(true);
   fetch('/export-filtered', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
@@ -1484,7 +3626,6 @@ function initMap() {
       <div style="min-width:180px;max-width:240px;font-family:sans-serif">
          <b style="font-size:13px">${escapeHtml(r.name||'')}</b>
          ${r.category ? `<div style="color:#888;font-size:11px">${escapeHtml(r.category)}</div>` : ''}
-         ${r.rating   ? `<div style="color:#f5a623">★ ${escapeHtml(r.rating)}${r.reviews ? ' · '+escapeHtml(r.reviews)+' отз.' : ''}</div>` : ''}
          ${r.address  ? `<div style="font-size:11px">📍 ${escapeHtml(r.address)}</div>` : ''}
          ${r.phone    ? `<div style="font-size:11px">📞 ${escapeHtml(r.phone)}</div>`   : ''}
         ${socials    ? `<div style="margin-top:5px">${socials}</div>`       : ''}          ${r.twogis_url ? `<div style="margin-top:6px"><a href="${escapeHtml(safeUrl(r.twogis_url))}" target="_blank" rel="noopener noreferrer" style="font-size:11px;color:#0d7d4d">Открыть в 2ГИС ↗</a></div>` : ''}
@@ -1514,10 +3655,9 @@ function renderDefaultStats() {
     <div class="stat-cards">
       <div class="stat-card"><div class="num">0</div><div class="lbl">Всего найдено</div></div>
       <div class="stat-card"><div class="num">0</div><div class="lbl">С соцсетями</div></div>
-      <div class="stat-card"><div class="num">0</div><div class="lbl">Через taplink</div></div>
-      <div class="stat-card"><div class="num">0</div><div class="lbl">С рейтингом</div></div>
       <div class="stat-card"><div class="num">—</div><div class="lbl">Время</div></div>
     </div>
+    <div id="quota-slot"></div>
     <div class="stat-section">
       <h3>По соцсетям</h3>
       <div class="no-data" style="padding:18px 12px">Данные появятся после запуска поиска</div>
@@ -1526,21 +3666,69 @@ function renderDefaultStats() {
       <h3>Топ категорий</h3>
       <div class="no-data" style="padding:18px 12px">Данные появятся после запуска поиска</div>
     </div>`;
+  // 2GIS quota card (if tokens were spent in this process) — idempotent.
+  renderQuotaCard();
+}
+
+// ── 2GIS Places API quota card ─────────────────────────────
+// Free-tier cap = 1000 billed requests per CALENDAR MONTH per key.
+// 2GIS has no live-balance endpoint, so "spent" is our own persistent
+// counter (output/.2gis_quota.json + this run); "left" = cap − spent.
+// The counter survives app restarts and resets each month.
+function quotaCardHtml() {
+  const tq = _twogisQuotaLive;
+  if (tq <= 0) return '';
+  const cap = 1000, pct = Math.min(100, Math.round(tq / cap * 100));
+  const cls = pct >= 95 ? 'crit' : pct >= 85 ? 'warn' : '';
+  const orgs = tq * 10;
+  const left = Math.max(0, cap - tq);
+  return `
+  <div class="stat-section">
+    <div class="stat-city-card quota-card ${cls}" style="max-width:420px">
+      <h4>🧮 Токены 2GIS Places API</h4>
+      <div class="stat-mini-row"><span>Израсходовано за месяц</span><span><b>${tq}</b> / ${cap}</span></div>
+      <div class="quota-track"><div class="quota-fill" style="width:${pct}%"></div></div>
+      <div class="stat-mini-row"><span>Осталось до конца месяца</span><span style="font-weight:700">${left} запросов (≈ ${(left * 10).toLocaleString('ru-RU')} организаций)</span></div>
+      <div class="quota-sub">Счётчик приложения: ≈ ${orgs.toLocaleString('ru-RU')} организаций · 1 запрос ≈ 10 организаций · 2GIS не показывает точный остаток — платный лимит видно только в Platform Manager (dev.2gis.ru) с задержкой ~1 день</div>
+    </div>
+  </div>`;
+}
+
+function renderQuotaCard() {
+  const slot = document.getElementById('quota-slot');
+  if (!slot) return;              // stats tab not rendered yet — renderStats will pick it up
+  slot.innerHTML = quotaCardHtml();
+}
+
+// Shared bar renderer for the stats sections. Bars are normalized against
+// the MAXIMUM value (not the record total), so the largest bar is always
+// full width and small values stay comparable. Tiny counts (<3) get a
+// minimal 5px bar so they stay visible; the exact number is in the tail.
+function barRows(rows) {
+  if (!rows || !rows.length) return '';
+  const max = Math.max(...rows.map(r => r.count)) || 1;
+  return rows.map(r => {
+    const pct = Math.max(Math.round(r.count / max * 100), 1);
+    const min = r.count < 3 ? 5 : 0;          // px floor for tiny values
+    const style = `width:${pct}%;${min ? `min-width:${min}px;` : ''}background:${r.color}`;
+    return `
+        <div class="bar-row">
+          <div class="bar-lbl" title="${escapeHtml(r.label)}">${escapeHtml(r.label)}</div>
+          <div class="bar-track"><div class="bar-fill" style="${style}"></div></div>
+          <div class="bar-val">${r.count}</div>
+        </div>`;
+  }).join('');
 }
 
 function renderStats(data, elapsed, skippedCities) {
   if (!data.length) return;
   const total  = data.length;
   const withSo = data.filter(r => Object.keys(SOCIALS).some(p => r[p])).length;
-  const taplink= data.filter(r => r.aggregator_url).length;
-  const rated  = data.filter(r => r.rating).length;
   const dur    = elapsed ? (elapsed < 60 ? elapsed.toFixed(0)+'с' : (elapsed/60).toFixed(1)+'м') : '—';
 
   const cards = [
     {num: total,   lbl: 'Всего найдено'},
     {num: withSo,  lbl: 'С соцсетями'},
-    {num: taplink, lbl: 'Через taplink'},
-    {num: rated,   lbl: 'С рейтингом'},
     {num: dur,     lbl: 'Время'},
   ];
 
@@ -1558,7 +3746,6 @@ function renderStats(data, elapsed, skippedCities) {
     const t = c.trim(); if (t) catMap[t] = (catMap[t]||0) + 1;
   }));
   const cats = Object.entries(catMap).sort((a,b)=>b[1]-a[1]).slice(0,10);
-  const maxC = cats[0]?.[1] || 1;
 
   // Per-city breakdown — records carry a city stamp from the backend.
   const byCity = {};
@@ -1607,35 +3794,42 @@ function renderStats(data, elapsed, skippedCities) {
   }
 
   const body = document.getElementById('stats-body');
-  // Fetch live analytics + cache stats
+  // Fetch live analytics + cache stats + 2GIS Places quota
   Promise.all([
     fetch('/analytics').then(r=>r.json()).catch(()=>({})),
-    fetch('/cache/stats').then(r=>r.json()).catch(()=>({}))
-  ]).then(([a, c]) => {
+    fetch('/cache/stats').then(r=>r.json()).catch(()=>({})),
+    fetch('/status').then(r=>r.json()).catch(()=>({}))
+  ]).then(([a, c, st]) => {
+    // Prefer the live value streamed from the child process (progress events);
+    // /status is the fallback (thread mode + past runs in this process).
+    if ((st && st.twogis_quota_used) > _twogisQuotaLive) _twogisQuotaLive = st.twogis_quota_used;
+    const quotaHtml = quotaCardHtml();
     const analyticsHtml = (a && a.total_requests) || (c && c.total) ? `
     <div class="stat-section">
       <h3>⚡ Аналитика</h3>
       <div class="stat-cards">
         ${a.total_requests ? `
-        <div class="stat-card"><div class="num">${a.rps_actual}</div><div class="lbl">RPS (факт.)</div></div>
-        <div class="stat-card"><div class="num">${a.rps_target}</div><div class="lbl">RPS (цель)</div></div>
-        <div class="stat-card"><div class="num">${a.avg_latency}с</div><div class="lbl">Среднее</div></div>
-        <div class="stat-card"><div class="num">${a.p50_latency}с</div><div class="lbl">P50</div></div>
-        <div class="stat-card"><div class="num">${a.p95_latency}с</div><div class="lbl">P95</div></div>
+        <div class="stat-card" title="Фактическая скорость запросов к API (запросов в секунду)"><div class="num">${a.rps_actual}</div><div class="lbl">RPS (факт.)</div></div>
+        <div class="stat-card" title="Целевая скорость запросов — лимит, который мы стараемся не превышать"><div class="num">${a.rps_target}</div><div class="lbl">RPS (цель)</div></div>
+        <div class="stat-card" title="Средняя задержка ответа сервера"><div class="num">${a.avg_latency}с</div><div class="lbl">Среднее</div></div>
+        <div class="stat-card" title="Медианная задержка: половина запросов отвечает быстрее этого времени"><div class="num">${a.p50_latency}с</div><div class="lbl">P50</div></div>
+        <div class="stat-card" title="95-й процентиль: 95% запросов отвечают быстрее этого времени (показывает самые медленные ответы)"><div class="num">${a.p95_latency}с</div><div class="lbl">P95</div></div>
         <div class="stat-card"><div class="num">${a.total_requests}</div><div class="lbl">Запросов</div></div>
         <div class="stat-card"><div class="num">${a.errors}</div><div class="lbl">Ошибок</div></div>
         <div class="stat-card"><div class="num">${a.rate_limits}</div><div class="lbl">429</div></div>
         ` : ''}
         ${c.valid ? `
-        <div class="stat-card"><div class="num">${c.valid}</div><div class="lbl">Кэш (активных)</div></div>
-        <div class="stat-card"><div class="num">${c.expired}</div><div class="lbl">Кэш (устаревших)</div></div>
+        <div class="stat-card" title="Свежие записи кэша — повторные запросы берутся из кэша мгновенно и не тратят лимит API"><div class="num">${c.valid}</div><div class="lbl">Кэш (активных)</div></div>
+        <div class="stat-card" title="Устаревшие записи кэша — данные старше 7 дней, будут перезапрошены"><div class="num">${c.expired}</div><div class="lbl">Кэш (устаревших)</div></div>
         ` : ''}
       </div>
     </div>` : '';
     body.innerHTML = `
     <div class="stat-cards">${cards.map(c =>
-      `<div class="stat-card"><div class="num">${c.num}</div><div class="lbl">${c.lbl}</div></div>`
+      `<div class="stat-card"${c.tip ? ` title="${escapeHtml(c.tip)}"` : ''}><div class="num">${c.num}</div><div class="lbl">${c.lbl}</div></div>`
     ).join('')}</div>
+
+    ${quotaHtml}
 
     ${analyticsHtml}
 
@@ -1646,23 +3840,13 @@ function renderStats(data, elapsed, skippedCities) {
     ${socialCounts.length ? `
     <div class="stat-section">
       <h3>По соцсетям</h3>
-      ${socialCounts.map(s => `
-        <div class="bar-row">
-          <div class="bar-lbl">${s.name}</div>
-          <div class="bar-track"><div class="bar-fill" style="width:${Math.round(s.count/total*100)}%;background:${s.color}"></div></div>
-          <div class="bar-val">${s.count}</div>
-        </div>`).join('')}
+      ${barRows(socialCounts.map(s => ({label: s.name, count: s.count, color: s.color})))}
     </div>` : ''}
 
     ${cats.length ? `
     <div class="stat-section">
       <h3>Топ категорий</h3>
-      ${cats.map(([name, cnt], i) => `
-        <div class="bar-row">
-          <div class="bar-lbl" title="${escapeHtml(name)}">${escapeHtml(name)}</div>
-          <div class="bar-track"><div class="bar-fill" style="width:${Math.round(cnt/maxC*100)}%;background:${CAT_COLORS[i%CAT_COLORS.length]}"></div></div>
-          <div class="bar-val">${cnt}</div>
-        </div>`).join('')}
+      ${barRows(cats.map(([name, cnt], i) => ({label: name, count: cnt, color: CAT_COLORS[i%CAT_COLORS.length]})))}
     </div>` : ''}
   `;
   }).catch(()=>{});
@@ -1677,7 +3861,9 @@ const PRESETS_KEY  = 'yp_presets_v1';
 function getCurrentSettings() {
   return {
     queries:  document.getElementById('f-queries').value,
-    // city intentionally NOT saved to localStorage — start fresh each time
+    // Полный пресет: города и всё, что видно в форме.
+    cities:   [...selectedCities],
+    source:   dataSource,
     excel:    document.getElementById('f-excel').checked,
     json:     document.getElementById('f-json').checked,
     csv:      document.getElementById('f-csv').checked,
@@ -1686,46 +3872,93 @@ function getCurrentSettings() {
     workers:  document.getElementById('f-workers').value,
     queryWorkers: document.getElementById('f-query-workers').value,
     maxCandidates: document.getElementById('f-max-candidates').value,
-    rating:   document.getElementById('f-rating').value,
-    reviews:  document.getElementById('f-reviews').value,
-    grid:     document.getElementById('f-grid').checked,
+    grid:     _gridMode === 'manual',
     grad:     document.getElementById('f-grad').value,
     gstep:    document.getElementById('f-gstep').value,
-    validate: document.getElementById('f-validate').checked,
-    resume:   document.getElementById('f-resume').checked,
     collapseChains: document.getElementById('f-collapse-chains').checked,
-    minContact:     document.getElementById('f-min-contact').checked,
+    rawMode:  (document.getElementById('f-raw-mode')||{}).value || 'keep',
+    chainKey: (document.getElementById('f-chain-key')||{}).value || 'name_city',
     socialMode: socialMode,
+    // Tiles only exist in «С соцсетями» — the interface clears them otherwise.
+    requiredSocials: socialMode === 'with_socials' ? [...requiredSocials] : [],
+    vkCheck:  !!(document.getElementById('f-vk-check')||{}).checked,
+    vkMode:   vkMode,
+    vkMaxDays: (document.getElementById('f-vk-max-days')||{}).value || 0,
+    vkMinFollowers: (document.getElementById('f-vk-min-followers')||{}).value || 0,
+    sortScore: (document.getElementById('f-sort-score')||{}).checked !== false,
+    minScore: (document.getElementById('f-min-score')||{}).value || 0,
     parseMode: parseMode,
+    continueMode: (document.getElementById('f-continue')||{}).checked || false,
+    continueLimit: parseInt((document.getElementById('f-continue-limit')||{}).value, 10) || 5,
      // API keys are entered for the current run only and are never persisted.
   };
 }
 
 function applySettings(s) {
   if (!s) return;
-  if (s.queries  != null) document.getElementById('f-queries').value   = s.queries;
-  // Cities are intentionally NOT restored from localStorage.
-  // User should select them fresh each time.
-  // (renderCityTags is called by initCitySelect on page load)
+  if (s.queries  != null) {
+    document.getElementById('f-queries').value = s.queries;
+    updateQueriesCounter();
+    updateClearAllBtn();
+    updateBasicSummary();
+    updateRunBtnState();
+  }
+  // Cities: presets restore them, localStorage keeps the old behaviour
+  // (fresh start each reload) — the caller passes {cities:null} there.
+  if (s.cities != null && Array.isArray(s.cities)) {
+    selectedCities = s.cities.filter(c => typeof c === 'string' && c.trim()).slice(0, 50);
+    renderCityTags();
+  }
+  if (s.source === 'yandex' || s.source === '2gis') setDataSource(s.source);
   if (s.excel    != null) { document.getElementById('f-excel').checked = s.excel;   document.getElementById('f-excel').closest('.chk').classList.toggle('on', s.excel); }
   if (s.json     != null) { document.getElementById('f-json').checked  = s.json;    document.getElementById('f-json').closest('.chk').classList.toggle('on', s.json); }
   if (s.csv      != null) { document.getElementById('f-csv').checked   = s.csv;     document.getElementById('f-csv').closest('.chk').classList.toggle('on', s.csv); }
   if (s.map      != null) { document.getElementById('f-map').checked   = s.map;     document.getElementById('f-map').closest('.chk').classList.toggle('on', s.map); }
   if (s.pages    != null) document.getElementById('f-pages').value    = s.pages;
+  updatePagesCapNote();
   if (s.workers  != null) document.getElementById('f-workers').value  = s.workers;
   if (s.queryWorkers != null) document.getElementById('f-query-workers').value = s.queryWorkers;
   if (s.maxCandidates != null) document.getElementById('f-max-candidates').value = s.maxCandidates;
-  if (s.rating   != null) document.getElementById('f-rating').value   = s.rating;
-  if (s.reviews  != null) document.getElementById('f-reviews').value  = s.reviews;
-  if (s.grid     != null) { document.getElementById('f-grid').checked = s.grid; toggleGrid(); document.getElementById('grid-lbl').classList.toggle('on', s.grid); }
+  if (s.vkCheck != null) { const cb = document.getElementById('f-vk-check'); if (cb) { cb.checked = !!s.vkCheck; onVkCheckChange(); } }
+  if (s.vkMode) setVkMode(s.vkMode);
+  if (s.vkMaxDays != null) { const el = document.getElementById('f-vk-max-days'); if (el) el.value = s.vkMaxDays; }
+  if (s.vkMinFollowers != null) { const el = document.getElementById('f-vk-min-followers'); if (el) el.value = s.vkMinFollowers; }
+  if (s.sortScore != null) { const cb = document.getElementById('f-sort-score'); if (cb) cb.checked = !!s.sortScore; }
+  if (s.minScore != null) { const el = document.getElementById('f-min-score'); if (el) { el.value = s.minScore; onMinScoreInput(); } }
+  if (s.chainKey != null) { const el = document.getElementById('f-chain-key'); if (el) el.value = s.chainKey; }
+  if (s.grid     != null) setGridMode(s.grid ? 'manual' : 'whole');
   if (s.grad     != null) document.getElementById('f-grad').value    = s.grad;
   if (s.gstep    != null) document.getElementById('f-gstep').value   = s.gstep;
-  if (s.validate != null) { document.getElementById('f-validate').checked = s.validate; document.getElementById('f-validate').closest('.chk').classList.toggle('on', s.validate); }
-  if (s.resume != null) { document.getElementById('f-resume').checked = s.resume; document.getElementById('f-resume').closest('.chk').classList.toggle('on', s.resume); }
+  if (s.grad != null || s.gstep != null) onGridSlider();
   if (s.collapseChains != null) { document.getElementById('f-collapse-chains').checked = s.collapseChains; document.getElementById('f-collapse-chains').closest('.chk').classList.toggle('on', s.collapseChains); }
-  if (s.minContact != null) { document.getElementById('f-min-contact').checked = s.minContact; document.getElementById('f-min-contact').closest('.chk').classList.toggle('on', s.minContact); }
+  if (s.rawMode != null) { const rm = document.getElementById('f-raw-mode'); if (rm) rm.value = s.rawMode; }
   if (s.socialMode) setSocialMode(s.socialMode);
+  // Restore the tiles after the mode radio — only «С соцсетами» keeps them.
+  if (s.socialMode === 'with_socials' && Array.isArray(s.requiredSocials)) {
+    requiredSocials.clear();
+    document.querySelectorAll('#social-net-chk-grid .soc-tile').forEach(t => {
+      t.classList.remove('on');
+      const cb = t.querySelector('input[type=checkbox]');
+      if (cb) cb.checked = false;
+    });
+    s.requiredSocials.forEach(key => {
+      // data-soc-key lives on the input INSIDE the tile label
+      const inp = document.querySelector('#social-net-chk-grid input[data-soc-key="' + key + '"]');
+      const tile = inp ? inp.closest('.soc-tile') : null;
+      if (tile) toggleRequiredSocial(key, tile);
+    });
+    updateSocialFilterHint();
+  }
   if (s.parseMode) setParseMode(s.parseMode);
+  if (s.continueMode != null) {
+    const cb = document.getElementById('f-continue');
+    if (cb) cb.checked = !!s.continueMode;
+    onContinueToggle();
+  }
+  if (s.continueLimit != null) {
+    const lim = document.getElementById('f-continue-limit');
+    if (lim) lim.value = s.continueLimit;
+  }
    // Do not restore API keys from browser storage.
 }
 
@@ -1745,38 +3978,216 @@ function getPresets() {
 function savePresets(p) { localStorage.setItem(PRESETS_KEY, JSON.stringify(p)); }
 
 function renderPresets() {
-  const bar    = document.getElementById('preset-bar');
+  // Presets live in a static block at the TOP of the sidebar (under API
+  // keys) as a dropdown — discoverable before any accordion is opened.
+  const wrap = document.getElementById('preset-dd-wrap');
+  const list = document.getElementById('preset-dd-list');
+  const hint = document.getElementById('preset-block-hint');
   const presets = getPresets();
-  // Keep the save button, rebuild chips
-  bar.innerHTML = `<button class="btn-sm" onclick="savePreset()">💾 Сохранить</button>`;
-  presets.forEach((p, i) => {
-    const chip = document.createElement('span');
-    chip.className = 'preset-chip';
-    chip.innerHTML = `${p.name}<span class="del" onclick="event.stopPropagation();deletePreset(${i})">✕</span>`;
-    chip.onclick = () => loadPreset(i);
-    bar.appendChild(chip);
+  if (!wrap || !list) return;
+  if (!presets.length) {
+    wrap.hidden = true;
+    list.innerHTML = '';                      // drop stale items from the last render
+    if (hint) hint.textContent = 'Пресетов пока нет — настройте поиск и сохраните его кнопкой «+ Новый». Хранятся в этом браузере.';
+    return;
+  }
+  if (hint) hint.textContent = 'Выберите пресет — все настройки подставятся автоматически. Хранятся в этом браузере.';
+  wrap.hidden = false;
+  list.innerHTML = presets.map((p, i) => {
+    const safeName = String(p.name).replace(/"/g, '&quot;');
+    return '<div class="preset-dd-item" role="option" tabindex="0" data-i="' + i + '"'
+      + ' title="Применить пресет «' + safeName + '»">'
+      + '<span class="preset-dd-name">' + safeName + '</span>'
+      + '<span class="preset-dd-actions">'
+      + '<button type="button" class="preset-dd-edit" title="Перезаписать пресет текущими настройками формы" aria-label="Редактировать пресет" data-edit="' + i + '">✎</button>'
+      + '<button type="button" class="preset-dd-del" title="Удалить пресет" aria-label="Удалить пресет" data-del="' + i + '">✕</button>'
+      + '</span>'
+      + '</div>';
+  }).join('');
+  list.querySelectorAll('.preset-dd-item').forEach(item => {
+    item.addEventListener('click', e => {
+      if (e.target.closest('.preset-dd-del') || e.target.closest('.preset-dd-edit')) return;   // manage, not apply
+      closePresetDropdown();
+      loadPreset(+item.dataset.i);
+    });
+    item.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); closePresetDropdown(); loadPreset(+item.dataset.i); }
+    });
+  });
+  list.querySelectorAll('.preset-dd-edit').forEach(btn => {
+    btn.addEventListener('click', async e => {
+      e.stopPropagation();
+      const idx = +btn.dataset.edit;
+      const preset = getPresets()[idx];
+      if (!preset) return;
+      if (!(await uiConfirm('Перезаписать пресет «' + preset.name + '» текущими настройками формы?', 'Редактировать пресет', 'Перезаписать', false))) return;
+      const presets = getPresets();
+      presets[idx] = {name: preset.name, settings: getCurrentSettings()};
+      savePresets(presets);
+      markAppliedPreset(preset.name);
+      showToast('Пресет «' + preset.name + '» обновлён', 'success');
+    });
+  });
+  list.querySelectorAll('.preset-dd-del').forEach(btn => {
+    btn.addEventListener('click', async e => {
+      e.stopPropagation();
+      const idx = +btn.dataset.del;
+      const preset = getPresets()[idx];
+      if (!preset) return;
+      if (!(await uiConfirm('Удалить пресет «' + preset.name + '»?', 'Удалить пресет', 'Удалить'))) return;
+      deletePreset(idx);
+      showToast('Пресет «' + preset.name + '» удалён', 'success');
+    });
   });
 }
 
-function savePreset() {
-  const name = prompt('Название пресета:');
-  if (!name) return;
-  const presets = getPresets();
-  presets.unshift({name, settings: getCurrentSettings()});
-  savePresets(presets.slice(0, 10));
-  renderPresets();
+function togglePresetDropdown(force) {
+  const btn  = document.getElementById('preset-dd-btn');
+  const list = document.getElementById('preset-dd-list');
+  if (!btn || !list) return;
+  const open = typeof force === 'boolean' ? force : list.hidden;
+  list.hidden = !open;
+  btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  btn.classList.toggle('open', open);
 }
+
+function closePresetDropdown() {
+  togglePresetDropdown(false);
+}
+
+// Outside click + Escape close the dropdown.
+(function initPresetDropdown() {
+  const btn  = document.getElementById('preset-dd-btn');
+  const wrap = document.getElementById('preset-dd-wrap');
+  if (btn) btn.addEventListener('click', () => togglePresetDropdown());
+  if (wrap) {
+    document.addEventListener('click', e => {
+      if (!wrap.hidden && !wrap.contains(e.target)) closePresetDropdown();
+    });
+  }
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && wrap && !wrap.hidden) closePresetDropdown();
+  });
+})();
+
+// Show the applied preset's name in the closed dropdown.
+function markAppliedPreset(name) {
+  const cur = document.getElementById('preset-dd-current');
+  if (cur) cur.textContent = name || 'Выберите пресет…';
+  const btn = document.getElementById('preset-dd-btn');
+  if (btn) btn.classList.toggle('has-selection', !!name);
+}
+
+// ── In-app «save preset» modal (replaces the browser prompt()) ──────
+// Same .ui-modal styling as uiConfirm; validates the name, shows how many
+// of the 10 preset slots are used, and supports Enter/Esc.
+function openPresetModal() {
+  const existing = getPresets();
+  const overlay = document.createElement('div');
+  overlay.className = 'ui-modal-overlay';
+  overlay.innerHTML = `
+    <div class="ui-modal preset-modal">
+      <h3>Сохранить пресет</h3>
+      <p>В текущий пресет войдут запросы, города, источник, форматы и все параметры сбора.</p>
+      <input type="text" id="preset-name-input" maxlength="40" placeholder="Например: Кафе Уфа, 2GIS" autocomplete="off">
+      <div class="preset-modal-meta">Сохранённых пресетов: ${existing.length} из 10</div>
+      <div class="ui-modal-btns">
+        <button type="button" class="m-cancel">Отмена</button>
+        <button type="button" class="m-ok">💾 Сохранить</button>
+      </div>
+    </div>`;
+  const done = val => { overlay.remove(); document.removeEventListener('keydown', onKey, true); if (val) finishSavePreset(val); };
+  const onKey = e => {
+    if (e.key === 'Escape') { e.stopPropagation(); done(false); }
+    else if (e.key === 'Enter' && input.value.trim()) { e.stopPropagation(); done(input.value.trim()); }
+  };
+  const finishSavePreset = name => {
+    const presets = getPresets();
+    if (presets.some(p => p.name === name)) {
+      showToast('Пресет «' + name + '» уже существует — выберите другое имя', 'error');
+      openPresetModal();                       // reopen pre-filled
+      const again = document.getElementById('preset-name-input');
+      if (again) again.value = name;
+      return;
+    }
+    presets.unshift({name, settings: getCurrentSettings()});
+    savePresets(presets.slice(0, 10));
+    renderPresets();
+    showToast('Пресет «' + name + '» сохранён — примените его из блока «Мои пресеты» наверху', 'success');
+  };
+  const input = overlay.querySelector('#preset-name-input');
+  overlay.querySelector('.m-cancel').onclick = () => done(false);
+  overlay.querySelector('.m-ok').onclick = () => {
+    const name = input.value.trim();
+    if (!name) { input.classList.add('field-invalid'); input.focus(); return; }
+    done(name);
+  };
+  overlay.addEventListener('click', e => { if (e.target === overlay) done(false); });
+  document.addEventListener('keydown', onKey, true);
+  document.body.appendChild(overlay);
+  input.focus();
+}
+
+// ── Grid magic-wand listener ─────────────────────────────────
+// stopPropagation keeps the click from bubbling into any accordion/section
+// handler (a click here used to collapse the whole «Глубина поиска» block).
+(function initGridWand() {
+  const wand = document.getElementById('grid-wand-btn');
+  if (!wand) return;
+  wand.addEventListener('click', e => {
+    e.stopPropagation();
+    try { gridAutoTune(); }
+    catch (err) { console.error('gridAutoTune failed:', err); }
+  });
+})();
+
+// Kept as an alias: older presets chips / docs referenced savePreset().
+function savePreset() { openPresetModal(); }
 
 function loadPreset(i) {
   const p = getPresets()[i];
-  if (p) applySettings(p.settings);
+  if (p) {
+    applySettings(p.settings);
+    markAppliedPreset(p.name);
+    showToast('Пресет «' + p.name + '» применён — все настройки подставлены', 'success');
+  }
 }
 
 function deletePreset(i) {
   const p = getPresets();
+  const deletedName = p[i] ? p[i].name : null;
   p.splice(i, 1);
   savePresets(p);
   renderPresets();
+  if (deletedName) {
+    const cur = document.getElementById('preset-dd-current');
+    if (cur && cur.textContent === deletedName) markAppliedPreset(null);
+  }
+}
+
+// ── Reset the whole form to factory defaults ─────────────────
+// Mirrors the HTML defaults: opposite of applySettings. Also clears the
+// «applied preset» highlight — after a reset no preset is active.
+const FORM_DEFAULTS = {
+  queries: '', source: 'yandex', excel: true, json: true, csv: false, map: false,
+  pages: 1, workers: 20, queryWorkers: 2, maxCandidates: 200,
+  grid: false, grad: 20, gstep: 5,
+  validate: false, resume: false, collapseChains: false, rawMode: 'keep', chainKey: 'name_city',
+  socialMode: 'all', requiredSocials: [], fetchSocials: true, parseMode: 'without_website',
+  vkCheck: false, vkMode: 'all', vkMaxDays: 0, vkMinFollowers: 0,
+  sortScore: true, minScore: 0,
+  continueMode: false, continueLimit: 5,
+};
+
+function resetToDefaults() {
+  applySettings({...FORM_DEFAULTS, cities: []});
+  markAppliedPreset(null);
+  saveSettings();                 // keep localStorage in sync with the reset
+  updateQueriesCounter();
+  updateClearAllBtn();
+  updateBasicSummary();
+  updateRunBtnState();
+  showToast('Настройки сброшены к значениям по умолчанию', 'success');
 }
 
 // ═══════════════════════════════════════════
@@ -1878,28 +4289,9 @@ function clearSocialFilters() {
   filterTable();
 }
 
-// ═══════════════════════════════════════════
-//  Deduplication
-// ═══════════════════════════════════════════
-function deduplicateResults() {
-  const before = allResults.length;
-  const seen = new Set();
-  allResults = allResults.filter(r => {
-    const key = r.yandex_maps_url || r.twogis_url || (r.name + '|' + r.address);
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-  const removed = before - allResults.length;
-  if (removed === 0) {
-    appendLog('info', '  Дублей не найдено.');
-  } else {
-    appendLog('ok', `  Удалено ${removed} дубл${removed === 1 ? 'ь' : removed < 5 ? 'я' : 'ей'}. Осталось ${allResults.length}.`);
-    showTab('log');
-    setTimeout(() => showTab('table'), 800);
-  }
-  renderTable(allResults);
-}
+// Кнопки «⊘ Дубли» больше нет: убирать дубли одним кликом без контроля было
+// опасно, а объединение филиалов сетей живёт в аккордеоне «Фильтрация
+// результата» («Объединять филиалы сетей» + правило объединения).
 
 // ═══════════════════════════════════════════
 //  Column visibility
@@ -1912,8 +4304,7 @@ const COLS = [
   { idx: 4, key: 'category', label: 'Категория' },
   { idx: 5, key: 'address',  label: 'Адрес' },
   { idx: 6, key: 'phone',    label: 'Телефон' },
-  { idx: 7, key: 'rating',   label: 'Рейтинг' },
-  { idx: 8, key: 'socials',  label: 'Соцсети' },
+  { idx: 7, key: 'socials',  label: 'Соцсети' },
 ];
 let hiddenCols = new Set();
 
@@ -1983,30 +4374,28 @@ function toggleColDropdown(e) {
 const EXCEL_COLS_KEY = 'yp_excel_cols_v1';
 const EXCEL_COLUMN_DEFS = [
   { f: 'reviewed',       l: '✓ Просмотрено' },
+  { f: 'lead_score',     l: 'Оценка лида' },
   { f: 'name',           l: 'Название' },
   { f: 'category',       l: 'Категория' },
-  { f: 'description',    l: 'Описание' },
   { f: 'address',        l: 'Адрес' },
   { f: 'phone',          l: 'Телефон' },
-  { f: 'hours',          l: 'Часы работы' },
   { f: 'rating',         l: 'Рейтинг' },
-  { f: 'reviews',        l: 'Отзывов' },
+  { f: 'reviews_count',  l: 'Отзывов' },
   { f: 'vk',             l: 'ВКонтакте' },
+  { f: 'vk_activity',    l: 'Активность ВК' },
+  { f: 'vk_followers',   l: 'Подписчики ВК' },
+  { f: 'vk_last_post_days', l: 'Последний пост (дней)' },
   { f: 'instagram',      l: 'Instagram' },
-  { f: 'facebook',       l: 'Facebook' },
   { f: 'telegram',       l: 'Telegram' },
-  { f: 'youtube',        l: 'YouTube' },
-  { f: 'tiktok',         l: 'TikTok' },
-  { f: 'ok',             l: 'Одноклассники' },
-  { f: 'twitter',        l: 'Twitter / X' },
   { f: 'whatsapp',       l: 'WhatsApp' },
-  { f: 'other_socials',  l: 'Другие соцсети' },
-  { f: 'socials_valid',  l: 'Соцсети активны' },
   { f: 'aggregator_url', l: 'Taplink / Linktree' },
+  // Обе колонки-ссылки на карточку: в файл попадает та, что отвечает
+  // источнику запуска (Яндекс или 2ГИС) — пустой колонки-двойника нет.
   { f: 'yandex_maps_url',l: 'Яндекс.Карты' },
   { f: 'twogis_url',     l: '2ГИС' },
   { f: 'query',          l: 'Запрос' },
   { f: 'parsed_at',      l: 'Дата сбора' },
+  { f: 'city',           l: 'Город' },
 ];
 let enabledExcelCols = null;  // null = все столбцы; иначе Set выбранных полей
 
@@ -2071,13 +4460,135 @@ document.addEventListener('click', e => {
 // ═════════════════════════════════════════
 //  API keys → .env (Yandex + 2GIS, one button)
 // ═════════════════════════════════════════
+
+// ── API-keys block (static section at the top of the sidebar) ──
+// Expand/collapse the key form; the status badge lives in the header so the
+// user sees at a glance whether keys are configured without expanding.
+function toggleApiKeys() {
+  const body = document.getElementById('api-keys-body');
+  const hdr  = document.getElementById('api-keys-toggle');
+  if (!body || !hdr) return;
+  body.hidden = !body.hidden;
+  hdr.setAttribute('aria-expanded', body.hidden ? 'false' : 'true');
+  hdr.classList.toggle('open', !body.hidden);
+}
+
+// Badge states — the badge always carries the exact count:
+//   3/3 → ✅ Готово (green) · 1–2/3 → оранжевый с процентом · 0/3 → ❌.
+// All three keys count equally: VK drives the lead score (+20) and the
+// activity filter, so a missing VK token is worth seeing in the ratio.
+function updateApiKeysStatus(yandex, twogis, vk) {
+  const badge = document.getElementById('api-status-badge');
+  if (!badge) return;
+  const total = 3;
+  const have = [yandex, twogis, vk].filter(Boolean).length;
+  let cls, txt, title;
+  if (have === total) {
+    cls = 'ok'; txt = `✅ Готово ${have}/${total}`;
+    title = 'Все API-ключи настроены: Яндекс, 2GIS, VK';
+  } else if (have > 0) {
+    cls = 'warn'; txt = `⚠️ ${have}/${total} ключей`;
+    title = 'Настроены не все API-ключи — часть функций (соцсети, активность ВК, 2GIS) будет недоступна';
+  } else {
+    cls = 'err'; txt = `❌ 0/${total} ключей`;
+    title = 'API-ключи не найдены — поиск может не работать';
+  }
+  badge.className = 'api-badge ' + cls;
+  badge.textContent = txt;
+  badge.title = title;
+  // Per-key dots next to each field label (green = key is set).
+  const dots = { 'key-dot-yandex': yandex, 'key-dot-2gis': twogis, 'key-dot-vk': vk };
+  for (const [id, present] of Object.entries(dots)) {
+    const dot = document.getElementById(id);
+    if (dot) {
+      dot.classList.toggle('on', !!present);
+      dot.title = present ? 'Ключ указан (в .env)' : 'Ключ не указан';
+    }
+  }
+}
+
+// True when a VK token is stored — used by the «Проверять активность ВК»
+// hint so the user learns about the missing token before the run, not after.
+let vkTokenReady = false;
+
+function updateVkCheckHint() {
+  const hint = document.getElementById('vk-check-hint');
+  if (!hint) return;
+  hint.textContent = vkTokenReady
+    ? 'Проверяет подписчиков и дату последнего поста через VK API. Результат кэшируется на 7 дней.'
+    : 'Нужен VK-ключ в блоке «API-ключи» — без него шаг будет пропущен с предупреждением.';
+}
+
+// ═══════════════════════════════════════════
+//  VK activity + lead score (accordion 04)
+// ═══════════════════════════════════════════
+function setVkMode(mode) {
+  vkMode = mode;
+  document.querySelectorAll('.vk-mode-opt').forEach(el => {
+    const radio = el.querySelector('input[type=radio]');
+    const on = !!radio && radio.value === mode;
+    el.classList.toggle('active', on);
+    if (radio) radio.checked = on;
+  });
+}
+
+// The activity controls only matter when the check is on — showing them
+// always made the block look like it filtered something by itself.
+function onVkCheckChange() {
+  const cb = document.getElementById('f-vk-check');
+  const block = document.getElementById('vk-filter-block');
+  if (block) block.classList.toggle('open', !!(cb && cb.checked));
+  updateVkCheckHint();
+}
+
+function onMinScoreInput() {
+  const el = document.getElementById('f-min-score');
+  if (!el) return;
+  const v = +el.value || 0;
+  // Preset buttons mirror the stored threshold; «Все» (0) is the default.
+  document.querySelectorAll('.score-preset').forEach(b =>
+    b.classList.toggle('active', +b.dataset.score === v));
+  const hint = document.getElementById('score-hint');
+  if (!hint) return;
+  const base = v === 0
+    ? 'Порог 0: показывать все записи'
+    : `Порог ${v}: останутся лиды с оценкой ${v} и выше`;
+  const scored = allResults.filter(r => r.lead_score != null && r.lead_score !== '');
+  hint.textContent = scored.length
+    ? `${base} · подходят ${scored.filter(r => (+r.lead_score || 0) >= v).length} из ${scored.length}.`
+    : `${base}. Формула — в «ℹ️ Как считается оценка» ниже.`;
+}
+
+// Preset click → store the threshold in the same hidden field (presets,
+// filterTable and min_lead_score read it) and refresh the feedback line.
+function setMinScore(v) {
+  const el = document.getElementById('f-min-score');
+  if (el) el.value = +v || 0;
+  onMinScoreInput();
+  applyFiltersAndRender();
+}
+
+function applyFiltersAndRender() {
+  curPage = 1;
+  renderPage();
+}
+
+// Ask the backend which keys are present in .env and paint the badge.
+function refreshApiKeysStatus() {
+  fetch('/api-keys/status')
+    .then(r => r.json())
+    .then(j => { vkTokenReady = !!j.vk; updateApiKeysStatus(!!j.yandex, !!j.twogis, !!j.vk); updateVkCheckHint(); })
+    .catch(() => {});
+}
+
 function saveApiKeys() {
   const btn = document.getElementById('btn-save-key');
   const yandexKey = document.getElementById('f-apikey').value.trim();
   const twogisKey = (document.getElementById('f-2gis-key') || {}).value?.trim() || '';
+  const vkToken = (document.getElementById('f-vk-token') || {}).value?.trim() || '';
   const status = document.getElementById('apikey-status');
 
-  if (!yandexKey && !twogisKey) {
+  if (!yandexKey && !twogisKey && !vkToken) {
     showToast('Введите хотя бы один ключ', 'error');
     return;
   }
@@ -2096,7 +4607,7 @@ function saveApiKeys() {
   fetch('/save-api-keys', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({yandex_api_key: yandexKey, twogis_api_key: twogisKey})
+    body: JSON.stringify({yandex_api_key: yandexKey, twogis_api_key: twogisKey, vk_token: vkToken})
   })
   .then(r => r.json().then(d => ({ok: r.ok, data: d})))
   .then(({ok, data}) => {
@@ -2106,6 +4617,15 @@ function saveApiKeys() {
       // Empty fields = «использовать сохранённое в .env» — reflect it
       if (yandexKey) document.getElementById('f-apikey').value = '';
       if (twogisKey) { document.getElementById('f-2gis-key').value = ''; refreshSourceKeyState(); }
+      if (vkToken) document.getElementById('f-vk-token').value = '';
+      refreshApiKeysStatus();
+      // Новый ключ 2GIS — сервер обнулил месячный счётчик токенов: карточка
+      // квоты и лог должны показать это сразу, а не после перезапуска.
+      if (data.quota_reset) {
+        _twogisQuotaLive = 0;
+        renderQuotaCard();
+        appendLog('info', '  🔄 Новый ключ 2GIS — счётчик токенов сброшен');
+      }
     } else {
       showToast(data.error || 'Ошибка сохранения', 'error');
       show(false, data.error || 'Ошибка сохранения');
@@ -2129,16 +4649,26 @@ function saveApiKeys() {
 //  Dark theme
 // ═══════════════════════════════════════════
 const THEME_KEY = 'yp_theme_v1';
+let themeAnimTimer = null;
 
-function applyTheme(dark) {
-  document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+// animate=true только при ручном переключении: короткая плавная смена цветов
+// вместо резкого «щелчка». Первую отрисовку анимировать нельзя — тему ставит
+// мини-скрипт в <head> шаблона ещё до загрузки стилей.
+function applyTheme(dark, animate) {
+  const root = document.documentElement;
+  if (animate) {
+    root.classList.add('theme-anim');
+    if (themeAnimTimer) clearTimeout(themeAnimTimer);
+    themeAnimTimer = setTimeout(() => root.classList.remove('theme-anim'), 260);
+  }
+  root.setAttribute('data-theme', dark ? 'dark' : 'light');
   document.getElementById('btn-theme').textContent = dark ? '☀️' : '🌙';
 }
 
 function toggleTheme() {
   const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
   const next = !isDark;
-  applyTheme(next);
+  applyTheme(next, true);
   localStorage.setItem(THEME_KEY, next ? 'dark' : 'light');
 }
 
@@ -2389,12 +4919,21 @@ function showLogsModal() {
 // re-uses the same check on demand.
 const UPDATE_CHECK_INTERVAL = 30 * 60 * 1000;
 
+// DEV-сборка (config.is_dev_build) не обновляется публичными релизами:
+// сервер отвечает dev:true, баннер и точка обновления не показываются.
+let _devBuild = false;
+
 function checkForUpdates(silent) {
   // Frozen build: /update/status also reports latest version + whether the
   // in-app updater is available. Source runs fall back to /check-version.
   return fetch('/update/status')
     .then(r => r.json())
     .then(data => {
+      if (data.dev) {
+        _devBuild = true;
+        setUpdateDot(false);
+        return { newer: false, dev: true, version: data.current };
+      }
       if (data.newer) {
         showUpdateBanner(data.latest, data.changelog || '',
           data.download_url || 'https://github.com/ScarFace11/Yandex-Buisnes-Parser/releases/latest');
@@ -2409,6 +4948,11 @@ function checkForUpdates(silent) {
       return fetch('/check-version')
         .then(r => r.json())
         .then(data => {
+          if (data.dev) {
+            _devBuild = true;
+            setUpdateDot(false);
+            return { newer: false, dev: true, version: data.current };
+          }
           if (data.newer) {
             showUpdateBanner(data.remote, data.changelog || '', data.download_url || '');
             setUpdateDot(true, data.remote);
@@ -2421,7 +4965,8 @@ function checkForUpdates(silent) {
     })
     .then(res => {
       if (silent) return res;
-      if (res.error) showToast('Не удалось связаться с GitHub — проверьте интернет', 'error');
+      if (res.dev) showToast('DEV-сборка — авто-обновление отключено (только для разработки)', 'info');
+      else if (res.error) showToast('Не удалось связаться с GitHub — проверьте интернет', 'error');
       else if (res.newer) showToast(`Новая версия v${res.version} — обновите через баннер сверху`, 'success');
       else showToast('Вы на последней версии ✓', 'success');
       return res;
@@ -2442,8 +4987,9 @@ function manualUpdateCheck(btn) {
     });
 }
 
-// Periodic background check (silent — banner only, no toasts)
-setInterval(() => checkForUpdates(true), UPDATE_CHECK_INTERVAL);
+// Periodic background check (silent — banner only, no toasts).
+// DEV-сборку не проверяем вовсе: узнав про dev:true, выходим из цикла.
+setInterval(() => { if (!_devBuild) checkForUpdates(true); }, UPDATE_CHECK_INTERVAL);
 
 // ── «Update available» dot on the header button ──
 // Orange dot + pulse while a newer version exists; hidden once the user
@@ -2471,16 +5017,36 @@ function showUpdateBanner(newVer, changelog, url) {
   const existing = document.getElementById('update-banner');
   if (existing) existing.remove();
 
-  const banner = document.createElement('div');
-  banner.id = 'update-banner';
-  banner.innerHTML = `
-    <span class="ub-text">🔄 Доступна новая версия <b>v${newVer}</b>${changelog ? ' — ' + escapeHtml(changelog) : ''}</span>
-    <button class="ub-btn" id="ub-changelog" onclick="showChangelog()" title="Подробнее об изменениях в новой версии">📄 Что нового</button>
-    <button class="ub-btn" id="ub-self-update" onclick="selfUpdate()" title="Скачать и установить прямо из приложения">⬆ Обновить сейчас</button>
-    <a class="ub-btn" href="${url}" target="_blank" rel="noopener noreferrer" title="Страница релизов на GitHub">GitHub ↗</a>
-    <button class="ub-close" onclick="this.parentElement.remove()">✕</button>
-  `;
-  document.body.prepend(banner);
+  // Frozen build: «Обновить сейчас» is the PRIMARY action — it downloads,
+  // installs and restarts inside the app (no GitHub visit needed).
+  // Source run: no in-app updater, so GitHub becomes the primary action.
+  fetch('/update/status').then(r => r.json()).then(st => {
+    // Сам обновляет файлы только Windows-сборка; macOS-бандл и исходники
+    // получают ссылку на релиз (auto_apply=false приходит с сервера).
+    const frozen = !!st.frozen && st.auto_apply !== false;
+    const banner = document.createElement('div');
+    banner.id = 'update-banner';
+    banner.innerHTML = `
+      <span class="ub-text">🔄 Доступна новая версия <b>v${newVer}</b>${changelog ? ' — ' + escapeHtml(changelog) : ''}</span>
+      <button class="ub-btn" id="ub-changelog" onclick="showChangelog()" title="Подробнее об изменениях в новой версии">📄 Что нового</button>
+      ${frozen
+        ? `<button class="ub-btn ub-primary" id="ub-self-update" onclick="selfUpdate()" title="Скачать и установить прямо из приложения — после установки просто обновите страницу">⬆ Обновить сейчас</button>
+           <a class="ub-btn" href="${url}" target="_blank" rel="noopener noreferrer" title="Страница релизов на GitHub">GitHub ↗</a>`
+        : `<a class="ub-btn ub-primary" href="${url}" target="_blank" rel="noopener noreferrer" title="Скачайте сборку для своей системы на странице релизов">Скачать v${newVer} ↗</a>`}
+      <button class="ub-close" onclick="this.parentElement.remove()">✕</button>
+    `;
+    document.body.prepend(banner);
+  }).catch(() => {
+    // /update/status is dead — render the source-mode banner (GitHub primary)
+    const banner = document.createElement('div');
+    banner.id = 'update-banner';
+    banner.innerHTML = `
+      <span class="ub-text">🔄 Доступна новая версия <b>v${newVer}</b>${changelog ? ' — ' + escapeHtml(changelog) : ''}</span>
+      <a class="ub-btn ub-primary" href="${url}" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
+      <button class="ub-close" onclick="this.parentElement.remove()">✕</button>
+    `;
+    document.body.prepend(banner);
+  });
 }
 
 // ── Changelog viewer: full version.json (whats-new) in a modal ──
@@ -2563,23 +5129,52 @@ async function selfUpdate() {
   const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
   applyTheme(savedTheme ? savedTheme === 'dark' : prefersDark);
 
+  // Отметки «Просмотрено» должны дожить до следующей сессии, даже если
+  // вкладку закрыли или свернули сразу после клика.
+  window.addEventListener('pagehide', persistReviewedOnLeave);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') persistReviewedOnLeave();
+  });
+  updateReviewedSaveStatus();
+
   // Initialize city combobox — start empty, user picks cities fresh each time
   selectedCities = [];
   initCitySelect();
   loadCityHistoryMeta();
 
+  // Sidebar counters / summary live-update on any edit of the basic fields
+  const _fq = document.getElementById('f-queries');
+  if (_fq) _fq.addEventListener('input', () => {
+    updateQueriesCounter();
+    updateClearAllBtn();
+    updateBasicSummary();
+  });
+  const _fci = document.getElementById('f-city-input');
+  if (_fci) _fci.addEventListener('input', () => {
+    updateClearAllBtn();
+  });
+
+  const _fp = document.getElementById('f-pages');
+  if (_fp) _fp.addEventListener('input', updatePagesCapNote);
+
   try {
     const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY));
-    // Restore non-city settings only
-    if (saved) delete saved.city;
+    // Restore non-city settings only — cities stay empty on reload.
+    if (saved) { delete saved.city; saved.cities = null; }
     applySettings(saved);
   } catch {}
   // Set initial social mode active state + social net checkboxes
   initSocialNetCheckboxes();
   setSocialMode(socialMode);
   setParseMode(parseMode);
+  // Initial state of sidebar counters / «Очистить всё» / accordion summary
+  updateQueriesCounter();
+  updateClearAllBtn();
+  updateBasicSummary();
+  updateRunBtnState();
   renderPresets();
   loadExcelCols();
+  initResultsPanel();
   loadReviewed();
   loadColState();
   // Stats tab shows zero cards right away — before any search
@@ -2605,11 +5200,20 @@ async function selfUpdate() {
   // Check for updates from GitHub
   checkForUpdates();
 
+  // API-keys status badge (✅ / ⚠️ / ❌) from .env
+  refreshApiKeysStatus();
+
   // Check Playwright availability
   fetch('/status').then(r => r.json()).then(s => {
     if (s.playwright_available === false) {
       const el = document.getElementById('playwright-notice');
       if (el) el.style.display = '';
+    }
+    // A paused run survives a page reload: without this the dock showed
+    // «Найти компании» and the only way «продолжить» was gone — users started
+    // a fresh search instead and the pause looked like a stop.
+    if (s.paused && s.paused.resume) {
+      enterPausedState(s.paused.resume);
     }
   }).catch(() => {});
 

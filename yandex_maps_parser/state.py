@@ -19,6 +19,8 @@ from config import (
     SEARCH_QUERIES,
     CITY,
     OUTPUT_DIR,
+    RAW_DIR,
+    PROCESSED_DIR,
     OUTPUT_FILENAME,
     APPEND_MODE,
     RESUME_MODE,
@@ -26,9 +28,6 @@ from config import (
     OUTPUT_JSON,
     OUTPUT_EXCEL,
     OUTPUT_MAP,
-    MIN_RATING,
-    MIN_REVIEWS,
-    VALIDATE_SOCIALS,
     USE_GRID,
     GRID_RADIUS_KM,
     GRID_STEP_KM,
@@ -46,6 +45,13 @@ from config import (
     PROXIES,
 )
 
+# Pipeline mode: "raw" — collect everything unfiltered (stage 1), filters
+# are applied afterwards by processing.apply_filters (stage 2). Any other
+# value (incl. unset) keeps the legacy single-stage behaviour (CLI, API).
+PIPELINE = ""
+# What happens to raw files after stage 2: "keep" | "archive" | "delete".
+RAW_MODE = "keep"
+
 # Social mode: "all" | "with_socials" | "without_socials"
 # Set by run_web(); controls whether enrichment fetches detail pages
 # and whether the frontend filters results by social media presence.
@@ -54,12 +60,11 @@ SOCIAL_MODE = "all"
 # Пустое множество = фильтр выключен (обычный режим «with_socials»).
 REQUIRED_SOCIALS: set[str] = set()
 
-# Optional output-quality filters (set from the web form).
+# Optional output-quality filters (set from the web form, stage 2).
 # COLLAPSE_CHAINS — merge records of the same business chain (same
 #   normalized name + overlapping phone/social links) into one row.
-# MIN_CONTACT — drop records with neither a phone nor any social link.
+# Applied by processing.apply_filters() AFTER collection in raw mode.
 COLLAPSE_CHAINS = False
-MIN_CONTACT = False
 
 # Parse mode (web form toggle):
 #   "without_website" (default) — only businesses WITHOUT their own website
@@ -83,9 +88,51 @@ _SYSLOG_FN = None        # callable(msg) for file-only system traces (developer 
 _TQDM_DISABLE = False    # True when running from web interface
 _STOP_EVENT = None       # threading.Event; set to request graceful stop
 _SKIP_CITY_EVENT = None  # threading.Event; set to skip current city (not the whole run)
+
+
+def request_stop() -> None:
+    """Request a graceful stop of the whole run (safe to call anytime).
+
+    Parser modules (e.g. twogis quota guard) use this to halt the run from
+    deep inside the pipeline without importing runner internals.
+    """
+    if _STOP_EVENT is not None:
+        try:
+            _STOP_EVENT.set()
+        except Exception:
+            pass
 _SKIPPED_CITIES: list[dict] = []  # [{"name": str, "records_found": int}]
 _CITY_RECORDS_FOUND = 0  # records found in current city (for skip confirmation)
 _city_records_lock = threading.Lock()
+
+# Set by run() for the city that just finished: True when the search returned
+# organizations but every one of them was already parsed in an earlier run
+# (global seen store), so the city produced nothing new. run_web() uses it to
+# explain the empty result instead of leaving the user with "нашлось 0".
+CITY_ALL_SEEN = False
+
+# ⏸ Last known run position, updated as the search moves on (city / query /
+# point). Frozen at pause time into a resume payload so «Продолжить» can tell
+# the user exactly where the search stopped.
+_pause_info_lock = threading.Lock()
+PAUSE_INFO: dict = {"city": "", "city_idx": 0, "cities_total": 0,
+                    "query": "", "point": 0, "points_total": 0, "records": 0}
+
+
+def update_pause_info(**kwargs) -> None:
+    """Thread-safe update of the current run position (partial update)."""
+    global PAUSE_INFO
+    with _pause_info_lock:
+        PAUSE_INFO = {**PAUSE_INFO, **kwargs}
+
+
+def pause_position() -> dict:
+    """Snapshot of the current run position (thread-safe copy)."""
+    with _pause_info_lock:
+        pos = dict(PAUSE_INFO)
+    with _found_lock:
+        pos["records"] = _found_count
+    return pos
 
 # Found-counter — written from multiple detail-fetching threads; protected by _found_lock
 _found_count = 0
@@ -175,11 +222,31 @@ def error(msg: str) -> None:
     _cli_write(Fore.RED + "  [✖] " + msg + Style.RESET_ALL)
 
 
+def tech(msg: str) -> None:
+    """Technical details for developers: browser log (hidden behind the
+    «Технические детали» toggle) + run file. NOT shown as a normal log line.
+    Use for raw error payloads, stack details, HTTP internals."""
+    if _LOG_FN:
+        _LOG_FN("tech", msg)
+
+
 def syslog(msg: str) -> None:
     """System/developer log: goes to file only, NOT to browser.
     Use for internal traces: HTTP details, function calls, timings."""
     if _SYSLOG_FN:
         _SYSLOG_FN(msg)
+
+
+def stats_event(payload: dict) -> None:
+    """Structured statistics for the web UI (level «stats»).
+
+    The browser renders a real card (rows + bars) from this payload instead of
+    parsing ASCII bars out of the log text. CLI mode keeps the text summary
+    (print_stats falls back to it when _LOG_FN is not set).
+    """
+    if _LOG_FN:
+        import json as _json
+        _LOG_FN("stats", _json.dumps(payload, ensure_ascii=False))
 
 
 def _progress(current: int, total: int, stage: str = "") -> None:
@@ -199,7 +266,17 @@ def _progress(current: int, total: int, stage: str = "") -> None:
             count = _found_count
             work_done = current + _work_candidates_done
             work_total = total + _work_candidates_total
-        _LOG_FN("progress", f"{work_done}/{work_total}/{stage}/{count}")
+        # 5th segment: 2GIS Places quota used (the counter lives in the child
+        # process, so the UI can only get it through the progress channel).
+        # Deferred import — twogis imports state, so a top-level import would
+        # create a cycle.
+        _quota = 0
+        try:
+            from .twogis import quota_used as _quota_used_fn
+            _quota = _quota_used_fn()
+        except Exception:
+            pass
+        _LOG_FN("progress", f"{work_done}/{work_total}/{stage}/{count}/{_quota}")
 
 
 def _add_candidates(n: int) -> None:
@@ -236,7 +313,15 @@ def _inc_found() -> None:
             with _found_lock:
                 work_done = _prog_cur + _work_candidates_done
                 work_total = _prog_tot + _work_candidates_total
-            _LOG_FN("progress", f"{work_done}/{work_total}/{_prog_stage}/{count}")
+            # 5th segment: 2GIS Places quota used (child-process counter →
+            # progress channel, same as in _progress()).
+            _quota = 0
+            try:
+                from .twogis import quota_used as _quota_used_fn
+                _quota = _quota_used_fn()
+            except Exception:
+                pass
+            _LOG_FN("progress", f"{work_done}/{work_total}/{_prog_stage}/{count}/{_quota}")
             # Emit analytics every 5 seconds
             _emit_analytics_throttled(now)
 
@@ -292,6 +377,15 @@ def _emit_result(record: dict) -> None:
     try:
         if CITY and not record.get("city"):
             record["city"] = CITY
+    except Exception:
+        pass
+    # Lead score right away (not only at stage 2): the live table, the raw
+    # files and the frontend JSON then carry the score, and stage 2 only
+    # re-computes it after the VK activity check (which can add points).
+    # Missing fields simply score 0 — never a fake value.
+    try:
+        from .lead_score import annotate_records
+        annotate_records([record])
     except Exception:
         pass
     line = _json.dumps(record, ensure_ascii=False, default=str)

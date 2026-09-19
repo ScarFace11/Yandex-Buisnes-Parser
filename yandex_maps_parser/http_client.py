@@ -1,9 +1,15 @@
 """
 HTTP session management and low-level request helpers.
 
-Uses httpx with HTTP/2 for multiplexed connections — multiple requests
-share a single TCP+TLS connection, reducing handshake overhead from
-~500ms per request to ~0ms after the first.
+Engine: curl-cffi (curl-impersonate) when installed — a libcurl binding
+that byte-for-byte impersonates a real Chrome TLS/JA3 + HTTP/2 handshake,
+defeating TLS-fingerprint anti-bot. Sessions also carry Chrome's full
+header set (UA, sec-ch-ua, Accept-Language ordering), so Yandex sees a
+request indistinguishable from a real browser at the transport layer.
+Falls back to httpx (HTTP/2, no fingerprint) when curl_cffi is absent —
+all call sites are engine-agnostic: they only use .get()/.head(),
+.status_code/.text/.headers and httpx.Timeout objects, which the
+_SessionWrapper below translates transparently.
 """
 import threading
 import time
@@ -11,8 +17,74 @@ from collections import deque
 
 import httpx
 
+try:  # optional engine — install curl-cffi for Chrome-grade TLS fingerprints
+    from curl_cffi.requests import Session as _CffiSession
+    from curl_cffi.requests.exceptions import (
+        CurlError as _CurlError,
+        Timeout as _CffiTimeout,
+    )
+except ImportError:
+    _CffiSession = None
+
 from .constants import USER_AGENTS
 from . import state
+
+# Browser preset to impersonate. "chrome" tracks the newest Chrome the
+# installed curl_cffi ships fingerprints for (updated upstream).
+_IMPERSONATE = "chrome"
+
+
+class _SessionWrapper:
+    """Translate httpx-style calls to curl_cffi (or pass through to httpx).
+
+    Callers across the codebase do:
+        client.get(url, params=..., timeout=httpx.Timeout(...))
+        r.status_code / r.text / r.headers / r.content
+        client.head(url, timeout=...)
+    curl_cffi.Session supports the same surface except:
+      * timeout — accepts a float, not httpx.Timeout. We map
+        (connect, read[, total]) tuples to a single float (the read phase;
+        the hard wall-clock deadline is enforced by _abortable_get anyway).
+      * exception types — mapped to their closest httpx equivalents so the
+        except clauses in _get() keep working unchanged.
+    """
+
+    def __init__(self, session) -> None:
+        self._s = session
+
+    @staticmethod
+    def _norm_timeout(timeout):
+        if isinstance(timeout, httpx.Timeout):
+            return timeout.read
+        if isinstance(timeout, (tuple, list)):
+            return timeout[1] if len(timeout) >= 2 else timeout[0]
+        return timeout
+
+    def get(self, url, **kw):
+        try:
+            if "timeout" in kw:
+                kw["timeout"] = self._norm_timeout(kw["timeout"])
+            return self._s.get(url, **kw)
+        except _CffiTimeout as e:              # connect or read timeout
+            raise httpx.TimeoutException(str(e)) from e
+        except _CurlError as e:                # DNS, TLS, proxy, connection reset…
+            raise httpx.ConnectError(str(e)) from e
+
+    def head(self, url, **kw):
+        try:
+            if "timeout" in kw:
+                kw["timeout"] = self._norm_timeout(kw["timeout"])
+            return self._s.head(url, **kw)
+        except _CffiTimeout as e:
+            raise httpx.TimeoutException(str(e)) from e
+        except _CurlError as e:
+            raise httpx.ConnectError(str(e)) from e
+
+    def close(self) -> None:
+        try:
+            self._s.close()
+        except Exception:
+            pass
 
 # ── Per-thread session storage ────────────────────────────────
 _ua_lock     = threading.Lock()
@@ -49,13 +121,37 @@ def _next_proxy() -> str | None:
     return p
 
 
-def _make_client(proxy: str | None = None) -> httpx.Client:
-    """Create an httpx client with HTTP/2 support (graceful fallback).
+def _make_client(proxy: str | None = None):
+    """Create an HTTP client: curl_cffi (Chrome impersonation) or httpx.
 
-    Each client maintains its own connection pool.  With HTTP/2, multiple
-    concurrent requests are multiplexed over a single TCP+TLS connection.
-    Falls back to HTTP/1.1 if the h2 package is not installed.
+    curl_cffi path — libcurl fork that replays Chrome's exact TLS/JA3 and
+    HTTP/2 SETTINGS frames; the strongest defence against TLS-fingerprint
+    blocking, and faster than httpx to boot. Falls back to a plain httpx
+    client with HTTP/2 when curl_cffi is not installed.
     """
+    if _CffiSession is not None:
+        try:
+            kwargs = dict(
+                impersonate=_IMPERSONATE,
+                timeout=20,
+                headers={
+                    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+                    "Referer": "https://yandex.ru/maps/",
+                },
+            )
+            if proxy:
+                kwargs["proxy"] = proxy
+            return _SessionWrapper(_CffiSession(**kwargs))
+        except Exception as e:
+            state.syslog(f"_make_client: curl_cffi failed ({e!r}), using httpx")
+    # httpx fallback with HTTP/2 support (graceful HTTP/1.1 downgrade).
+    # Each client maintains its own connection pool.  With HTTP/2, multiple
+    # concurrent requests are multiplexed over a single TCP+TLS connection.
+    return _make_httpx_client(proxy)
+
+
+def _make_httpx_client(proxy: str | None = None) -> httpx.Client:
+    """Create an httpx client with HTTP/2 support (graceful fallback)."""
     limits = httpx.Limits(
         max_connections=20,
         max_keepalive_connections=10,
@@ -84,7 +180,7 @@ def _make_client(proxy: str | None = None) -> httpx.Client:
 
 # Client pool for proxy rotation: one client per proxy + one direct.
 # Round-robin between them to distribute requests across IPs.
-_client_pool: list[httpx.Client] = []
+_client_pool: list = []
 _pool_lock = threading.Lock()
 _pool_index = 0
 
@@ -130,7 +226,7 @@ def close_client_pool() -> None:
         _pool_index = 0
 
 
-def _next_client() -> httpx.Client:
+def _next_client():
     """Round-robin to the next client in the pool."""
     global _pool_index
     with _pool_lock:
@@ -145,7 +241,7 @@ def _next_client() -> httpx.Client:
 _main_client = _make_client()
 
 
-def _worker_client() -> httpx.Client:
+def _worker_client():
     """Return (or lazily create) the current thread's dedicated client.
 
     In proxy mode, returns the next client from the rotation pool.

@@ -1,0 +1,92 @@
+name: CI
+
+# Гейт для pull request и быстрая проверка main/dev.
+#
+# Отдельные сборки (build-exe.yml, build-dev.yml, build-macos.yml) тестируют
+# только свою ветку/тег, поэтому раньше обычный PR не проверялся вообще.
+# Здесь то же тестовое покрытие прогоняется на трёх системах: сборка есть и
+# для Windows, и для macOS, а тесты должны ловить платформенные различия
+# (пути, порты, `sys.platform`) до тега.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - dev
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest        # Apple Silicon: та же система, что у сборки arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Run tests
+        # Playwright browsers не ставим: тесты парсера мокают HTTP/CDP, а
+        # приложение штатно откатывается на Chrome CDP и httpx.
+        env:
+          YANDEX_API_KEY: ci-dummy-key
+        run: python -m pytest tests/ -q
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Run UI logic tests
+        run: node --test "tests/ui/*.test.mjs"
+
+      - name: Check packaging specs parse
+        # Опечатка в .spec всплывает только на теге — там уже поздно.
+        run: |
+          python -c "import ast, pathlib; [ast.parse(pathlib.Path(p).read_text(encoding='utf-8'), p) for p in ('parser.spec', 'parser-mac.spec')]; print('specs OK')"
+
+  workflows-lint:
+    name: Workflow YAML
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate every workflow file
+        run: |
+          python -m pip install --quiet pyyaml
+          python - <<'PY'
+          import pathlib, sys
+          import yaml
+          bad = []
+          for f in sorted(pathlib.Path('.github/workflows').glob('*.yml')):
+              try:
+                  yaml.safe_load(f.read_text(encoding='utf-8'))
+              except Exception as exc:
+                  bad.append(f'{f}: {exc}')
+          if bad:
+              print('::error::Сломанный YAML: ' + '; '.join(bad))
+              sys.exit(1)
+          print('Все workflow-файлы читаются')
+          PY

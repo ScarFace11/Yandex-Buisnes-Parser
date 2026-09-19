@@ -31,11 +31,16 @@ def run_parser():
 
     active = run_manager.active_run_id()
     if active and active != entry["id"]:
-        with run_manager._lock:
-            entry["queued"] = True
-            entry["active"] = False
-        return jsonify({"ok": True, "queued": True, "run_id": entry["id"],
-                        "position": run_manager.queue_position(entry["id"])})
+        # «Продолжить» after a pause: the paused run already delivered its
+        # results and is being finalized — it must not block the resume, or
+        # the continuation would sit in the queue forever (see clear_paused_run).
+        resumable = params.get("resume") and run_manager.clear_paused_run(active)
+        if not resumable:
+            with run_manager._lock:
+                entry["queued"] = True
+                entry["active"] = False
+            return jsonify({"ok": True, "queued": True, "run_id": entry["id"],
+                            "position": run_manager.queue_position(entry["id"])})
 
     run_manager.start_process(entry)
     return jsonify({"ok": True, "queued": False, "run_id": entry["id"]})
@@ -44,8 +49,15 @@ def run_parser():
 @bp.route("/stop", methods=["POST"])
 def stop_parser():
     run_id = request.args.get("run_id", "")
-    run_manager.stop_run(run_id)
-    return jsonify({"ok": True})
+    # ?pause=1 → graceful unwind that REMEMBERS the run: the frontend gets
+    # a done message with paused=true + resume payload and offers «Продолжить».
+    pause = request.args.get("pause", "") in ("1", "true", "yes")
+    affected = run_manager.stop_run(run_id, pause=pause)
+    # `targets` says whether anything was actually stopped: a pause request
+    # that arrives after the run already finished used to answer «ok, paused»
+    # and the UI kept waiting for a done message that was never coming.
+    return jsonify({"ok": True, "paused": pause, "targets": affected,
+                    "target": affected[0] if affected else None})
 
 
 @bp.route("/skip-city", methods=["POST"])
@@ -108,6 +120,12 @@ def status():
         s["playwright_available"] = pw_installed() or cdp_installed()
     except Exception:
         s["playwright_available"] = False
+    # 2GIS Places API quota (billed pages this process) for the stats tab.
+    try:
+        from yandex_maps_parser.twogis import quota_used as _tg_quota
+        s["twogis_quota_used"] = _tg_quota()
+    except Exception:
+        s["twogis_quota_used"] = 0
     return jsonify(s)
 
 

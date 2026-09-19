@@ -5,15 +5,13 @@ import json
 import random
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .constants import (
     LINK_AGGREGATORS,
     SOCIAL_DOMAINS,
-    KNOWN_PLATFORMS,
     EXCLUDE_URLS,
 )
-from .http_client import _head, _worker_client, _get
+from .http_client import _worker_client, _get
 from . import state
 
 # ── Compiled patterns ─────────────────────────────────────────
@@ -62,7 +60,11 @@ _JSON_BLOB_RE = re.compile(
     r'(?:window\.(?:__)?(?:NUXT|INITIAL_STATE|SERVER_STATE|PRELOADED_STATE|'
     r'APP_STATE|REDUX_STATE|DATA|STATE)(?:__)?'
     r'|window\.serverState'
-    r'|<script[^>]+type=["\']application/json["\'][^>]*>)\s*[=]*(\{)',
+    # NOTE: whitespace is allowed on BOTH sides of the «=» — pages are not
+    # always minified (`window.__INITIAL_STATE__ = {` used to match nothing,
+    # so both the socials and the rating/reviews of such a page were lost).
+    r'|<script[^>]+type=["\']application/ld\+json["\'][^>]*>'
+    r'|<script[^>]+type=["\']application/json["\'][^>]*>)\s*[=]*\s*(\{)',
     re.I,
 )
 
@@ -73,6 +75,37 @@ _ANTIBOT_MARKERS = (
 
 # Fast pre-check: does this string look like it could contain social URLs?
 _HTTP_LIKE = re.compile(r'https?://[^\s"\'<>\\\\,}{]+', re.I)
+
+# 2GIS wraps every outbound link in its own redirect:
+#     http://link.2gis.ru/1.2/<token>/…/null/<hash>?https://vk.com/club1
+# The wrapper URL matches no social pattern, but its TARGET does — and the
+# normalized result used to be the wrapper itself (a dead 2GIS link shown
+# in the ВКонтакте/Telegram columns). The host list also covers the mirror
+# domains (2gis.by/2gis.kz) seen in exported files.
+_OUTBOUND_WRAPPER = re.compile(
+    r"^https?://(?:[\w.-]+\.)?(?:link\.)?2gis\.(?:ru|com|kz|by|uz)/", re.I
+)
+
+
+def unwrap_outbound(url: str, _depth: int = 0) -> str:
+    """Return the real target behind a 2GIS outbound link wrapper.
+
+    `link.2gis.ru/…?https://vk.com/profile` → `https://vk.com/profile`.
+    Anything else (including a wrapper without a target, which leads
+    nowhere) is returned unchanged; a wrapper that can't be resolved
+    resolves to "" so it never lands in a social column.
+    """
+    u = (url or "").strip()
+    if not u or not _OUTBOUND_WRAPPER.match(u) or _depth > 3:
+        return u
+    _, sep, tail = u.partition("?")
+    if not sep:
+        return ""                      # wrapper with no target — dead link
+    from urllib.parse import unquote
+    tail = unquote(tail).strip()
+    if not tail.lower().startswith("http"):
+        return ""
+    return unwrap_outbound(tail, _depth + 1)
 
 
 # ── URL helpers ───────────────────────────────────────────────
@@ -98,6 +131,11 @@ def _normalize_social_url(platform: str, url: str) -> str | None:
     from urllib.parse import urlparse, urlunparse
     try:
         parsed = urlparse(url)
+        # Social pages are served over https; pages hand out plain http://
+        # links (2GIS firm pages do) and the exported column then looks
+        # untrustworthy/broken in Excel.
+        if parsed.scheme == "http":
+            parsed = parsed._replace(scheme="https")
         if platform == "vk":
             if _VK_NON_PROFILE.search(url):
                 return None
@@ -227,7 +265,7 @@ def _extract_from_json_blob(html: str) -> dict[str, str]:
         except (ValueError, json.JSONDecodeError):
             continue
         for url in _collect_url_strings(obj):
-            url = _clean_social_url(url)
+            url = _clean_social_url(unwrap_outbound(url))
             if not url or EXCLUDE_URLS.search(url):
                 continue
             for platform, pat in SOCIAL_DOMAINS.items():
@@ -241,12 +279,99 @@ def _extract_from_json_blob(html: str) -> dict[str, str]:
     return result
 
 
+_RATING_KEYS = ("ratingvalue", "rating", "score", "votesscore")
+_REVIEWS_KEYS = ("reviewscount", "reviewscountvalue", "reviewcount", "reviews")
+
+
+def _num(value):
+    """Coerce a JSON value to float/int, or None when it is not numeric."""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return value
+    if isinstance(value, str):
+        try:
+            return float(value.replace(",", "."))
+        except ValueError:
+            return None
+    return None
+
+
+def _find_numbers(obj, keys, depth: int = 0):
+    """Depth-first search for the first numeric value under any of `keys`.
+
+    Yandex embeds the business card as a JSON blob whose exact nesting differs
+    between page builds, so we look up by key name instead of by path.
+    """
+    if depth > 10 or obj is None:
+        return None
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if str(key).lower() in keys:
+                num = _num(value)
+                if num is not None:
+                    return num
+                # `"rating": {"value": 4.5}` and `"reviews": {"count": 7}`
+                if isinstance(value, dict):
+                    for sub in ("value", "count", "countValue", "ratingValue"):
+                        num = _num(value.get(sub))
+                        if num is not None:
+                            return num
+        for value in obj.values():
+            num = _find_numbers(value, keys, depth + 1)
+            if num is not None:
+                return num
+    elif isinstance(obj, (list, tuple)):
+        for value in obj:
+            num = _find_numbers(value, keys, depth + 1)
+            if num is not None:
+                return num
+    return None
+
+
+def extract_rating_reviews(html: str) -> tuple[object, object]:
+    """Pull (rating, reviews_count) out of a Yandex Maps page, or ("", "").
+
+    Reads the same embedded JSON blob that socials come from, so it costs no
+    extra request. Returns empty strings when the page has no such data —
+    callers must not turn that into 0.0/0.
+    """
+    if not html:
+        return "", ""
+    text = html[:200_000]
+    decoder = json.JSONDecoder()
+    rating = reviews = None
+    for m in _JSON_BLOB_RE.finditer(text):
+        try:
+            obj, _ = decoder.raw_decode(text, m.start(1))
+        except (ValueError, json.JSONDecodeError):
+            continue
+        if rating is None:
+            rating = _find_numbers(obj, _RATING_KEYS)
+        if reviews is None:
+            reviews = _find_numbers(obj, _REVIEWS_KEYS)
+        if rating is not None and reviews is not None:
+            break
+    # Ratings arrive on a 5-point scale, but some page builds embed a ×10
+    # value (4.7 → 47). Normalize those (same rule as lead_score.compute_score)
+    # instead of dropping them; anything else is not a rating (a vote count,
+    # a year…) and is discarded rather than guessed.
+    if rating is not None:
+        if 5 < rating <= 50:
+            rating = rating / 10
+        if not 0 <= rating <= 5:
+            rating = None
+    rating_out = round(rating, 1) if rating else ""
+    reviews_out = int(reviews) if reviews else ""
+    return rating_out, reviews_out
+
+
 def extract_socials(text: str) -> dict[str, str]:
     """Extract real social-profile links (URLs only — no fabrication from
     phone numbers or @mentions in arbitrary text)."""
     result: dict[str, str] = {}
     for url in _HTTP_LIKE.findall(text):
-        url = _clean_social_url(url)
+        url = _clean_social_url(unwrap_outbound(url))
         if not url or EXCLUDE_URLS.search(url):
             continue
         for platform, pat in SOCIAL_DOMAINS.items():
@@ -258,62 +383,109 @@ def extract_socials(text: str) -> dict[str, str]:
     return result
 
 
-def extract_description(html: str) -> str:
-    for pat in [
-        r'<meta[^>]+name=["\']description["\'][^>]+content=["\'](.*?)["\']',
-        r'<meta[^>]+content=["\'](.*?)["\'][^>]+name=["\']description["\']',
-        r'<meta[^>]+property=["\']og:description["\'][^>]+content=["\'](.*?)["\']',
-    ]:
-        m = re.search(pat, html, re.I)
-        if m:
-            desc = m.group(1).strip()
-            if desc and "Яндекс" not in desc and len(desc) > 20:
-                return desc[:500]
-    return ""
+# ── Телефон из карточки ──────────────────────────────────
+# Used as a fallback when the source did not hand out a phone in its API
+# response (2GIS strips contact_groups for demo keys; the Yandex Search API
+# does not always include Phones). Card pages render the contact phone as a
+# `tel:` link, so that link is by far the most reliable signal.
+_TEL_LINK_RE = re.compile(r'href=["\']tel:([+\d\s()\-]{7,25})["\']', re.I)
+# Scripts/styles are cut out before the loose text pass: otherwise any
+# 11-digit number in the page state (a view counter, an id) reads as a phone.
+_SCRIPT_BLOCK_RE = re.compile(r"<(script|style)\b[^>]*>.*?</\1>", re.I | re.S)
+_PHONE_TEXT_RE = re.compile(
+    r"(?:\+7|8)[\s\-(]*\d{3}[\s\-)]*\d{3}[\s\-]*\d{2}[\s\-]*\d{2}"
+)
 
 
-def extract_reviews_count(html: str) -> str:
-    """Extract the numeric review count from a Yandex Maps detail page."""
-    for pat in _REVIEW_COUNT_PATS:
-        m = pat.search(html)
-        if m:
-            return re.sub(r"\D", "", m.group(1))
-    return ""
+def _phone_digits(raw: str) -> str:
+    return re.sub(r"\D", "", raw or "")
 
 
-_REVIEW_COUNT_PATS = [
-    re.compile(r'"reviewCount"\s*:\s*(\d+)'),
-    re.compile(r'"reviewsCount"\s*:\s*(\d+)'),
-    re.compile(r'"review_count"\s*:\s*(\d+)'),
-    re.compile(r'"count"\s*:\s*(\d+).{0,200}?"rating"', re.DOTALL),
-    re.compile(r'(?<!\w)(\d[\d\s\xa0]*)\s+(?:отзыв(?:а|ов)?|reviews?)\b', re.I),
-]
+def _format_phone(digits: str) -> str:
+    """10/11 digits → «+7 XXX XXX-XX-XX»; anything else is not a phone.
 
-
-def validate_socials(socials: dict[str, str], pool: ThreadPoolExecutor | None = None) -> str:
-    """HEAD-check each social URL; return comma-separated list of live platforms.
-
-    Reuses the caller's thread pool when provided to avoid creating
-    a new ThreadPoolExecutor per record (which was a major perf bottleneck).
+    8-800-X… hotlines («+7 800 …») are rejected: they are support lines of
+    the platform or of a franchise head office, never the number to call the
+    owner about a website.
     """
-    valid: list[str] = []
-    owns_pool = pool is None
-    if owns_pool:
-        pool = ThreadPoolExecutor(max_workers=min(len(socials), 5))
-    try:
-        future_to_platform = {
-            pool.submit(_head, url): platform
-            for platform, url in socials.items() if url
-        }
-        for fut in as_completed(future_to_platform):
-            platform = future_to_platform[fut]
-            try:
-                status = fut.result()
-                if 200 <= status < 400:
-                    valid.append(platform)
-            except Exception:
-                pass
-    finally:
-        if owns_pool:
-            pool.shutdown(wait=False)
-    return ", ".join(p for p in KNOWN_PLATFORMS if p in valid)
+    if len(digits) == 10:
+        digits = "7" + digits
+    if len(digits) != 11 or digits[0] not in "78":
+        return ""
+    digits = "7" + digits[1:]
+    if digits[1:4] == "800":
+        return ""
+    return f"+{digits[0]} {digits[1:4]} {digits[4:7]}-{digits[7:9]}-{digits[9:]}"
+
+
+# Keys under which embedded page data carries a phone number.
+_PHONE_KEYS = ("phone", "phonenumber", "phone_number", "telephone", "contactphone")
+
+
+def _phone_from_json(value, depth: int = 0) -> str:
+    """First phone-shaped value stored under a phone-ish key in embedded data.
+
+    Yandex and 2GIS both ship the business card as JSON inside the page; a
+    phone that the UI hides behind «Показать телефон» is usually already in
+    that data. Only explicitly phone-named keys count — this never scrapes a
+    random number out of unrelated state.
+    """
+    if depth > 12 or value is None:
+        return ""
+    if isinstance(value, dict):
+        for key, sub in value.items():
+            if str(key).lower() not in _PHONE_KEYS:
+                continue
+            cand = sub
+            if isinstance(cand, dict):
+                cand = cand.get("value") or cand.get("text") or cand.get("number") or ""
+            if isinstance(cand, (list, tuple)):
+                cand = next((x for x in cand if isinstance(x, str)), "")
+            if isinstance(cand, (int, float)):
+                cand = str(cand)
+            if isinstance(cand, str):
+                phone = _format_phone(_phone_digits(cand))
+                if phone:
+                    return phone
+        for sub in value.values():
+            phone = _phone_from_json(sub, depth + 1)
+            if phone:
+                return phone
+    elif isinstance(value, (list, tuple)):
+        for sub in value:
+            phone = _phone_from_json(sub, depth + 1)
+            if phone:
+                return phone
+    return ""
+
+
+def extract_phone(html: str) -> str:
+    """Первый настоящий телефон со страницы карточки — или "".
+
+    Порядок по надёжности: ссылка tel: (её рендерят для контактов самой
+    организации) → телефон в данных страницы под ключом phone/tel →
+    телефон в тексте. Служебные 8-800 и короткие номера отбраковываются.
+    """
+    if not html:
+        return ""
+    text = html[:200_000]
+    for m in _TEL_LINK_RE.finditer(text):
+        phone = _format_phone(_phone_digits(m.group(1)))
+        if phone:
+            return phone
+    decoder = json.JSONDecoder()
+    for m in _JSON_BLOB_RE.finditer(text):
+        try:
+            obj, _ = decoder.raw_decode(text, m.start(1))
+        except (ValueError, json.JSONDecodeError):
+            continue
+        phone = _phone_from_json(obj)
+        if phone:
+            return phone
+    for m in _PHONE_TEXT_RE.finditer(_SCRIPT_BLOCK_RE.sub(" ", text)):
+        phone = _format_phone(_phone_digits(m.group(0)))
+        if phone:
+            return phone
+    return ""
+
+

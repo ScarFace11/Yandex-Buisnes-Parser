@@ -29,6 +29,47 @@ jobs:
           pip install -r requirements.txt
           pip install pytest
 
+      - name: Guard — релиз нельзя собрать из dev-версии
+        # Публичная сборка выпускается только версией без суффикса «-dev»:
+        # иначе у пользователей включится метка DEV и отключится авто-обновление.
+        env:
+          YANDEX_API_KEY: ci-dummy-key
+        run: |
+          python - <<'PY'
+          import sys
+          import config
+          print('APP_VERSION =', config.APP_VERSION)
+          if config.is_dev_build():
+              print('::error::APP_VERSION содержит суффикс -dev. В config.py укажите '
+                    'версию релиза без суффикса (например "2.3.0") и повторите.')
+              sys.exit(1)
+          PY
+
+      - name: Guard — тег и version.json совпадают с версией
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          YANDEX_API_KEY: ci-dummy-key
+          TAG: ${{ github.ref_name }}
+        run: |
+          python - <<'PY'
+          import json, os, sys
+          import config
+          v = config.APP_VERSION
+          tag = os.environ['TAG']
+          with open('static/version.json', encoding='utf-8-sig') as fh:
+              jv = json.load(fh).get('version', '')
+          problems = []
+          if tag != 'v' + v:
+              problems.append(f'тег {tag} не совпадает с APP_VERSION v{v}')
+          if jv != v:
+              problems.append(f'static/version.json {jv} != APP_VERSION {v} '
+                              '(иначе авто-обновление у пользователей не сработает)')
+          if problems:
+              print('::error::' + '; '.join(problems))
+              sys.exit(1)
+          print(f'OK: {tag}, APP_VERSION {v}, version.json {jv}')
+          PY
+
       - name: Run tests
         # Playwright browsers are not installed in CI — parser tests mock
         # HTTP/CDP and don't need them; the app falls back gracefully.
@@ -36,12 +77,24 @@ jobs:
           YANDEX_API_KEY: ci-dummy-key
         run: python -m pytest tests/ -q
 
+      - name: Setup Node (UI logic tests)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Run UI logic tests
+        run: node --test "tests/ui/*.test.mjs"
+
   build:
     name: Build Windows .exe
     needs: test
     runs-on: windows-latest
     steps:
+      # fetch-depth: 0 — full history so the download_url stamp commit can push
+      # back onto main (the in-app updater reads version.json from main)
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -116,6 +169,27 @@ jobs:
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # CI/CD self-update chain (release tags only):
+      #   1. Release published with the exe zip (step above)
+      #   2. version.json stamped with the asset URL and pushed to main
+      #   → every running .exe sees «Доступна новая версия» within 30 min,
+      #     clicks «Обновить сейчас» and updates WITHOUT visiting GitHub.
+      - name: Verify the release is ready for the in-app updater
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $tag = '${{ github.ref_name }}'
+          $expected = 'https://github.com/${{ github.repository }}/releases/download/' + $tag + '/YandexBusinessParser-windows-x64.zip'
+          for ($i = 0; $i -lt 10; $i++) {
+            try {
+              $r = Invoke-WebRequest -Uri $expected -Method Head -UseBasicParsing -TimeoutSec 10
+              if ($r.StatusCode -eq 200) { Write-Host "Release asset OK: $expected"; exit 0 }
+            } catch { }
+            Start-Sleep -Seconds 6
+          }
+          Write-Host "::warning::Release asset not reachable yet at $expected — /update/status falls back to /releases/latest/download which resolves after propagation"
+          exit 0
 
       - name: Upload artifact (manual runs)
         if: github.event_name == 'workflow_dispatch'

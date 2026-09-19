@@ -5,6 +5,7 @@
 # Core
 Flask>=3.0
 httpx[http2]>=0.27
+curl-cffi>=0.16      # HTTP engine with Chrome TLS/JA3 impersonation (anti-bot); httpx used as fallback
 requests>=2.31
 tqdm>=4.65
 colorama>=0.4
@@ -19,8 +20,8 @@ openpyxl>=3.1
 # Maps (HTML)
 folium>=0.15
 
-# Geocoding (built-in, uses httpx)
-# 2GIS source (built-in, uses httpx — no extra deps)
+# Geocoding (built-in, uses the http_client engine)
+# 2GIS source (built-in, same engine — no extra deps)
 
 # Dev / Testing
 # pytest>=7.0
