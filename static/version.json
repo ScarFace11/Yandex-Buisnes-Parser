@@ -2,7 +2,6 @@
   "version": "2.3.0",
   "min_version": "2.0.0",
   "changelog": "Массовый обход соцсетей без блокировки вкладок, журнал «Ход поиска» с фильтрами и иерархией, мягкие тёмная и светлая темы, оценка лида с разбором, автосохранение отметок, graceful-пауза с продолжением со следующего города, сборка для macOS (.app/.dmg) с подписью Developer ID и нотаризацией",
-  "download_url": "https://github.com/ScarFace11/Yandex-Buisnes-Parser/releases/latest/download/YandexBusinessParser-windows-x64.zip",
   "history": [
     {
       "version": "2.3.0",
@@ -20,5 +19,6 @@
       "version": "2.2.0",
       "changelog": "Быстрая загрузка карточек через Chrome CDP (2-6 сек), живая статистика по городам, история поиска в списке городов, фильтры качества, чекпоинт-возобновление, быстрая остановка"
     }
-  ]
+  ],
+  "download_url": "https://github.com/ScarFace11/Yandex-Buisnes-Parser/releases/latest/download/YandexBusinessParser-windows-x64.zip"
 }
