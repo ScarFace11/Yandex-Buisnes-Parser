@@ -189,53 +189,6 @@ APPLE_ID=you@example.com APPLE_APP_SPECIFIC_PASSWORD=xxxx APPLE_TEAM_ID=TEAMID \
   YP_CODESIGN_IDENTITY="Developer ID Application: Имя (TEAMID)" ./build-mac.sh
 ```
 
----
-
-## ⚙️ Сборка разработчика (ветка `dev`)
-
-Чтобы не выкладывать каждое изменение в `main`, работа ведётся в ветке `dev`:
-
-```bash
-git checkout -b dev          # один раз
-git push -u origin dev       # дальше просто git push
-```
-
-Dev-сборка включается суффиксом `-dev` в версии (`config.py`):
-`APP_VERSION = "2.3.0-dev"`. Отличия: метка **⚙ DEV** в шапке, авто-обновление
-выключено, порт **5010**, своё имя exe/бандла и своя папка данных — dev- и
-публичная сборки не мешают друг другу.
-
-- Локально (Windows): `build-dev.bat` → `dist-dev\YandexBusinessParserDev\`.
-- Локально (macOS): `./build-mac.sh --dev`.
-- В CI: push в `dev` запускает `build-dev.yml` (Windows) и `build-macos.yml`
-  (`.app`-артефакт); Release не создаётся.
-
-**Выпуск в публику:** влить `dev` в `main`, убрать суффикс
-(`APP_VERSION = "2.3.0"`), обновить `static/version.json`, поставить тег
-`v2.3.0` и запушить — сборки и релиз сделают workflow. CI не даст выпустить
-релиз случайно: на теге проверяется, что тег, `APP_VERSION` и
-`static/version.json` совпадают и не содержат `-dev`.
-
-## 🤖 Автоматизация в GitHub
-
-| Workflow | Когда запускается | Что делает |
-|---|---|---|
-| `ci.yml` | каждый PR, push в `main`/`dev` | тесты на трёх системах (Ubuntu, Windows, macOS) + node-тесты UI + проверка, что `.spec`-файлы и workflow-YAML парсятся |
-| `build-exe.yml` | тег `v*` | гейт версии, тесты, Windows `.exe`, смоук-тест, GitHub Release |
-| `build-macos.yml` | тег `v*`, push в `dev` | `.app` для arm64 и x64, подпись Developer ID **или ad-hoc**, нотаризация, смоук-тест, `.zip` + `.dmg` |
-| `build-dev.yml` | push в `dev` | dev-`exe` (порт 5010, без релиза) |
-
-Плюс `dependabot.yml`: еженедельные PR на обновление pip-зависимостей и
-версий GitHub Actions (мажоры PyInstaller игнорируются — они ломают spec'и).
-
-## 🧪 Тесты
-
-```bash
-python -m pytest tests -q          # backend: пайплайн, фильтры, пауза, API
-node --test tests/ui/              # UI: лог, таблица, пресеты, история файлов
-```
-
-CI прогоняет оба набора на Ubuntu, Windows и macOS.
 
 ## 📄 Документация
 
