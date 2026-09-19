@@ -85,9 +85,42 @@ jobs:
       - name: Run UI logic tests
         run: node --test "tests/ui/*.test.mjs"
 
+  release-draft:
+    name: Draft release with CHANGELOG body
+    # Черновик создаётся ДО сборки: build (Windows) только добавляет exe,
+    # build-macos.yml доливает .zip/.dmg. Пока релиз — черновик, пользователи
+    # его не видят; опубликовать можно одной кнопкой, когда оба билда зелёные.
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0      # полный лог для фолбэка «коммиты с прошлого тега»
+
+      - name: Extract release notes from CHANGELOG
+        run: |
+          python3 scripts/release_notes.py --tag "${{ github.ref_name }}" \
+            --changelog CHANGELOG.md --out release_notes.md | tee release_title.txt
+          echo "TITLE=$(cat release_title.txt)" >> "$GITHUB_ENV"
+
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "${{ github.ref_name }}" >/dev/null 2>&1; then
+            echo "Релиз ${{ github.ref_name }} уже существует — не трогаем."
+          else
+            gh release create "${{ github.ref_name }}" \
+              --draft --title "$TITLE" --notes-file release_notes.md
+          fi
+
   build:
     name: Build Windows .exe
-    needs: test
+    needs: [test, release-draft]
+    # release-draft фильтруется условием тега — на workflow_dispatch он skipped,
+    # поэтому пропускаем и его (тот же приём, что в build-macos.yml).
+    if: ${{ always() && needs.test.result == 'success' && (needs.release-draft.result == 'success' || needs.release-draft.result == 'skipped') }}
     runs-on: windows-latest
     steps:
       # fetch-depth: 0 — full history so the download_url stamp commit can push
@@ -162,33 +195,39 @@ jobs:
           git push origin HEAD:main || Write-Host 'push failed (non-fatal)'
 
       - name: Attach exe to the GitHub Release
+        # Релиз (черновик) уже создан job'ом release-draft с телом из
+        # CHANGELOG — здесь только добавляем exe. generate_release_notes
+        # не нужен: тело готово.
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: dist/YandexBusinessParser-windows-x64.zip
-          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # CI/CD self-update chain (release tags only):
-      #   1. Release published with the exe zip (step above)
-      #   2. version.json stamped with the asset URL and pushed to main
-      #   → every running .exe sees «Доступна новая версия» within 30 min,
-      #     clicks «Обновить сейчас» and updates WITHOUT visiting GitHub.
-      - name: Verify the release is ready for the in-app updater
+      #   1. Draft release created by release-draft (body from CHANGELOG)
+      #   2. exe attached here, macOS .zip/.dmg attached by build-macos.yml
+      #   3. version.json stamped with the asset URL and pushed to main
+      #   → after the release is PUBLISHED, every running .exe sees
+      #     «Доступна новая версия» within 30 min and updates in-app.
+      - name: Verify the draft release has the exe attached
         if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $tag = '${{ github.ref_name }}'
-          $expected = 'https://github.com/${{ github.repository }}/releases/download/' + $tag + '/YandexBusinessParser-windows-x64.zip'
           for ($i = 0; $i -lt 10; $i++) {
-            try {
-              $r = Invoke-WebRequest -Uri $expected -Method Head -UseBasicParsing -TimeoutSec 10
-              if ($r.StatusCode -eq 200) { Write-Host "Release asset OK: $expected"; exit 0 }
-            } catch { }
+            $assets = gh release view $tag --json assets,isDraft 2>$null | ConvertFrom-Json
+            if ($assets -and ($assets.assets | Where-Object name -eq 'YandexBusinessParser-windows-x64.zip')) {
+              $state = if ($assets.isDraft) { 'draft (опубликуйте — включится авто-обновление у пользователей)' } else { 'published' }
+              Write-Host "Release $tag ready: exe attached, state = $state"
+              exit 0
+            }
             Start-Sleep -Seconds 6
           }
-          Write-Host "::warning::Release asset not reachable yet at $expected — /update/status falls back to /releases/latest/download which resolves after propagation"
+          Write-Host "::warning::exe asset not found on release $tag — проверьте шаг Attach exe выше"
           exit 0
 
       - name: Upload artifact (manual runs)
