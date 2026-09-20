@@ -16,7 +16,7 @@ tqdm~=4.70.0
 colorama~=0.4.6
 
 # Browser automation (Playwright for detail pages, or CDP fallback)
-playwright~=1.62.0
+playwright~=1.63.0
 websocket-client~=1.9  # CDP WebSocket for Chrome DevTools Protocol
 
 # Excel export
