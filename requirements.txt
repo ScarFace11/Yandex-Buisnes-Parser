@@ -12,7 +12,7 @@ Flask~=3.1.3
 httpx[http2]~=0.28.1
 curl-cffi~=0.16.3    # HTTP engine with Chrome TLS/JA3 impersonation (anti-bot); httpx used as fallback
 requests~=2.34.2
-tqdm~=4.70.0
+tqdm~=4.70.1
 colorama~=0.4.6
 
 # Browser automation (Playwright for detail pages, or CDP fallback)
