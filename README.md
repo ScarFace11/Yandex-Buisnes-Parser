@@ -194,7 +194,7 @@ APPLE_ID=you@example.com APPLE_APP_SPECIFIC_PASSWORD=xxxx APPLE_TEAM_ID=TEAMID \
 
 | Workflow | Когда запускается | Что делает |
 |---|---|---|
-| `ci.yml` | каждый PR, push в `main`/`dev` | тесты на трёх системах (Ubuntu, Windows, macOS) + node-тесты UI + проверка, что `.spec`-файлы и workflow-YAML парсятся |
+| `ci.yml` | каждый PR, push в `main` | тесты на трёх системах (Ubuntu, Windows, macOS) + node-тесты UI + проверка, что `.spec`-файлы и workflow-YAML парсятся |
 | `build-exe.yml` | тег `v*` | гейт версии, тесты, Windows `.exe`, смоук-тест, GitHub Release |
 | `build-macos.yml` | тег `v*` | `.app` для arm64 и x64, подпись Developer ID **или ad-hoc**, нотаризация, смоук-тест, `.zip` + `.dmg` |
 
