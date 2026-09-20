@@ -46,7 +46,7 @@ class TestPollSemaphoreAcquire:
     def test_acquires_when_free(self):
         """A free semaphore is acquired immediately (no stop interference)."""
         sem = threading.Semaphore(1)
-        with _StopHarness(mode="none") as _h:
+        with _StopHarness(mode="none"):
             pass  # events set but not triggered below
 
         # No stop requested → plain acquire path

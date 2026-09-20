@@ -136,7 +136,6 @@ def test_quota_cap_reached_stops_run_once(monkeypatch):
 def test_quota_stop_resets_per_run(monkeypatch):
     """A fresh run re-arms the stop: an exhausted month stops immediately,
     exactly once per run."""
-    import threading
     msgs = []
     stop_count = []
     monkeypatch.setattr(twogis.state, "warn", lambda m: msgs.append(m))

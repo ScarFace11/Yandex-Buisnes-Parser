@@ -11,7 +11,6 @@ import json
 import os
 import threading
 import time
-from pathlib import Path
 
 from config import OUTPUT_DIR
 
@@ -40,7 +39,6 @@ def _load() -> list[dict]:
 
 def _save() -> None:
     """Save history to disk."""
-    global _cache
     if _cache is None:
         return
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -59,6 +57,7 @@ def add_entry(
     status: str = "completed",
 ) -> None:
     """Add a new entry to search history."""
+    global _cache
     with _lock:
         history = _load()
         entry = {
@@ -111,6 +110,7 @@ def get_entry(run_id: str) -> dict | None:
 
 def delete_entry(run_id: str) -> bool:
     """Delete an entry by run_id."""
+    global _cache
     with _lock:
         history = _load()
         original_len = len(history)
@@ -124,6 +124,7 @@ def delete_entry(run_id: str) -> bool:
 
 def clear_history() -> None:
     """Clear all history."""
+    global _cache
     with _lock:
         _cache = []
         _save()

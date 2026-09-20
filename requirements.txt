@@ -1,24 +1,29 @@
 # ══════════════════════════════════════════════════════════════
 #  Yandex Business Parser — Dependencies
+#
+#  Версии зафиксированы на проверенной связке: CI ставит ровно
+#  эти версии, поэтому свежий релиз зависимости не может тихо
+#  сломать тесты или сборку. Обновляет Dependabot (пру-реквесты
+#  проходят тесты до слияния).
 # ══════════════════════════════════════════════════════════════
 
 # Core
-Flask>=3.0
-httpx[http2]>=0.27
-curl-cffi>=0.16      # HTTP engine with Chrome TLS/JA3 impersonation (anti-bot); httpx used as fallback
-requests>=2.31
-tqdm>=4.65
-colorama>=0.4
+Flask~=3.1.3
+httpx[http2]~=0.28.1
+curl-cffi~=0.16.3    # HTTP engine with Chrome TLS/JA3 impersonation (anti-bot); httpx used as fallback
+requests~=2.34.2
+tqdm~=4.70.0
+colorama~=0.4.6
 
 # Browser automation (Playwright for detail pages, or CDP fallback)
-playwright>=1.40
-websocket-client>=1.6  # CDP WebSocket for Chrome DevTools Protocol
+playwright~=1.62.0
+websocket-client~=1.9  # CDP WebSocket for Chrome DevTools Protocol
 
 # Excel export
-openpyxl>=3.1
+openpyxl~=3.1.5
 
 # Maps (HTML)
-folium>=0.15
+folium~=0.20.0
 
 # Geocoding (built-in, uses the http_client engine)
 # 2GIS source (built-in, same engine — no extra deps)

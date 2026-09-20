@@ -1,7 +1,5 @@
 """Tests for the optional output-quality filters and the total-deadline timeout."""
 
-import pytest
-
 from yandex_maps_parser import state
 from yandex_maps_parser.exporters import (
     collapse_chains,
@@ -128,8 +126,6 @@ class TestTotalTimeoutExtraction:
     """The 3rd tuple element of _get's timeout is a hard wall-clock deadline."""
 
     def test_three_tuple_extracts_total(self):
-        from yandex_maps_parser.http_client import _get
-
         # simulate the extraction logic used by _get()
         def extract(t):
             return t[2] if isinstance(t, tuple) and len(t) >= 3 else None

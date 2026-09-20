@@ -2,9 +2,7 @@
 HTML / text extraction: social links, emails, descriptions, reviews.
 """
 import json
-import random
 import re
-import time
 
 from .constants import (
     LINK_AGGREGATORS,

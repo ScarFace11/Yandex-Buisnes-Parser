@@ -12,10 +12,8 @@ Anything that turns the SECOND pause into a plain stop (a stale `.pause` file,
 a paused entry left active, a resume that queues instead of starting) makes one
 of the assertions below fail.
 """
-import json
 import queue as _queue
 import sys
-import threading
 import time
 from pathlib import Path
 

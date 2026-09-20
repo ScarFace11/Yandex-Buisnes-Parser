@@ -95,7 +95,8 @@ _local       = threading.local()
 
 _MAX_RATE_LIMIT_RETRIES = 8
 
-# Rate limiting policy imported from rate_limit module
+# Rate limiting policy: реэкспорт из rate_limit — extractors и runner
+# импортируют эти имена отсюда (pyflakes помечает часть как unused ложно).
 from .rate_limit import (
     _get_rps, _rps_drop, _rps_reset,
     _set_cooldown, _anti_bot_detected, _anti_bot_reset, _cooldown_remaining,
@@ -341,7 +342,6 @@ def _get_latency_stats() -> tuple[float, float, float]:
 
 def get_analytics() -> dict:
     """Return real-time analytics for the web UI."""
-    global _rps_start_time
     with _stats_lock:
         total_requests = _stats["requests"]
         errors = _stats["errors"]

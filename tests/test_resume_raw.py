@@ -7,7 +7,6 @@
 а export_raw_records умеет досыпать записи в существующий файл.
 """
 import os
-import queue as _queue
 import sys
 from pathlib import Path
 
@@ -16,7 +15,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pytest
 
 from yandex_maps_parser import processing, runner, state
-from yandex_maps_parser.exporters import save_excel
 
 
 @pytest.fixture

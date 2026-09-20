@@ -4,7 +4,6 @@ continuation mode, and request-kind labeling.
 """
 import sys
 import os
-import types
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 

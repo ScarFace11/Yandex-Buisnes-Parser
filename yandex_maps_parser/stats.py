@@ -3,7 +3,7 @@ Console statistics summary.
 """
 from collections import Counter
 
-from .constants import KNOWN_PLATFORMS, SOCIAL_COLORS
+from .constants import KNOWN_PLATFORMS
 from . import state
 
 

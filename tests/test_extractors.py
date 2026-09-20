@@ -2,7 +2,6 @@
 Smoke tests for the parser's extraction pipeline.
 Run with: python -m pytest tests/ -v
 """
-import json
 import sys
 import os
 

@@ -15,6 +15,9 @@ import time as _time
 from colorama import Fore, Style
 from tqdm import tqdm
 
+# Реэкспорт настроек config: остальные модули читают их через state.*.
+# (pyflakes помечает эти импорты как «unused» — это ложное срабатывание,
+# привязки нужны именно в пространстве имён state.)
 from config import (
     SEARCH_QUERIES,
     CITY,

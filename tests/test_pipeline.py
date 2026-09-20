@@ -6,8 +6,6 @@ run_web raw-mode filter neutralization and the interrupted-run rule.
 """
 import os
 
-import pytest
-
 from yandex_maps_parser import processing, runner, state
 
 

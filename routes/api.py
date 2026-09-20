@@ -3,6 +3,7 @@ import os
 import io
 import csv
 import json
+import shutil
 
 from flask import Blueprint, request, Response, send_from_directory, jsonify
 
@@ -54,7 +55,8 @@ def _save_reviewed(data: dict):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-GITHUB_RAW_URL = "https://raw.githubusercontent.com/ScarFace11/Yandex-Buisnes-Parser/main/static/version.json"
+GITHUB_REPO = "ScarFace11/Yandex-Buisnes-Parser"
+GITHUB_RAW_URL = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/static/version.json"
 
 
 @bp.route("/")

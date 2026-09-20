@@ -1,6 +1,4 @@
 """Tests for the pause feature: position tracking + enriched resume payload."""
-import io
-import json
 import os
 import sys
 from pathlib import Path

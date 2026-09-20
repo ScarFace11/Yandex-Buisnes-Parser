@@ -21,7 +21,7 @@ from yandex_maps_parser.checkpoint import (
 from yandex_maps_parser.enrichment import collect_candidates, enrich
 from yandex_maps_parser.twogis import collect_candidates_2gis, reset_field_fallback as _2gis_reset_fields
 from yandex_maps_parser.http_client import _worker_client, reset_stats, _init_client_pool
-from yandex_maps_parser.browser_client import init_browser as _init_browser, close_browser as _close_browser, is_available as _browser_ready
+from yandex_maps_parser.browser_client import init_browser as _init_browser, close_browser as _close_browser
 from yandex_maps_parser import cdp_client
 from yandex_maps_parser.exporters import (
     _resolve, load_existing_urls, load_jsonl, dedupe_records,
@@ -583,7 +583,6 @@ def _apply_params(params: dict) -> None:
     state.RAW_MODE = params.get("raw_mode", "keep") if state.PIPELINE == "raw" else "keep"
     if state.PIPELINE == "raw":
         state.COLLAPSE_CHAINS = False
-        _pm_force = "all"
     else:
         state.COLLAPSE_CHAINS = bool(params.get("collapse_chains", False))
     state.USE_GRID        = bool(params.get("use_grid", False))

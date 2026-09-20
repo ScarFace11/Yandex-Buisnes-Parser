@@ -6,7 +6,7 @@ import random
 import threading
 import time
 import concurrent.futures
-from concurrent.futures import ThreadPoolExecutor, as_completed, wait as _future_wait
+from concurrent.futures import ThreadPoolExecutor, wait as _future_wait
 from datetime import datetime
 
 from tqdm import tqdm

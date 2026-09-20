@@ -390,11 +390,13 @@ class TestGithubAutomation:
         assert "gh-release" not in wf            # не создаём второй релиз
         assert "gh release view" in wf           # и ждём появления релиза
 
-    def test_mac_workflow_builds_a_dev_bundle_too(self):
+    def test_mac_workflow_builds_only_the_public_bundle(self):
+        """Сборка .app — публичная: dev-бандл собирается локально."""
         wf = self._wf("build-macos.yml")
-        assert "refs/heads/dev" in wf
-        assert "inputs.dev" in wf
-        assert "5010" in wf                      # dev-порт в смоук-тесте
+        assert "refs/heads/dev" not in wf        # без dev-триггера
+        assert "inputs.dev" not in wf            # и без ручного переключателя
+        assert "YandexBusinessParserDev" not in wf
+        assert "5050" in wf                      # публичный macOS-порт в смоук-тесте
 
     def test_dependabot_covers_pip_and_actions(self):
         cfg = (ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8")

@@ -20,7 +20,7 @@ import random
 import threading
 import time
 import logging
-from typing import Callable, Optional
+from typing import Callable
 
 from .vk_adapter import VKAdapter
 from . import excel_manager as xm
@@ -183,7 +183,7 @@ def run_send(
 
         try:
             adapter.send_message(peer_id, text)
-            ok(f"  ✓ Отправлено!")
+            ok("  ✓ Отправлено!")
             stats["sent"] += 1
             xm.mark_sent(excel_path, row_num, "+")
         except PermissionError as exc:

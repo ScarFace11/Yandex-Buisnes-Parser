@@ -10,7 +10,6 @@ from collections import Counter
 from datetime import datetime
 
 import openpyxl
-from openpyxl.formatting.rule import ColorScaleRule, DataBarRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 

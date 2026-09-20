@@ -5,9 +5,9 @@
   * dev-сборка слушает свой порт (5010), публичная — 5000, YP_PORT главнее;
   * авто-обновление в dev-режиме отключено целиком (и в сеть не ходим);
   * в шапке появляется метка DEV, а в публичной сборке её нет;
-  * файлы dev-пайплайна (build-dev.bat, workflow) на месте.
+  * dev-инфраструктура НЕ публикуется: workflow сборки dev-exe удалён,
+    локальный build-dev.bat не попадает в git.
 """
-import os
 from pathlib import Path
 
 import pytest
@@ -165,27 +165,27 @@ class TestDevBadge:
         assert "v2.3.0" in rel_html
 
 
-# ── Dev-пайплайн на месте ─────────────────────────────────────
+# ── Dev-инфраструктура не публикуется ────────────────────────
 
 class TestDevPipeline:
-    def test_local_dev_build_script(self):
-        bat = (ROOT / "build-dev.bat").read_text(encoding="utf-8")
-        assert "YP_DEV=1" in bat
-        assert "dist-dev" in bat
-        assert "parser.spec" in bat
-
     def test_spec_switches_the_exe_name(self):
         spec = (ROOT / "parser.spec").read_text(encoding="utf-8")
         assert 'os.environ.get("YP_DEV"' in spec
         assert '"YandexBusinessParserDev" if DEV_BUILD else "YandexBusinessParser"' in spec
 
-    def test_ci_builds_dev_from_the_dev_branch(self):
-        wf = (ROOT / ".github" / "workflows" / "build-dev.yml").read_text(encoding="utf-8")
-        assert "- dev" in wf                      # триггер на ветку dev
-        assert "YP_DEV: '1'" in wf
-        assert "--distpath dist-dev" in wf
-        assert "upload-artifact" in wf
-        assert "gh-release" not in wf             # релиз не создаём
+    def test_ci_does_not_build_a_dev_exe(self):
+        """Сборка dev-exe — только локально: в репозитории нет ни workflow,
+        ни упоминаний dev-сборки в публичных workflow."""
+        assert not (ROOT / ".github" / "workflows" / "build-dev.yml").exists()
+        for wf in (ROOT / ".github" / "workflows").glob("*.yml"):
+            text = wf.read_text(encoding="utf-8")
+            assert "YandexBusinessParserDev" not in text, wf.name
+            assert "dist-dev" not in text, wf.name
+
+    def test_local_dev_build_script_is_not_committed(self):
+        """build-dev.bat живёт только локально (в .gitignore)."""
+        gi = (ROOT / ".gitignore").read_text(encoding="utf-8")
+        assert "build-dev.bat" in gi
 
     def test_release_workflow_guards_against_dev_versions(self):
         wf = (ROOT / ".github" / "workflows" / "build-exe.yml").read_text(encoding="utf-8")

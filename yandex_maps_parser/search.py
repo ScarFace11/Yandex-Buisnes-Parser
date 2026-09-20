@@ -1,7 +1,6 @@
 """
 Yandex Maps Search API: page fetching and feature parsing.
 """
-from .constants import KNOWN_PLATFORMS
 from .http_client import _get
 from . import state
 

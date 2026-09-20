@@ -5,12 +5,6 @@
 # Result: dist/YandexBusinessParser/YandexBusinessParser.exe  (onedir —
 # starts fast and trips fewer antivirus false positives than onefile).
 #
-# Build (сборка разработчика):  YP_DEV=1 pyinstaller parser.spec --distpath dist-dev
-# Result: dist-dev/YandexBusinessParserDev/YandexBusinessParserDev.exe —
-# отдельное имя файла и отдельная папка, поэтому dev-сборка не затирает
-# публичную и может работать одновременно (порт 5010 против 5000, см.
-# config.app_port). Проще всего — build-dev.bat / workflow build-dev.yml.
-#
 # Playwright is deliberately EXCLUDED (~300 MB of browsers + driver).
 # The app falls back to Chrome CDP (installed Chrome) and then to httpx,
 # so the exe is fully functional without it.
@@ -20,7 +14,7 @@ from PyInstaller.utils.hooks import collect_submodules
 
 block_cipher = None
 
-# YP_DEV=1 → имя разработческой сборки. Публичное имя остаётся неизменным.
+# YP_DEV=1 → внутреннее имя сборки (для локальных сборок разработчика).
 DEV_BUILD = os.environ.get("YP_DEV", "").strip().lower() not in ("", "0", "false", "no")
 APP_NAME = "YandexBusinessParserDev" if DEV_BUILD else "YandexBusinessParser"
 

@@ -16,7 +16,6 @@ Usage:
 """
 
 import json
-import queue
 
 from flask import Blueprint, request, jsonify
 

@@ -116,7 +116,7 @@ class VKAdapter(BaseSocialAdapter):
                         raise RuntimeError(f"VK требует капчу (14): {msg}")
                     # Сообщения закрыты
                     if code == 901:
-                        raise PermissionError(f"Сообщество закрыло личные сообщения (901)")
+                        raise PermissionError("Сообщество закрыло личные сообщения (901)")
                     raise RuntimeError(f"VK API ошибка {code}: {msg}")
 
                 return data.get("response", {})

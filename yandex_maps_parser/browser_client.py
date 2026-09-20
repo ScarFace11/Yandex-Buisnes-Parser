@@ -334,7 +334,7 @@ def _restart_browser() -> bool:
 
     Returns True if restart succeeded.
     """
-    global _pw_instance, _browser, _page_pool, _rate_semaphore
+    global _pw_instance, _browser, _page_pool
 
     with _browser_lock:
         # Close existing browser

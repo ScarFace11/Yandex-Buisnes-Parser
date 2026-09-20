@@ -39,6 +39,13 @@ ENV/
 # Jupyter
 .ipynb_checkpoints/
 
+# Self-updater runtime state (updater.bat, update.zip, _backup, update.log)
+_update/
+
+# Local-only build scripts and CI leftovers
+build-dev.bat
+release_notes.md
+
 # Archives
 *.zip
 *.tar.gz

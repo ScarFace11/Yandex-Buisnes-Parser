@@ -19,7 +19,6 @@ Usage:
     app = Flask(__name__, template_folder=paths.template_dir(), static_folder=paths.static_dir())
     config.OUTPUT_DIR = paths.output_dir()   # ... or import paths wherever a dir is needed
 """
-import os
 import sys
 from pathlib import Path
 

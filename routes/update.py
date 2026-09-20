@@ -12,15 +12,38 @@ Flow (all triggered from the web UI):
   GET  /update/download — stream the release zip to a temp file
   POST /update/apply    — extract, verify, swap via updater.bat, restart the app
 
+Two failure modes this module specifically guards against:
+
+1. STALE RELEASE LINK. version.json on main is stamped with a
+   `releases/latest/download/...` URL at build time, but while the new
+   release is still a DRAFT that link silently resolves to the PREVIOUS
+   published release — the updater would "update" users to the old version
+   (report: update runs, console closes, the old version is still there).
+   So the real asset URL is resolved through the GitHub API (latest
+   PUBLISHED release) and the version inside the downloaded zip is verified
+   against the advertised one before anything is touched on disk.
+
+2. HALF-DONE SWAP. A running .exe cannot be moved/overwritten; the old bat
+   relied on `tasklist | find` + `timeout`, both fragile (a non-Windows
+   `find` on PATH breaks the wait; `timeout` cannot run without a console),
+   so the bat could start swapping while the app was still running: the
+   locked exe stayed, the new _internal landed next to it, and the old exe
+   relaunched. The new bat waits for an explicit exit marker written by the
+   app, retries locked moves, verifies the result, and ROLLS BACK to the
+   backup on any failure. Only app-owned files (exe, _internal, ...) are
+   moved — user data (.env, logs/, output/) is never touched. Every step
+   appends to _update/update.log for diagnosability.
+
 Swap strategy (a running .exe cannot overwrite itself on Windows):
   1. Extract the downloaded zip to <user_dir>/_update/
-  2. Verify YandexBusinessParser.exe and _internal/ exist inside
+  2. Verify the new exe/_internal and that its version >= advertised
   3. Write _update/updater.bat which:
-       waits for the current process to exit,
-       backs up the current files to _backup/,
-       moves the new files into place,
-       starts the new exe, deletes itself
-  4. Respond ok, then spawn the .bat detached and stop Flask
+       waits for the app.exit marker (the app writes it right before exit),
+       backs up ONLY the app files to _update/_backup/,
+       moves the new files into place (retrying while files are locked),
+       starts the new exe; on any failure restores the backup;
+       keeps _backup (rollback) and update.log, cleans the rest
+  4. Respond ok, write the app.exit marker, stop the app
 
 From source (not frozen) the endpoints report frozen=False and the UI
 hides the self-update button — update via git pull instead.
@@ -31,7 +54,7 @@ import subprocess
 import zipfile
 from pathlib import Path
 
-from flask import Blueprint, jsonify, request, Response
+from flask import Blueprint, jsonify, request
 
 try:
     import paths
@@ -42,7 +65,10 @@ bp = Blueprint("update", __name__)
 
 APP_DIR_NAME = "YandexBusinessParser"     # top-level folder inside the release zip
 EXE_NAME = "YandexBusinessParser.exe"
+ZIP_ASSET_NAME = "YandexBusinessParser-windows-x64.zip"
 STATE_FILE = "_update_state.json"         # progress for /update/status polling
+EXIT_MARKER = "app.exit"                  # the app writes this right before exiting
+LOG_FILE = "update.log"                   # updater.bat trace, for diagnostics
 
 # popen kwargs that work the same on all supported Python versions
 _DETACHED = {"creationflags": getattr(subprocess, "DETACHED_PROCESS", 0), "close_fds": True}
@@ -146,6 +172,36 @@ def _remote_meta() -> dict:
     return r.json()
 
 
+def _published_asset_url() -> str:
+    """Download URL of the zip asset on the latest PUBLISHED release.
+
+    The download_url stamped into version.json points at
+    `releases/latest/download/...` — but until the release is published that
+    link still serves the PREVIOUS release (drafts are invisible to it), and
+    the updater would silently install an old version. The API endpoint
+    answers with the same "latest published" release, so the asset URL is
+    taken from there explicitly (unauthenticated access is enough for a
+    public repo). "" when the release or the asset is missing (then the
+    caller falls back to the version.json URL).
+    """
+    import requests
+    from routes.api import GITHUB_REPO
+    try:
+        r = requests.get(
+            f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
+            timeout=10,
+            headers={"User-Agent": "YandexParser-Updater/1.0",
+                     "Accept": "application/vnd.github+json"},
+        )
+        r.raise_for_status()
+        for asset in r.json().get("assets", []):
+            if asset.get("name") == ZIP_ASSET_NAME:
+                return asset.get("browser_download_url", "")
+    except Exception:
+        pass
+    return ""
+
+
 @staticmethod
 def _ver_tuple(v: str):
     return tuple(int(x) for x in str(v).split(".") if x.isdigit())
@@ -177,6 +233,10 @@ def update_status():
         out["changelog"] = meta.get("changelog", "")
         out["download_url"] = meta.get("download_url", "")
         out["newer"] = _ver_tuple(out["latest"] or "0") > _ver_tuple(APP_VERSION)
+        # Remember the advertised version for /update/apply: the bat is built
+        # later, and the zip must be verified against the SAME advertised
+        # version even if GitHub is unreachable by then.
+        _save_state(latest=out["latest"], download_url=out["download_url"])
     except Exception as exc:
         out["error"] = str(exc)
     return jsonify(out)
@@ -214,8 +274,16 @@ def update_download():
     if not _self_update_supported():
         return jsonify(_platform_refusal()), 400
 
-    meta = _state()
-    url = (request.get_json(silent=True) or {}).get("url") or meta.get("download_url")
+    state = _state()
+    explicit = (request.get_json(silent=True) or {}).get("url")
+    url = explicit or state.get("download_url") or ""
+    # The stamped `releases/latest/download/...` URL serves the PREVIOUS
+    # published release while the new one is a draft — resolve the real
+    # published asset through the API instead.
+    if not explicit:
+        published = _published_asset_url()
+        if published:
+            url = published
     if not url:
         try:
             url = _remote_meta().get("download_url", "")
@@ -223,6 +291,7 @@ def update_download():
             url = ""
     if not url:
         return jsonify({"ok": False, "error": "Не найден адрес обновления"}), 400
+    _save_state(download_url=url)
 
     import requests
     try:
@@ -283,43 +352,148 @@ def update_apply():
     if not (src / "_internal").exists():
         return jsonify({"ok": False, "error": "В архиве нет _internal — повреждённая сборка"}), 400
 
-    app_root = _app_root()
-    new_version = _state().get("latest") or ""
-    try:
-        vf = src / "static" / "version.json"
-        if vf.exists():
-            import json as _json
-            new_version = _json.loads(vf.read_text(encoding="utf-8")).get("version", new_version)
-    except Exception:
-        pass
+    # 3. Verify the version INSIDE the zip against the advertised one.
+    #    While a release is still a draft, a `releases/latest/...` link
+    #    downloaded the PREVIOUS release: without this check the updater
+    #    would "successfully" install an old version (report: «остаётся
+    #    прежняя версия»). A stale zip is deleted so the retry re-downloads.
+    advertised = str(st.get("latest") or "").strip()
+    zip_version = ""
+    for cand in (src / "_internal" / "static" / "version.json",
+                 src / "static" / "version.json"):
+        if cand.exists():
+            try:
+                zip_version = str(_json_load(cand).get("version", "")).strip()
+            except Exception:
+                zip_version = ""
+            break
+    if advertised and zip_version and _ver_tuple(zip_version) < _ver_tuple(advertised):
+        try:
+            zip_path.unlink()
+        except OSError:
+            pass
+        _save_state(error=f"В архиве v{zip_version}, ожидалась v{advertised}")
+        return jsonify({
+            "ok": False,
+            "error": f"В архиве версия v{zip_version}, а ожидалась v{advertised}: "
+                     "релиз ещё не опубликован. Скачайте новую версию вручную "
+                     "со страницы релизов (кнопка GitHub ↗)."}), 409
+    new_version = zip_version or advertised
 
-    # 3. Build the updater script: it runs AFTER this process exits.
-    #    a running exe cannot replace itself, so a .bat waits for PID,
-    #    backs up, swaps, restarts, deletes itself.
-    pid = os.getpid()
+    app_root = _app_root()
+
+    # 4. Build the updater script: it runs AFTER this process exits.
+    #    The old bat waited for the app PID via `tasklist | find` and slept
+    #    with `timeout` — both break easily (a non-Windows find.exe on PATH,
+    #    no console for timeout), so the swap could start while the exe was
+    #    still locked: the move failed silently, the new _internal landed
+    #    next to the OLD exe, and the old version relaunched. This bat waits
+    #    for an explicit marker file instead, retries locked moves, verifies
+    #    the result and rolls back if anything failed. Only app-owned files
+    #    are moved — .env, logs/ and output/ stay where they are.
     backup = work / "_backup"
     bat = work / "updater.bat"
-    bat.write_text("\r\n".join([
+    marker = work / EXIT_MARKER
+
+    def _mov_block(idx: int, name: str, is_dir: bool) -> list[str]:
+        """Retry-loop that moves one app entry into the backup folder."""
+        pre = [f'if exist "%BAK%\\{name}" rmdir /s /q "%BAK%\\{name}"'] if is_dir else []
+        return [
+            f'rem -- swap entry: {name} ({"dir" if is_dir else "file"})',
+            "set /a TRY=0",
+            f":mov_{idx}",
+            f'if not exist "%APP%\\{name}" goto done_{idx}',
+            *pre,
+            f'move /y "%APP%\\{name}" "%BAK%\\{name}" >nul 2>>"%LOG%"',
+            f'if not exist "%APP%\\{name}" goto done_{idx}',
+            "set /a TRY+=1",
+            "if %TRY% GEQ 10 goto rollback",
+            "ping -n 2 127.0.0.1 >nul",
+            f"goto mov_{idx}",
+            f":done_{idx}",
+            "",
+        ]
+
+    lines = [
         "@echo off",
-        "rem Auto-generated by YandexBusinessParser updater — do not edit",
-        f":waitloop",
-        f"tasklist /FI \"PID eq {pid}\" | find /I \"{pid}\" >nul && (timeout /t 1 /nobreak >nul & goto waitloop)",
-        f"if exist \"{backup}\" rmdir /s /q \"{backup}\"",
-        # everything currently in the app folder except the _update workdir
-        f"mkdir \"{backup}\"",
-        f"for /f %%i in ('dir /b \"{app_root}\" ^| findstr /v /i \"_update\"') do move \"{app_root}\\%%i\" \"{backup}\\\" >nul 2>&1",
-        f"xcopy \"{src}\\*\" \"{app_root}\\\" /e /i /y >nul",
-        f"start \"\" \"{app_root}\\{EXE_NAME}\"",
-        f"rmdir /s /q \"{work}\"",
-        "exit",
-    ]), encoding="cp866", errors="replace")
+        "setlocal EnableExtensions",
+        "rem Auto-generated by YandexBusinessParser updater - do not edit",
+        f'set "LOG={work / LOG_FILE}"',
+        f'set "APP={app_root}"',
+        f'set "SRC={src}"',
+        f'set "BAK={backup}"',
+        f'set "MARK={marker}"',
+        f'set "WORK={work}"',
+        'echo [%date% %time%] updater started >> "%LOG%"',
+        "",
+        "rem -- 1. Wait for the app.exit marker (the app writes it on exit)",
+        "set /a N=0",
+        ":waitmark",
+        'if exist "%MARK%" goto waited',
+        "ping -n 2 127.0.0.1 >nul",
+        "set /a N+=1",
+        "if %N% LSS 40 goto waitmark",
+        'echo [%time%] no exit marker after ~40s, proceeding anyway >> "%LOG%"',
+        ":waited",
+        "ping -n 3 127.0.0.1 >nul",
+        "",
+        "rem -- 2. Back up ONLY the app files (user data is not touched)",
+        'if not exist "%BAK%" mkdir "%BAK%"',
+    ]
+    for i, entry in enumerate(sorted(src.iterdir())):
+        lines += _mov_block(i, entry.name, entry.is_dir())
+    lines += [
+        "rem -- 3. Copy the new files in",
+        'xcopy "%SRC%\\*" "%APP%\\" /e /i /y >>"%LOG%" 2>&1',
+        "if errorlevel 1 goto rollback",
+        f'if not exist "%APP%\\{EXE_NAME}" goto rollback',
+        'echo [%time%] swap done, starting the new version >> "%LOG%"',
+        'cd /d "%APP%"',
+        f'start "" "%APP%\\{EXE_NAME}"',
+        'echo [%date% %time%] update completed >> "%LOG%"',
+        'if exist "%SRC%" rmdir /s /q "%SRC%"',
+        'if exist "%MARK%" del /q "%MARK%" >nul 2>&1',
+        'if exist "%WORK%\\update.zip" del /q "%WORK%\\update.zip" >nul 2>&1',
+        "exit /b 0",
+        "",
+        ":rollback",
+        'echo [%time%] FAILED - restoring the previous version >> "%LOG%"',
+    ]
+    for i, entry in enumerate(sorted(src.iterdir())):
+        name = entry.name
+        lines += [
+            f'if not exist "%APP%\\{name}" if exist "%BAK%\\{name}" '
+            f'move /y "%BAK%\\{name}" "%APP%\\{name}" >nul 2>>"%LOG%"',
+        ]
+    lines += [
+        'echo [%date% %time%] rollback finished, old version kept >> "%LOG%"',
+        "exit /b 1",
+    ]
+    # newline="" keeps the explicit CR-LF line endings exactly as written
+    # (a text-mode write would turn them into CR-CR-LF).
+    with open(bat, "w", encoding="cp866", errors="replace", newline="") as fh:
+        fh.write("\r\n".join(lines))
 
     _save_state(applied=True, new_version=new_version,
-                previous_version=st.get("current", ""))
+                previous_version=st.get("current", ""), error="")
 
-    # 4. Launch detached, then stop the app so the .bat can take over.
+    # 5. Launch detached, signal exit, then stop the app so the .bat can
+    #    take over. The marker makes the bat start its swap as soon as this
+    #    process is gone; the retry loops cover the shutdown window.
+    if marker.exists():
+        try:
+            marker.unlink()
+        except OSError:
+            pass
     subprocess.Popen(["cmd", "/c", str(bat)], cwd=str(work), **_DETACHED)
+    try:
+        marker.write_text("exit", encoding="ascii")
+    except OSError:
+        pass
 
+    # 6. Give the response a moment to flush, then hard-exit: the running
+    #    exe locks itself, and the .bat can only swap files once this
+    #    process is gone (the marker + the bat's retry loops cover the gap).
     def _bye():
         import time as _t
         _t.sleep(1.0)

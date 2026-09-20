@@ -1,34 +1,21 @@
 name: Build macOS .app
 
-# Сборка .app для macOS (Apple Silicon и Intel).
-#
-#  * push тега v*         → публичная сборка, .zip и .dmg прикрепляются к тому
-#                           же GitHub Release, что и Windows .exe
-#                           (build-exe.yml создаёт релиз, мы ждём его и доливаем
-#                            файлы — так два workflow не дерутся за релиз);
-#  * push ветки dev       → сборка разработчика (артефакт, без релиза);
-#  * workflow_dispatch    → вручную, переключателем «dev» можно собрать
-#                           сборку разработчика.
+# Сборка .app для macOS (Apple Silicon и Intel): пуш тега v* или запуск
+# вручную из Actions. `.zip` и `.dmg` прикрепляются к тому же GitHub Release,
+# что и Windows .exe (build-exe.yml создаёт релиз, мы ждём его и доливаем
+# файлы — так два workflow не дерутся за релиз).
 #
 # Подпись: если в секретах задан MACOS_CERTIFICATE_P12 (+ APPLE_ID,
 # APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID) — бандл подписывается
 # Developer ID с hardened runtime и нотаризуется: Gatekeeper запускает
 # приложение без предупреждений. Без секретов — ad-hoc подпись и
-# подтверждение при первом запуске (как включить: README, «Как настроить
-# подпись macOS»).
+# подтверждение при первом запуске.
 
 on:
   push:
     tags:
       - 'v*'
-    branches:
-      - dev
   workflow_dispatch:
-    inputs:
-      dev:
-        description: 'Собрать сборку разработчика (APP_VERSION с суффиксом -dev)'
-        type: boolean
-        default: false
 
 permissions:
   contents: write   # gh release upload на тегах
@@ -36,9 +23,6 @@ permissions:
 jobs:
   guard:
     name: Guard — версия и тег
-    # Только для публичной сборки: dev-сборка как раз и живёт на версии -dev,
-    # поэтому при push в dev и при включённом переключателе «dev» шаг пропускаем.
-    if: ${{ !((github.event_name == 'push' && github.ref == 'refs/heads/dev') || inputs.dev == true) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -52,20 +36,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-
-      - name: Guard — публичный релиз не собирается из dev-версии
-        env:
-          YANDEX_API_KEY: ci-dummy-key
-        run: |
-          python - <<'PY'
-          import sys
-          import config
-          print('APP_VERSION =', config.APP_VERSION)
-          if config.is_dev_build():
-              print('::error::APP_VERSION содержит суффикс -dev: это сборка '
-                    'разработчика. Для релиза уберите суффикс в config.py.')
-              sys.exit(1)
-          PY
 
       - name: Guard — тег и version.json совпадают с версией
         if: startsWith(github.ref, 'refs/tags/v')
@@ -94,8 +64,7 @@ jobs:
   build-macos:
     name: Build ${{ matrix.label }}
     needs: guard
-    # needs пропускается, если guard отфильтрован — поэтому проверяем сами.
-    if: ${{ always() && (needs.guard.result == 'success' || needs.guard.result == 'skipped') }}
+    if: ${{ always() && needs.guard.result == 'success' || needs.guard.result == 'skipped' }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -125,26 +94,10 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
-      - name: Decide the build flavour
-        id: flavour
-        run: |
-          DEV=0
-          if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref }}" = "refs/heads/dev" ]; then DEV=1; fi
-          if [ "${{ inputs.dev }}" = "true" ]; then DEV=1; fi
-          echo "dev=$DEV" >> "$GITHUB_OUTPUT"
-          # Публичная сборка на macOS слушает 5050: 5000 занят AirPlay Receiver
-          # у самой системы (см. config.MAC_PORT).
-          if [ "$DEV" = "1" ]; then
-            echo "name=YandexBusinessParserDev" >> "$GITHUB_OUTPUT"
-            echo "port=5010" >> "$GITHUB_OUTPUT"
-          else
-            echo "name=YandexBusinessParser" >> "$GITHUB_OUTPUT"
-            echo "port=5050" >> "$GITHUB_OUTPUT"
-          fi
-
+      # Публичная сборка на macOS слушает 5050: 5000 занят AirPlay Receiver
+      # у самой системы (см. config.MAC_PORT).
       - name: Build the .app bundle (parser-mac.spec)
         env:
-          YP_DEV: ${{ steps.flavour.outputs.dev == '1' && '1' || '' }}
           YP_ARCH: ${{ matrix.arch }}
           # Минимальная система — macOS 11 (Big Sur): иначе бандл, собранный
           # на свежем образе, откажется запускаться на Mac постарше.
@@ -177,10 +130,9 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          NAME: ${{ steps.flavour.outputs.name }}
         run: |
           set -euo pipefail
-          APP="dist-mac/$NAME.app"
+          APP="dist-mac/YandexBusinessParser.app"
 
           # 1. Сертификат (base64 P12) — во временную keychain
           WORK="$(mktemp -d)"
@@ -206,7 +158,7 @@ jobs:
           xcrun notarytool store-credentials YP_NOTARY \
             --apple-id "$APPLE_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" \
             --team-id "$APPLE_TEAM_ID"
-          NOTARY_ZIP="$WORK/$NAME-notary.zip"
+          NOTARY_ZIP="$WORK/notary.zip"
           ditto -c -k --sequesterRsrc --keepParent "$APP" "$NOTARY_ZIP"
           xcrun notarytool submit "$NOTARY_ZIP" --keychain-profile YP_NOTARY --wait
 
@@ -220,7 +172,7 @@ jobs:
         # PyInstaller подписывает ad-hoc сам, здесь доводим и проверяем.
         if: steps.signing.outputs.mode == 'adhoc'
         run: |
-          APP="dist-mac/${{ steps.flavour.outputs.name }}.app"
+          APP="dist-mac/YandexBusinessParser.app"
           test -d "$APP" || { echo "::error::bundle not found: $APP"; exit 1; }
           codesign --force --deep --sign - "$APP"
           codesign --verify --deep --strict "$APP"
@@ -231,9 +183,8 @@ jobs:
         # YP_OPEN_BROWSER=0 — на раннере браузер не нужен.
         run: |
           set -euo pipefail
-          NAME="${{ steps.flavour.outputs.name }}"
-          PORT="${{ steps.flavour.outputs.port }}"
-          BIN="dist-mac/$NAME.app/Contents/MacOS/$NAME"
+          PORT=5050
+          BIN="dist-mac/YandexBusinessParser.app/Contents/MacOS/YandexBusinessParser"
           test -x "$BIN" || { echo "::error::bundle executable missing: $BIN"; exit 1; }
           YP_OPEN_BROWSER=0 "$BIN" > /tmp/app.log 2>&1 &
           PID=$!
@@ -248,28 +199,26 @@ jobs:
             tail -60 /tmp/app.log || true
             exit 1
           fi
-          echo "Smoke test passed: $NAME ответил на 127.0.0.1:$PORT"
+          echo "Smoke test passed: ответил на 127.0.0.1:$PORT"
           # Данные на macOS живут в Application Support, а не внутри бандла
-          test -d "$HOME/Library/Application Support/$NAME" \
-            && echo "Каталог данных создан: ~/Library/Application Support/$NAME"
+          test -d "$HOME/Library/Application Support/YandexBusinessParser" \
+            && echo "Каталог данных создан: ~/Library/Application Support/YandexBusinessParser"
 
       - name: Package the .zip (ditto keeps symlinks and permissions)
         run: |
-          NAME="${{ steps.flavour.outputs.name }}"
           ARCH="${{ matrix.asset_arch }}"
           ditto -c -k --sequesterRsrc --keepParent \
-            "dist-mac/$NAME.app" "dist-mac/$NAME-macos-$ARCH.zip"
+            "dist-mac/YandexBusinessParser.app" "dist-mac/YandexBusinessParser-macos-$ARCH.zip"
           ls -lh dist-mac/*.zip
 
       - name: Build the .dmg
         run: |
-          NAME="${{ steps.flavour.outputs.name }}"
           ARCH="${{ matrix.asset_arch }}"
           STAGE="$(mktemp -d)"
-          cp -R "dist-mac/$NAME.app" "$STAGE/"
+          cp -R "dist-mac/YandexBusinessParser.app" "$STAGE/"
           ln -s /Applications "$STAGE/Applications"
-          hdiutil create -volname "$NAME" -srcfolder "$STAGE" -ov -format UDZO \
-            "dist-mac/$NAME-macos-$ARCH.dmg"
+          hdiutil create -volname "YandexBusinessParser" -srcfolder "$STAGE" -ov -format UDZO \
+            "dist-mac/YandexBusinessParser-macos-$ARCH.dmg"
           rm -rf "$STAGE"
           ls -lh dist-mac/*.dmg
 
@@ -277,8 +226,7 @@ jobs:
         # Данные (templates/, static/) и библиотеки обязаны лежать внутри
         # бандла: иначе .app заработает только рядом с исходниками.
         run: |
-          NAME="${{ steps.flavour.outputs.name }}"
-          APP="dist-mac/$NAME.app"
+          APP="dist-mac/YandexBusinessParser.app"
           test -d "$APP/Contents/Frameworks" \
             || { echo "::error::$APP без Contents/Frameworks — собран неверно"; exit 1; }
           find "$APP/Contents" -name 'index.html' -path '*templates*' | grep -q . \
@@ -290,7 +238,7 @@ jobs:
       - name: Upload the artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.flavour.outputs.name }}-macos-${{ matrix.asset_arch }}
+          name: YandexBusinessParser-macos-${{ matrix.asset_arch }}
           path: |
             dist-mac/*.zip
             dist-mac/*.dmg
@@ -301,7 +249,7 @@ jobs:
         # build-exe.yml ещё до сборки exe — обычно он уже есть к этому моменту.
         # Доливаем файлы в черновик; публикация — одной кнопкой в UI, когда
         # оба билда зелёные (пока черновик, пользователи релиз не видят).
-        if: startsWith(github.ref, 'refs/tags/v') && steps.flavour.outputs.dev == '0'
+        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

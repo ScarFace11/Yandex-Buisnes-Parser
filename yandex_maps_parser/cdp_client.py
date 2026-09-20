@@ -16,7 +16,6 @@ import queue
 import re
 import socket
 import subprocess
-import sys
 import threading
 import time
 import urllib.request
@@ -673,7 +672,7 @@ def fetch_page(url: str, timeout_ms: int = 40000, biz_id: str = "") -> str | Non
 
             # Check tab health
             if not _is_tab_alive(ws_url):
-                state.syslog(f"cdp_client: tab dead, creating replacement...")
+                state.syslog("cdp_client: tab dead, creating replacement...")
                 _close_dead_tab(ws_url)   # free the Chrome tab, don't leak it
                 ws_url = _create_tab()
                 if not ws_url:

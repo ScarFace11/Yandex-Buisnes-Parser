@@ -129,14 +129,14 @@ class RunLogger:
         mins, secs = divmod(int(elapsed), 60)
         self._write("")
         self._write("═" * 60)
-        self._write(f"  ИТОГИ ПОИСКА")
+        self._write("  ИТОГИ ПОИСКА")
         self._write(f"  Время: {mins}м {secs}с")
         self._write(f"  Найдено записей: {total_results}")
         self._write(f"  Файлы: {', '.join(files) if files else 'нет'}")
         if paused:
-            self._write(f"  ⏸ Поставлен на паузу — прогресс сохранён, можно продолжить")
+            self._write("  ⏸ Поставлен на паузу — прогресс сохранён, можно продолжить")
         elif stopped:
-            self._write(f"  ⏹ Остановлено пользователем")
+            self._write("  ⏹ Остановлено пользователем")
         self._write(f"  Лог: {self._path}")
         self._write("═" * 60)
 

@@ -12,7 +12,6 @@ Usage:
         if html:
             set_cached("1234567890", html)
 """
-import json
 import os
 import time
 import threading

@@ -12,7 +12,7 @@ Key: free demo key from https://dev.2gis.ru (Platform Manager) → .env:
 import threading
 import time
 
-from .constants import LINK_AGGREGATORS, SOCIAL_DOMAINS, KNOWN_PLATFORMS
+from .constants import LINK_AGGREGATORS, SOCIAL_DOMAINS
 from .extractors import unwrap_outbound
 from .http_client import _get
 from . import state
@@ -487,8 +487,6 @@ def parse_item(item: dict, query: str) -> dict | None:
     Returns None if the org has no name or fails the PARSE_MODE filter
     (same semantics as the Yandex path).
     """
-    from .extractors import _is_aggregator
-
     name, category = _name_and_category(item)
     if not name:
         return None

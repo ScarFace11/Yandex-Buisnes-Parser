@@ -4,10 +4,6 @@
 # Build (публичная сборка):   pyinstaller parser-mac.spec
 # Result: dist-mac/YandexBusinessParser.app
 #
-# Build (сборка разработчика): YP_DEV=1 pyinstaller parser-mac.spec --distpath dist-mac
-# Result: dist-mac/YandexBusinessParserDev.app — своё имя, свой порт (5010),
-# без авто-обновления. Проще всего — ./build-mac.sh [--dev].
-#
 # Отличия от Windows-спеки (parser.spec):
 #   * результат — .app-бандл (BUNDLE), а не папка с .exe: его можно
 #     перетащить в /Applications и запускать двойным кликом;
@@ -33,7 +29,7 @@ try:
 except Exception:
     pass
 
-# YP_DEV=1 → сборка разработчика (другое имя бандла + другая папка данных).
+# YP_DEV=1 → внутреннее имя бандла (для локальных сборок разработчика).
 DEV_BUILD = os.environ.get("YP_DEV", "").strip().lower() not in ("", "0", "false", "no")
 APP_NAME = "YandexBusinessParserDev" if DEV_BUILD else "YandexBusinessParser"
 BUNDLE_ID = ("com.yandexparser.desktop.dev" if DEV_BUILD
