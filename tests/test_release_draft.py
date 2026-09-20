@@ -4,6 +4,8 @@ import ast
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
@@ -94,5 +96,7 @@ class TestWorkflow:
         assert "generate_release_notes: true" not in wf
 
     def test_workflow_yaml_parses(self):
+        # pyyaml входит в requirements (Dev / Testing) — на CI модуль есть.
+        pytest.importorskip("yaml", reason="pyyaml не установлен")
         import yaml
         yaml.safe_load(self._wf())
