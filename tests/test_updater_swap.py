@@ -132,8 +132,18 @@ class TestRealSwap:
         assert (app_root / "logs" / "run.log").read_text(encoding="utf-8") == "keep me"
         # ...the old version kept for rollback, and the run is logged.
         assert (work / "_backup" / "YandexBusinessParser.exe").exists()
-        log = (work / "update.log").read_text(encoding="utf-8", errors="replace")
-        assert "update completed" in log
+        # «update completed» is written by the DETACHED bat — under heavy load
+        # it may still be finishing (starting the exe, cleaning up) when the
+        # assertions above already see the new files. Wait a little; what the
+        # swap guarantees synchronously is: no rollback was performed.
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            log = (work / "update.log").read_text(encoding="utf-8", errors="replace")
+            if "update completed" in log or "rollback" in log:
+                break
+            time.sleep(0.5)
+        assert "rollback" not in log, f"updater rolled back; log:\n{log}"
+        assert "update completed" in log, f"updater did not finish; log:\n{log}"
         # The exit marker is cleaned up after a successful swap.
         assert not (work / "app.exit").exists()
 
