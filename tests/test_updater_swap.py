@@ -109,16 +109,23 @@ class TestRealSwap:
             time.sleep(0.1)
         assert env["state"]["exited"], "update_apply must os._exit to release the exe lock"
 
-        deadline = time.time() + 40
+        # A CI runner is heavily loaded: the bat's ping-based waits and the
+        # start of the new exe can take tens of seconds — give it 90s.
+        deadline = time.time() + 90
         core = app_root / "_internal" / "core.txt"
         while time.time() < deadline:
             if core.exists() and core.read_text(encoding="utf-8") == "NEW":
                 break
             time.sleep(0.5)
-        time.sleep(1)
 
         # New version installed...
-        assert (app_root / "_internal" / "core.txt").read_text(encoding="utf-8") == "NEW"
+        log = ""
+        try:
+            log = (work / "update.log").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            pass
+        assert (app_root / "_internal" / "core.txt").read_text(
+            encoding="utf-8") == "NEW", f"swap failed; updater log:\n{log}"
         assert (app_root / "YandexBusinessParser.exe").exists()
         # ...user data untouched...
         assert (app_root / ".env").read_text(encoding="utf-8") == "API_KEY=1"
