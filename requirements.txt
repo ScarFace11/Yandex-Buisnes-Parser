@@ -29,4 +29,5 @@ folium~=0.20.0
 # 2GIS source (built-in, same engine — no extra deps)
 
 # Dev / Testing
-# pytest>=7.0
+pytest~=8.3
+pyyaml~=6.0    # тесты парсят workflow-YAML (tests/test_release_draft.py, ci.yml)
