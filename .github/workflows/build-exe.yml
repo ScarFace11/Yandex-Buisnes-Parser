@@ -151,11 +151,11 @@ jobs:
       # именно тот архив, который обещал, а офлайн-«Что нового» показывает
       # правильные заметки. В main файл НЕ коммитится — там свою копию пишет
       # announce-release.yml, и только после публикации релиза.
+      # Одной строкой без переносов: job идёт на windows-latest, где по
+      # умолчанию PowerShell (в нём «\» переносом строки не является).
       - name: Stamp the tag version into the bundled version.json
         if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          python scripts/stamp_version.py --tag "${{ github.ref_name }}" \
-            --changelog CHANGELOG.md --repo "${{ github.repository }}"
+        run: python scripts/stamp_version.py --tag "${{ github.ref_name }}" --changelog CHANGELOG.md --repo "${{ github.repository }}"
 
       - name: Build exe (parser.spec)
         run: pyinstaller parser.spec --noconfirm

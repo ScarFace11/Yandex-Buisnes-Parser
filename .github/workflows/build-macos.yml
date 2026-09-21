@@ -38,6 +38,10 @@ jobs:
           pip install -r requirements.txt
 
       - name: Guard — тег и version.json совпадают с версией
+        # version.json на main объявляет только ОПУБЛИКОВАННЫЕ релизы (его
+        # пишет announce-release.yml в момент публикации), поэтому на теге он
+        # обычно на версию позади — это нормально. Запрещено обратное: файл
+        # не должен объявлять версию, архива которой ещё нет.
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           YANDEX_API_KEY: ci-dummy-key
@@ -50,15 +54,18 @@ jobs:
           tag = os.environ['TAG']
           with open('static/version.json', encoding='utf-8-sig') as fh:
               jv = json.load(fh).get('version', '')
+          def ver(s):
+              return tuple(int(x) for x in str(s).split('.') if x.isdigit())
           problems = []
           if tag != 'v' + v:
               problems.append(f'тег {tag} не совпадает с APP_VERSION v{v}')
-          if jv != v:
-              problems.append(f'static/version.json {jv} != APP_VERSION {v}')
+          if jv and ver(jv) > ver(v):
+              problems.append(f'static/version.json объявляет {jv} — это новее '
+                              f'собираемого v{v}, то есть релиза ещё нет')
           if problems:
               print('::error::' + '; '.join(problems))
               sys.exit(1)
-          print(f'OK: {tag}, APP_VERSION {v}, version.json {jv}')
+          print(f'OK: {tag}, APP_VERSION {v}, version.json на main {jv}')
           PY
 
   build-macos:
