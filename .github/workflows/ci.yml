@@ -21,9 +21,6 @@ permissions:
 jobs:
   tests:
     name: Tests (${{ matrix.os }})
-    # write — только для диагностического отчёта при падении (шаг в конце).
-    permissions:
-      contents: write
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -49,36 +46,9 @@ jobs:
       - name: Run tests
         # Playwright browsers не ставим: тесты парсера мокают HTTP/CDP, а
         # приложение штатно откатывается на Chrome CDP и httpx.
-        shell: bash
         env:
           YANDEX_API_KEY: ci-dummy-key
-        run: |
-          set -o pipefail
-          python -m pytest tests/ -q 2>&1 | tee pytest.log
-
-      - name: Publish the failure report (diagnostics)
-        # ВРЕМЕННО: логи Actions атоматически недоступны без токена, поэтому при
-        # падении складываем хвост pytest в ветку ci-diag-<os>, откуда его
-        # видно без авторизации. Ветки удаляются вместе с этим шагом.
-        if: failure()
-        shell: bash
-        run: |
-          branch="ci-diag-${{ matrix.os }}"
-          {
-            echo "OS: ${{ matrix.os }}"
-            echo "commit: ${{ github.sha }}"
-            echo
-            grep -nE "^(FAILED|ERROR)" pytest.log | head -40 || true
-            echo
-            echo "----- tail -----"
-            tail -60 pytest.log
-          } > ci-report.txt
-          git config user.name 'github-actions[bot]'
-          git config user.email 'github-actions[bot]@users.noreply.github.com'
-          git checkout -q -B "$branch"
-          git add -f ci-report.txt pytest.log
-          git commit -qm "ci: failure report (${{ matrix.os }}) [skip ci]" || true
-          git push -qf origin "$branch"
+        run: python -m pytest tests/ -q
 
       - uses: actions/setup-node@v4
         with:

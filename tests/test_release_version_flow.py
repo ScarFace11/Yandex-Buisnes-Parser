@@ -54,7 +54,9 @@ class TestAdvertisedVersion:
     def test_advertised_version_matches_a_published_release(self):
         """Версия в файле должна существовать как опубликованный тег.
 
-        Без сети тест пропускается (как и остальные сетевые проверки).
+        Всё сетевое обёрнуто: любой сбой GitHub (лимит запросов у общих
+        IP-адресов раннеров, прокси, обрыв) — это SKIP, а не красный CI.
+        Проверяем инвариант только когда точно получили валидный ответ.
         """
         import requests
         try:
@@ -63,11 +65,13 @@ class TestAdvertisedVersion:
                 f"https://api.github.com/repos/{GITHUB_REPO}/releases/tags/"
                 f"v{load_version_json()['version']}", timeout=10,
                 headers={"Accept": "application/vnd.github+json"})
+            if r.status_code != 200:
+                pytest.skip("GitHub API недоступен (лимит запросов или сеть)")
+            data = r.json()
+        except pytest.skip.Exception:
+            raise
         except Exception:
             pytest.skip("нет доступа к GitHub API")
-        if r.status_code != 200:
-            pytest.skip("GitHub API недоступен (лимит запросов)")
-        data = r.json()
         assert data.get("draft") is False, "объявлена версия, чей релиз — черновик"
         names = [a.get("name") for a in data.get("assets", [])]
         assert "YandexBusinessParser-windows-x64.zip" in names, (
