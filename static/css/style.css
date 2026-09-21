@@ -1052,13 +1052,21 @@ details[open].sender-advanced summary::before{content:"▼  "}
    UPDATE BANNER
    ════════════════════════════════ */
 #update-banner{
-  display:flex;align-items:center;gap:12px;
+  display:flex;align-items:center;gap:12px;flex-wrap:wrap;
   padding:10px 24px;
   background:linear-gradient(135deg,var(--ok-strong),var(--grn));
   color:var(--on-accent);font-size:13px;font-weight:600;
-  position:sticky;top:58px;z-index:199;
-  box-shadow:0 2px 8px rgba(0,0,0,.15);
+  /* Прижат ПОД шапку и не зависит от прокрутки: раньше это был
+     position:sticky внутри потока — баннер уезжал вместе со страницей и
+     его было видно только после прокрутки вниз (иногда его перекрывала
+     приклеенная шапка). */
+  position:fixed;top:58px;left:0;right:0;z-index:240;
+  box-shadow:0 6px 18px rgba(9,30,36,.22);
 }
+/* Пока баннер висит поверх контента, сдвигаем страницу на его высоту.
+   Точное значение ставит JS (_syncBannerOffset) — оно зависит от переноса
+   кнопок на узком экране. */
+body.has-update-banner{padding-top:48px}
 .ub-text{flex:1}
 .ub-text b{color:var(--on-accent);font-weight:800}
 .ub-btn{
@@ -1069,13 +1077,15 @@ details[open].sender-advanced summary::before{content:"▼  "}
   transition:background .12s;white-space:nowrap;
 }
 .ub-btn:hover{background:rgba(255,255,255,.35)}
-/* Primary banner action (Обновить сейчас in the frozen build): solid white —
-   reads as THE thing to click, ghost buttons stay secondary. */
+/* Главное действие в баннере («Обновить сейчас» в .exe, «Скачать» в
+   исходниках/macOS): плотная белая кнопка с ТЁМНО-ЗЕЛЁНЫМ текстом.
+   Раньше цвет текста брался из --ok-on (= белый), и в светлой теме надпись
+   была белой на белом — кнопку приходилось искать на ощупь. */
 .ub-btn.ub-primary{
-  background:var(--card);color:var(--ok-on);border-color:var(--on-accent);
+  background:var(--on-accent);color:var(--ok-strong);border-color:var(--on-accent);
   box-shadow:0 1px 6px rgba(0,0,0,.18);
 }
-.ub-btn.ub-primary:hover{background:var(--ok-bg);color:var(--ok-on)}
+.ub-btn.ub-primary:hover{background:var(--ok-bg);color:var(--ok-strong)}
 .ub-close{
   background:none;border:none;color:rgba(255,255,255,.6);
   font-size:16px;font-weight:800;cursor:pointer;padding:4px 8px;
@@ -1083,6 +1093,22 @@ details[open].sender-advanced summary::before{content:"▼  "}
 }
 .ub-close:hover{color:var(--on-accent)}
 [data-theme="dark"] #update-banner{background:var(--ok-strong)}
+
+/* Видимая с первого взгляда индикация обновления в шапке.
+   Шапка приклеена к верху окна, поэтому кнопку видно при любой прокрутке —
+   именно она (а не только тонкая точка) сообщает о новой версии, даже если
+   зелёный баннер закрыли. */
+#btn-updates.has-update{
+  background:var(--warn-bdr);border-color:var(--warn-bdr);color:var(--txt);
+  font-weight:800;
+  animation:btn-update-pulse 2.4s ease infinite;
+}
+#btn-updates.has-update:hover{filter:brightness(1.05);opacity:1}
+@keyframes btn-update-pulse{
+  0%{box-shadow:0 0 0 0 rgba(232,150,13,.55)}
+  70%{box-shadow:0 0 0 8px rgba(232,150,13,0)}
+  100%{box-shadow:0 0 0 0 rgba(232,150,13,0)}
+}
 
 /* «Update available» dot on the header button */
 #btn-updates{position:relative}
@@ -1297,6 +1323,8 @@ html.theme-anim #log-output{
    ════════════════════════════════ */
 @media(max-width:860px){
   header{padding:0 16px;height:52px}
+  /* шапка ниже — баннер опускаем вместе с ней */
+  #update-banner{top:52px;padding:9px 16px}
   .layout{padding:12px;gap:12px}
   .flow-steps{grid-template-columns:1fr}
   .onboarding{padding:28px 18px;min-height:400px}

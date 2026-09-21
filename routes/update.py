@@ -12,27 +12,37 @@ Flow (all triggered from the web UI):
   GET  /update/download — stream the release zip to a temp file
   POST /update/apply    — extract, verify, swap via updater.bat, restart the app
 
-Two failure modes this module specifically guards against:
+Failure modes this module specifically guards against — all three were
+reported as «скачал обновление, консоль закрылась, версия та же»:
 
-1. STALE RELEASE LINK. version.json on main is stamped with a
-   `releases/latest/download/...` URL at build time, but while the new
-   release is still a DRAFT that link silently resolves to the PREVIOUS
-   published release — the updater would "update" users to the old version
-   (report: update runs, console closes, the old version is still there).
-   So the real asset URL is resolved through the GitHub API (latest
-   PUBLISHED release) and the version inside the downloaded zip is verified
-   against the advertised one before anything is touched on disk.
+1. STALE RELEASE LINK. version.json on main used to be stamped with a
+   `releases/latest/download/...` alias, but while the new release is still
+   a DRAFT (or after it was deleted) that alias silently resolves to the
+   PREVIOUS published release: the updater downloads the build the user is
+   already running and "installs" it — a no-op that looks like a failed
+   update. So only an URL pinned to the advertised version
+   (`releases/download/v<latest>/...`) is accepted, otherwise the asset is
+   resolved through the API by EXACT tag (`releases/tags/v<latest>`, which
+   answers 404 for drafts), and the version inside the downloaded zip is
+   verified before anything on disk is touched.
 
-2. HALF-DONE SWAP. A running .exe cannot be moved/overwritten; the old bat
-   relied on `tasklist | find` + `timeout`, both fragile (a non-Windows
-   `find` on PATH breaks the wait; `timeout` cannot run without a console),
-   so the bat could start swapping while the app was still running: the
-   locked exe stayed, the new _internal landed next to it, and the old exe
-   relaunched. The new bat waits for an explicit exit marker written by the
-   app, retries locked moves, verifies the result, and ROLLS BACK to the
-   backup on any failure. Only app-owned files (exe, _internal, ...) are
-   moved — user data (.env, logs/, output/) is never touched. Every step
-   appends to _update/update.log for diagnosability.
+2. SCRIPT THAT NEVER RUNS. v2.3.0 wrote updater.bat with
+   `write_text("\r\n".join(lines))` in TEXT mode: every line ended with
+   CR CR LF, cmd.exe aborted the script before the first swap command, the
+   app had already exited — nothing was copied and the old version stayed.
+   The script is now written with newline="" (exact CR LF) and validated
+   byte-for-byte before it is launched.
+
+3. HALF-DONE SWAP / LOST DATA. The old bat waited for the process with
+   `tasklist | find` + `timeout` (a non-Windows `find` on PATH breaks the
+   wait; `timeout` cannot run without a console), moved EVERY entry of the
+   app folder — including .env, logs/ and output/ — into _backup and then
+   deleted _update with the backup inside it, i.e. it destroyed the user's
+   keys and results. The new bat waits for an explicit exit marker written
+   by the app, retries locked moves, verifies the result, ROLLS BACK to the
+   backup on any failure and moves only app-owned files (exe, _internal,
+   ...) — user data stays where it is. Every step is appended to
+   _update/update.log for diagnosability.
 
 Swap strategy (a running .exe cannot overwrite itself on Windows):
   1. Extract the downloaded zip to <user_dir>/_update/
@@ -51,6 +61,7 @@ hides the self-update button — update via git pull instead.
 import os
 import shutil
 import subprocess
+import time
 import zipfile
 from pathlib import Path
 
@@ -67,6 +78,7 @@ APP_DIR_NAME = "YandexBusinessParser"     # top-level folder inside the release 
 EXE_NAME = "YandexBusinessParser.exe"
 ZIP_ASSET_NAME = "YandexBusinessParser-windows-x64.zip"
 STATE_FILE = "_update_state.json"         # progress for /update/status polling
+ASSET_CACHE_TTL = 10 * 60                 # секунд: кэш проверки релиза по API
 EXIT_MARKER = "app.exit"                  # the app writes this right before exiting
 LOG_FILE = "update.log"                   # updater.bat trace, for diagnostics
 
@@ -172,34 +184,90 @@ def _remote_meta() -> dict:
     return r.json()
 
 
-def _published_asset_url() -> str:
-    """Download URL of the zip asset on the latest PUBLISHED release.
-
-    The download_url stamped into version.json points at
-    `releases/latest/download/...` — but until the release is published that
-    link still serves the PREVIOUS release (drafts are invisible to it), and
-    the updater would silently install an old version. The API endpoint
-    answers with the same "latest published" release, so the asset URL is
-    taken from there explicitly (unauthenticated access is enough for a
-    public repo). "" when the release or the asset is missing (then the
-    caller falls back to the version.json URL).
-    """
-    import requests
-    from routes.api import GITHUB_REPO
+def _releases_page() -> str:
+    """Human-facing release page (banner link when self-update is unavailable)."""
     try:
+        from routes.api import GITHUB_REPO
+    except Exception:
+        return ""
+    return f"https://github.com/{GITHUB_REPO}/releases/latest"
+
+
+def _versioned_asset_url(version: str, url: str) -> str:
+    """`url` if it is pinned to v<version>, else "".
+
+    Only `.../releases/download/v<version>/<asset>` is safe to hand to the
+    updater: the `releases/latest/download/...` alias serves the previous
+    published release while the new one is a draft (GitHub hides drafts),
+    which is how a user could end up re-installing the version already on
+    disk.
+    """
+    version = str(version or "").strip()
+    url = str(url or "").strip()
+    if not version or not url:
+        return ""
+    return url if f"/releases/download/v{version}/" in url else ""
+
+
+def _release_asset_url(version: str, use_cache: bool = True) -> str:
+    """browser_download_url of the zip asset of EXACTLY the v<version> release.
+
+    `/releases/tags/v<version>` is used instead of `/releases/latest`: it
+    answers 404 while the release is a draft or was deleted, and that is
+    precisely the case we must not treat as an available update. Returns ""
+    when the release is not published or has no zip asset.
+    """
+    version = str(version or "").strip()
+    if not version:
+        return ""
+    cache = _state().get("asset") or {}
+    if use_cache and cache.get("version") == version:
+        if time.time() - float(cache.get("at") or 0) < ASSET_CACHE_TTL:
+            return str(cache.get("url") or "")
+    url = ""
+    try:
+        import requests
+        from routes.api import GITHUB_REPO
         r = requests.get(
-            f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
+            f"https://api.github.com/repos/{GITHUB_REPO}/releases/tags/v{version}",
             timeout=10,
             headers={"User-Agent": "YandexParser-Updater/1.0",
                      "Accept": "application/vnd.github+json"},
         )
-        r.raise_for_status()
-        for asset in r.json().get("assets", []):
-            if asset.get("name") == ZIP_ASSET_NAME:
-                return asset.get("browser_download_url", "")
+        if r.status_code == 200:
+            data = r.json() or {}
+            if not data.get("draft"):
+                for asset in data.get("assets", []):
+                    if asset.get("name") == ZIP_ASSET_NAME:
+                        url = asset.get("browser_download_url", "")
+                        break
     except Exception:
         pass
-    return ""
+    _save_state(asset={"version": version, "url": url, "at": time.time()})
+    return url
+
+
+def _download_target(latest: str, stamped_url: str = "") -> tuple:
+    """(url, reason) — where the advertised version can really be downloaded.
+
+    1. the URL stamped into version.json, when it is pinned to v<latest>
+       (no network call needed — the normal case);
+    2. otherwise the asset of the exact v<latest> release through the API;
+    3. otherwise an empty url and a message explaining that the release is
+       not published yet, so the caller can tell the truth instead of
+       offering an update that would silently no-op.
+    """
+    version = str(latest or "").strip()
+    if not version:
+        return "", "Неизвестна версия обновления — повторите проверку позже."
+    pinned = _versioned_asset_url(version, stamped_url)
+    if pinned:
+        return pinned, ""
+    resolved = _release_asset_url(version)
+    if resolved:
+        return resolved, ""
+    return "", (f"Релиз v{version} ещё не опубликован на GitHub. Обновление "
+                 "появится здесь сразу после публикации релиза.")
 
 
 @staticmethod
@@ -231,12 +299,24 @@ def update_status():
         meta = _remote_meta()
         out["latest"] = meta.get("version", "")
         out["changelog"] = meta.get("changelog", "")
-        out["download_url"] = meta.get("download_url", "")
+        stamped = meta.get("download_url", "")
+        out["download_url"] = _releases_page()
         out["newer"] = _ver_tuple(out["latest"] or "0") > _ver_tuple(APP_VERSION)
+        if out["newer"]:
+            url, why = _download_target(out["latest"], stamped)
+            if url:
+                out["download_url"] = url
+            else:
+                # Advertised but not installable (release still a draft, was
+                # deleted, ...). Better to say "nothing to install" than to
+                # walk the user through an update that silently no-ops.
+                out["newer"] = False
+                out["notice"] = why
         # Remember the advertised version for /update/apply: the bat is built
         # later, and the zip must be verified against the SAME advertised
         # version even if GitHub is unreachable by then.
-        _save_state(latest=out["latest"], download_url=out["download_url"])
+        _save_state(latest=out["latest"], download_url=out["download_url"],
+                    stamped_url=stamped)
     except Exception as exc:
         out["error"] = str(exc)
     return jsonify(out)
@@ -276,21 +356,25 @@ def update_download():
 
     state = _state()
     explicit = (request.get_json(silent=True) or {}).get("url")
-    url = explicit or state.get("download_url") or ""
-    # The stamped `releases/latest/download/...` URL serves the PREVIOUS
-    # published release while the new one is a draft — resolve the real
-    # published asset through the API instead.
-    if not explicit:
-        published = _published_asset_url()
-        if published:
-            url = published
+    url = explicit or ""
     if not url:
-        try:
-            url = _remote_meta().get("download_url", "")
-        except Exception:
-            url = ""
-    if not url:
-        return jsonify({"ok": False, "error": "Не найден адрес обновления"}), 400
+        # NEVER fall back to the stamped `releases/latest/download/...` alias:
+        # while the release is a draft (or was deleted) it serves the PREVIOUS
+        # release and the update becomes a silent no-op — the reported bug.
+        # Only an URL pinned to v<advertised> is used, otherwise the exact tag
+        # is resolved through the API.
+        latest = str(state.get("latest") or "")
+        stamped = str(state.get("stamped_url") or "")
+        if not latest:
+            try:
+                meta = _remote_meta()
+                latest = meta.get("version", "")
+                stamped = meta.get("download_url", "")
+            except Exception:
+                pass
+        url, why = _download_target(latest, stamped)
+        if not url:
+            return jsonify({"ok": False, "error": why or "Не найден адрес обновления"}), 400
     _save_state(download_url=url)
 
     import requests
@@ -306,6 +390,9 @@ def update_download():
                 if chunk:
                     f.write(chunk)
                     done += len(chunk)
+        if total and done != total:
+            return jsonify({"ok": False,
+                            "error": f"Архив скачан неполностью ({done} из {total} байт)"}), 502
         _save_state(download={"done": done, "total": total,
                               "file": str(target), "url": url})
         return jsonify({"ok": True, "bytes": done, "total": total, "file": str(target)})
@@ -469,13 +556,21 @@ def update_apply():
         'echo [%date% %time%] rollback finished, old version kept >> "%LOG%"',
         "exit /b 1",
     ]
-    # newline="" keeps the explicit CR-LF line endings exactly as written
-    # (a text-mode write would turn them into CR-CR-LF).
+    # newline="" keeps the explicit CR-LF line endings exactly as written.
+    # v2.3.0 wrote the same script in text mode, so every line ended with
+    # CR CR LF and cmd.exe aborted it before the first swap command: the app
+    # restarted, nothing was replaced and the version stayed the same.
     with open(bat, "w", encoding="cp866", errors="replace", newline="") as fh:
         fh.write("\r\n".join(lines))
+    raw = bat.read_bytes()
+    if b"\r\r" in raw or not raw.startswith(b"@echo off\r\n"):
+        return jsonify({"ok": False,
+                        "error": "Скрипт установки записался с ошибкой — "
+                                 "обновление отменено, приложение не тронуто."}), 500
 
     _save_state(applied=True, new_version=new_version,
-                previous_version=st.get("current", ""), error="")
+                previous_version=st.get("current", ""), error="",
+                bat=str(bat))
 
     # 5. Launch detached, signal exit, then stop the app so the .bat can
     #    take over. The marker makes the bat start its swap as soon as this

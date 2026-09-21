@@ -10,8 +10,12 @@ files are locked (a running exe cannot be moved or overwritten). Asserts:
   * the old version is kept in _update/_backup for rollback;
   * a stale zip (older version inside than advertised) is REFUSED and deleted
     — the «updater installs the previous published release» bug;
-  * the download URL is resolved from the latest PUBLISHED release, not from
-    the version.json stamp that lags while the release is a draft.
+  * the generated script has clean CR LF line endings — v2.3.0 wrote it in
+    text mode (CR CR LF) and cmd.exe aborted it before the first command, so
+    the app closed and the version never changed;
+  * the download URL is pinned to the ADVERTISED version: the
+    `releases/latest/download/...` alias serves the previous release while the
+    new one is a draft (or was deleted) and must never be used.
 """
 import os
 import shutil
@@ -147,6 +151,20 @@ class TestRealSwap:
         # The exit marker is cleaned up after a successful swap.
         assert not (work / "app.exit").exists()
 
+    def test_generated_bat_uses_exact_crlf_line_endings(self, env, tmp_path, monkeypatch):
+        """Регресс: 2.3.0 писала скрипт в текстовом режиме, каждая строка
+        заканчивалась CR CR LF — cmd.exe прерывал файл до первой команды
+        замены, приложение уже вышло, версия оставалась прежней."""
+        zip_path = _make_zip(tmp_path, "9.9.9")
+        monkeypatch.setattr(env["update"], "_state",
+                            lambda: {"latest": "9.9.9",
+                                     "download": {"file": str(zip_path)}})
+        assert env["client"].post("/update/apply").status_code == 200
+        raw = (env["work"] / "updater.bat").read_bytes()
+        assert b"\r\r" not in raw, "CR CR LF ломает выполнение скрипта"
+        assert raw.count(b"\n") == raw.count(b"\r\n"), "у каждой строки ровно один CR"
+        assert raw.startswith(b"@echo off\r\n")
+
     def test_stale_zip_is_refused_and_deleted(self, env, tmp_path, monkeypatch):
         client = env["client"]
         zip_path = _make_zip(tmp_path, "9.9.9")
@@ -162,36 +180,99 @@ class TestRealSwap:
         assert not zip_path.exists()
 
 
-class TestPublishedAssetResolution:
-    """The download URL must come from the latest PUBLISHED release."""
+class TestDownloadTarget:
+    """Архив берётся только той версии, которую приложение объявило.
 
-    def _patch_requests(self, monkeypatch, payload):
+    Регресс 2.3.0 → 2.3.1: version.json штамповался ссылкой
+    `releases/latest/download/...`, а этот алиас не видит черновики — пока
+    новый релиз был черновиком (а потом был удалён из GitHub), он отдавал
+    ПРЕДЫДУЩИЙ релиз. Обновлятор скачивал ту же версию, что уже стояла:
+    «скачал обновление, консоль закрылась, версия та же».
+    """
+
+    ALIAS = ("https://github.com/o/r/releases/latest/download/"
+             "YandexBusinessParser-windows-x64.zip")
+    PINNED = ("https://github.com/o/r/releases/download/v2.3.1/"
+              "YandexBusinessParser-windows-x64.zip")
+
+    # ── адрес, привязанный к версии ───────────────────────────
+
+    def test_alias_is_rejected_the_pinned_url_is_kept(self):
+        from routes import update as update_mod
+        assert update_mod._versioned_asset_url("2.3.1", self.ALIAS) == ""
+        assert update_mod._versioned_asset_url("2.3.1", self.PINNED) == self.PINNED
+        # адрес другого тега — тоже не то, что нужно
+        assert update_mod._versioned_asset_url("2.3.2", self.PINNED) == ""
+
+    def test_pinned_url_needs_no_network(self, monkeypatch):
+        from routes import update as update_mod
+        monkeypatch.setattr(update_mod, "_release_asset_url",
+                            lambda *a, **k: pytest.fail("сеть не нужна"))
+        url, why = update_mod._download_target("2.3.1", self.PINNED)
+        assert url == self.PINNED and why == ""
+
+    # ── фолбэк: точный тег через API ───────────────────────────
+
+    def _patch_api(self, monkeypatch, *, status_code=200, payload=None):
         import requests
+        seen = {}
 
         class _Resp:
-            status_code = 200
-            def raise_for_status(self): pass
-            def json(self): return payload
+            def __init__(self):
+                self.status_code = status_code
 
-        monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp())
+            def json(self):
+                return payload or {}
 
-    def test_uses_the_published_asset_url(self, monkeypatch):
+        def _get(url, *a, **k):
+            seen["url"] = url
+            return _Resp()
+
+        monkeypatch.setattr(requests, "get", _get)
         from routes import update as update_mod
-        self._patch_requests(monkeypatch, {"assets": [{
-            "name": update_mod.ZIP_ASSET_NAME,
-            "browser_download_url": "https://x/pub.zip"}]})
-        assert update_mod._published_asset_url() == "https://x/pub.zip"
+        monkeypatch.setattr(update_mod, "_state", lambda: {})
+        monkeypatch.setattr(update_mod, "_save_state", lambda **k: None)
+        return seen
 
-    def test_empty_when_the_asset_is_missing(self, monkeypatch):
+    def test_exact_tag_is_resolved_through_the_api(self, monkeypatch):
         from routes import update as update_mod
-        self._patch_requests(monkeypatch, {"assets": [{"name": "other.zip"}]})
-        assert update_mod._published_asset_url() == ""
+        seen = self._patch_api(monkeypatch, payload={
+            "draft": False,
+            "assets": [{"name": update_mod.ZIP_ASSET_NAME,
+                        "browser_download_url": self.PINNED}]})
+        assert update_mod._release_asset_url("9.9.9", use_cache=False) == self.PINNED
+        assert "/releases/tags/v9.9.9" in seen["url"]
+        assert "/releases/latest" not in seen["url"]
 
-    def test_empty_when_github_is_unreachable(self, monkeypatch):
-        import requests
+    def test_draft_release_is_not_offered(self, monkeypatch):
         from routes import update as update_mod
+        self._patch_api(monkeypatch, status_code=404)
+        assert update_mod._release_asset_url("9.9.9", use_cache=False) == ""
 
-        def _boom(*a, **k):
-            raise ConnectionError("offline")
-        monkeypatch.setattr(requests, "get", _boom)
-        assert update_mod._published_asset_url() == ""
+    def test_unpublished_version_gets_an_explanation(self, monkeypatch):
+        from routes import update as update_mod
+        monkeypatch.setattr(update_mod, "_release_asset_url", lambda *a, **k: "")
+        url, why = update_mod._download_target("9.9.9", self.ALIAS)
+        assert url == ""
+        assert "не опубликован" in why
+
+    # ── эндпоинт скачивания ────────────────────────────────────
+
+    def test_download_refuses_an_unpublished_version(self, monkeypatch, tmp_path):
+        from flask import Flask
+        from routes import update as update_mod
+        monkeypatch.setattr(update_mod, "_is_frozen", lambda: True)
+        monkeypatch.setattr(update_mod, "_is_dev", lambda: False)
+        monkeypatch.setattr(update_mod, "_self_update_supported", lambda: True)
+        monkeypatch.setattr(update_mod, "_user_dir", lambda: tmp_path)
+        monkeypatch.setattr(update_mod, "_state", lambda: {})
+        monkeypatch.setattr(update_mod, "_save_state", lambda **k: None)
+        monkeypatch.setattr(update_mod, "_remote_meta",
+                            lambda: {"version": "9.9.9",
+                                     "download_url": self.ALIAS})
+        monkeypatch.setattr(update_mod, "_release_asset_url", lambda *a, **k: "")
+        app = Flask(__name__)
+        app.register_blueprint(update_mod.bp)
+        r = app.test_client().post("/update/download")
+        assert r.status_code == 400
+        assert "не опубликован" in r.get_json()["error"]

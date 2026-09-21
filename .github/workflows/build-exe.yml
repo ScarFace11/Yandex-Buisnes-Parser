@@ -45,7 +45,11 @@ jobs:
               sys.exit(1)
           PY
 
-      - name: Guard — тег и version.json совпадают с версией
+      - name: Guard — тег совпадает с APP_VERSION, version.json не забегает вперёд
+        # version.json на main рекламирует ТОЛЬКО опубликованные релизы: он
+        # обновляется workflow «Announce release» в момент публикации релиза.
+        # Здесь следим, чтобы он не объявлял версию, которую ещё нельзя
+        # скачать (иначе баннер обновления обещает недоступное обновление).
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           YANDEX_API_KEY: ci-dummy-key
@@ -57,17 +61,20 @@ jobs:
           v = config.APP_VERSION
           tag = os.environ['TAG']
           with open('static/version.json', encoding='utf-8-sig') as fh:
-              jv = json.load(fh).get('version', '')
+              advertised = json.load(fh).get('version', '')
+          def ver(s):
+              return tuple(int(x) for x in str(s).split('.') if x.isdigit())
           problems = []
           if tag != 'v' + v:
               problems.append(f'тег {tag} не совпадает с APP_VERSION v{v}')
-          if jv != v:
-              problems.append(f'static/version.json {jv} != APP_VERSION {v} '
-                              '(иначе авто-обновление у пользователей не сработает)')
+          if advertised and ver(advertised) > ver(v):
+              problems.append(f'static/version.json объявляет {advertised} — '
+                              f'это НОВЕЕ собираемого v{v}, то есть релиза ещё '
+                              'нет; вернуть файл к последней опубликованной версии')
           if problems:
               print('::error::' + '; '.join(problems))
               sys.exit(1)
-          print(f'OK: {tag}, APP_VERSION {v}, version.json {jv}')
+          print(f'OK: тег {tag}, APP_VERSION {v}, version.json на main {advertised}')
           PY
 
       - name: Run tests
@@ -123,8 +130,8 @@ jobs:
     if: ${{ always() && needs.test.result == 'success' && (needs.release-draft.result == 'success' || needs.release-draft.result == 'skipped') }}
     runs-on: windows-latest
     steps:
-      # fetch-depth: 0 — full history so the download_url stamp commit can push
-      # back onto main (the in-app updater reads version.json from main)
+      # fetch-depth: 0 — полная история для фолбэка release_notes (список
+      # коммитов с прошлого тега); в main этот job ничего не пушит.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -139,6 +146,16 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyinstaller
+
+      # Версия для копии ВНУТРИ .exe: по ней обновлятор проверяет, что скачал
+      # именно тот архив, который обещал, а офлайн-«Что нового» показывает
+      # правильные заметки. В main файл НЕ коммитится — там свою копию пишет
+      # announce-release.yml, и только после публикации релиза.
+      - name: Stamp the tag version into the bundled version.json
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          python scripts/stamp_version.py --tag "${{ github.ref_name }}" \
+            --changelog CHANGELOG.md --repo "${{ github.repository }}"
 
       - name: Build exe (parser.spec)
         run: pyinstaller parser.spec --noconfirm
@@ -174,26 +191,6 @@ jobs:
           Compress-Archive -Path dist/YandexBusinessParser/* `
             -DestinationPath dist/YandexBusinessParser-windows-x64.zip
 
-      # Stamp the exe asset URL into version.json so the app's built-in
-      # auto-updater downloads the release zip from inside the running exe.
-      - name: Stamp download_url into version.json (release assets only)
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: pwsh
-        run: |
-          $p = 'static/version.json'
-          $j = Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json
-          $j | Add-Member -Force -NotePropertyName download_url `
-            -NotePropertyValue 'https://github.com/${{ github.repository }}/releases/latest/download/YandexBusinessParser-windows-x64.zip'
-          $j | ConvertTo-Json -Depth 5 | Set-Content $p -Encoding UTF8
-          Write-Host "version.json -> $($j.version), download_url = $($j.download_url)"
-          # version.json is served raw from main; keep the stamped value in
-          # the repo so /check-version always returns a working URL.
-          git config user.name 'github-actions[bot]'
-          git config user.email 'github-actions[bot]@users.noreply.github.com'
-          git add $p
-          git commit -m "chore(ci): stamp download_url for v$($j.version) [skip ci]" || Write-Host 'nothing to commit'
-          git push origin HEAD:main || Write-Host 'push failed (non-fatal)'
-
       - name: Attach exe to the GitHub Release
         # Релиз (черновик) уже создан job'ом release-draft с телом из
         # CHANGELOG — здесь только добавляем exe. generate_release_notes
@@ -208,9 +205,12 @@ jobs:
       # CI/CD self-update chain (release tags only):
       #   1. Draft release created by release-draft (body from CHANGELOG)
       #   2. exe attached here, macOS .zip/.dmg attached by build-macos.yml
-      #   3. version.json stamped with the asset URL and pushed to main
-      #   → after the release is PUBLISHED, every running .exe sees
-      #     «Доступна новая версия» within 30 min and updates in-app.
+      #   3. релиз ПУБЛИКУЮТ вручную, и тогда announce-release.yml пишет версию
+      #      в version.json на main
+      #   → только после этого шага установленные .exe видят «Доступна новая
+      #     версия» (в пределах 30 минут) и обновляются внутри приложения.
+      #     Раньше версия попадала в main ещё до публикации, и обновлятор
+      #     скачивал предыдущий релиз: «скачал — версия та же».
       - name: Verify the draft release has the exe attached
         if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh

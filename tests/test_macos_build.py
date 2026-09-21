@@ -213,6 +213,13 @@ class TestWindowlessStdout:
         assert app.sys.stdout is out and app.sys.stderr is err
 
 
+# Ссылка, какую теперь штампует релизный конвейер: она привязана к КОНКРЕТНОМУ
+# тегу (никакого `releases/latest`, который отдаёт предыдущий релиз, пока
+# новый — черновик). С такой ссылкой статус не ходит в сеть.
+PINNED_WINDOWS_URL = "https://github.com/o/r/releases/download/v9.9.9/" \
+                     "YandexBusinessParser-windows-x64.zip"
+
+
 @pytest.fixture
 def client():
     from routes import update as update_mod
@@ -222,6 +229,8 @@ def client():
 
 
 class TestUpdaterOnMac:
+    PINNED = PINNED_WINDOWS_URL
+
     def test_self_update_is_windows_only(self, monkeypatch):
         from routes import update as update_mod
         monkeypatch.setattr(sys, "platform", "darwin")
@@ -235,7 +244,7 @@ class TestUpdaterOnMac:
         monkeypatch.setattr(update_mod, "_is_frozen", lambda: True)
         monkeypatch.setattr(update_mod, "_is_dev", lambda: False)
         monkeypatch.setattr(update_mod, "_remote_meta",
-                            lambda: {"version": "9.9.9", "download_url": "https://x/y.zip"})
+                            lambda: {"version": "9.9.9", "download_url": self.PINNED})
         d = client.get("/update/status").get_json()
         # Версию проверяем, чтобы баннер «доступна новая версия» работал…
         assert d["newer"] is True
@@ -263,7 +272,7 @@ class TestUpdaterOnMac:
         monkeypatch.setattr(update_mod, "_is_frozen", lambda: True)
         monkeypatch.setattr(update_mod, "_is_dev", lambda: False)
         monkeypatch.setattr(update_mod, "_remote_meta",
-                            lambda: {"version": "9.9.9", "download_url": "https://x/y.zip"})
+                            lambda: {"version": "9.9.9", "download_url": self.PINNED})
         assert client.get("/update/status").get_json()["auto_apply"] is True
 
 

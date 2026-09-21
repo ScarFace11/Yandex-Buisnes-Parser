@@ -1,0 +1,76 @@
+name: Announce release (version.json)
+
+# Единственное место, где main узнаёт о новой версии.
+#
+# Событие `release: published` срабатывает в момент публикации черновика, то
+# есть когда архивы уже скачиваются. Так установленные приложения видят версию
+# ровно тогда, когда её можно поставить: раньше version.json штамповался на
+# этапе сборки (пока релиз был черновиком), а `releases/latest/download/...`
+# в это время отдаёт ПРЕДЫДУЩИЙ релиз — обновлятор скачивал ту же версию,
+# «консоль закрывалась», а версия оставалась прежней.
+#
+# Порядок релиза после этого workflow:
+#   1. пуш тега v* → CI собирает и создаёт ЧЕРНОВИК релиза;
+#   2. билды зелёные → публикуем черновик;
+#   3. срабатывает этот workflow: ждёт публикацию с windows-архивом, пишет
+#      версию, заметки и ссылку на КОНКРЕТНЫЙ тег в static/version.json на main.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Тег релиза, например v2.3.1'
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: announce-release
+  cancel-in-progress: false
+
+jobs:
+  announce:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Wait for the published release with the Windows asset
+        # Событие приходит сразу после публикации, но ассеты могли доливаться
+        # секундами позже. Если архива нет — версию не объявляем вообще:
+        # лучше тишина, чем баннер об обновлении, которое не скачивается.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          for i in $(seq 1 15); do
+            state=$(gh release view "$TAG" --json isDraft,assets 2>/dev/null || echo '')
+            if [ -n "$state" ] \
+               && echo "$state" | python -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (not d['isDraft'] and any(a['name'].endswith('YandexBusinessParser-windows-x64.zip') for a in d['assets'])) else 1)"; then
+              echo "Релиз $TAG опубликован и содержит windows-архив"
+              echo "TAG=$TAG" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::релиз $TAG не опубликован или без windows-архива — version.json не тронут"
+          exit 1
+
+      - name: Stamp version.json and push it to main
+        run: |
+          python scripts/stamp_version.py --tag "$TAG" --changelog CHANGELOG.md \
+            --repo "${{ github.repository }}"
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add static/version.json
+          git commit -m "chore(release): advertise v${TAG#v} in version.json [skip ci]" \
+            || echo "версия уже объявлена — коммитить нечего"
+          git push origin HEAD:main

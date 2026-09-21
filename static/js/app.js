@@ -4931,17 +4931,19 @@ function checkForUpdates(silent) {
     .then(data => {
       if (data.dev) {
         _devBuild = true;
-        setUpdateDot(false);
+        setUpdateIndicator(false);
         return { newer: false, dev: true, version: data.current };
       }
       if (data.newer) {
         showUpdateBanner(data.latest, data.changelog || '',
           data.download_url || 'https://github.com/ScarFace11/Yandex-Buisnes-Parser/releases/latest');
-        setUpdateDot(true, data.latest);
+        setUpdateIndicator(true, data.latest);
         return { newer: true, version: data.latest };
       }
-      setUpdateDot(false);
-      return { newer: false, version: data.latest || data.current };
+      setUpdateIndicator(false);
+      // Сервер может объяснить, почему объявленную версию пока нельзя
+      // поставить (релиз ещё не опубликован) — это не ошибка связи.
+      return { newer: false, version: data.latest || data.current, notice: data.notice || '' };
     })
     .catch(() => {
       // /update/status unavailable — legacy /check-version fallback
@@ -4950,15 +4952,15 @@ function checkForUpdates(silent) {
         .then(data => {
           if (data.dev) {
             _devBuild = true;
-            setUpdateDot(false);
+            setUpdateIndicator(false);
             return { newer: false, dev: true, version: data.current };
           }
           if (data.newer) {
             showUpdateBanner(data.remote, data.changelog || '', data.download_url || '');
-            setUpdateDot(true, data.remote);
+            setUpdateIndicator(true, data.remote);
             return { newer: true, version: data.remote };
           }
-          setUpdateDot(false);
+          setUpdateIndicator(false);
           return { newer: false, version: data.current };
         })
         .catch(() => ({ newer: false, error: true }));
@@ -4968,6 +4970,7 @@ function checkForUpdates(silent) {
       if (res.dev) showToast('DEV-сборка — авто-обновление отключено (только для разработки)', 'info');
       else if (res.error) showToast('Не удалось связаться с GitHub — проверьте интернет', 'error');
       else if (res.newer) showToast(`Новая версия v${res.version} — обновите через баннер сверху`, 'success');
+      else if (res.notice) showToast(res.notice, 'info');
       else showToast('Вы на последней версии ✓', 'success');
       return res;
     });
@@ -4977,13 +4980,16 @@ function checkForUpdates(silent) {
 function manualUpdateCheck(btn) {
   if (!btn || btn.dataset.busy) return;
   btn.dataset.busy = '1';
-  const orig = btn.innerHTML;
+  btn.classList.remove('has-update');
   btn.innerHTML = '<span class="spin" style="width:11px;height:11px;border-width:1.5px"></span> Проверяю…';
   checkForUpdates(false)
     .catch(() => {})
     .finally(() => {
       delete btn.dataset.busy;
-      btn.innerHTML = orig;
+      // Надпись восстанавливает индикатор: он заново решит, «🔄 Обновления»
+      // или «⬆ Обновить до vX» — исходный innerHTML больше не запоминаем,
+      // иначе он затирал бы свежий статус проверки.
+      renderUpdateIndicator();
     });
 }
 
@@ -4991,31 +4997,71 @@ function manualUpdateCheck(btn) {
 // DEV-сборку не проверяем вовсе: узнав про dev:true, выходим из цикла.
 setInterval(() => { if (!_devBuild) checkForUpdates(true); }, UPDATE_CHECK_INTERVAL);
 
-// ── «Update available» dot on the header button ──
-// Orange dot + pulse while a newer version exists; hidden once the user
-// updates or the check reports up-to-date.
-function setUpdateDot(on, version) {
+// ── Индикация обновления в шапке ──
+// Кнопка «Обновления» живёт в приклеенной шапке, поэтому её видно при любой
+// прокрутке: она и есть главный индикатор (надпись «⬆ Обновить до vX» +
+// пульсация), а тонкая точка — только дополнение к ней.
+const UPDATE_BTN_IDLE = '🔄 Обновления';
+let _availableVersion = '';
+
+function renderUpdateIndicator() {
   const btn = document.getElementById('btn-updates');
   if (!btn) return;
+  const on = !!_availableVersion;
+  if (!btn.dataset.busy) {
+    btn.classList.toggle('has-update', on);
+    btn.textContent = on ? `⬆ Обновить до v${_availableVersion}` : UPDATE_BTN_IDLE;
+  }
   let dot = document.getElementById('update-dot');
+  if (!dot) {
+    dot = document.createElement('span');
+    dot.id = 'update-dot';
+    dot.title = 'Доступно обновление';
+    btn.appendChild(dot);
+  }
   if (on) {
-    if (!dot) {
-      dot = document.createElement('span');
-      dot.id = 'update-dot';
-      dot.title = 'Доступно обновление';
-      btn.appendChild(dot);
-    }
-    dot.dataset.version = version || '';
+    dot.dataset.version = _availableVersion;
     dot.classList.add('on');
-  } else if (dot) {
+  } else {
     dot.classList.remove('on');
   }
+}
+
+function setUpdateIndicator(on, version) {
+  _availableVersion = on ? String(version || '') : '';
+  renderUpdateIndicator();
+}
+
+// Высоту баннера нельзя зашить в CSS: на узком экране кнопки переносятся на
+// вторую строку, и страницу нужно сдвинуть ровно на его высоту.
+function _syncBannerOffset() {
+  const banner = document.getElementById('update-banner');
+  document.body.classList.toggle('has-update-banner', !!banner);
+  document.body.style.paddingTop = banner ? banner.offsetHeight + 'px' : '';
+}
+window.addEventListener('resize', _syncBannerOffset);
+
+// Закрытый баннер не возвращаем для ТОЙ ЖЕ версии (кнопка в шапке всё равно
+// продолжает сообщать об обновлении), но новую версию показываем снова.
+let _dismissedBannerVersion = '';
+
+function dismissUpdateBanner() {
+  const banner = document.getElementById('update-banner');
+  _dismissedBannerVersion = banner ? (banner.dataset.version || '') : '';
+  if (banner) banner.remove();
+  _syncBannerOffset();
 }
 
 function showUpdateBanner(newVer, changelog, url) {
   // Remove existing banner if any
   const existing = document.getElementById('update-banner');
   if (existing) existing.remove();
+  // Пользователь закрыл баннер этой версии — уважаем выбор: индикация
+  // остаётся в шапке («⬆ Обновить до vX»), но окно больше не перекрываем.
+  if (_dismissedBannerVersion && _dismissedBannerVersion === String(newVer)) {
+    _syncBannerOffset();
+    return;
+  }
 
   // Frozen build: «Обновить сейчас» is the PRIMARY action — it downloads,
   // installs and restarts inside the app (no GitHub visit needed).
@@ -5026,6 +5072,7 @@ function showUpdateBanner(newVer, changelog, url) {
     const frozen = !!st.frozen && st.auto_apply !== false;
     const banner = document.createElement('div');
     banner.id = 'update-banner';
+    banner.dataset.version = String(newVer);
     banner.innerHTML = `
       <span class="ub-text">🔄 Доступна новая версия <b>v${newVer}</b>${changelog ? ' — ' + escapeHtml(changelog) : ''}</span>
       <button class="ub-btn" id="ub-changelog" onclick="showChangelog()" title="Подробнее об изменениях в новой версии">📄 Что нового</button>
@@ -5033,19 +5080,22 @@ function showUpdateBanner(newVer, changelog, url) {
         ? `<button class="ub-btn ub-primary" id="ub-self-update" onclick="selfUpdate()" title="Скачать и установить прямо из приложения — после установки просто обновите страницу">⬆ Обновить сейчас</button>
            <a class="ub-btn" href="${url}" target="_blank" rel="noopener noreferrer" title="Страница релизов на GitHub">GitHub ↗</a>`
         : `<a class="ub-btn ub-primary" href="${url}" target="_blank" rel="noopener noreferrer" title="Скачайте сборку для своей системы на странице релизов">Скачать v${newVer} ↗</a>`}
-      <button class="ub-close" onclick="this.parentElement.remove()">✕</button>
+      <button class="ub-close" onclick="dismissUpdateBanner()" title="Скрыть (индикация останется в шапке)">✕</button>
     `;
     document.body.prepend(banner);
+    _syncBannerOffset();
   }).catch(() => {
     // /update/status is dead — render the source-mode banner (GitHub primary)
     const banner = document.createElement('div');
     banner.id = 'update-banner';
+    banner.dataset.version = String(newVer);
     banner.innerHTML = `
       <span class="ub-text">🔄 Доступна новая версия <b>v${newVer}</b>${changelog ? ' — ' + escapeHtml(changelog) : ''}</span>
       <a class="ub-btn ub-primary" href="${url}" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
-      <button class="ub-close" onclick="this.parentElement.remove()">✕</button>
+      <button class="ub-close" onclick="dismissUpdateBanner()" title="Скрыть (индикация останется в шапке)">✕</button>
     `;
     document.body.prepend(banner);
+    _syncBannerOffset();
   });
 }
 
