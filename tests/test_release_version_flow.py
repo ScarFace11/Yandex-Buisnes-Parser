@@ -134,6 +134,27 @@ class TestStampScript:
         data = mod.apply_version(target, "2.3.1", repo="o/r")
         assert [h["version"] for h in data["history"]].count("2.3.1") == 1
 
+    def test_runs_on_a_windows_runner_stdout(self, tmp_path):
+        """Регресс CI: на windows-раннере stdout — cp1252.
+
+        Русские слова в print() роняли шаг сборки с UnicodeEncodeError: файл
+        штамповался правильно, а job падал. Скрипт обязан переживать любую
+        кодировку вывода.
+        """
+        import os
+        import subprocess
+        target = tmp_path / "version.json"
+        target.write_text(load_version_json().__str__().replace("'", '"'),
+                          encoding="utf-8")
+        env = dict(os.environ, PYTHONIOENCODING="cp1252")
+        res = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "stamp_version.py"),
+             "--tag", "v2.3.1", "--changelog", str(ROOT / "CHANGELOG.md"),
+             "--repo", "o/r", "--path", str(target)],
+            capture_output=True, text=True, env=env, timeout=60)
+        assert res.returncode == 0, res.stderr
+        assert load_version_json(target)["version"] == "2.3.1"
+
 
 # ── Разводка workflow ─────────────────────────────────────────
 

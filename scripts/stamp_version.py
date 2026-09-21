@@ -117,7 +117,26 @@ def apply_version(path, version: str, *, changelog_file=None,
     return data
 
 
+def say(text: str) -> None:
+    """Вывод, который не может уронить шаг сборки.
+
+    На windows-раннере GitHub stdout внешне — cp1252, и обычный print() с
+    русскими словами падал с UnicodeEncodeError: скрипт отрабатывал верно, а
+    шаг сборки краснел. Сначала просим UTF-8, а если не вышло — печатаем
+    ASCII-версию строки.
+    """
+    try:
+        sys.stdout.write(text + "\n")
+    except UnicodeEncodeError:
+        enc = getattr(sys.stdout, "encoding", None) or "ascii"
+        sys.stdout.write(text.encode(enc, "replace").decode(enc, "replace") + "\n")
+
+
 def main() -> int:
+    try:                       # UTF-8 в лог, где это возможно
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
     ap = argparse.ArgumentParser(description=__doc__)
     src = ap.add_mutually_exclusive_group(required=True)
     src.add_argument("--tag", help="тег релиза, например v2.3.1")
@@ -140,10 +159,10 @@ def main() -> int:
         asset=args.asset,
         bump_history=not args.no_history,
     )
-    print(f"version.json -> version {data.get('version')}, "
-          f"download_url {data.get('download_url')}, "
-          f"history {len(data.get('history') or [])}")
-    print(f"changelog: {data.get('changelog', '')[:120]}")
+    say(f"version.json -> version {data.get('version')}, "
+        f"download_url {data.get('download_url')}, "
+        f"history {len(data.get('history') or [])}")
+    say(f"changelog: {data.get('changelog', '')[:120]}")
     return 0
 
 
