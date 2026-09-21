@@ -9,14 +9,15 @@ name: Announce release (version.json)
 # в это время отдаёт ПРЕДЫДУЩИЙ релиз — обновлятор скачивал ту же версию,
 # «консоль закрывалась», а версия оставалась прежней.
 #
-# Порядок релиза после этого workflow:
-#   1. пуш тега v* → CI собирает и создаёт ЧЕРНОВИК релиза;
-#   2. билды зелёные → публикуем черновик;
-#   3. срабатывает этот workflow: ждёт публикацию с windows-архивом, пишет
-#      версию, заметки и ссылку на КОНКРЕТНЫЙ тег в static/version.json на main.
+# Расписание раз в час — страховка: на практике событие публикации может не
+# дойти до workflow (в истории проекта так и случилось), а объявить версию всё
+# равно нужно. Прогон идемпотентный: если версия уже объявлена, он ничего не
+# делает.
 on:
   release:
     types: [published]
+  schedule:
+    - cron: '17 * * * *'
   workflow_dispatch:
     inputs:
       tag:
@@ -43,20 +44,43 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Wait for the published release with the Windows asset
-        # Событие приходит сразу после публикации, но ассеты могли доливаться
-        # секундами позже. Если архива нет — версию не объявляем вообще:
-        # лучше тишина, чем баннер об обновлении, которое не скачивается.
+      - name: Resolve the tag to announce
+        # Событие публикации → его тег; ручной запуск → входной параметр;
+        # расписание → последний опубликованный релиз.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
+          if [ -n "$RELEASE_TAG" ]; then TAG="$RELEASE_TAG"
+          elif [ -n "$INPUT_TAG" ]; then TAG="$INPUT_TAG"
+          else TAG=$(gh release view --json tagName --jq .tagName); fi
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "Объявляем версию $TAG"
+
+      - name: Skip when the version is already announced
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          have=$(python -c "import json;print(json.load(open('static/version.json',encoding='utf-8-sig')).get('version',''))")
+          echo "ANNOUNCED=$have" >> "$GITHUB_ENV"
+          echo "в version.json сейчас: $have, в релизе: ${TAG#v}"
+
+      - name: Wait for the published release with the Windows asset
+        if: env.ANNOUNCED != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "$ANNOUNCED" = "${TAG#v}" ]; then
+            echo "Версия ${TAG#v} уже объявлена — выходим."
+            echo "SKIP=1" >> "$GITHUB_ENV"
+            exit 0
+          fi
           for i in $(seq 1 15); do
             state=$(gh release view "$TAG" --json isDraft,assets 2>/dev/null || echo '')
             if [ -n "$state" ] \
                && echo "$state" | python -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (not d['isDraft'] and any(a['name'].endswith('YandexBusinessParser-windows-x64.zip') for a in d['assets'])) else 1)"; then
               echo "Релиз $TAG опубликован и содержит windows-архив"
-              echo "TAG=$TAG" >> "$GITHUB_ENV"
               exit 0
             fi
             sleep 10
@@ -65,6 +89,7 @@ jobs:
           exit 1
 
       - name: Stamp version.json and push it to main
+        if: env.SKIP != '1'
         run: |
           python scripts/stamp_version.py --tag "$TAG" --changelog CHANGELOG.md \
             --repo "${{ github.repository }}"
