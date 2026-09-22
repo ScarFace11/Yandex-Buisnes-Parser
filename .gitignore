@@ -3,6 +3,8 @@
 .env.*
 !.env.example
 sender_config.json
+# Настройки приложения: папка результатов и переопределения по этапам
+settings.json
 
 # Runtime/generated data
 output/

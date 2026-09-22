@@ -860,6 +860,24 @@ async function stopRunWithConfirm() {
   stopRun();
 }
 
+// ⏹ Stop while PAUSED. The paused run has no live process, so there is
+// nothing to unwind — what the user abandons is the saved resume point.
+// Without this the ⏹ button used to disappear on pause and «Продолжить»
+// was the only way out of a paused search.
+async function stopPausedRun() {
+  const ok = await uiConfirm(
+    'Поиск закончится здесь, уже собранные данные сохранятся. Продолжить с места остановки будет нельзя.',
+    'Отменить продолжение поиска?',
+    'Остановить'
+  );
+  if (!ok) return;
+  try { fetch('/stop', {method: 'POST'}).catch(() => {}); } catch (e) {}
+  resetBtn();
+  setStatus('done', 'Готово');
+  appendLog('ok', '  ⏹ Поиск остановлен — точка продолжения сброшена.');
+  showToast('⏹ Поиск остановлен — точка продолжения сброшена', 'info');
+}
+
 // ⏸ Paused state (after the done message with paused=true): the dock
 // shows ONE orange button that resumes the run; stop stays available.
 function enterPausedState(resume) {
@@ -892,8 +910,10 @@ function enterPausedState(resume) {
     btn.classList.add('run-paused');
     btn.title = title;
   }
+  // ⏹ stays visible while the search is paused (and means «отменить
+  // продолжение»): hiding it left the user with no way to stop.
   const stopBtn = document.getElementById('btn-stop');
-  if (stopBtn) stopBtn.hidden = true;
+  if (stopBtn) { stopBtn.hidden = false; stopBtn.disabled = false; stopBtn.onclick = stopPausedRun; }
   const icon = document.getElementById('btn-icon');
   if (icon) icon.textContent = '▶';
   const txt = document.getElementById('btn-txt');
@@ -1157,19 +1177,9 @@ function updateTermProgress() {
   if (fill) fill.style.width = (frac * 100).toFixed(1) + '%';
   const eta = document.getElementById('tp-eta');
   if (eta) eta.textContent = (typeof isRunActive === 'function' && isRunActive()) ? _etaText(frac) : '';
-  // One mini bar per city: the aggregate bar can't explain a stalled run.
-  const chips = document.getElementById('tp-cities');
-  if (chips) {
-    chips.innerHTML = entries.map(([name, d]) => {
-      const pct = (d.status === 'done' || d.status === 'skipped') ? 100 : (d.pct || 0);
-      const cls = d.status === 'running' ? 'tp-chip running' : (d.status === 'queued' ? 'tp-chip queued' : 'tp-chip');
-      const tip = `${name}: ${pct}%` + (d.found ? ` · ${d.found} ${pluralRecords(d.found)}` : '');
-      return `<span class="${cls}" title="${escapeHtml(tip)}">`
-        + `<span class="tp-chip-name">${escapeHtml(name)}</span>`
-        + `<span class="tp-chip-track"><span class="tp-chip-fill" style="width:${pct}%"></span></span>`
-        + `</span>`;
-    }).join('');
-  }
+  // The per-city bars are NOT repeated here: the top strip (#city-progress)
+  // already shows every city with its own bar, and painting them twice made
+  // a 50-city run impossible to read.
 }
 
 function _etaText(frac) {
@@ -1296,13 +1306,18 @@ function _logLevel(level, text) {
   if (level === 'info') return 'info';
   return 'sys';
 }
-// Механика, которая интересна только при отладке: геокодинг, сырые
-// координаты, старт запросов («── Запрос …: начало поиска»), страницы и
-// HTTP-детали, внутренние трейсы клиентов (cdp/browser/http).
-// РЕЗУЛЬТАТЫ при этом остаются видимыми: «🔍 Поиск в», «🗺 Источник»,
-// «✅ …: N записей», «📦 Raw», «🎯 Processed», файлы, ошибки.
-const LOG_NOISE_RE = /геокодирую|→ координаты|запрос начат|начало поиска\s*$|───\s*Запрос|page \d+\/\d+|HTTP \d{3}|api_hits|\[SYS\]|http_client|rate_limit|cdp_client|browser_client|checkpoint/i;
+// Механика: геокодинг, старт запросов, координаты вида «→ 61.24178, 73.39383»,
+// постраничные и поточечные счётчики, HTTP-статусы, трейсы клиентов
+// (http/cdp/browser, rate-limit), checkpoint, кэш.
+const LOG_NOISE_RE = /геокодирую|запрос начат|начало поиска|───\s*Запрос|api_hits|cache_hit|\[SYS\]|(?:http|cdp|browser)_client|rate_limit|checkpoint|→\s*-?\d+[.,]\d+|поиск:\s*«|\bpage \d+(?:\/\d+)?\b|\bpoint \d+\/\d+|\bHTTP \d{3}\b|раньше найденных/i;
+// Белый список: результаты, статусы и ошибки видны в «Важном» ВСЕГДА, что бы
+// ещё ни было в строке. Проверяется первым — поэтому «✅ «кафе»: 50 записей»
+// не уедет в технические из-за случайного совпадения с шаблоном механики.
+// («📡» и «🗺» сами по себе НЕ признак важного: та же иконка стоит на
+// служебном «Геокодирую» — поэтому важен текст, а не один эмодзи.)
+const LOG_KEEP_RE = /🏙|Город\s+\d+\s*\/\s*\d+|🔍 Поиск в |Источник:|✅|📦\s*Raw|🎯\s*Processed|💾 Карта|⏪|📍|⏸|🚨|⚠|\[!\]|\[✖\]|Остановлен|Готово|Пауза|Ничего не найдено/;
 function _logIsNoise(lvl, text) {
+  if (LOG_KEEP_RE.test(text)) return false;
   return lvl === 'tech' || lvl === 'sys' || LOG_NOISE_RE.test(text);
 }
 const LOG_CITY_RE = /🏙|Город\s+\d+\s*\/\s*\d+/i;
@@ -2287,16 +2302,151 @@ function setResultsView(view) {
     });
 }
 
+// ═══════════════════════════════════════════
+//  «Куда сохранять»: папка результатов
+//  Папка живёт в settings.json на сервере (её читает и парсер), поэтому
+//  источник правды — GET /output-dir, а не localStorage.
+// ═══════════════════════════════════════════
+const OUT_ADV_KEY = 'yp_output_advanced';
+let _outputDirs = null;      // последнее состояние от сервера
+
+function _setText(id, text) { const el = document.getElementById(id); if (el) el.textContent = text; }
+
+function onOutputAdvancedToggle() {
+  const on = !!(document.getElementById('f-output-advanced') || {}).checked;
+  const box = document.getElementById('output-advanced');
+  if (box) box.classList.toggle('open', on);
+  try { localStorage.setItem(OUT_ADV_KEY, on ? '1' : '0'); } catch (e) {}
+}
+
+function updateOutputDirHint(state) {
+  const hint = document.getElementById('output-dir-hint');
+  if (!hint || !state) return;
+  const custom = !!state.custom || !!state.advanced;
+  hint.textContent = custom
+    ? `Файлы сохраняются в: ${state.raw} · ${state.processed} · ${state.archive}. Ключи, кэш найденного и история остаются в папке приложения.`
+    : `По умолчанию: ${state.root}. Внутри создаются raw/, processed/ и _archive/.`;
+}
+
+function showOutputDirError(msg, field) {
+  const box = document.getElementById('output-dir-err');
+  if (box) { box.textContent = '⚠ ' + msg; box.hidden = !msg; }
+  ['f-output-dir', 'f-output-raw', 'f-output-processed', 'f-output-archive'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el && el.classList) el.classList.toggle('field-invalid', !!msg && (!field || id === field));
+  });
+}
+
+function applyOutputDirState(state, opts) {
+  if (!state) return;
+  _outputDirs = state;
+  const root = document.getElementById('f-output-dir');
+  if (root) root.value = state.root || '';
+  const adv = document.getElementById('f-output-advanced');
+  if (adv) adv.checked = !!state.advanced;
+  const fill = (id, value) => { const el = document.getElementById(id); if (el) el.value = value || ''; };
+  // В обычном режиме поля показывают фактические подпапки общей папки —
+  // так видно, куда реально попадут файлы.
+  fill('f-output-raw', state.advanced ? state.raw : '');
+  fill('f-output-processed', state.advanced ? state.processed : '');
+  fill('f-output-archive', state.advanced ? state.archive : '');
+  onOutputAdvancedToggle();
+  updateOutputDirHint(state);
+  showOutputDirError('', null);
+  if (opts && opts.toast) {
+    showToast(opts.pending
+      ? '📁 Папка сохранена — применится со следующего города'
+      : '📁 Папка для сохранения обновлена', opts.pending ? 'info' : 'success');
+  }
+}
+
+function loadOutputDir() {
+  fetch('/output-dir')
+    .then(r => r.json())
+    .then(d => { if (d && d.root) applyOutputDirState(d); })
+    .catch(() => {});
+}
+
+// 📁 Обзор… — системный диалог открывает сервер (браузер не отдаёт путь).
+function pickOutputDir() {
+  const btn = document.getElementById('btn-output-browse');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Открываю…'; }
+  postJSON('/folder-picker', {})
+    .then(d => {
+      if (d && d.ok && d.path) {
+        const el = document.getElementById('f-output-dir');
+        if (el) el.value = d.path;
+        showOutputDirError('', null);
+        showToast('Папка выбрана — нажмите «Сохранить»', 'info');
+      } else if (!(d && d.cancelled)) {
+        showOutputDirError((d && d.error) || 'Не удалось выбрать папку', null);
+      }
+    })
+    .catch(() => showOutputDirError('Не удалось открыть диалог выбора папки', null))
+    .finally(() => { if (btn) { btn.disabled = false; btn.textContent = '📁 Обзор…'; } });
+}
+
+function saveOutputDir() {
+  const val = id => ((document.getElementById(id) || {}).value || '').trim();
+  const advanced = !!(document.getElementById('f-output-advanced') || {}).checked;
+  const btn = document.getElementById('btn-output-save');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Проверяю…'; }
+  postJSON('/output-dir', {
+    root: val('f-output-dir'), advanced,
+    raw: advanced ? val('f-output-raw') : '',
+    processed: advanced ? val('f-output-processed') : '',
+    archive: advanced ? val('f-output-archive') : '',
+  })
+    .then(d => {
+      if (d && d.ok) {
+        applyOutputDirState(d, {toast: true, pending: d.pending});
+      } else {
+        showOutputDirError((d && d.error) || 'Не удалось сохранить папку', null);
+      }
+    })
+    .catch(() => showOutputDirError('Не удалось сохранить папку', null))
+    .finally(() => { if (btn) { btn.disabled = false; btn.textContent = '💾 Сохранить'; } });
+}
+
+function resetOutputDir() {
+  const btn = document.getElementById('btn-output-default');
+  if (btn) btn.disabled = true;
+  postJSON('/output-dir', {reset: true})
+    .then(d => {
+      if (d && d.ok) {
+        applyOutputDirState(d, {toast: true, pending: d.pending});
+      } else {
+        showOutputDirError((d && d.error) || 'Не удалось вернуть папку по умолчанию', null);
+      }
+    })
+    .catch(() => showOutputDirError('Не удалось вернуть папку по умолчанию', null))
+    .finally(() => { if (btn) btn.disabled = false; });
+}
+
 // 🔄 Re-run stage 2 (filtering) on the saved raw data — no new crawling.
+// There are two of these buttons (the filter accordion and the RAW section of
+// «История файлов»); both drive the same call and show the same progress.
+const REFILTER_LABEL = '🔄 Применить фильтры заново';
+function _refilterButtons() {
+  return ['btn-refilter', 'btn-refilter-files']
+    .map(id => document.getElementById(id)).filter(Boolean);
+}
 function refilterNow() {
-  const btn = document.getElementById('btn-refilter');
-  if (btn) { btn.disabled = true; btn.textContent = '⏳ Обработка…'; }
+  const buttons = _refilterButtons();
+  // How much work is coming: the raw files are already on disk, so the count
+  // is known before the request starts.
+  const rawCount = ((filesData || {}).raw || []).length;
+  const busy = rawCount ? `⏳ Обрабатываю ${rawCount} ${pluralFiles(rawCount)}…` : '⏳ Обработка…';
+  buttons.forEach(b => { b.disabled = true; b.textContent = busy; });
   const formats = [];
   if (document.getElementById('f-excel')?.checked) formats.push('excel');
   if (document.getElementById('f-json')?.checked)  formats.push('json');
   if (document.getElementById('f-csv')?.checked)   formats.push('csv');
   if (document.getElementById('f-map')?.checked)   formats.push('html');
   if (!formats.length) formats.push('excel');
+  // The payload mirrors a fresh run: EVERY stage-2 filter travels along.
+  // Leaving the VK/score ones out made «Применить фильтры заново» quietly
+  // return a different slice than the same settings during a search.
   const body = {
     formats,
     collapse_chains: document.getElementById('f-collapse-chains')?.checked || false,
@@ -2305,6 +2455,12 @@ function refilterNow() {
     social_mode:     socialMode || 'all',
     required_socials:[...requiredSocials],
     raw_mode:        (document.getElementById('f-raw-mode')||{}).value || 'keep',
+    vk_check:         !!(document.getElementById('f-vk-check') || {}).checked,
+    vk_mode:          vkMode || 'all',
+    vk_max_post_days: (document.getElementById('f-vk-max-days')     || {}).value || 0,
+    vk_min_followers: (document.getElementById('f-vk-min-followers') || {}).value || 0,
+    min_lead_score:   (document.getElementById('f-min-score') || {}).value || 0,
+    sort_by_score:    (document.getElementById('f-sort-score') || {}).checked !== false,
   };
   fetch('/process-filters', {
     method: 'POST',
@@ -2323,13 +2479,18 @@ function refilterNow() {
         appendLog('warn', '  ⚠ Ничего не найдено по заданным фильтрам. Измените настройки.');
         return;
       }
+      // Полный путь: папка результатов может быть пользовательской.
+      const outDir = data.out_dir ? data.out_dir.replace(/[\\/]+$/, '') : 'output';
       showToast(`Готово: ${data.count} организаций → ${data.files.length} файлов`, 'success');
-      appendLog('ok', `  📦 Обработано: ${data.count} организаций → ${data.files.length} файлов в output/processed/`);
+      appendLog('ok', `  🎯 Processed: ${data.count} организаций → ${data.files.length} файлов в ${outDir}/processed/`);
+      // The file lists just changed under the user's feet — refresh them.
+      loadFilesPanel(true);
       setResultsView(_resultsView === 'raw' ? 'processed' : _resultsView);
+      updateStatsBadge();
     })
     .catch(() => showToast('Ошибка обработки', 'error'))
     .finally(() => {
-      if (btn) { btn.disabled = false; btn.textContent = '🔄 Применить фильтры заново'; }
+      buttons.forEach(b => { b.disabled = false; b.textContent = REFILTER_LABEL; });
     });
 }
 
@@ -3351,6 +3512,17 @@ async function loadFilesPanel(force) {
   }
 }
 
+// File-card actions. Inline SVGs with stroke="currentColor" instead of
+// emoji: the emoji 🗑 renders as a monochrome glyph that ignores `color`,
+// so it vanished on the dark card. SVG inherits the themed colour.
+const FILE_ACT_ICONS = {
+  open:     '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20V10"/><path d="M10 20V4"/><path d="M16 20v-6"/><path d="M20 20V8"/></svg>',
+  download: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v11"/><path d="M7.5 10 12 14.5 16.5 10"/><path d="M4 20h16"/></svg>',
+  archive:  '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7h18l-1.6-3.2H4.6L3 7z"/><path d="M5 7v13h14V7"/><path d="M10 12h4"/></svg>',
+  restore:  '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6 5 10l4 4"/><path d="M5 10h9a4.5 4.5 0 0 1 0 9h-3"/></svg>',
+  delete:   '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16"/><path d="M9.5 7V4h5v3"/><path d="M6.5 7 7.5 20h9l1-13"/><path d="M10.5 11v5.5"/><path d="M13.5 11v5.5"/></svg>',
+};
+
 function fileCardHTML(section, it) {
   const meta = it.error
     ? `⚠ ${it.error}`
@@ -3358,8 +3530,8 @@ function fileCardHTML(section, it) {
   const icon = ICONS[it.ext] || '📁';
   // Архивные файлы не архивируем повторно, но даём вернуть на место.
   const archiveBtn = section === 'archive'
-    ? `<button class="file-btn" data-act="restore" data-path="${escapeHtml(it.path)}" title="Вернуть файл в рабочую папку">↩</button>`
-    : `<button class="file-btn" data-act="archive" data-path="${escapeHtml(it.path)}" title="Убрать в архив (файл можно вернуть)">📦</button>`;
+    ? `<button class="file-btn" data-act="restore" data-path="${escapeHtml(it.path)}" title="Вернуть файл в рабочую папку">${FILE_ACT_ICONS.restore}</button>`
+    : `<button class="file-btn" data-act="archive" data-path="${escapeHtml(it.path)}" title="Убрать в архив (файл можно вернуть)">${FILE_ACT_ICONS.archive}</button>`;
   return `
     <div class="file-card">
       <div class="file-info">
@@ -3373,15 +3545,15 @@ function fileCardHTML(section, it) {
         </div>
       </div>
       <div class="file-actions">
-        <button class="file-btn" data-act="open" data-path="${escapeHtml(it.path)}" title="Открыть в таблице">📊</button>
-        <button class="file-btn" data-act="download" data-path="${escapeHtml(it.path)}" title="Скачать">📥</button>
+        <button class="file-btn" data-act="open" data-path="${escapeHtml(it.path)}" title="Открыть в таблице">${FILE_ACT_ICONS.open}</button>
+        <button class="file-btn" data-act="download" data-path="${escapeHtml(it.path)}" title="Скачать">${FILE_ACT_ICONS.download}</button>
         ${archiveBtn}
-        <button class="file-btn danger" data-act="delete" data-path="${escapeHtml(it.path)}" title="Удалить навсегда">🗑</button>
+        <button class="file-btn danger" data-act="delete" data-path="${escapeHtml(it.path)}" title="Удалить навсегда">${FILE_ACT_ICONS.delete}</button>
       </div>
     </div>`;
 }
 
-// ── Bulk selection («Удалить выбранные») ─────────────────────
+// ── Bulk selection («Удалить выбранные» / «В архив» / «Отменить выбор») ──
 let _selectedFiles = new Set();
 
 function onFileSelect(cb) {
@@ -3390,11 +3562,47 @@ function onFileSelect(cb) {
   updateBulkDeleteBtn();
 }
 
+// Three buttons follow one counter: the destructive delete, the reversible
+// archive and «снять выделение». They appear together with 1+ ticked file.
 function updateBulkDeleteBtn() {
-  const btn = document.getElementById('btn-files-bulk-delete');
-  const n = document.getElementById('files-bulk-n');
-  if (n) n.textContent = _selectedFiles.size;
-  if (btn) btn.hidden = _selectedFiles.size === 0;
+  const n = _selectedFiles.size;
+  const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
+  set('files-bulk-n', n);
+  set('files-bulk-arch-n', n);
+  ['btn-files-bulk-delete', 'btn-files-bulk-archive', 'btn-files-bulk-cancel'].forEach(id => {
+    const b = document.getElementById(id);
+    if (b) b.hidden = n === 0;
+  });
+}
+
+// ✕ Отменить выбор — untick everything at once (one click instead of N).
+function clearFileSelection() {
+  _selectedFiles.clear();
+  const boxes = document.querySelectorAll ? document.querySelectorAll('.file-cb') : [];
+  for (let i = 0; i < boxes.length; i++) boxes[i].checked = false;
+  updateBulkDeleteBtn();
+  showToast('Выбор снят', 'info');
+}
+
+// 📦 В архив (N) — same batch endpoint as delete, action="archive"; the file
+// moves to <результаты>/_archive/ГГГГ-ММ-ДД/ and can be restored (↩).
+async function bulkArchiveSelected() {
+  const paths = [..._selectedFiles];
+  if (!paths.length) return;
+  try {
+    const d = await postJSON('/files/action', { paths, action: 'archive' });
+    const moved = (d.moved || []).length;
+    const errs = (d.errors || []).length;
+    showToast(`В архив: ${moved}${errs ? ` · ошибок: ${errs}` : ''}`, errs ? 'warn' : 'success');
+    if (errs) showToast(`Не удалось архивировать: ${(d.errors[0] || {}).error || 'ошибка'}`, 'error');
+    // Archived files leave RAW/PROCESSED → the tick set has to be dropped.
+    _selectedFiles.clear();
+    updateBulkDeleteBtn();
+    loadFilesPanel(true);
+    setResultsView(_resultsView);
+  } catch (e) {
+    showToast('Ошибка архивации: ' + e.message, 'error');
+  }
 }
 
 async function bulkDeleteSelected() {
@@ -5246,6 +5454,13 @@ async function selfUpdate() {
       }
     }
   }, 800);
+
+  // Папка для сохранения результатов: источник правды — сервер (settings.json),
+  // поэтому форма заполняется ответом /output-dir, а не localStorage.
+  const _advSaved = (() => { try { return localStorage.getItem(OUT_ADV_KEY); } catch (e) { return null; } })();
+  const _advBox = document.getElementById('f-output-advanced');
+  if (_advBox && _advSaved === '1') _advBox.checked = true;
+  loadOutputDir();
 
   // Check for updates from GitHub
   checkForUpdates();

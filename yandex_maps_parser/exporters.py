@@ -52,13 +52,15 @@ def _map_url_of(rec: dict) -> str:
 # ── Path resolution ───────────────────────────────────────────
 
 def _resolve(base: str) -> dict[str, str]:
-    os.makedirs(state.OUTPUT_DIR, exist_ok=True)
+    # RESULTS_DIR — папка результатов (настраиваемая), не служебная OUTPUT_DIR.
+    root = str(getattr(state, "RESULTS_DIR", None) or state.OUTPUT_DIR)
+    os.makedirs(root, exist_ok=True)
     return {
-        "csv":  os.path.join(state.OUTPUT_DIR, f"{base}.csv"),
-        "json": os.path.join(state.OUTPUT_DIR, f"{base}.json"),
-        "jsonl": os.path.join(state.OUTPUT_DIR, f"{base}.jsonl"),
-        "xlsx": os.path.join(state.OUTPUT_DIR, f"{base}.xlsx"),
-        "map":  os.path.join(state.OUTPUT_DIR, f"{base}_map.html"),
+        "csv":  os.path.join(root, f"{base}.csv"),
+        "json": os.path.join(root, f"{base}.json"),
+        "jsonl": os.path.join(root, f"{base}.jsonl"),
+        "xlsx": os.path.join(root, f"{base}.xlsx"),
+        "map":  os.path.join(root, f"{base}_map.html"),
     }
 
 

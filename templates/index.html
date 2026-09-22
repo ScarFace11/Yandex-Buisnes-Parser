@@ -451,6 +451,34 @@
                 <label class="chk"><input type="checkbox" id="f-csv"> CSV</label>
                 <label class="chk"><input type="checkbox" id="f-map"> HTML-карта</label>
               </div>
+
+              <!-- Куда всё складывается. По умолчанию — output/ рядом с
+                   данными приложения; служебные файлы (кэш найденного,
+                   чекпоинты, история) остаются там же и не переносятся. -->
+              <div class="out-dir-block" id="output-dir-block">
+                <div class="sec">Куда сохранять</div>
+                <label class="lbl" for="f-output-dir">Папка для сохранения результатов</label>
+                <div class="out-dir-row">
+                  <input type="text" id="f-output-dir" placeholder="например: D:\\Клиенты" spellcheck="false" autocomplete="off">
+                  <button type="button" class="btn-sm" id="btn-output-browse" onclick="pickOutputDir()" title="Открыть системный диалог выбора папки">📁 Обзор…</button>
+                  <button type="button" class="btn-sm" id="btn-output-save" onclick="saveOutputDir()" title="Проверить путь и сохранить">💾 Сохранить</button>
+                  <button type="button" class="btn-sm" id="btn-output-default" onclick="resetOutputDir()" title="Вернуть папку по умолчанию">↺ По умолчанию</button>
+                </div>
+                <label class="chk" id="output-adv-chk"><input type="checkbox" id="f-output-advanced" onchange="onOutputAdvancedToggle()">
+                  Разные папки для разных этапов</label>
+                <div id="output-advanced" class="tiles-reveal">
+                  <div class="tiles-inner">
+                    <label class="lbl" for="f-output-raw">Сырые данные (raw)</label>
+                    <input type="text" id="f-output-raw" placeholder="пусто — общая папка" spellcheck="false" autocomplete="off">
+                    <label class="lbl" for="f-output-processed">Обработанные (processed)</label>
+                    <input type="text" id="f-output-processed" placeholder="пусто — общая папка" spellcheck="false" autocomplete="off">
+                    <label class="lbl" for="f-output-archive">Архив (_archive)</label>
+                    <input type="text" id="f-output-archive" placeholder="пусто — общая папка" spellcheck="false" autocomplete="off">
+                  </div>
+                </div>
+                <div class="hint" id="output-dir-hint">Загружаю текущий путь…</div>
+                <div class="out-dir-err" id="output-dir-err" hidden></div>
+              </div>
             </div>
           </div>
         </section>
@@ -520,8 +548,8 @@
             <span class="term-progress-eta" id="tp-eta"></span>
           </div>
           <div class="term-progress-bar"><div class="term-progress-fill" id="tp-fill"></div></div>
-          <!-- Mini bars: one per city, so the overall bar is explainable -->
-          <div class="tp-cities" id="tp-cities"></div>
+          <!-- The per-city bars live in the ONE top strip (#city-progress);
+               repeating them here painted every city twice. -->
         </div>
         <div id="log-output">
           <div id="onboarding-screen" class="onboarding">
@@ -690,13 +718,19 @@
             <input type="text" id="files-search" placeholder="🔍  Поиск по имени файла…" oninput="onFilesSearchInput()">
             <span class="files-found" id="files-found"></span>
             <span class="files-count" id="files-count"></span>
-            <button class="btn-sm files-bulk-btn" id="btn-files-bulk-delete" hidden onclick="bulkDeleteSelected()">🗑 Удалить выбранные (<span id="files-bulk-n">0</span>)</button>
+            <button class="btn-sm danger files-bulk-btn" id="btn-files-bulk-delete" hidden onclick="bulkDeleteSelected()">🗑 Удалить выбранные (<span id="files-bulk-n">0</span>)</button>
+            <button class="btn-sm warn files-bulk-arch" id="btn-files-bulk-archive" hidden onclick="bulkArchiveSelected()" title="Убрать выбранные файлы в _archive/ГГГГ-ММ-ДД/ — их можно вернуть">📦 В архив (<span id="files-bulk-arch-n">0</span>)</button>
+            <button class="btn-sm" id="btn-files-bulk-cancel" hidden onclick="clearFileSelection()" title="Снять все галочки">✕ Отменить выбор</button>
             <button class="btn-sm" onclick="loadFilesPanel(true)">🔄 Обновить</button>
           </div>
-          <div class="history-panel">
-            <div class="history-section">
-              <h3 class="history-title">📁 RAW · сырые данные</h3>
-              <div class="history-hint">Всё, что собрал парсер, без фильтров. Отсюда работает «Фильтрация результата».</div>
+          <div class="history-panel">              <div class="history-section">
+                <div class="history-head">
+                  <h3 class="history-title">📁 RAW · сырые данные</h3>
+                  <!-- Рефильтр живёт и здесь: это раздел сырых файлов, и
+                       искать кнопку в аккордеоне настроек не обязательно. -->
+                  <button class="btn-sm" id="btn-refilter-files" onclick="refilterNow()" title="Применить текущие фильтры к собранным сырым файлам — без повторного парсинга">🔄 Применить фильтры заново</button>
+                </div>
+                <div class="history-hint">Всё, что собрал парсер, без фильтров. Отсюда работает «Фильтрация результата».</div>
               <div class="history-list" id="history-raw"><div class="no-data">Загрузка…</div></div>
             </div>
             <div class="history-section">

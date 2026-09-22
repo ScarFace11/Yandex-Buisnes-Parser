@@ -367,7 +367,8 @@ def process_all(
                 except Exception as exc:  # one bad group must not stop the rest
                     log("warn", f"  [!] Ошибка экспорта {fmt}: {q} / {c}: {exc}")
 
-    log("info", f"  📦 Processed: {res['count']} организаций → {len(written)} файлов в output/processed/")
+    # Полный путь: папка результатов может быть пользовательской.
+    log("info", f"  📦 Processed: {res['count']} организаций → {len(written)} файлов в {state.PROCESSED_DIR}")
     cleanup_raw(raw_files, cleanup_mode)
     res["files"] = written
     return res

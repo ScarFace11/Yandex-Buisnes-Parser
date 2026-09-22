@@ -90,6 +90,14 @@ for (const id of [
   'reviewed-save-status',
   'history-raw', 'history-processed', 'history-archive', 'files-count', 'files-search',
   'files-found',
+  // Bulk file actions: delete / archive / clear selection
+  'btn-files-bulk-delete', 'btn-files-bulk-archive',
+  'btn-files-bulk-cancel', 'files-bulk-n', 'files-bulk-arch-n',
+  // «Применить фильтры заново» — обе кнопки (аккордеон и раздел RAW)
+  'btn-refilter', 'btn-refilter-files',
+  // Фильтры этапа 2, которые рефильтр обязан отправить на сервер
+  'f-excel', 'f-json', 'f-csv', 'f-map', 'f-chain-key', 'f-raw-mode',
+  'f-vk-check', 'f-vk-max-days', 'f-vk-min-followers',
   // Lead-score controls read by filterTable / rendered by renderPage
   'f-sort-score', 'f-min-score',
 ]) els[id] = mkEl(id);
@@ -148,6 +156,11 @@ globalThis.sortCol = -1;
 globalThis.activeSocialFilters = new Set();
 globalThis.requiredSocials = new Set();
 globalThis.socialMode = 'all';
+globalThis.parseMode = 'all';
+globalThis.vkMode = 'all';
+// appendLog пишет в журнал — в тестах копим строки, чтобы проверить текст.
+const logLines = [];
+globalThis.appendLog = (lvl, msg) => logLines.push({ lvl, msg });
 globalThis.unviewedOnly = false;
 globalThis.activeCity = '';
 globalThis._lastCities = [];
@@ -160,6 +173,11 @@ globalThis.bulkState = { social: 'vk', opened: 0, blocked: 0, keys: new Set(), c
 globalThis.filesData = { raw: [], processed: [], archive: [] };
 globalThis.filesFilter = '';
 globalThis.updateStatsBadge = () => {};
+// The file panel/table refresh after a bulk action — the real ones hit
+// /files/list and /results-view, so they are stubbed and inspected here.
+let filesReloads = 0;
+globalThis.loadFilesPanel = force => { if (force) filesReloads++; };
+globalThis.setResultsView = view => { globalThis.__viewAfterBulk = view; };
 
 // fetch stub for the bulk runs (tests overwrite `bulkBatch` per case)
 globalThis.bulkBatch = [];
@@ -185,7 +203,7 @@ globalThis.clearTimeout = () => {};
 
 // Score tables and limits live at module scope — load them verbatim.
 (0, eval)(['SCORE_MAX', 'SCORE_AGGREGATORS', 'SCORE_EXPENSIVE', 'SCORE_RULES',
-  'REVIEWED_AUTOSAVE_MS'].map(grabConst).join('\n'));
+  'REVIEWED_AUTOSAVE_MS', 'FILE_ACT_ICONS', 'REFILTER_LABEL'].map(grabConst).join('\n'));
 
 const fns = [
   'pluralNum', 'pluralRecords', 'pluralProfiles', 'pluralFiles', 'fmtBytes', 'basenameOf',
@@ -194,6 +212,11 @@ const fns = [
   'bulkScopeRows', 'bulkScopeStats', 'bulkOpenable', 'bulkWillOpen', 'renderCityTabs', 'setCityTab',
   'updateBulkStats', 'renderBulkProgress', 'resetBulkProgress', 'setBulkCount',
   'toggleUnviewedOnly', 'fileCardHTML', 'renderFiles', 'bulkParams',
+  // File history: bulk archive / clear selection
+  'onFileSelect', 'updateBulkDeleteBtn', 'clearFileSelection', 'bulkArchiveSelected',
+  'bulkDeleteSelected',
+  // Рефильтр без повторного парсинга
+  'refilterNow', '_refilterButtons',
   'showBulkWarn', 'hideBulkWarn', 'postJSON', 'openBlankTabs', 'fillTab', 'closeTab',
   'markReviewedBatch', 'bulkOpenBatch',
   // Автосохранение отметок «Просмотрено»
@@ -705,7 +728,7 @@ test('fileCardHTML shows meta, four actions for RAW and no archive for ARCHIVE',
   assert.ok(!/data-act="archive"/.test(arch), 'archived files cannot be archived again');
   assert.match(arch, /data-act="restore"/, 'but they can be restored');
   assert.match(arch, /data-act="delete"/);
-  assert.match(arch, /↩/);
+  assert.match(arch, /stroke="currentColor"/, 'restore icon is a theme-aware SVG');
 });
 
 test('archived cards keep open and download available', () => {
@@ -957,4 +980,201 @@ test('score tooltip admits when the stored score differs from the data', () => {
 test('scoreHTML shows a dash when the score was never computed', () => {
   assert.equal(globalThis.scoreHTML({ lead_score: '' }), '<span class="score-na">—</span>');
   assert.equal(globalThis.scoreHTML({}), '<span class="score-na">—</span>');
+});
+
+// ── 9. File history: icons, bulk archive, clear selection ─────
+// The four card actions used to be emoji. 🗑 is a monochrome glyph that
+// ignores `color`, so it disappeared on the dark card; SVGs with
+// stroke="currentColor" inherit the theme instead.
+test('file cards use theme-aware SVG icons, not emoji', () => {
+  resetState();
+  const html = globalThis.fileCardHTML('raw', {
+    name: 'raw_кафе_уфа.xlsx', path: 'raw/raw_кафе_уфа.xlsx',
+    size: 1024, records: 12, modified: '01.01.2026 10:00', ext: 'xlsx',
+  });
+  assert.equal((html.match(/<svg/g) || []).length, 4, 'open/download/archive/delete are SVGs');
+  assert.ok(!/🗑/.test(html), 'the invisible emoji trash is gone');
+  assert.ok(!/📥/.test(html) && !/📦/.test(html), 'no emoji left in the action row');
+  assert.match(html, /stroke="currentColor"/);
+  assert.match(html, /class="file-btn danger" data-act="delete"/, 'delete stays the danger button');
+});
+
+test('archived cards offer «вернуть» instead of «в архив»', () => {
+  resetState();
+  const html = globalThis.fileCardHTML('archive', {
+    name: 'raw_бар_уфа.xlsx', path: '_archive/2026-01-01/raw_бар_уфа.xlsx',
+    size: 10, records: 1, modified: 'x', ext: 'xlsx',
+  });
+  assert.match(html, /data-act="restore"/);
+  assert.ok(!/data-act="archive"/.test(html), 'an archived file is not archived twice');
+});
+
+test('the three bulk buttons follow the ticked files', () => {
+  resetState();
+  const ids = ['btn-files-bulk-delete', 'btn-files-bulk-archive', 'btn-files-bulk-cancel'];
+  globalThis.updateBulkDeleteBtn();
+  ids.forEach(id => assert.equal(els[id].hidden, true, id + ' hidden without a selection'));
+
+  globalThis.onFileSelect({checked: true, dataset: {path: 'raw/a.xlsx'}});
+  ids.forEach(id => assert.equal(els[id].hidden, false, id + ' appears with 1+ selected'));
+  assert.equal(els['files-bulk-n'].textContent, 1);
+  assert.equal(els['files-bulk-arch-n'].textContent, 1, 'the archive button counts too');
+
+  globalThis.onFileSelect({checked: false, dataset: {path: 'raw/a.xlsx'}});
+  ids.forEach(id => assert.equal(els[id].hidden, true, id + ' hides again'));
+});
+
+test('«✕ Отменить выбор» untick everything at once', () => {
+  resetState();
+  const boxes = [
+    {checked: true, dataset: {path: 'raw/a.xlsx'}},
+    {checked: true, dataset: {path: 'raw/b.xlsx'}},
+  ];
+  globalThis.onFileSelect(boxes[0]);
+  globalThis.onFileSelect(boxes[1]);
+  assert.equal(globalThis._selectedFiles.size, 2);
+  const realQSA = globalThis.document.querySelectorAll;
+  globalThis.document.querySelectorAll = sel => (sel === '.file-cb' ? boxes : realQSA(sel));
+  try {
+    globalThis.clearFileSelection();
+  } finally {
+    globalThis.document.querySelectorAll = realQSA;
+  }
+  assert.equal(globalThis._selectedFiles.size, 0, 'selection dropped');
+  assert.deepEqual(boxes.map(b => b.checked), [false, false], 'checkboxes cleared');
+  assert.equal(els['btn-files-bulk-cancel'].hidden, true, 'buttons gone with the selection');
+});
+
+test('«📦 В архив» sends one batch request and refreshes the list', async () => {
+  resetState();
+  fetchCalls = [];
+  filesReloads = 0;
+  globalThis._selectedFiles = new Set(['raw/a.xlsx', 'raw/b.xlsx']);
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    fetchCalls.push({url, body: opts && opts.body ? JSON.parse(opts.body) : null});
+    if (url === '/files/action') {
+      return {ok: true, json: async () => ({ok: true, moved: ['_archive/2026-01-01/a.xlsx'], errors: []})};
+    }
+    return {ok: true, json: async () => ({raw: [], processed: [], archive: []})};
+  };
+  try {
+    await globalThis.bulkArchiveSelected();
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  const call = fetchCalls.find(c => c.url === '/files/action');
+  assert.ok(call, 'batch endpoint used');
+  assert.equal(call.body.action, 'archive');
+  assert.equal(call.body.paths.length, 2, 'both files in one request');
+  assert.equal(filesReloads, 1, 'the panel is reloaded with force=true');
+  assert.equal(globalThis._selectedFiles.size, 0, 'archived files leave the selection');
+  assert.ok(toasts.some(t => /В архив: 1/.test(t.msg)), 'the user is told what moved');
+});
+
+// ── 10. «Применить фильтры заново» без повторного парсинга ─────
+// Регресс: клиент отправлял только часть настроек, поэтому рефильтр давал не
+// тот срез, что поиск с теми же настройками (терялись ВК и оценка лида), и
+// непонятно было, сколько файлов обрабатывается.
+test('refilterNow sends every stage-2 filter and reports progress', async () => {
+  resetState();
+  fetchCalls = [];
+  logLines.length = 0;
+  filesReloads = 0;
+  globalThis.filesData = {raw: [{}, {}, {}], processed: [], archive: []};
+  globalThis.parseMode = 'without_website';
+  globalThis.socialMode = 'with_socials';
+  globalThis.requiredSocials = new Set(['vk', 'telegram']);
+  globalThis.vkMode = 'active';
+  els['f-excel'].checked = true;
+  els['f-json'].checked = true;
+  els['f-csv'].checked = false;
+  els['f-map'].checked = false;
+  els['f-collapse-chains'].checked = true;
+  els['f-chain-key'].value = 'phone';
+  els['f-raw-mode'].value = 'archive';
+  els['f-vk-check'].checked = true;
+  els['f-vk-max-days'].value = '30';
+  els['f-vk-min-followers'].value = '250';
+  els['f-min-score'].value = '50';
+  els['f-sort-score'].checked = true;
+
+  const realFetch = globalThis.fetch;
+  let body = null;
+  let busyLabel = '';
+  globalThis.fetch = async (url, opts) => {
+    if (url === '/process-filters') {
+      body = JSON.parse(opts.body);
+      busyLabel = els['btn-refilter'].textContent;
+      return {ok: true, json: async () => ({ok: true, count: 9, empty: false,
+                                            files: ['a.xlsx'], out_dir: '/data/MyResults'})};
+    }
+    return {ok: true, json: async () => ({})};
+  };
+  try {
+    globalThis.refilterNow();
+    await new Promise(r => setImmediate(r));
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  assert.equal(body.formats.join(','), 'excel,json', 'только отмеченные форматы');
+  assert.equal(body.parse_mode, 'without_website');
+  assert.equal(body.social_mode, 'with_socials');
+  assert.deepEqual(body.required_socials, ['vk', 'telegram']);
+  assert.equal(body.collapse_chains, true);
+  assert.equal(body.chain_key, 'phone');
+  assert.equal(body.raw_mode, 'archive');
+  // То, что раньше терялось и ломало результат рефильтра:
+  assert.equal(body.vk_check, true);
+  assert.equal(body.vk_mode, 'active');
+  assert.equal(body.vk_max_post_days, '30');
+  assert.equal(body.vk_min_followers, '250');
+  assert.equal(body.min_lead_score, '50');
+  assert.equal(body.sort_by_score, true);
+
+  assert.match(busyLabel, /Обрабатываю 3 файла/, 'виден объём работы: ' + busyLabel);
+  assert.equal(els['btn-refilter'].textContent, '🔄 Применить фильтры заново', 'кнопка вернулась в норму');
+  assert.equal(filesReloads, 1, 'список файлов обновился');
+  // Полный путь в журнале: папка результатов может быть пользовательской.
+  assert.ok(logLines.some(l => /🎯 Processed: 9 организаций.*\/data\/MyResults\/processed\//.test(l.msg)),
+    'журнал показывает полный путь: ' + JSON.stringify(logLines.map(l => l.msg)));
+});
+
+test('both refilter buttons share the progress state', async () => {
+  resetState();
+  const realFetch = globalThis.fetch;
+  globalThis.filesData = {raw: [{}], processed: [], archive: []};
+  let labels = null;
+  globalThis.fetch = async (url, opts) => {
+    if (url === '/process-filters') {
+      labels = [els['btn-refilter'].textContent, els['btn-refilter-files'].textContent];
+      return {ok: true, json: async () => ({ok: true, count: 1, files: [], out_dir: '/x'})};
+    }
+    return {ok: true, json: async () => ({})};
+  };
+  try {
+    globalThis.refilterNow();
+    await new Promise(r => setImmediate(r));
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.deepEqual(labels, ['⏳ Обрабатываю 1 файл…', '⏳ Обрабатываю 1 файл…']);
+  assert.equal(els['btn-refilter-files'].disabled, false, 'обе кнопки снова доступны');
+});
+
+test('refiltering without raw files fails honestly', async () => {
+  resetState();
+  logLines.length = 0;
+  globalThis.filesData = {raw: [], processed: [], archive: []};
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ok: false, json: async () => ({
+    ok: false, error: 'Нет сырых данных в output/raw/ — сначала запустите сбор.'})});
+  try {
+    globalThis.refilterNow();
+    await new Promise(r => setImmediate(r));
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.ok(logLines.some(l => l.lvl === 'warn' && /Нет сырых данных/.test(l.msg)));
 });

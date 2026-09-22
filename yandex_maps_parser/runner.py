@@ -449,7 +449,8 @@ def run() -> None:
                     state._RAW_FILES_RUN.append(_rawp)
                 state.syslog(f"raw_export: {len(_recs)} records → {_rawp}")
             if state._RAW_FILES_LAST_RUN:
-                state.info(f"  📦 Raw: {len(jsonl_records)} организаций (без фильтров) → output/raw/")
+                # Полный путь: папка результатов может быть пользовательской.
+                state.info(f"  📦 Raw: {len(jsonl_records)} организаций (без фильтров) → {state.RAW_DIR}")
         except Exception as exc:
             state.warn(f"Не удалось сохранить raw-данные: {exc}")
     if state.APPEND_MODE and os.path.exists(paths["json"]):
@@ -676,9 +677,10 @@ def _run_was_interrupted() -> bool:
 def _collect_run_files(started_at: float) -> list[str]:
     """Collect output files created after started_at."""
     result_files: list[str] = []
-    if os.path.isdir(state.OUTPUT_DIR):
-        for fname in sorted(os.listdir(state.OUTPUT_DIR)):
-            fpath = os.path.join(state.OUTPUT_DIR, fname)
+    _results = str(getattr(state, "RESULTS_DIR", None) or state.OUTPUT_DIR)
+    if os.path.isdir(_results):
+        for fname in sorted(os.listdir(_results)):
+            fpath = os.path.join(_results, fname)
             if (
                 os.path.isfile(fpath)
                 and os.path.getmtime(fpath) >= started_at
@@ -885,6 +887,15 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None, pause_event=
             if stop_event and stop_event.is_set():
                 break
 
+            # Папку результатов могли поменять в интерфейсе уже во время
+            # поиска: новая настройка вступает в силу со СЛЕДУЮЩЕГО города,
+            # текущий дописывается туда, где начался.
+            try:
+                import paths as _paths_mod
+                _paths_mod.refresh_output_dirs()
+            except Exception:
+                pass
+
             state.update_pause_info(city=city, city_idx=city_idx + 1, cities_total=total_cities)
             # Reset skip event and per-city record counter for each new city
             state.reset_skip_city()
@@ -950,7 +961,7 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None, pause_event=
             # the app is killed or the run is stopped before all cities.
             try:
                 from .exporters import write_frontend_json
-                write_frontend_json(all_files, state.OUTPUT_DIR, cities)
+                write_frontend_json(all_files, str(getattr(state, "RESULTS_DIR", None) or state.OUTPUT_DIR), cities)
             except Exception:
                 pass
 
@@ -1041,7 +1052,7 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None, pause_event=
                     cleanup_mode=state.RAW_MODE,
                 )
                 for _pf in _stage2.get("files", []) or []:
-                    _rel = os.path.relpath(_pf, state.OUTPUT_DIR)
+                    _rel = os.path.relpath(_pf, str(getattr(state, "RESULTS_DIR", None) or state.OUTPUT_DIR))
                     if _rel not in all_files:
                         all_files.append(_rel)
             except Exception as exc:
@@ -1198,7 +1209,7 @@ def run_process(params: dict, mp_queue, stop_file: str | None = None,
         # otherwise xlsx is read back with header labels -> english keys.
         try:
             from .exporters import write_frontend_json
-            ff = write_frontend_json(files, state.OUTPUT_DIR, params.get("cities"))
+            ff = write_frontend_json(files, str(getattr(state, "RESULTS_DIR", None) or state.OUTPUT_DIR), params.get("cities"))
             if ff and ff not in files:
                 files.insert(0, ff)
         except Exception:
@@ -1207,7 +1218,7 @@ def run_process(params: dict, mp_queue, stop_file: str | None = None,
         for f in files:
             if f == "_results_for_frontend.json" or (f.endswith(".json") and not f.startswith("_")):
                 try:
-                    with open(os.path.join(state.OUTPUT_DIR, f), encoding="utf-8") as jf:
+                    with open(os.path.join(str(getattr(state, "RESULTS_DIR", None) or state.OUTPUT_DIR), f), encoding="utf-8") as jf:
                         count = len(json.load(jf))
                     break
                 except Exception:

@@ -17,9 +17,11 @@ import multiprocessing
 # Writable dir: next to the .exe when frozen, project root from source
 try:
     import paths as _paths
-    OUTPUT_DIR = _paths.output_dir()
+    OUTPUT_DIR = _paths.output_dir()        # служебные файлы (маркер, стоп-файл)
+    RESULTS_DIR = str(_paths.results_root())  # куда пишутся результаты
 except Exception:
     OUTPUT_DIR = "output"
+    RESULTS_DIR = "output"
 
 # Marker telling the web UI which search is «the current one»: the
 # «Текущий результат» tab reads only the files written after started_at, so
@@ -337,7 +339,7 @@ class RunManager:
                 # with header labels converted to english field keys.
                 try:
                     from yandex_maps_parser.exporters import write_frontend_json
-                    ff = write_frontend_json(files, OUTPUT_DIR, params.get("cities"))
+                    ff = write_frontend_json(files, RESULTS_DIR, params.get("cities"))
                     if ff and ff not in files:
                         files.insert(0, ff)
                 except Exception:
@@ -347,7 +349,7 @@ class RunManager:
                 for f in files:
                     if f == "_results_for_frontend.json" or (f.endswith(".json") and not f.startswith("_")):
                         try:
-                            with open(os.path.join(OUTPUT_DIR, f), encoding="utf-8") as jf:
+                            with open(os.path.join(RESULTS_DIR, f), encoding="utf-8") as jf:
                                 count = len(json.load(jf))
                             break
                         except Exception:

@@ -42,6 +42,9 @@ def client(tmp_path, monkeypatch):
         d.mkdir(parents=True, exist_ok=True)
 
     monkeypatch.setattr(api_mod, "OUTPUT_DIR", str(root))
+    # Результаты (raw/processed/_archive) — отдельная настраиваемая папка,
+    # служебные файлы (отметки, маркер поиска) остаются в OUTPUT_DIR.
+    monkeypatch.setattr(api_mod, "RESULTS_DIR", str(root))
     monkeypatch.setattr(api_mod, "REVIEWED_FILE", str(root / "_reviewed.json"))
     monkeypatch.setattr(api_mod, "_raw_dir", lambda: str(raw))
     monkeypatch.setattr(api_mod, "_processed_dir", lambda: str(proc))

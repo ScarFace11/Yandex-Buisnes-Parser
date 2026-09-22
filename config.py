@@ -62,17 +62,22 @@ SEARCH_QUERIES = [
 CITY = "Ярославль"
 
 # ── Файлы вывода ─────────────────────────────────────────────
-# Из frozen-сборки (.exe) output/ указывает на папку рядом с exe.
-# Двухэтапный пайплайн:
-#   RAW_DIR       — этап 1 «Сбор»: сырые данные без фильтров (output/raw/)
+# OUTPUT_DIR — служебная папка приложения (кэш найденного, чекпоинты, история):
+# она всегда лежит рядом с данными приложения.
+# RESULTS_DIR — папка результатов; по умолчанию это output/, но пользователь
+# может указать свою в настройках («Папка для сохранения»). Двухэтапный
+# пайплайн:
+#   RAW_DIR       — этап 1 «Сбор»: сырые данные без фильтров (<результаты>/raw/)
 #   PROCESSED_DIR — этап 2 «Фильтрация»: обработанные файлы по форматам
 try:
     import paths as _paths
     OUTPUT_DIR      = _paths.output_dir()
+    RESULTS_DIR     = _paths.results_root()
     RAW_DIR         = _paths.raw_dir()
     PROCESSED_DIR   = _paths.processed_dir()
 except Exception:
     OUTPUT_DIR      = "output"
+    RESULTS_DIR     = "output"
     RAW_DIR         = os.path.join("output", "raw")
     PROCESSED_DIR   = os.path.join("output", "processed")
 OUTPUT_FILENAME = None    # None = авто (город + время)

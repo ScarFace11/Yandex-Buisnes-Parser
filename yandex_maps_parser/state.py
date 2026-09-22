@@ -22,6 +22,7 @@ from config import (
     SEARCH_QUERIES,
     CITY,
     OUTPUT_DIR,
+    RESULTS_DIR,
     RAW_DIR,
     PROCESSED_DIR,
     OUTPUT_FILENAME,

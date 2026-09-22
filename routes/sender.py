@@ -6,13 +6,16 @@ import threading
 
 from flask import Blueprint, request, jsonify
 
-OUTPUT_DIR = "output"
-# Config lives next to the .exe when frozen, in the project root from source
+# Config lives next to the .exe when frozen, in the project root from source.
+# OUTPUT_DIR — папка результатов (Excel-файлы рассылки лежат там же, где их
+# создал парсер), поэтому она следует за настройкой «Папка для сохранения».
 try:
     import paths as _paths
     SENDER_CONFIG_FILE = str(_paths.sender_config_path())
+    OUTPUT_DIR = str(_paths.results_root())
 except Exception:
     SENDER_CONFIG_FILE = "sender_config.json"
+    OUTPUT_DIR = "output"
 
 bp = Blueprint("sender", __name__)
 

@@ -4,15 +4,20 @@ import io
 import csv
 import json
 import shutil
+import subprocess
+import sys
 
 from flask import Blueprint, request, Response, send_from_directory, jsonify
 
-# Writable dir: next to the .exe when frozen, project root from source
+# OUTPUT_DIR — служебные файлы приложения (отметки, маркер текущего поиска),
+# RESULTS_DIR — папка результатов (raw/processed/_archive), настраиваемая.
 try:
     import paths as _paths
     OUTPUT_DIR = _paths.output_dir()
+    RESULTS_DIR = str(_paths.results_root())
 except Exception:
     OUTPUT_DIR = "output"
+    RESULTS_DIR = "output"
 REVIEWED_FILE = os.path.join(OUTPUT_DIR, "_reviewed.json")
 
 bp = Blueprint("api", __name__)
@@ -122,7 +127,7 @@ def set_reviewed():
 
 @bp.route("/results/<path:filename>")
 def results(filename):
-    allowed = os.path.realpath(OUTPUT_DIR)
+    allowed = os.path.realpath(_results_dir())
     filepath = os.path.realpath(os.path.join(allowed, filename))
     if not filepath.startswith(allowed + os.sep) or not os.path.isfile(filepath):
         return jsonify({"error": "not found"}), 404
@@ -135,7 +140,7 @@ def results(filename):
 
 @bp.route("/download/<path:filename>")
 def download(filename):
-    return send_from_directory(OUTPUT_DIR, filename, as_attachment=True)
+    return send_from_directory(_results_dir(), filename, as_attachment=True)
 
 
 @bp.route("/download-zip")
@@ -148,8 +153,8 @@ def download_zip():
     names = [n.strip() for n in raw.split("|") if n.strip()]
     if not names:
         return jsonify({"error": "no files requested"}), 400
-    # Only files that actually exist in OUTPUT_DIR; reject path traversal
-    allowed = os.path.realpath(OUTPUT_DIR)
+    # Only files that actually exist in the results folder; reject traversal
+    allowed = os.path.realpath(_results_dir())
     safe_names = []
     for n in names:
         p = os.path.realpath(os.path.join(allowed, n))
@@ -533,12 +538,21 @@ def seen_status():
 #  Two-stage pipeline: raw / processed views + re-filtering
 # ═══════════════════════════════════════════════════════════════
 
+def _results_dir() -> str:
+    """Папка результатов, куда пишут raw/processed/_archive.
+
+    Значение актуализирует paths.refresh_output_dirs() — он же вызывается
+    после смены настройки «Папка для сохранения» и на границе города.
+    """
+    return RESULTS_DIR
+
+
 def _raw_dir() -> str:
     try:
         import paths as _p
         return _p.raw_dir()
     except Exception:
-        return os.path.join(OUTPUT_DIR, "raw")
+        return os.path.join(_results_dir(), "raw")
 
 
 def _processed_dir() -> str:
@@ -546,7 +560,7 @@ def _processed_dir() -> str:
         import paths as _p
         return _p.processed_dir()
     except Exception:
-        return os.path.join(OUTPUT_DIR, "processed")
+        return os.path.join(_results_dir(), "processed")
 
 
 def _run_state():
@@ -555,8 +569,12 @@ def _run_state():
 
 
 def _archive_root() -> str:
-    """output/_archive/ — root of every dated archive folder (may not exist)."""
-    return os.path.join(OUTPUT_DIR, "_archive")
+    """<результаты>/_archive/ — корень датированных архивов (может не быть)."""
+    try:
+        import paths as _p
+        return _p.archive_root()
+    except Exception:
+        return os.path.join(RESULTS_DIR, "_archive")
 
 
 def _archive_today() -> str:
@@ -628,7 +646,7 @@ def _safe_output_file(rel: str) -> str | None:
     rel = (rel or "").strip().replace("\\", "/")
     if not rel or rel.startswith("/") or ".." in rel.split("/"):
         return None
-    root = os.path.realpath(OUTPUT_DIR)
+    root = os.path.realpath(_results_dir())
     full = os.path.realpath(os.path.join(root, rel))
     if not full.startswith(root + os.sep) or not os.path.isfile(full):
         return None
@@ -639,8 +657,8 @@ def _safe_output_file(rel: str) -> str | None:
 
 
 def _rel_output(path: str) -> str:
-    """Posix-style path relative to output/ (for the API + UI)."""
-    return os.path.relpath(path, OUTPUT_DIR).replace(os.sep, "/")
+    """Posix-style path relative to the results folder (for the API + UI)."""
+    return os.path.relpath(path, _results_dir()).replace(os.sep, "/")
 
 
 def _review_key(rec: dict) -> str:
@@ -914,7 +932,10 @@ def process_filters():
             "ok": True,
             "count": res.get("count", 0),
             "empty": res.get("empty", False),
-            "files": [os.path.relpath(f, OUTPUT_DIR) for f in res.get("files", [])],
+            "files": [os.path.relpath(f, _results_dir()) for f in res.get("files", [])],
+            # Полный путь — фронтенд показывает его в журнале (папка может
+            # быть пользовательской, «output/processed/» уже не всегда правда).
+            "out_dir": _results_dir(),
         })
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
@@ -1173,7 +1194,7 @@ def files_action():
     if not full:
         return jsonify({"error": "file not found"}), 404
 
-    root = os.path.realpath(OUTPUT_DIR)
+    root = os.path.realpath(_results_dir())
     top_dir = os.path.relpath(full, root).split(os.sep)[0]
 
     if action == "archive":
@@ -1241,11 +1262,11 @@ def _files_action_batch(rels: list, action: str, confirm: bool):
     for rel in rels:
         full = _safe_output_file(rel)
         if not full:
-            if action == "delete" and not os.path.exists(os.path.join(OUTPUT_DIR, rel)):
+            if action == "delete" and not os.path.exists(os.path.join(_results_dir(), rel)):
                 continue          # already gone — nothing to do
             errors.append({"path": rel, "error": "file not found"})
             continue
-        root = os.path.realpath(OUTPUT_DIR)
+        root = os.path.realpath(_results_dir())
         top_dir = os.path.relpath(full, root).split(os.sep)[0]
         try:
             if action == "archive":
@@ -1297,3 +1318,166 @@ def _files_action_batch(rels: list, action: str, confirm: bool):
         "deleted": deleted,
         "errors": errors,
     })
+
+
+# ═══════════════════════════════════════════════════════════════
+#  «Папка для сохранения» — где лежат raw / processed / _archive
+#  Кэш найденного, чекпоинты паузы, история поиска и отметки остаются
+#  в папке данных приложения: смена папки не должна их обнулять.
+# ═══════════════════════════════════════════════════════════════
+
+_STAGE_FIELDS = {"raw": "raw_dir", "processed": "processed_dir", "archive": "archive_dir"}
+PICKER_TIMEOUT = 300          # секунд: столько пользователь может выбирать папку
+
+
+def _paths_module():
+    """Модуль paths или None (в урезанной сборке его может не быть)."""
+    try:
+        import paths as _p
+        return _p
+    except Exception:
+        return None
+
+
+def _run_active() -> bool:
+    """Идёт ли поиск прямо сейчас — от этого зависит, когда применится настройка."""
+    try:
+        import run_manager
+        return bool(run_manager.active_run_id())
+    except Exception:
+        return False
+
+
+def _output_dir_state() -> dict:
+    """Текущие папки результатов для формы настроек."""
+    p = _paths_module()
+    if p is None:
+        return {"root": RESULTS_DIR, "default_root": RESULTS_DIR, "raw": "", "processed": "",
+                "archive": "", "advanced": False, "custom": False}
+    dirs = p.output_dirs()
+    settings = p.load_settings()
+    custom = bool(str(settings.get(getattr(p, "RESULTS_ROOT_KEY", "results_root")) or "").strip())
+    advanced = any(str(settings.get(k) or "").strip() for k in _STAGE_FIELDS.values())
+    return {
+        "root": dirs["root"],
+        "default_root": str(p.default_results_root()),
+        "raw": dirs["raw"],
+        "processed": dirs["processed"],
+        "archive": dirs["archive"],
+        "advanced": advanced,
+        "custom": custom,
+        "running": _run_active(),
+    }
+
+
+@bp.route("/output-dir", methods=["GET"])
+def get_output_dir():
+    return jsonify(_output_dir_state())
+
+
+@bp.route("/output-dir", methods=["POST"])
+def set_output_dir():
+    """Сохранить папку результатов.
+
+    Body: {root, raw, processed, archive, advanced} | {reset: true}
+    Каждый непустой путь проверяется на запись ДО сохранения: пользователь
+    должен увидеть ошибку в форме, а не узнать о ней при сохранении файла.
+    Поиск идёт → настройка вступает в силу со следующего города (parser
+    перечитывает её на границе города), о чём честно сказано в ответе.
+    """
+    p = _paths_module()
+    if p is None:
+        return jsonify({"ok": False, "error": "Настройка папки недоступна в этой сборке"}), 500
+
+    data = _json_body()
+    key_root = getattr(p, "RESULTS_ROOT_KEY", "results_root")
+
+    if data.get("reset"):
+        p.save_settings({key_root: "", **{field: "" for field in _STAGE_FIELDS.values()}})
+        p.refresh_output_dirs()
+        state = _output_dir_state()
+        return jsonify({"ok": True, "reset": True, "pending": _run_active(), **state})
+
+    if not data.get("advanced"):
+        # Обычный режим: одна папка, три подпапки внутри (переопределения сбрасываем).
+        data = dict(data)
+        for stage in _STAGE_FIELDS:
+            data[stage] = ""
+
+    values = {"root": str(data.get("root") or "").strip()}
+    for stage in _STAGE_FIELDS:
+        values[stage] = str(data.get(stage) or "").strip()
+
+    errors = {}
+    for name, path in values.items():
+        if not path:
+            continue
+        err = p.check_dir(path)
+        if err:
+            errors[name] = f"Папка недоступна: {err}"
+    if errors:
+        return jsonify({"ok": False, "errors": errors,
+                        "error": next(iter(errors.values()))}), 400
+
+    p.save_settings({key_root: values["root"],
+                     **{_STAGE_FIELDS[s]: values[s] for s in _STAGE_FIELDS}})
+    p.refresh_output_dirs()
+    state = _output_dir_state()
+    return jsonify({"ok": True, "pending": _run_active(), **state})
+
+
+def picker_command(platform: str = "") -> list[str] | None:
+    """Команда системного диалога выбора папки (None — системы без диалога).
+
+    Windows: FolderBrowserDialog через PowerShell; macOS: choose folder
+    через osascript. Браузер не отдаёт серверу абсолютный путь из обычного
+    поля выбора файлов, поэтому диалог открывает сам сервер — как апдейтер
+    запускает свой скрипт.
+    """
+    platform = platform or sys.platform
+    if platform.startswith("win"):
+        script = (
+            "Add-Type -AssemblyName System.Windows.Forms;"
+            "$d = New-Object System.Windows.Forms.FolderBrowserDialog;"
+            "$d.Description = 'Папка для сохранения результатов';"
+            "$d.ShowNewFolderButton = $true;"
+            "if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK)"
+            " { [Console]::Out.Write($d.SelectedPath) }"
+        )
+        return ["powershell", "-NoProfile", "-STA", "-Command", script]
+    if platform == "darwin":
+        return ["osascript", "-e",
+                'POSIX path of (choose folder with prompt "Папка для сохранения результатов")']
+    return None
+
+
+def _run_picker(cmd: list[str]) -> str:
+    """Запускает диалог и возвращает выбранный путь ("" — отменили)."""
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=PICKER_TIMEOUT,
+                          creationflags=flags)
+    out = (proc.stdout or "").strip()
+    if proc.returncode != 0:
+        err = (proc.stderr or "").strip().splitlines()
+        raise RuntimeError(err[-1] if err else "диалог закрыт")
+    if not out:
+        return ""
+    return out.splitlines()[-1].strip()
+
+
+@bp.route("/folder-picker", methods=["POST"])
+def folder_picker():
+    """Открыть системный диалог выбора папки и вернуть выбранный путь."""
+    cmd = picker_command()
+    if not cmd:
+        return jsonify({"ok": False,
+                        "error": "Системный диалог недоступен — введите путь вручную"}), 501
+    try:
+        path = _run_picker(cmd)
+    except subprocess.TimeoutExpired:
+        return jsonify({"ok": False, "error": "Диалог выбора папки не дождался ответа"}), 500
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"Диалог не открылся: {exc}"}), 500
+    if not path:
+        return jsonify({"ok": False, "cancelled": True})
+    return jsonify({"ok": True, "path": path})

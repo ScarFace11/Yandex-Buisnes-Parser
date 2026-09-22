@@ -65,7 +65,7 @@ const els = {};
 for (const id of ['log-output', 'log-ph', 'onboarding-screen', 'log-skeleton',
   'city-progress-list', 'city-progress', 'btn-tech-details', 'term-log-lbl',
   'ls-stage', 'ls-found-num', 't-stats',
-  'term-progress', 'tp-done', 'tp-total', 'tp-fill', 'tp-eta', 'tp-city', 'tp-cities',
+  'term-progress', 'tp-done', 'tp-total', 'tp-fill', 'tp-eta', 'tp-city',
   'log-jump', 'log-jump-n', 'log-filter-empty', 'log-err-count',
   'log-autoscroll', 'tab-log-dot']) {
   els[id] = mkEl(id);
@@ -125,7 +125,8 @@ function grabConst(name) {
   return src.slice(i, src.indexOf(';', i) + 1);
 }
 (0, eval)(fns.map(grab).join('\n')
-  + '\n' + ['LOG_NOISE_RE', 'LOG_CITY_RE', 'LOG_SUBLINE_RE', 'LOG_FILTERS'].map(grabConst).join('\n'));
+  + '\n' + ['LOG_NOISE_RE', 'LOG_KEEP_RE', 'LOG_CITY_RE', 'LOG_SUBLINE_RE', 'LOG_FILTERS']
+    .map(grabConst).join('\n'));
 
 const logEl = els['log-output'];
 const visibleLines = () => logEl.children.filter(c => c.className !== undefined);
@@ -421,6 +422,54 @@ test('filters are one class on the container, with an empty verdict', () => {
   assert.equal(logEl._classes.has('f-errors'), false, 'only one filter class at a time');
 });
 
+// The «Важные» filter owns the WHOLE technical stream: geocoding, raw
+// coordinates, per-query banners, page/point counters, HTTP statuses and
+// client traces. Results and statuses stay readable in both filters.
+test('«Важные» hides every technical line and keeps the results', () => {
+  const noise = [
+    '  Геокодирую «Москва»…',
+    '  → 61.24178, 73.39383',
+    '  ─── Запрос «кафе»: начало поиска',
+    '  🔍 Поиск: «кафе» в Москва…',
+    '  page 2/5',
+    '  HTTP 200',
+    '  point 3/12',
+    '  Checkpoint: 40 ранее найденных, 3 точек уже обработано.',
+    '  browser_client: cache initialized, 12 entries',
+  ];
+  const keep = [
+    '  🏙  Город 1/2: Москва',
+    '  🔍 Поиск в «Москва» — запросы: кафе',
+    '  🗺  Источник: 2GIS (официальный API — соцсети и сайты уже в ответе)',
+    '  🗺  Источник: Яндекс.Карты',
+    '  ✅ «кафе»: 50 записей',
+    '  📦 Raw: 50 организаций (без фильтров) → output/raw/',
+    '  🎯 Processed: 44 организаций → 2 файлов в output/processed/',
+    '  💾 Карта: готово → output/map.html',
+    '  [!] Не удалось загрузить детали — пропускаю организацию',
+  ];
+  resetLog();
+  noise.forEach(t => globalThis.appendLog('info', t));
+  keep.forEach(t => globalThis.appendLog('info', t));
+  assert.equal(globalThis._ls().stats.noise, noise.length,
+    'each technical line is classified as noise');
+  noise.forEach((t, i) => assert.match(logEl.children[i].className, /\bnoise\b/, 'noise: ' + t));
+  keep.forEach((t, i) =>
+    assert.ok(!/\bnoise\b/.test(logEl.children[noise.length + i].className), 'kept: ' + t));
+});
+
+test('«Технические»/«Все» still show the mechanics «Важные» hides', () => {
+  resetLog();
+  globalThis.appendLog('info', '  → 61.24178, 73.39383');
+  globalThis.appendLog('info', '  🏙  Город 1/1: Уфа');
+  globalThis.setLogFilter('tech');
+  // The line stays in the DOM (CSS decides visibility), it is only tagged.
+  assert.equal(logEl.children.length, 2);
+  assert.match(logEl.children[0].className, /\bnoise\b/);
+  globalThis.setLogFilter('all');
+  assert.equal(logEl._classes.has('f-all'), true);
+});
+
 test('«Важные» marks mechanics as noise but never drops them', () => {
   resetLog();
   globalThis.appendLog('info', '  📡 Геокодирую «Ленина 1»');
@@ -494,8 +543,10 @@ test('_logPlainText writes one stamped line per log row', () => {
   assert.equal(globalThis._logPlainText(), '');
 });
 
-// ── 14. Progress strip: current city + mini bars ─────────────
-test('progress strip names the running city and draws a bar per city', () => {
+// ── 14. Progress strip: current city + overall bar (no per-city dupe) ──
+// The run used to paint every city twice: as mini bars here and in the top
+// strip. The log panel now owns the AGGREGATE only.
+test('progress strip names the running city and sizes the overall bar', () => {
   globalThis._cityProgressData = {
     'Ташкент': {pct: 100, found: 45, status: 'done'},
     'Санкт-Петербург': {pct: 50, found: 10, status: 'running'},
@@ -503,9 +554,19 @@ test('progress strip names the running city and draws a bar per city', () => {
   globalThis._totalCities = 2;
   globalThis.updateTermProgress();
   assert.equal(els['tp-city'].textContent, 'Санкт-Петербург');
-  const html = els['tp-cities'].innerHTML;
-  assert.match(html, /tp-chip running/);
-  assert.match(html, /width:100%/);
-  assert.match(html, /width:50%/);
-  assert.match(html, /Санкт-Петербург/);
+  assert.equal(els['tp-done'].textContent, 1);
+  assert.equal(els['tp-total'].textContent, 2);
+  // 1 finished city + the running one at 50% of 2 cities = 75%.
+  assert.equal(els['tp-fill'].style.width, '75.0%');
+});
+
+test('the log panel never repeats the city list (top strip owns it)', () => {
+  const tpl = readFileSync(join(root, 'templates', 'index.html'), 'utf8');
+  assert.ok(!/id="tp-cities"/.test(tpl), 'tp-cities markup is gone');
+  assert.ok(!/tp-chip/.test(src), 'per-city chips are not rendered any more');
+  const css = readFileSync(join(root, 'static', 'css', 'style.css'), 'utf8');
+  assert.ok(!/\.tp-chip/.test(css), 'chip styles are gone too');
+  // …while the top strip caps its height and scrolls instead of growing.
+  assert.match(css, /#city-progress-list\{[^}]*max-height/);
+  assert.match(css, /#city-progress-list\{[^}]*overflow-y:auto/);
 });

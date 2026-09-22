@@ -104,12 +104,20 @@ class TestJumpToBottom:
 
 
 class TestProgressStrip:
-    def test_current_city_eta_and_mini_bars_are_rendered(self):
-        for needle in ('id="tp-city"', 'id="tp-eta"', 'id="tp-cities"'):
+    def test_current_city_eta_and_overall_bar_are_rendered(self):
+        for needle in ('id="tp-city"', 'id="tp-eta"', 'id="tp-fill"'):
             assert needle in TEMPLATE, needle
-        assert "tp-chip" in APP_JS and ".tp-chip" in STYLE
         assert "set('tp-city'" in APP_JS
         assert ".term-progress-info .tp-city{font-size:13px" in STYLE
+
+    def test_cities_are_listed_once(self):
+        """Полоска городов одна: верхняя полоса, а не ещё и лог-панель."""
+        assert 'id="tp-cities"' not in TEMPLATE
+        assert "tp-chip" not in APP_JS and ".tp-chip" not in STYLE
+        # …и она скроллится вместо того, чтобы расти на пол-экрана.
+        strip = STYLE[STYLE.index("#city-progress-list{"):]
+        strip = strip[:strip.index("}")]
+        assert "max-height" in strip and "overflow-y:auto" in strip
 
 
 class TestCountersCarryContext:
@@ -135,3 +143,60 @@ class TestLogCapAndEmptyState:
         assert "S.stats = {total: 0, noise: 0, err: 0, tech: 0}" in body
         assert "S.meta = []" in body
         assert re.search(r"_refreshLogFilter\(\);", body)
+
+
+class TestImportantFilterCoversMechanics:
+    """«Важные» прячет ВСЮ механику, а результаты остаются видимыми."""
+
+    def test_noise_pattern_covers_the_technical_stream(self):
+        line = APP_JS[APP_JS.index("const LOG_NOISE_RE = "):]
+        line = line[: line.index(";\n")]
+        # Шаблоны проверяются как «в исходнике», поэтому экранирование тут
+        # и в app.js должно совпадать: берём сырые строки.
+        for pattern in (r"геокодирую", r"поиск:\s*«", r"page", r"point", r"HTTP",
+                        r"checkpoint", r"cache_hit", r"→\s*-?\d+[.,]\d+"):
+            assert pattern in line, f"нет шаблона механики: {pattern}"
+
+    def test_results_are_whitelisted(self):
+        line = APP_JS[APP_JS.index("const LOG_KEEP_RE = "):]
+        line = line[: line.index(";\n")]
+        for keep in ("🏙", "🔍 Поиск в ", "Источник:", "✅", "📦", "🎯", "💾 Карта"):
+            assert keep in line, f"результат выпал из белого списка: {keep}"
+
+    def test_whitelist_wins_over_the_noise_pattern(self):
+        body = APP_JS[APP_JS.index("function _logIsNoise("):]
+        body = body[: body.index("\n}")]
+        assert body.index("LOG_KEEP_RE") < body.index("LOG_NOISE_RE"), \
+            "белый список должен проверяться первым"
+
+
+class TestJournalFilterRegexIsIntact:
+    """Регулярка фильтра не должна содержать управляющих символов.
+
+    Регресс: в LOG_NOISE_RE одна из альтернатив записалась с живым символом
+    backspace (\x08) вместо «\\b». Строка в исходнике выглядела правильно,
+    и проверки на подстроки это пропускали — «HTTP 200» переставало
+    считаться механикой только из-за дубля шаблона ниже по шаблону.
+    """
+
+    def test_no_control_characters_in_journal_regexes(self):
+        for name in ("LOG_NOISE_RE", "LOG_KEEP_RE"):
+            line = APP_JS[APP_JS.index(f"const {name} = "):]
+            line = line[: line.index(";\n")]
+            assert "\x08" not in line, f"{name}: backspace вместо \\b"
+            assert "\x07" not in line, f"{name}: BEL в шаблоне"
+            assert "\x00" not in line, f"{name}: NUL в шаблоне"
+
+    def test_no_control_characters_anywhere_in_frontend_sources(self):
+        for path in ("static/js/app.js", "static/css/style.css", "templates/index.html"):
+            text = (ROOT / path).read_text(encoding="utf-8")
+            bad = {c: text.count(c) for c in ("\x08", "\x07", "\x00") if c in text}
+            assert not bad, f"{path}: управляющие символы {bad}"
+
+
+class TestRunSummaryCarriesRealPaths:
+    """Папка результатов настраиваемая — в журнале не должно быть «output/…»."""
+
+    def test_raw_and_processed_lines_print_the_actual_folder(self):
+        assert "→ {state.RAW_DIR}" in (ROOT / "yandex_maps_parser" / "runner.py").read_text(encoding="utf-8")
+        assert "файлов в {state.PROCESSED_DIR}" in (ROOT / "yandex_maps_parser" / "processing.py").read_text(encoding="utf-8")

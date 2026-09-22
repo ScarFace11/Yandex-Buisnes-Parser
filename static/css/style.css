@@ -38,6 +38,9 @@
   /* Брендовые цвета соцсетей (одни и те же в обеих темах) */
   --vk:#4c75a3;--ig:#a8306c;--tg:#1d6da3;--wa:#2e7d4f;
   --c-soft:rgba(0,126,140,.08);
+  /* Кольцо фокуса. Отдельный токен, потому что подложки (--c-soft, 8%)
+     для рамки фокуса мало: на тёмном поле её просто не видно. */
+  --focus-ring:rgba(0,126,140,.32);
   --glow:rgba(0,126,140,.28);
   --glow-warn:rgba(224,137,0,.30);
   --glow-red:rgba(196,64,64,.28);
@@ -105,11 +108,19 @@ header h1{font-size:15px;font-weight:700;letter-spacing:-.01em}
 [data-theme="dark"] #btn-skip:hover{background:var(--bdr-h);opacity:1}
 
 /* ── City progress bar (multi-city run strip under the header) ──
-   Was inline-styled white in the HTML — dark theme could not repaint it. */
+   Was inline-styled white in the HTML — dark theme could not repaint it.
+   This is the ONE city list: the log panel no longer repeats it as mini
+   bars. 50+ cities used to grow the strip to half the screen, so the list
+   scrolls inside a capped box while the summary line stays put. */
 #city-progress{
   padding:8px 24px;background:var(--panel);border-bottom:1px solid var(--bdr);font-size:12px;
 }
 [data-theme="dark"] #city-progress{background:var(--term);border-bottom-color:var(--bdr)}
+#city-progress-list{max-height:78px;overflow-y:auto;padding-right:4px}
+#city-progress-list::-webkit-scrollbar{width:8px}
+#city-progress-list::-webkit-scrollbar-track{background:transparent}
+#city-progress-list::-webkit-scrollbar-thumb{background:var(--bdr);border-radius:4px}
+#city-progress-list::-webkit-scrollbar-thumb:hover{background:var(--bdr-h)}
 
 /* ── «Страниц» cap note (2GIS never serves more than 5 pages/point) ── */
 .pages-cap-note{
@@ -231,7 +242,7 @@ input[type=text],input[type=number],input[type=password],textarea,select{
 }
 input[type=text]:focus,input[type=number]:focus,input[type=password]:focus,textarea:focus,select:focus{
   outline:none;border-color:var(--c);
-  box-shadow:0 0 0 3px rgba(26,122,138,.1);
+  box-shadow:0 0 0 3px var(--focus-ring);
 }
 textarea{resize:vertical;min-height:76px;line-height:1.5}
 .hint{font-size:11px;color:var(--muted);margin-top:4px}
@@ -853,9 +864,27 @@ input[type="range"]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;b
 .stat-section{margin-bottom:26px}
 .stat-section h3{font-size:13px;font-weight:800;color:var(--sub);text-transform:uppercase;letter-spacing:.05em;margin-bottom:13px}
 .file-cb{flex:0 0 auto;width:15px;height:15px;cursor:pointer;accent-color:var(--err-bdr);margin-right:2px}
-.files-bulk-btn{border-color:var(--err-bdr);color:var(--err-bdr);font-weight:700}
-.files-bulk-btn:hover{background:var(--err-bg);border-color:var(--err-bdr);color:var(--err-strong)}
-[data-theme="dark"] .files-bulk-btn:hover{background:var(--err-on)}
+.files-bulk-btn{border-color:var(--err-bdr);color:var(--err-strong);font-weight:700}
+.files-bulk-btn:hover{background:var(--err-bg);border-color:var(--red);color:var(--err-strong)}
+/* «Куда сохранять»: поле пути + Обзор/Сохранить/По умолчанию */
+.out-dir-block{margin-top:12px;display:flex;flex-direction:column;gap:6px}
+.out-dir-row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.out-dir-row input{flex:1 1 190px;min-width:0}
+.out-dir-row .btn-sm{flex:0 0 auto;white-space:nowrap}
+#output-advanced .tiles-inner{display:flex;flex-direction:column;gap:4px;padding-top:8px}
+#output-advanced .lbl{margin-top:4px}
+.out-dir-err{
+  font-size:11.5px;font-weight:700;line-height:1.45;
+  background:var(--err-bg);border:1px solid var(--err-bdr);color:var(--err-txt);
+  border-radius:7px;padding:6px 9px;
+}
+.out-dir-err[hidden]{display:none}
+
+/* «В архив» — обратимое действие, поэтому янтарный, а не красный. */
+.files-bulk-arch{border-color:var(--warn-bdr);color:var(--warn-strong);font-weight:700}
+.files-bulk-arch:hover{background:var(--warn-bg);border-color:var(--warn-bdr);color:var(--warn-strong)}
+/* Строка заголовка раздела с действием справа (RAW + «Применить фильтры») */
+.history-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
 .bar-row{display:flex;align-items:center;gap:9px;margin-bottom:7px}
 .bar-lbl{font-size:12px;width:150px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--sub)}
 .bar-track{flex:1;height:9px;background:var(--track);border-radius:5px;overflow:hidden}
@@ -985,8 +1014,7 @@ details[open].sender-advanced summary::before{content:"▼  "}
   transition:border-color .14s,box-shadow .14s;
 }
 .city-input-wrap input:focus{
-  outline:none;border-color:var(--c);
-  box-shadow:0 0 0 3px rgba(26,122,138,.1);
+  outline:none;border-color:var(--c);box-shadow:0 0 0 3px var(--focus-ring);
 }
 .city-input-wrap .city-clear{
   position:absolute;right:8px;top:50%;transform:translateY(-50%);
@@ -1159,13 +1187,22 @@ body.has-update-banner{padding-top:48px}
 /* Stable gutters: no width jump when a scrollbar appears */
 #log-output,#send-log-output,.tbl-wrap,#col-dropdown{scrollbar-gutter:stable}
 
-/* Keyboard focus rings (accessibility) */
+/* Keyboard focus rings (accessibility). The ring colour lives in a token:
+   the same literal in both themes was invisible on the dark field. */
 button:focus-visible,summary:focus-visible,a:focus-visible,.sf-tag:focus-visible,
-.col-item:focus-visible,.preset-chip:focus-visible{
+.col-item:focus-visible,.preset-chip:focus-visible,.score-preset:focus-visible{
   outline:2px solid var(--c);outline-offset:2px;border-radius:6px;
 }
+/* Tiles («Только без сайтов», «Все», сети, режим покрытия) are labels with a
+   hidden radio inside — without this the keyboard focus had no visual state. */
+.soc-tile:focus-within,.parse-mode-opt:focus-within,.social-mode-opt:focus-within,
+.vk-mode-opt:focus-within,.source-mode-opt:focus-within,.grid-mode-opt:focus-within{
+  outline:2px solid var(--c);outline-offset:2px;
+}
+/* Range sliders (покрытие города) rendered without any focus indication. */
+input[type=range]:focus-visible{outline:2px solid var(--c);outline-offset:4px;border-radius:6px}
 input:focus-visible,textarea:focus-visible,select:focus-visible{
-  outline:2px solid rgba(26,122,138,.35);outline-offset:1px;
+  outline:2px solid var(--focus-ring);outline-offset:1px;
 }
 
 /* Text selection tint */
@@ -1224,6 +1261,8 @@ input:focus-visible,textarea:focus-visible,select:focus-visible{
   --tip-bg:#0F1720;--tip-txt:#E8EFF3;--tip-field:#1B2733;--tip-ok:#8FD6A6;--tip-bdr:#2C3D4A;
   --vk:#4c75a3;--ig:#a8306c;--tg:#1d6da3;--wa:#2e7d4f;
   --c-soft:rgba(95,191,174,.10);
+  /* В тёмной теме кольцо плотнее: те же 8% на тёмном поле неразличимы. */
+  --focus-ring:rgba(95,191,174,.48);
   --glow:rgba(95,191,174,.22);
   --glow-warn:rgba(211,162,76,.24);
   --glow-red:rgba(217,115,111,.24);
@@ -1279,7 +1318,7 @@ html.theme-anim #log-output{
 [data-theme="dark"] input[type=password],[data-theme="dark"] textarea,
 [data-theme="dark"] select{background:var(--field);border:1px solid var(--bdr);color:var(--txt)}
 [data-theme="dark"] input:focus,[data-theme="dark"] textarea:focus,[data-theme="dark"] select:focus{
-  background:var(--field);border-color:var(--c);box-shadow:0 0 0 3px var(--c-soft);outline:none}
+  background:var(--field);border-color:var(--c);box-shadow:0 0 0 3px var(--focus-ring);outline:none}
 [data-theme="dark"] input::placeholder,[data-theme="dark"] textarea::placeholder{color:var(--muted)}
 [data-theme="dark"] input[type=password]{letter-spacing:.08em}
 [data-theme="dark"] .stepper input{background:var(--field);border:none;color:var(--txt)}
@@ -1419,7 +1458,7 @@ html.theme-anim #log-output{
 }
 .stepper input::-webkit-outer-spin-button,.stepper input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
 .stepper input:focus{outline:none;box-shadow:none}
-.stepper:focus-within{border-color:var(--c);box-shadow:0 0 0 3px rgba(0,126,140,.1)}
+.stepper:focus-within{border-color:var(--c);box-shadow:0 0 0 3px var(--focus-ring)}
 .stp-btn{
   width:30px;flex-shrink:0;border:none;background:var(--panel);color:var(--sub);
   font-size:15px;font-weight:800;cursor:pointer;line-height:1;
@@ -1638,7 +1677,7 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
   font-size:14px;font-family:inherit;color:var(--txt);background:var(--card);
   margin-bottom:8px;box-sizing:border-box;
 }
-.preset-modal input[type=text]:focus{border-color:var(--c);outline:none;box-shadow:0 0 0 3px rgba(0,126,140,.12)}
+.preset-modal input[type=text]:focus{border-color:var(--c);outline:none;box-shadow:0 0 0 3px var(--focus-ring)}
 .preset-modal input.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgba(196,64,64,.12) !important}
 .preset-modal-meta{font-size:12px;color:var(--muted);margin-bottom:16px}
 
@@ -2007,6 +2046,18 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 
 [data-theme="dark"] .btn-sm,[data-theme="dark"] #btn-cols{background:var(--field);border-color:var(--bdr);color:var(--sub)}
 [data-theme="dark"] .btn-sm:hover,[data-theme="dark"] #btn-cols:hover{border-color:var(--c);color:var(--c)}
+/* Semantic buttons must win over the generic dark .btn-sm above (same
+   specificity, later rule): with translucent --err-bdr (*.45) both the
+   border and the label faded into the panel — the button «сливалась
+   с фоном». Solid tokens keep it as red as it is in the light theme. */
+[data-theme="dark"] .btn-sm.danger,[data-theme="dark"] .files-bulk-btn{
+  background:var(--err-bg);border-color:var(--red);color:var(--err-txt)}
+[data-theme="dark"] .btn-sm.danger:hover,[data-theme="dark"] .files-bulk-btn:hover{
+  background:var(--err-on);border-color:var(--red);color:var(--red)}
+[data-theme="dark"] .btn-sm.warn,[data-theme="dark"] .files-bulk-arch{
+  background:var(--warn-bg);border-color:var(--warn-bdr);color:var(--warn-txt)}
+[data-theme="dark"] .btn-sm.warn:hover,[data-theme="dark"] .files-bulk-arch:hover{
+  background:var(--warn-on);border-color:var(--warn-strong);color:var(--warn-strong)}
 [data-theme="dark"] .hdr-right button{border-color:rgba(255,255,255,.3)}
 /* Dark theme header is teal, so a 15%-alpha badge washed out (contrast ~1.5:1).
    Solid fills with dark text keep every state readable on the teal bar. */
@@ -2173,7 +2224,7 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
   transition:border-color .12s,box-shadow .12s;
 }
 .files-toolbar input:focus{
-  outline:none;border-color:var(--c);box-shadow:0 0 0 3px rgba(0,126,140,.13);
+  outline:none;border-color:var(--c);box-shadow:0 0 0 3px var(--focus-ring);
 }
 .files-toolbar input::placeholder{color:var(--muted)}
 .files-found{font-size:11.5px;font-weight:700;color:var(--sub);white-space:nowrap}
@@ -2208,15 +2259,19 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 }
 .file-meta{font-size:11px;color:var(--muted);margin-top:2px;font-weight:600}
 .file-actions{display:flex;gap:3px;flex-shrink:0}
-/* Resting state is visible on purpose: bare emoji read as decoration. */
+/* Resting state is visible on purpose: bare icons read as decoration.
+   The glyphs are inline SVGs with stroke="currentColor", so one `color`
+   rule colours them in both themes (emoji ignored the colour entirely). */
 .file-btn{
   width:34px;height:34px;border:1.5px solid var(--bdr);background:var(--cl);
   border-radius:8px;cursor:pointer;font-size:16px;line-height:1;
   display:inline-flex;align-items:center;justify-content:center;
+  color:var(--sub);
   transition:background .12s,border-color .12s,color .12s,transform .12s;
 }
-.file-btn:hover{background:var(--card);border-color:var(--c);transform:translateY(-1px)}
-.file-btn.danger:hover{background:var(--err-bg);border-color:var(--red)}
+.file-btn:hover{background:var(--card);border-color:var(--c);color:var(--c);transform:translateY(-1px)}
+.file-btn.danger{color:var(--err-strong)}
+.file-btn.danger:hover{background:var(--err-bg);border-color:var(--red);color:var(--red)}
 .links-modal textarea{
   width:100%;min-height:170px;font-family:ui-monospace,Menlo,Consolas,monospace;
   font-size:12px;line-height:1.6;padding:9px 11px;border:1.5px solid var(--bdr);border-radius:7px;
@@ -2251,14 +2306,15 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 [data-theme="dark"] .file-card{background:var(--card);border-color:var(--bdr)}
 [data-theme="dark"] .file-card:hover{border-color:var(--c);box-shadow:0 2px 12px rgba(20,184,166,.18)}
 [data-theme="dark"] .file-name{color:var(--txt)}
-[data-theme="dark"] .file-btn:hover{background:rgba(20,184,166,.12);border-color:var(--c)}
-[data-theme="dark"] .file-btn.danger:hover{background:rgba(239,68,68,.15);border-color:var(--red)}
+[data-theme="dark"] .file-btn:hover{background:rgba(20,184,166,.12);border-color:var(--c);color:var(--c)}
+[data-theme="dark"] .file-btn.danger{color:var(--err-txt)}
+[data-theme="dark"] .file-btn.danger:hover{background:rgba(239,68,68,.15);border-color:var(--red);color:var(--red)}
 [data-theme="dark"] .files-toolbar input{background:var(--field);border-color:var(--bdr);color:var(--txt)}
-[data-theme="dark"] .files-toolbar input:focus{border-color:var(--c);box-shadow:0 0 0 3px var(--c-soft)}
+[data-theme="dark"] .files-toolbar input:focus{border-color:var(--c);box-shadow:0 0 0 3px var(--focus-ring)}
 [data-theme="dark"] .files-badge.raw{background:var(--field);color:var(--sub);border-color:var(--bdr)}
 [data-theme="dark"] .files-badge.processed{background:rgba(16,185,129,.14);color:var(--grn);border-color:rgba(16,185,129,.3)}
 [data-theme="dark"] .files-badge.archive{background:rgba(245,158,11,.14);color:var(--yel);border-color:rgba(245,158,11,.3)}
-[data-theme="dark"] .file-btn{background:var(--panel);border-color:var(--bdr)}
+[data-theme="dark"] .file-btn{background:var(--panel);border-color:var(--bdr);color:var(--sub)}
 [data-theme="dark"] .file-btn:hover{background:var(--field);border-color:var(--c)}
 [data-theme="dark"] .links-modal textarea{background:var(--term);border-color:var(--bdr);color:var(--txt)}
 
@@ -2393,17 +2449,5 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 .log-jump:hover{filter:brightness(1.08)}
 .log-jump[hidden]{display:none}
 
-/* ── Прогресс: город крупно + мини-полоски по городам ───────────────── */
+/* ── Прогресс: город крупно (полоски по городам живут в верхней полосе) ── */
 .term-progress-info .tp-city{font-size:13px;font-weight:800;color:var(--txt);letter-spacing:-.01em}
-.tp-cities{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;max-height:64px;overflow-y:auto}
-.tp-chip{
-  display:inline-flex;align-items:center;gap:6px;padding:2px 7px;border-radius:6px;
-  background:var(--panel);border:1px solid var(--bdr);
-  font-size:10.5px;font-weight:700;color:var(--sub);
-}
-.tp-chip.running{border-color:var(--c);color:var(--c);background:var(--cl)}
-.tp-chip.queued{opacity:.72}
-.tp-chip-name{max-width:104px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.tp-chip-track{width:38px;height:4px;border-radius:2px;background:var(--track);overflow:hidden}
-.tp-chip-fill{display:block;height:100%;width:0;border-radius:2px;background:var(--c)}
-.tp-chip.running .tp-chip-fill{background:var(--pause-to)}

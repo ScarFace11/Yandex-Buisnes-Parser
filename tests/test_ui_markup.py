@@ -136,3 +136,114 @@ class TestDarkPalette:
     def test_stylesheet_braces_balance(self):
         css = re.sub(r"/\*.*?\*/", "", STYLE, flags=re.S)
         assert css.count("{") == css.count("}"), "CSS сломан: фигурные скобки не сходятся"
+
+
+class TestFileHistoryBulkActions:
+    """История файлов: массовое удаление, массовый архив и снятие выбора.
+
+    Все три кнопки появляются вместе с первым отмеченным файлом. Иконки в
+    карточках — инлайновые SVG (эмодзи 🗑 рисовалось монохромно и пропадало
+    на тёмном фоне), а «Удалить выбранные» в тёмной теме не должно сливаться
+    с панелью."""
+    IDS = ("btn-files-bulk-delete", "btn-files-bulk-archive", "btn-files-bulk-cancel")
+
+    def test_three_bulk_buttons_exist_and_are_wired(self):
+        for bid in self.IDES if hasattr(self, "IDES") else self.IDS:
+            assert f'id="{bid}"' in TEMPLATE, bid
+        for handler in ("bulkDeleteSelected()", "bulkArchiveSelected()", "clearFileSelection()"):
+            assert f'onclick="{handler}"' in TEMPLATE, handler
+
+    def test_js_exposes_the_archive_and_clear_handlers(self):
+        for fn in ("function bulkArchiveSelected(", "function clearFileSelection(",
+                   "function onFileSelect("):
+            assert fn in APP_JS, fn
+        assert "action: 'archive'" in APP_JS, "массовый архив идёт батчем через /files/action"
+
+    def test_card_actions_are_theme_aware_svg_not_emoji(self):
+        assert "const FILE_ACT_ICONS = {" in APP_JS
+        assert "stroke=\"currentColor\"" in APP_JS
+        assert '>🗑</button>' not in APP_JS, "эмодзи-мусорка не наследует цвет темы"
+        assert "📥</button>" not in APP_JS
+
+    def test_danger_icon_has_a_colour_in_both_themes(self):
+        assert ".file-btn.danger{color:var(--err-strong)}" in STYLE
+        assert '[data-theme="dark"] .file-btn.danger{color:var(--err-txt)}' in STYLE
+        assert '[data-theme="dark"] .file-btn.danger:hover' in STYLE
+
+    def test_bulk_delete_is_red_in_the_dark_theme_too(self):
+        dark = dark_rule_lines()
+        assert '[data-theme="dark"] .btn-sm.danger,[data-theme="dark"] .files-bulk-btn{' in dark
+        rule = dark[dark.index('[data-theme="dark"] .btn-sm.danger,[data-theme="dark"] .files-bulk-btn{'):]
+        rule = rule[: rule.index("}")]
+        assert "border-color:var(--red)" in rule
+        assert "color:var(--err-txt)" in rule
+        # Полупрозрачный --err-bdr (*.45) делал кнопку серой — его тут быть не должно.
+        assert "--err-bdr" not in rule
+
+
+class TestFocusIsVisibleInBothThemes:
+    """Рамка фокуса: раньше кольцо брали из --c-soft (8%) — на тёмном поле
+    его не видно, а часть правил использовала светлый литерал."""
+
+    def test_focus_ring_token_is_defined_in_both_themes(self):
+        light = STYLE[STYLE.index(":root{"):]
+        light = light[: light.index("\n}")]
+        dark = DARK_TOKEN_BLOCK[: DARK_TOKEN_BLOCK.index("\n}")]
+
+        def alpha(block):
+            m = re.search(r"--focus-ring:rgba\([^)]*,\s*([0-9.]+)\)", block)
+            assert m, "--focus-ring объявлен не через rgba"
+            return float(m.group(1))
+
+        assert alpha(light) > 0.15, "в светлой теме кольцо должно быть заметным"
+        assert alpha(dark) > alpha(light), "на тёмном поле кольцо обязано быть плотнее"
+
+    def test_focus_rules_use_the_token(self):
+        """Правила, которые РИСУЮТ рамку фокуса, обязаны брать её из токена."""
+        css = re.sub(r"/\*.*?\*/", "", STYLE, flags=re.S)
+        for rule in re.finditer(r"([^{}]*(?:focus|focus-within|focus-visible)[^{}]*)\{([^}]*)\}", css):
+            selector, body = rule.group(1), rule.group(2)
+            where = selector.strip()[-60:]
+            assert "rgba(26,122,138" not in body, f"светлый литерал в правиле фокуса: {where}"
+            # Строка вида `.stepper input:focus{outline:none;box-shadow:none}`
+            # НЕ рисует фокус — рамку рисует .stepper:focus-within, поэтому
+            # такие правила пропускаем.
+            visible = [d for d in body.split(";")
+                       if d.split(":")[0].strip() in ("box-shadow", "outline", "border-color")
+                       and d.split(":", 1)[1].strip() not in ("none", "0", "0px")]
+            if not visible or "var(--" in body:
+                continue
+            raise AssertionError(f"фокус без токена: {where} → {body.strip()}")
+
+    def test_range_and_tiles_get_a_focus_state(self):
+        assert "input[type=range]:focus-visible" in STYLE
+        for tile in (".soc-tile:focus-within", ".parse-mode-opt:focus-within",
+                     ".social-mode-opt:focus-within", ".grid-mode-opt:focus-within"):
+            assert tile in STYLE, tile
+
+
+class TestOutputFolderSettings:
+    """«Куда сохранять»: одна папка (или своя на каждый этап) вместо output/."""
+
+    def test_form_has_the_folder_field_and_buttons(self):
+        for needle in ('id="f-output-dir"', 'id="btn-output-browse"', 'id="btn-output-save"',
+                       'id="btn-output-default"', 'id="f-output-advanced"',
+                       'id="f-output-raw"', 'id="f-output-processed"', 'id="f-output-archive"',
+                       'id="output-dir-hint"', 'id="output-dir-err"'):
+            assert needle in TEMPLATE, needle
+
+    def test_handlers_exist(self):
+        for fn in ("function loadOutputDir(", "function saveOutputDir(", "function resetOutputDir(",
+                   "function pickOutputDir(", "function onOutputAdvancedToggle(",
+                   "function applyOutputDirState("):
+            assert fn in APP_JS, fn
+        assert "'/output-dir'" in APP_JS and "'/folder-picker'" in APP_JS
+
+    def test_hint_explains_that_service_files_stay_put(self):
+        assert "Ключи, кэш найденного и история остаются" in APP_JS
+
+    def test_server_side_routes_exist(self):
+        api = (ROOT / "routes" / "api.py").read_text(encoding="utf-8")
+        assert '@bp.route("/output-dir", methods=["GET"])' in api
+        assert '@bp.route("/output-dir", methods=["POST"])' in api
+        assert '@bp.route("/folder-picker", methods=["POST"])' in api

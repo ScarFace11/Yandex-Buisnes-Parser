@@ -96,7 +96,8 @@ const asyncGrab = name => {
   }
   throw new Error('unbalanced braces while slicing: ' + name);
 };
-(0, eval)(fns.map(grab).join('\n') + '\n' + asyncGrab('stopRunWithConfirm'));
+(0, eval)(fns.map(grab).join('\n') + '\n'
+  + asyncGrab('stopRunWithConfirm') + '\n' + asyncGrab('stopPausedRun'));
 // resetBtn repaints the «Статистика» tab badge — irrelevant here.
 globalThis.updateStatsBadge = () => {};
 // setRunBtnActive/resetBtn rewire the dock button's onclick to these —
@@ -377,9 +378,37 @@ test('enterPausedState: orange resume button + paused badge', () => {
   assert.equal(els['btn-run']._classes.has('run-active'), false, 'run-active cleared');
   assert.equal(els['btn-txt'].textContent, 'Продолжить поиск');
   assert.equal(els['btn-icon'].textContent, '▶', 'resume icon ▶');
-  assert.equal(els['btn-stop'].hidden, true, 'stop button hidden while paused');
   assert.equal(globalThis.__status.cls, 'paused', 'status badge = paused');
   assert.equal(globalThis.__status.txt, '⏸ Пауза');
+  // ⏹ must stay reachable next to «▶ Продолжить» — it used to vanish here,
+  // leaving no way to stop a paused search.
+  assert.equal(els['btn-stop'].hidden, false, 'stop button visible while paused');
+  assert.equal(typeof els['btn-stop'].onclick, 'function', 'stop wired while paused');
+  assert.equal(els['btn-stop'].onclick, globalThis.stopPausedRun, '⏹ cancels the resume point');
+});
+
+test('stopPausedRun: dropping the resume point needs a confirmation', async () => {
+  globalThis.enterPausedState({queries: ['кафе'], all_cities: ['Уфа'],
+                                params: {queries: ['кафе'], cities: ['Уфа']}});
+  assert.ok(globalThis._pausedRun, 'a resume payload is kept');
+  let toasts = 0;
+  const prevConfirm = globalThis.uiConfirm;
+  const prevToast = globalThis.showToast;
+  globalThis.showToast = () => { toasts++; };
+
+  globalThis.uiConfirm = async () => false;          // user backs out
+  await globalThis.stopPausedRun();
+  assert.ok(globalThis._pausedRun, 'declining keeps the resume point');
+
+  globalThis.uiConfirm = async () => true;           // user confirms
+  await globalThis.stopPausedRun();
+  assert.equal(globalThis._pausedRun, null, 'confirming drops the resume point');
+  assert.equal(els['btn-run']._classes.has('run-paused'), false, 'paused style cleared');
+  assert.equal(els['btn-txt'].textContent, 'Найти компании', 'dock is back to idle');
+  assert.equal(els['btn-stop'].hidden, true, 'stop hidden once nothing is running');
+  assert.equal(toasts, 1, 'the user gets one explanation');
+  globalThis.uiConfirm = prevConfirm;
+  globalThis.showToast = prevToast;
 });
 
 test('enterPausedState: tooltip/toast carry pause position + 2GIS quota', () => {
