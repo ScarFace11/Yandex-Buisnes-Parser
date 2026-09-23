@@ -39,8 +39,11 @@
   --vk:#4c75a3;--ig:#a8306c;--tg:#1d6da3;--wa:#2e7d4f;
   --c-soft:rgba(0,126,140,.08);
   /* Кольцо фокуса. Отдельный токен, потому что подложки (--c-soft, 8%)
-     для рамки фокуса мало: на тёмном поле её просто не видно. */
-  --focus-ring:rgba(0,126,140,.32);
+     для рамки фокуса мало: на тёмном поле её просто не видно.
+     В СВЕТЛОЙ теме плотность прежняя (как до появления токена): рамку тут
+     видно за счёт бирюзовой обводки поля, а плотное свечение выглядело как
+     лишнее выделение. Усиливать кольцо нужно только на тёмной подложке. */
+  --focus-ring:rgba(0,126,140,.12);
   --glow:rgba(0,126,140,.28);
   --glow-warn:rgba(224,137,0,.30);
   --glow-red:rgba(196,64,64,.28);
@@ -871,7 +874,11 @@ input[type="range"]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;b
 .out-dir-row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
 .out-dir-row input{flex:1 1 190px;min-width:0}
 .out-dir-row .btn-sm{flex:0 0 auto;white-space:nowrap}
-#output-advanced .tiles-inner{display:flex;flex-direction:column;gap:4px;padding-top:8px}
+#output-advanced .tiles-inner{display:flex;flex-direction:column;gap:4px}
+/* Отступ сверху держит только ОТКРЫТЫЙ блок: та же строка в закрытом
+   состоянии (grid-template-rows:0fr) давала 8-пиксельную полоску контента —
+   закрытая секция «протекала» наружу. */
+#output-advanced.open .tiles-inner{padding-top:8px}
 #output-advanced .lbl{margin-top:4px}
 .out-dir-err{
   font-size:11.5px;font-weight:700;line-height:1.45;
@@ -1194,11 +1201,22 @@ button:focus-visible,summary:focus-visible,a:focus-visible,.sf-tag:focus-visible
   outline:2px solid var(--c);outline-offset:2px;border-radius:6px;
 }
 /* Tiles («Только без сайтов», «Все», сети, режим покрытия) are labels with a
-   hidden radio inside — without this the keyboard focus had no visual state. */
-.soc-tile:focus-within,.parse-mode-opt:focus-within,.social-mode-opt:focus-within,
-.vk-mode-opt:focus-within,.source-mode-opt:focus-within,.grid-mode-opt:focus-within{
+   hidden radio inside — without this the keyboard focus had no visual state.
+   Только для КЛАВИАТУРЫ (`:has(input:focus-visible)`): с `:focus-within`
+   обычный клик мышью по подписи фокусировал радио и обводил плитку целиком —
+   выделение, которого пользователь не просил. */
+.soc-tile:has(input:focus-visible),.parse-mode-opt:has(input:focus-visible),
+.social-mode-opt:has(input:focus-visible),.vk-mode-opt:has(input:focus-visible),
+.source-mode-opt:has(input:focus-visible),.grid-mode-opt:has(input:focus-visible){
   outline:2px solid var(--c);outline-offset:2px;
 }
+/* Чекбоксы и радио: на коробке 14px свечение токена неразличимо, а в светлой
+   теме у сфокусированного чекбокса не было видимого состояния вообще.
+   У чекбокса — обычное видимое поле, поэтому рамка есть и по клику мышью;
+   радио спрятаны внутри плиток (1×1, clip-path) — им рамку даём только
+   при клавиатурной навигации, иначе она светилась бы у самой плитки. */
+input[type=checkbox]:focus{outline:2px solid var(--c);outline-offset:2px;border-radius:4px}
+input[type=radio]:focus-visible{outline:2px solid var(--c);outline-offset:2px;border-radius:4px}
 /* Range sliders (покрытие города) rendered without any focus indication. */
 input[type=range]:focus-visible{outline:2px solid var(--c);outline-offset:4px;border-radius:6px}
 input:focus-visible,textarea:focus-visible,select:focus-visible{
@@ -1481,7 +1499,9 @@ html.theme-anim #log-output{
 }
 .tiles-reveal.open{grid-template-rows:1fr}
 .tiles-reveal>*{overflow:hidden;min-height:0}
-.tiles-inner{padding-top:2px}
+/* Верхний отступ только у ОТКРЫТОЙ секции: в закрытом виде (grid-template-rows
+   0fr) тот же padding давал 2-пиксельную полоску содержимого. */
+.tiles-reveal.open>.tiles-inner{padding-top:2px}
 .tiles-title{font-size:11px;font-weight:800;color:var(--sub);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px}
 .tiles-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(86px,1fr));gap:7px}
 .soc-tile{

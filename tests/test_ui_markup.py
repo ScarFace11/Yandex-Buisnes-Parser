@@ -195,8 +195,12 @@ class TestFocusIsVisibleInBothThemes:
             assert m, "--focus-ring объявлен не через rgba"
             return float(m.group(1))
 
-        assert alpha(light) > 0.15, "в светлой теме кольцо должно быть заметным"
-        assert alpha(dark) > alpha(light), "на тёмном поле кольцо обязано быть плотнее"
+        assert alpha(light) >= 0.1, "в светлой теме кольцо не должно исчезнуть"
+        # В светлой теме плотность оставляем прежней (как до появления токена):
+        # заметность там даёт бирюзовая обводка поля, а плотное свечение
+        # читалось как лишнее выделение.
+        assert alpha(light) <= 0.2, "в светлой теме кольцо не должно бросаться в глаза"
+        assert alpha(dark) > alpha(light) * 3, "на тёмном поле кольцо обязано быть плотнее"
 
     def test_focus_rules_use_the_token(self):
         """Правила, которые РИСУЮТ рамку фокуса, обязаны брать её из токена."""
@@ -217,9 +221,36 @@ class TestFocusIsVisibleInBothThemes:
 
     def test_range_and_tiles_get_a_focus_state(self):
         assert "input[type=range]:focus-visible" in STYLE
-        for tile in (".soc-tile:focus-within", ".parse-mode-opt:focus-within",
-                     ".social-mode-opt:focus-within", ".grid-mode-opt:focus-within"):
-            assert tile in STYLE, tile
+        tiles = (".soc-tile", ".parse-mode-opt", ".social-mode-opt",
+                 ".vk-mode-opt", ".source-mode-opt", ".grid-mode-opt")
+        for tile in tiles:
+            assert f"{tile}:has(input:focus-visible)" in STYLE, tile
+        # Регресс: `:focus-within` обводил плитку по клику мышью (фокус уходил
+        # в скрытое радио) — подсветка, которой пользователь не просил.
+        for tile in tiles:
+            assert f"{tile}:focus-within" not in STYLE, tile
+
+    def test_checkboxes_and_radios_get_a_keyboard_focus_ring(self):
+        """На коробке 14px свечение токена не различить, а в светлой теме
+        у сфокусированного чекбокса не было видимого состояния вообще."""
+        # Чекбокс — обычное видимое поле (рамка и по клику мышью).
+        assert "input[type=checkbox]:focus{" in STYLE
+        # Радио спрятаны в плитках: рамка только для клавиатуры, иначе она
+        # светилась бы у всей плитки при клике — то самое лишнее выделение.
+        assert "input[type=radio]:focus-visible{" in STYLE
+        assert "input[type=radio]:focus{" not in STYLE
+
+    def test_closed_reveal_does_not_leak_a_strip(self):
+        """Закрытая секция (grid-template-rows:0fr) не показывает полоску
+        контента: верхний отступ живёт только у открытого блока."""
+        for rule in re.finditer(r"([^{}]*\.tiles-inner[^{}]*)\{([^}]*)\}", STYLE):
+            selector, body = rule.group(1), rule.group(2)
+            if "padding-top" in body:
+                assert ".open" in selector, f"отступ у закрытого блока: {selector.strip()}"
+        rule = re.search(r"#output-advanced \.tiles-inner\{([^}]*)\}", STYLE)
+        assert rule, "нет правила #output-advanced .tiles-inner"
+        assert "padding-top" not in rule.group(1), "padding даёт утечку в закрытом виде"
+        assert "#output-advanced.open .tiles-inner{padding-top:8px}" in STYLE
 
 
 class TestOutputFolderSettings:
