@@ -278,3 +278,78 @@ class TestOutputFolderSettings:
         assert '@bp.route("/output-dir", methods=["GET"])' in api
         assert '@bp.route("/output-dir", methods=["POST"])' in api
         assert '@bp.route("/folder-picker", methods=["POST"])' in api
+
+
+class TestNotificationSettings:
+    """Попап настроек уведомлений: главный тумблер + два типа, два разных звука.
+
+    Логику (черновик, откат, гейт по типам) проверяют node-тесты в
+    tests/ui/notifications.test.mjs — здесь только разметка, стили и то,
+    что звук перестал зависеть от разрешения браузера.
+    """
+
+    def test_header_button_keeps_ids_and_opens_the_popover(self):
+        # id кнопки/иконки/подписи — контракт: их читает updateNotifyBtn.
+        for needle in ('id="btn-notify"', 'id="notify-icon"', 'id="notify-txt"'):
+            assert needle in TEMPLATE, needle
+        assert 'onclick="toggleNotifyPopover(event)"' in TEMPLATE
+        assert 'aria-haspopup="dialog"' in TEMPLATE
+
+    def test_popover_has_master_and_two_type_switches(self):
+        for needle in ('id="notify-pop"', 'id="notify-master"', 'id="notify-city"',
+                       'id="notify-search"', 'id="notify-save"', 'id="notify-perm-hint"'):
+            assert needle in TEMPLATE, needle
+        assert TEMPLATE.count('role="switch"') == 3
+        assert TEMPLATE.count('aria-checked=') == 3
+        assert 'role="dialog"' in TEMPLATE
+
+    def test_save_button_starts_disabled(self):
+        """Пока ничего не изменено — сохранять нечего."""
+        assert re.search(r'id="notify-save"[^>]*\bdisabled', TEMPLATE)
+
+    def test_ios_switch_styles(self):
+        start = STYLE.index('.tgl{')
+        block = STYLE[start:start + 400]
+        assert 'width:44px' in block and 'height:24px' in block
+        assert '.tgl.on{' in STYLE, 'нет включённого состояния'
+        assert '.tgl::after' in STYLE, 'нет ползунка'
+        assert '.tgl:disabled' in STYLE, 'подтумблеры должны гаснуть с мастером'
+
+    def test_switch_colours_live_in_tokens_for_both_themes(self):
+        light = STYLE[STYLE.index(':root{'):]
+        light = light[: light.index('\n}')]
+        dark = DARK_TOKEN_BLOCK[: DARK_TOKEN_BLOCK.index('\n}')]
+        for token in ('--tgl-off', '--tgl-on', '--knob'):
+            assert token + ':' in light, f'{token} не объявлен в светлой теме'
+            assert token + ':' in dark, f'{token} не объявлен в тёмной теме'
+        assert '#10B981' in light, 'зелёный из макета потерялся'
+
+    def test_popover_has_fixed_width_and_mobile_layout(self):
+        assert 'width:320px' in STYLE
+        assert '.notify-pop{position:fixed' in STYLE, 'нет раскладки на узком экране'
+        # Кнопка остаётся доступной на узком экране — иначе попап не открыть.
+        assert '#btn-notify{display:none}' not in STYLE
+        assert '#notify-txt{display:none}' in STYLE
+
+    def test_sounds_are_distinct_and_not_gated_by_notification_permission(self):
+        for fn in ('function playCityDoneSound(', 'function playDoneSound('):
+            assert fn in APP_JS, fn
+        for fn in ('playCityDoneSound', 'playDoneSound'):
+            body = APP_JS[APP_JS.index('function ' + fn + '('):]
+            body = body[: body.index('\n}')]
+            assert 'Notification' not in body, f'{fn} всё ещё зависит от разрешения'
+        # Один общий контекст вместо нового на каждый сигнал.
+        assert 'function audioCtx(' in APP_JS
+        assert APP_JS.count('new (window.AudioContext') == 0
+        assert "[[880, 1760]]" in APP_JS, 'звук города'
+        assert '[523, 659, 784, [1047, 2093]]' in APP_JS, 'финальная мелодия'
+
+    def test_settings_key_and_per_type_gate(self):
+        assert "const NOTIFY_KEY = 'notifications_settings'" in APP_JS
+        assert 'function notifyAllowed(' in APP_JS
+        assert 'function notifyCityComplete(' in APP_JS
+        assert 'function notifySearchComplete(' in APP_JS
+        # Триггеры больше не смотрят на общий флаг напрямую.
+        assert 'notifyCityComplete({ name, idx, total, status, records })' in APP_JS
+        assert 'notifySearchComplete({' in APP_JS
+        assert APP_JS.count("notificationsEnabled && Notification") == 0

@@ -23,6 +23,9 @@
   --row-alt:#f8fbfc;      /* чётные строки таблицы */
   --row-hover:#eaf4f7;    /* строка/панель под курсором */
   --track:#e2ebee;        /* дорожки полосок */
+  --tgl-off:#D1D5DB;      /* тумблер «выкл» — серый, как в iOS */
+  --tgl-on:#10B981;       /* тумблер «вкл» — зелёный (макет) */
+  --knob:#ffffff;         /* ползунок тумблера */
   --hdr:var(--c);         /* шапка */
   --bdr-h:#8fa9b1;        /* границы под курсором */
   --bdr-hover:var(--bdr-h);
@@ -166,6 +169,49 @@ header h1{font-size:15px;font-weight:700;letter-spacing:-.01em}
 #btn-notify:hover,#btn-theme:hover{background:rgba(255,255,255,.12)}
 #btn-notify.granted{background:rgba(40,130,90,.45);border-color:rgba(40,190,110,.35)}
 #btn-notify.denied{background:rgba(196,64,64,.28);cursor:default}
+
+/* ── Настройки уведомлений: попап под кнопкой в шапке ──────────
+   Ширина 320px по макету; z-index выше контента (шапка сама z-index:200,
+   внутри своего контекста попап рисуется над страницей). */
+.notify-wrap{position:relative}
+.notify-pop{
+  position:absolute;top:calc(100% + 8px);right:0;width:320px;
+  background:var(--card);border:1.5px solid var(--bdr);border-radius:8px;
+  box-shadow:0 10px 30px rgba(0,0,0,.18);padding:16px;z-index:500;
+  text-align:left;color:var(--txt);
+}
+.notify-pop[hidden]{display:none}
+[data-theme="dark"] .notify-pop{box-shadow:0 14px 36px rgba(0,0,0,.5)}
+.notify-pop-title{font-size:13.5px;font-weight:800;margin-bottom:10px}
+.notify-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 0}
+.notify-row-lbl{font-size:12.5px;font-weight:600;color:var(--sub)}
+.notify-sep{border:none;border-top:1px solid var(--bdr);margin:9px 0}
+.notify-hint{font-size:11px;line-height:1.45;color:var(--muted);margin:6px 0 0}
+.notify-hint[hidden]{display:none}
+.notify-save{
+  width:100%;margin-top:11px;padding:8px 12px;border:none;border-radius:7px;
+  background:var(--c);color:var(--on-accent);font-size:12.5px;font-weight:700;
+  font-family:inherit;cursor:pointer;transition:filter .15s,opacity .15s;
+}
+.notify-save:hover:not(:disabled){filter:brightness(1.07)}
+.notify-save:disabled{background:var(--bdr);color:var(--muted);cursor:not-allowed}
+
+/* Тумблер в стиле iOS: кнопка с role="switch" (клавиатура + рамка фокуса
+   достаются бесплатно), 44×24 с ползунком 20px. */
+.tgl{
+  position:relative;width:44px;height:24px;flex:0 0 auto;padding:0;margin:0;
+  border:none;border-radius:12px;background:var(--tgl-off);
+  cursor:pointer;transition:background .2s;-webkit-appearance:none;appearance:none;
+}
+.tgl::after{
+  content:'';position:absolute;top:2px;left:2px;width:20px;height:20px;
+  border-radius:50%;background:var(--knob);
+  box-shadow:0 1px 3px rgba(0,0,0,.25);transition:left .2s;
+}
+.tgl.on{background:var(--tgl-on)}
+.tgl.on::after{left:22px}
+.tgl:disabled{opacity:.45;cursor:not-allowed}
+.tgl:focus-visible{outline:2px solid var(--c);outline-offset:2px}
 
 /* ── Progress ── */
 #prog-wrap{height:3px;background:rgba(255,255,255,.2);overflow:hidden;display:none}
@@ -1252,6 +1298,9 @@ input:focus-visible,textarea:focus-visible,select:focus-visible{
   --row-alt:#1D2128;     /* чётные строки таблицы */
   --row-hover:#252B36;   /* строка под курсором */
   --track:#272C35;       /* дорожки полосок */
+  --tgl-off:#3A4150;     /* в тёмной теме «выкл» — тёмно-серый, а не белый */
+  --tgl-on:#22C08D;      /* чуть ярче: #10B981 на тёмном фоне глубже */
+  --knob:#F2F6F8;        /* ползунок: не чистый белый, чтобы не слепил */
   --bdr:#333844;         /* границы */
   --bdr-h:#414757;       /* границы под курсором */
   --bdr-hover:var(--bdr-h);
@@ -1387,7 +1436,11 @@ html.theme-anim #log-output{
   .onboarding{padding:28px 18px;min-height:400px}
   .onboarding h2{font-size:21px}
   .hdr-right{gap:5px}
-  #btn-notify{display:none}
+  /* Кнопка нужна и на узком экране (в попапе — настройки звука и окон),
+     но место в шапке экономим: остаётся только иконка. */
+  #notify-txt{display:none}
+  #btn-notify{padding:6px 9px}
+  .notify-pop{position:fixed;left:8px;right:8px;top:60px;width:auto;max-height:70vh;overflow-y:auto}
   .tab-btn{padding:8px 11px;font-size:11px}
   aside{position:static}
   details.advanced-settings>.dbody{grid-template-columns:1fr}

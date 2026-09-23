@@ -18,7 +18,13 @@ let activeSocialFilters = new Set();
 let socialMode = 'all';  // 'all' | 'with_socials' | 'without_socials'
 let parseMode = 'without_website';  // 'without_website' | 'all' — тип организаций
 let dataSource = 'yandex';  // 'yandex' | '2gis' — источник данных
-let notificationsEnabled = false;  // toggle state
+let notificationsEnabled = false;  // производный мастер-флаг (совместимость)
+// ── Настройки уведомлений: что именно присылать (localStorage + попап) ──
+const NOTIFY_KEY = 'notifications_settings';
+const NOTIFY_DEFAULTS = { enabled: true, city_complete: true, search_complete: true };
+let notifySettings = Object.assign({}, NOTIFY_DEFAULTS);  // сохранённые настройки
+let notifyDraft    = Object.assign({}, NOTIFY_DEFAULTS);  // черновик попапа
+let _notifyHintShown = false;   // подсказку про разрешение — раз за прогон
 let requiredSocials = new Set();   // AND filter: must have ALL selected socials
 let vkMode = 'all';                 // 'all' | 'active_semi' | 'active' — VK activity filter
 let _lastCompletedCityIdx = 0;     // track last completed city for notification
@@ -1076,26 +1082,13 @@ function removeCity(idx) {
 // ═══════════════════════════════════════════
 //  Notification toggle
 // ═══════════════════════════════════════════
+// Кнопка в шапке теперь открывает попап настроек (см. toggleNotifyPopover),
+// а эта функция осталась как простой «мастер-выключатель»:
+// глушит всё разом — и звук, и окна (настройки типов не трогает).
 function toggleNotifications() {
-  if (!('Notification' in window)) return;
-  if (Notification.permission === 'denied') {
-    showToast('Уведомления запрещены браузером. Разрешите их в настройках браузера.', 'error');
-    return;
-  }
-  if (notificationsEnabled) {
-    notificationsEnabled = false;
-    updateNotifyBtn();
-    return;
-  }
-  if (Notification.permission === 'default') {
-    Notification.requestPermission().then(perm => {
-      notificationsEnabled = (perm === 'granted');
-      updateNotifyBtn();
-    });
-  } else {
-    notificationsEnabled = true;
-    updateNotifyBtn();
-  }
+  notifySettings.enabled = !notifySettings.enabled;
+  saveNotifySettings();
+  if (typeof _renderNotifyPopover === 'function') _renderNotifyPopover();
 }
 
 // Прошло времени поиска: во время прогона — живое, после завершения —
@@ -1956,9 +1949,10 @@ function handleCityDone(raw) {
     // city is still running.
     updateStatsBadge();
     refreshLiveStats();
-    // Play sound for city completion
-    if (notificationsEnabled && Notification && Notification.permission === 'granted') {
-      playCityDoneSound(name, idx, total);
+    // Уведомление/звук «город завершён» — только если этот тип включён.
+    // (typeof — потому что в node-тестах функция может быть не подложена.)
+    if (typeof notifyCityComplete === 'function') {
+      notifyCityComplete({ name, idx, total, status, records });
     }
   }
 }
@@ -2161,9 +2155,12 @@ function onRunDone(msg) {
         `<div class="no-data">${emptyMsg}</div>`;
     }
     // Notification / sound (only on clean completion)
-    if (!stopped && notificationsEnabled && Notification && Notification.permission === 'granted') {
-      playDoneSound();
-      sendNotification('Поиск завершён', `Найдено ${allResults.length} компаний`);
+    if (!stopped && typeof notifySearchComplete === 'function') {
+      notifySearchComplete({
+        cities:  _totalCities || selectedCities.length || 0,
+        found:   Array.isArray(allResults) ? allResults.length : 0,
+        seconds: _runElapsed(),
+      });
     }
   };
 
@@ -4401,79 +4398,341 @@ function resetToDefaults() {
 // ═══════════════════════════════════════════
 //  Browser Notifications
 // ═══════════════════════════════════════════
+// ── Настройки: чтение / запись / состояние ───────────────────
+// Ключ и форма — `notifications_settings`:
+//   {enabled, city_complete, search_complete}
+// Битый JSON, чужой тип поля или недоступный localStorage не должны
+// оставлять пользователя без уведомлений вообще — откатываемся к дефолтам.
+function _notifyFlag(value, fallback) {
+  return typeof value === 'boolean' ? value : fallback;
+}
+
+function loadNotifySettings() {
+  let raw = null;
+  try {
+    if (typeof localStorage !== 'undefined' && localStorage) raw = localStorage.getItem(NOTIFY_KEY);
+  } catch (e) { raw = null; }        // приватный режим: настройки доживут до перезагрузки
+  let parsed = null;
+  try { parsed = raw ? JSON.parse(raw) : null; } catch (e) { parsed = null; }
+  const src = (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {};
+  notifySettings = {
+    enabled:         _notifyFlag(src.enabled,         NOTIFY_DEFAULTS.enabled),
+    city_complete:   _notifyFlag(src.city_complete,   NOTIFY_DEFAULTS.city_complete),
+    search_complete: _notifyFlag(src.search_complete, NOTIFY_DEFAULTS.search_complete),
+  };
+  notifyDraft = Object.assign({}, notifySettings);
+  _syncNotifyGlobals();
+  return notifySettings;
+}
+
+function saveNotifySettings() {
+  try {
+    if (typeof localStorage !== 'undefined' && localStorage) {
+      localStorage.setItem(NOTIFY_KEY, JSON.stringify(notifySettings));
+    }
+  } catch (e) { /* нет доступа к хранилищу — молча живём до перезагрузки */ }
+  _syncNotifyGlobals();
+  updateNotifyBtn();
+  return notifySettings;
+}
+
+// Старый глобал остаётся мастер-флагом: его читают sendNotification
+// и урезанные функции в node-тестах.
+function _syncNotifyGlobals() {
+  notificationsEnabled = !!notifySettings.enabled;
+}
+
+function notifyAllowed(kind) {
+  return !!notifySettings.enabled && !!notifySettings[kind];
+}
+
+// all_off | partial | all_on — нужно кнопке и подписи состояния
+function notifyState() {
+  if (!notifySettings.enabled) return 'all_off';
+  const on = ['city_complete', 'search_complete'].filter(k => notifySettings[k]).length;
+  if (on === 0) return 'all_off';
+  return on === 2 ? 'all_on' : 'partial';
+}
+
+function notifyStateLabel() {
+  const st = notifyState();
+  if (st === 'all_off') return 'Уведомления выкл.';
+  if (st === 'all_on')  return 'Уведомления вкл.';
+  return notifySettings.city_complete ? 'Уведомления: города' : 'Уведомления: поиск';
+}
+
+// Подпись кнопки показывает и состояние типов, и проблему с разрешением:
+// раньше в состоянии «запрещено» состояние типов пропадало вовсе.
+function notifyStateTitle() {
+  const c = notifySettings.city_complete ? 'вкл' : 'выкл';
+  const s = notifySettings.search_complete ? 'вкл' : 'выкл';
+  let t = `Города: ${c} · Поиск: ${s}. Клик — настройки.`;
+  if (!('Notification' in window)) {
+    t = 'Браузер не поддерживает системные уведомления — покажем тост. ' + t;
+  } else if (Notification.permission === 'denied') {
+    t = 'Уведомления запрещены в браузере — покажем тост вместо окна. ' + t;
+  }
+  return t;
+}
+
 function updateNotifyBtn() {
   const btn  = document.getElementById('btn-notify');
   const icon = document.getElementById('notify-icon');
   const txt  = document.getElementById('notify-txt');
-  if (!('Notification' in window)) {
-    btn.style.display = 'none'; return;
-  }
-  const perm = Notification.permission;
-  if (perm === 'denied') {
-    btn.className = 'denied';
-    icon.textContent = '🔕'; txt.textContent = 'Уведомления запрещены';
-  } else if (notificationsEnabled) {
-    btn.className = 'granted';
-    icon.textContent = '🔔'; txt.textContent = 'Уведомления вкл.';
-  } else {
-    btn.className = '';
-    icon.textContent = '🔔'; txt.textContent = 'Уведомления';
-  }
+  if (!btn || !icon || !txt) return;
+  const st   = notifyState();
+  const warn = !('Notification' in window) || Notification.permission === 'denied';
+  btn.className = warn ? 'denied' : (notifySettings.enabled ? 'granted' : '');
+  icon.textContent = st === 'all_off' ? '🔕' : '🔔';
+  txt.textContent  = notifyStateLabel() + (warn ? ' ⚠' : '');
+  btn.title        = notifyStateTitle();
+  const pop = document.getElementById('notify-pop');
+  btn.setAttribute('aria-expanded', pop && !pop.hidden ? 'true' : 'false');
 }
 
-function sendNotification(title, body, icon) {
-  if (!('Notification' in window) || Notification.permission !== 'granted') return;
-  if (!notificationsEnabled) return;
+function _renderNotifyPermHint() {
+  const el = document.getElementById('notify-perm-hint');
+  if (!el) return;
+  let msg = '';
+  if (!('Notification' in window)) {
+    msg = 'Браузер не поддерживает системные уведомления: вместо окна покажем тост. Звук работает.';
+  } else if (Notification.permission === 'denied') {
+    msg = 'Браузер запретил уведомления: окна не показываются, вместо них — тост. Звук работает. '
+        + 'Разрешить можно в настройках браузера для этой страницы.';
+  } else if (Notification.permission === 'default') {
+    msg = 'Разрешение на уведомления спросим при первом сохранении. Звук работает и без него.';
+  }
+  el.textContent = msg;
+  el.hidden = !msg;
+}
+
+// ── Отправка: окно, иначе тост (событие не теряется) ─────────
+// Окно уходит, только когда браузер разрешил уведомления; если нет — тост,
+// а подсказку про разрешение добавляем один раз, чтобы не повторяться.
+function sendNotification(title, body) {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return false;
+  if (!notificationsEnabled) return false;
   try {
     const n = new Notification(title, {body});
     n.onclick = () => { window.focus(); n.close(); };
-  } catch (e) { /* некоторые браузеры блокируют без service worker */ }
+    return true;
+  } catch (e) { return false; }   // браузер может блокировать без service worker
 }
 
-// ── Completion sound (Web Audio API chime) ──
-function playCityDoneSound(cityName, idx, total) {
+function fmtDuration(seconds) {
+  const total = Math.max(0, Math.round(Number(seconds) || 0));
+  if (total < 60) return `${total} сек`;
+  const m = Math.floor(total / 60);
+  if (m < 60) return `${m} мин ${String(total % 60).padStart(2, '0')} сек`;
+  return `${Math.floor(m / 60)} ч ${String(m % 60).padStart(2, '0')} мин`;
+}
+
+function _notifyOrgWord(n) {
+  return (typeof pluralNum === 'function')
+    ? pluralNum(n, 'организация', 'организации', 'организаций')
+    : 'организаций';
+}
+
+function _notifyBoth(title, body) {
+  if (sendNotification(title, body)) return true;
+  const hint = _notifyHintShown ? '' : ' Разрешите уведомления в браузере, чтобы получать окна.';
+  _notifyHintShown = true;
+  try { showToast(`${title} — ${body}${hint}`, 'info'); } catch (e) { /* тостов нет (тесты) */ }
+  return false;
+}
+
+function notifyCityComplete(info) {
+  if (!notifyAllowed('city_complete')) return false;
+  playCityDoneSound();
+  const skipped = info.status === 'skipped';
+  const title = skipped
+    ? `⏭ Город «${info.name}» пропущен`
+    : `🏙 Город «${info.name}» обработан`;
+  const body = `${info.idx}/${info.total} · Найдено: ${info.records} ${_notifyOrgWord(info.records)}`;
+  _notifyBoth(title, body);
+  return true;
+}
+
+function notifySearchComplete(info) {
+  if (!notifyAllowed('search_complete')) return false;
+  playDoneSound();
+  const body = `Городов: ${info.cities} · Найдено: ${info.found} ${_notifyOrgWord(info.found)}`
+             + ` · ${fmtDuration(info.seconds)}`;
+  _notifyBoth('✅ Поиск завершён', body);
+  return true;
+}
+
+// ── Completion sounds (Web Audio API — тоны генерируются кодом) ──
+// Один общий контекст на всю страницу: прежний код создавал новый
+// AudioContext на каждый сигнал, упирался в лимит браузера и не всегда
+// успевал разблокироваться после жеста.
+let _audioCtx = null;
+
+function audioCtx() {
+  if (_audioCtx) return _audioCtx;
+  const Ctor = window.AudioContext || window.webkitAudioContext;
+  if (!Ctor) return null;
+  try { _audioCtx = new Ctor(); } catch (e) { return null; }
+  return _audioCtx;
+}
+
+// Autoplay-политика: контекст стартует «suspended» до первого жеста.
+function unlockAudio() {
+  const ctx = audioCtx();
+  if (ctx && ctx.state === 'suspended' && typeof ctx.resume === 'function') {
+    try { ctx.resume(); } catch (e) { /* браузер не дал — тишина */ }
+  }
+}
+
+function _tone(ctx, freq, at, dur, gain, type) {
   try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    if (ctx.state === 'suspended') ctx.resume();
-    // Two-tone chime: E5 → G5 (lighter than full done sound)
-    [659, 784].forEach((freq, i) => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.type = 'sine';
-      osc.frequency.value = freq;
-      const t = ctx.currentTime + i * 0.15;
-      gain.gain.setValueAtTime(0.22, t);
-      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
-      osc.start(t);
-      osc.stop(t + 0.35);
-    });
-    // Browser notification
-    sendNotification(`Город ${idx}/${total} завершён`, `${cityName} — готово`);
+    const osc = ctx.createOscillator();
+    const g   = ctx.createGain();
+    osc.connect(g);
+    g.connect(ctx.destination);
+    osc.type = type || 'sine';
+    osc.frequency.value = freq;
+    g.gain.setValueAtTime(gain, at);
+    g.gain.exponentialRampToValueAtTime(0.001, at + dur);
+    osc.start(at);
+    osc.stop(at + dur);
   } catch (e) { /* Web Audio unavailable */ }
 }
 
+// notes: частоты или пары [основная, обертон]; opts: gain/step/tail/type
+function _chime(notes, opts) {
+  const ctx = audioCtx();
+  if (!ctx) return false;
+  unlockAudio();
+  const o = opts || {};
+  const gain = o.gain || 0.2, step = o.step || 0.15, tail = o.tail || 0.35;
+  notes.forEach((note, i) => {
+    const pair = Array.isArray(note);
+    const at = ctx.currentTime + i * step;
+    _tone(ctx, pair ? note[0] : note, at, tail, gain, o.type || 'sine');
+    if (pair && note[1]) _tone(ctx, note[1], at, tail, gain * 0.35, 'triangle');
+  });
+  return true;
+}
+
+// Город: мягкий короткий «динь» — тише и короче финального.
+function playCityDoneSound() {
+  return _chime([[880, 1760]], { gain: 0.16, tail: 0.45, step: 0 });
+}
+
+// Поиск: финальная мелодия (C5–E5–G5–C6) с длинным хвостом и завершающим
+// аккордом — слышно, что закончился весь поиск, а не очередной город.
 function playDoneSound() {
-  try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    if (ctx.state === 'suspended') ctx.resume();
-    // Ascending three-tone chime: C5 → E5 → G5
-    [523, 659, 784].forEach((freq, i) => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.type = 'sine';
-      osc.frequency.value = freq;
-      const t = ctx.currentTime + i * 0.18;
-      gain.gain.setValueAtTime(0.28, t);
-      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.45);
-      osc.start(t);
-      osc.stop(t + 0.45);
-    });
-  } catch (e) { /* Web Audio unavailable */ }
+  return _chime([523, 659, 784, [1047, 2093]], { gain: 0.26, step: 0.18, tail: 0.6 });
 }
+
+// ── Попап настроек ──────────────────────────────────
+function _renderNotifyPopover() {
+  notifyDraft = Object.assign({}, notifySettings);
+  _setSwitch(document.getElementById('notify-master'), notifyDraft.enabled);
+  _syncSubSwitches();
+  _renderNotifyPermHint();
+  _syncNotifySaveBtn();
+}
+
+function _setSwitch(el, on) {
+  if (!el) return;
+  el.classList.toggle('on', !!on);
+  el.setAttribute('aria-checked', on ? 'true' : 'false');
+}
+
+// Подтумблеры спят, пока выключен мастер, но их значения в черновике живут:
+// включили мастер обратно — выбор типов вернулся.
+function _syncSubSwitches() {
+  [['notify-city', 'city_complete'], ['notify-search', 'search_complete']].forEach(([id, key]) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.disabled = !notifyDraft.enabled;
+    _setSwitch(el, notifyDraft[key]);
+  });
+}
+
+function notifyDraftDirty() {
+  return notifyDraft.enabled         !== notifySettings.enabled
+      || notifyDraft.city_complete   !== notifySettings.city_complete
+      || notifyDraft.search_complete !== notifySettings.search_complete;
+}
+
+function _syncNotifySaveBtn() {
+  const btn = document.getElementById('notify-save');
+  if (btn) btn.disabled = !notifyDraftDirty();
+}
+
+function toggleNotifySetting(key) {
+  if (!(key in notifyDraft)) return;
+  if (key !== 'enabled' && !notifyDraft.enabled) return;   // спят вместе с мастером
+  notifyDraft[key] = !notifyDraft[key];
+  const id = key === 'enabled' ? 'notify-master'
+           : (key === 'city_complete' ? 'notify-city' : 'notify-search');
+  _setSwitch(document.getElementById(id), notifyDraft[key]);
+  _syncSubSwitches();
+  _syncNotifySaveBtn();
+}
+
+function toggleNotifyPopover(ev) {
+  if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation();
+  const pop = document.getElementById('notify-pop');
+  if (!pop) return;
+  if (pop.hidden) openNotifyPopover(); else closeNotifyPopover();
+}
+
+function openNotifyPopover() {
+  const pop = document.getElementById('notify-pop');
+  if (!pop) return;
+  _renderNotifyPopover();
+  pop.hidden = false;
+  updateNotifyBtn();
+  const first = document.getElementById('notify-master');
+  if (first && typeof first.focus === 'function') first.focus();
+}
+
+// Закрытие без «Сохранить» — откат черновика к сохранённым настройкам.
+function closeNotifyPopover() {
+  const pop = document.getElementById('notify-pop');
+  if (!pop || pop.hidden) return;
+  notifyDraft = Object.assign({}, notifySettings);
+  pop.hidden = true;
+  updateNotifyBtn();
+}
+
+function saveNotifySettingsFromPopover() {
+  notifySettings = Object.assign({}, notifyDraft);
+  saveNotifySettings();
+  _renderNotifyPermHint();
+  closeNotifyPopover();
+  try { showToast('Настройки сохранены', 'success'); } catch (e) { /* тесты */ }
+  // Разрешение спрашиваем ПОСЛЕ применения — жест есть, а звук уже включён.
+  if (notifySettings.enabled && ('Notification' in window) && Notification.permission === 'default') {
+    Notification.requestPermission().then(() => { updateNotifyBtn(); _renderNotifyPermHint(); });
+  }
+  return notifySettings;
+}
+
+// Клик вне попапа и Esc — то же, что «Отмена»: изменения не применяются.
+// Обработчики именованные: их текст проверяют node-тесты.
+function _notifyOutsideClick(e) {
+  const pop = document.getElementById('notify-pop');
+  const btn = document.getElementById('btn-notify');
+  if (!pop || pop.hidden) return;
+  if (pop.contains(e.target) || (btn && btn.contains(e.target))) return;
+  closeNotifyPopover();
+}
+
+function _notifyEscape(e) {
+  const pop = document.getElementById('notify-pop');
+  if (e && e.key === 'Escape' && pop && !pop.hidden) closeNotifyPopover();
+}
+
+document.addEventListener('mousedown', _notifyOutsideClick);
+document.addEventListener('keydown', _notifyEscape);
+// Первый жест разблокирует звук (autoplay-политика).
+['click', 'keydown', 'touchstart'].forEach(ev =>
+  document.addEventListener(ev, unlockAudio, { once: true, passive: true }));
 
 // ═══════════════════════════════════════════
 //  Social network filter
@@ -5437,8 +5696,10 @@ async function selfUpdate() {
   loadColState();
   // Stats tab shows zero cards right away — before any search
   renderDefaultStats();
-  // Initialize notifications toggle state from browser permission
-  notificationsEnabled = Notification && Notification.permission === 'granted';
+  // Настройки уведомлений из localStorage + состояние кнопки.
+  // Разрешение здесь больше не решает ничего: звук работает и без него,
+  // а окна появляются, как только браузер разрешит.
+  loadNotifySettings();
   updateNotifyBtn();
 
   // Sender init

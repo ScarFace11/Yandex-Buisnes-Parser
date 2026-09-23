@@ -33,10 +33,41 @@
     {% if DEV_BUILD %}<span id="app-dev" title="Сборка разработчика: авто-обновление отключено, порт 5010">⚙ DEV</span>{% endif %}
     <span id="app-version">v{{ APP_VERSION }}</span>
     <span id="status-badge">Готово</span>
-    <button id="btn-notify" onclick="toggleNotifications()" title="Уведомления в браузере">
-      <span id="notify-icon">•</span>
-      <span id="notify-txt">Уведомления</span>
-    </button>
+    <div class="notify-wrap">
+      <button id="btn-notify" onclick="toggleNotifyPopover(event)" title="Настройки уведомлений"
+              aria-haspopup="dialog" aria-expanded="false">
+        <span id="notify-icon">•</span>
+        <span id="notify-txt">Уведомления</span>
+      </button>
+      <div class="notify-pop" id="notify-pop" role="dialog" aria-label="Настройки уведомлений" hidden>
+        <div class="notify-pop-title">🔔 Уведомления</div>
+        <div class="notify-row">
+          <span class="notify-row-lbl">Уведомления вкл.</span>
+          <button type="button" class="tgl on" id="notify-master" role="switch"
+                  aria-checked="true" aria-label="Уведомления вкл."
+                  onclick="toggleNotifySetting('enabled')"></button>
+        </div>
+        <hr class="notify-sep">
+        <div class="notify-row-lbl">Что уведомлять:</div>
+        <div class="notify-row">
+          <span class="notify-row-lbl">Завершение города</span>
+          <button type="button" class="tgl on" id="notify-city" role="switch"
+                  aria-checked="true" aria-label="Завершение города"
+                  onclick="toggleNotifySetting('city_complete')"></button>
+        </div>
+        <div class="notify-row">
+          <span class="notify-row-lbl">Завершение поиска</span>
+          <button type="button" class="tgl on" id="notify-search" role="switch"
+                  aria-checked="true" aria-label="Завершение поиска"
+                  onclick="toggleNotifySetting('search_complete')"></button>
+        </div>
+        <hr class="notify-sep">
+        <div class="notify-hint" id="notify-perm-hint" hidden></div>
+        <button type="button" class="notify-save" id="notify-save"
+                onclick="saveNotifySettingsFromPopover()" disabled>Сохранить</button>
+        <div class="notify-hint">Изменения применятся после «Сохранить». Esc или клик вне — отменить.</div>
+      </div>
+    </div>
     <button id="btn-theme" onclick="toggleTheme()" title="Сменить тему">Тема</button>
     <button id="btn-skip" onclick="showSkipConfirm()" style="display:none" title="Пропустить текущий город и перейти к следующему">⏭ Город</button>
     <button id="btn-logs" onclick="showLogsModal()" title="Подробные логи всех запусков">📜 Логи</button>
