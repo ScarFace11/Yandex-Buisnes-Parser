@@ -106,9 +106,13 @@ jobs:
           fetch-depth: 0      # полный лог для фолбэка «коммиты с прошлого тега»
 
       - name: Extract release notes from CHANGELOG
+        # Две истории изменений: тело релиза — из CHANGELOG.md (для
+        # пользователей), технические подробности — свёрнутым блоком из
+        # CHANGES-DEV.md; оба файла прикладываются к релизу как ассеты.
         run: |
           python3 scripts/release_notes.py --tag "${{ github.ref_name }}" \
-            --changelog CHANGELOG.md --out release_notes.md | tee release_title.txt
+            --changelog CHANGELOG.md --dev-changelog CHANGES-DEV.md \
+            --out release_notes.md | tee release_title.txt
           echo "TITLE=$(cat release_title.txt)" >> "$GITHUB_ENV"
 
       - name: Create the draft release
@@ -198,7 +202,13 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/YandexBusinessParser-windows-x64.zip
+          # plus обе истории изменений: релиз уезжает вместе с ними.
+          # Обновлятор ищет архив по имени YandexBusinessParser-windows-x64.zip
+          # (ZIP_ASSET_NAME в routes/update.py) — лишние ассеты ему не мешают.
+          files: |
+            dist/YandexBusinessParser-windows-x64.zip
+            CHANGELOG.md
+            CHANGES-DEV.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -211,23 +221,29 @@ jobs:
       #     версия» (в пределах 30 минут) и обновляются внутри приложения.
       #     Раньше версия попадала в main ещё до публикации, и обновлятор
       #     скачивал предыдущий релиз: «скачал — версия та же».
-      - name: Verify the draft release has the exe attached
+      - name: Verify the draft release has the exe and both changelogs
         if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $tag = '${{ github.ref_name }}'
+          # Релиз обязан уехать вместе с обеими историями изменений.
+          $need = @('YandexBusinessParser-windows-x64.zip', 'CHANGELOG.md', 'CHANGES-DEV.md')
           for ($i = 0; $i -lt 10; $i++) {
-            $assets = gh release view $tag --json assets,isDraft 2>$null | ConvertFrom-Json
-            if ($assets -and ($assets.assets | Where-Object name -eq 'YandexBusinessParser-windows-x64.zip')) {
-              $state = if ($assets.isDraft) { 'draft (опубликуйте — включится авто-обновление у пользователей)' } else { 'published' }
-              Write-Host "Release $tag ready: exe attached, state = $state"
-              exit 0
+            $rel = gh release view $tag --json assets,isDraft 2>$null | ConvertFrom-Json
+            if ($rel) {
+              $names = @($rel.assets | ForEach-Object { $_.name })
+              $missing = @($need | Where-Object { $names -notcontains $_ })
+              if ($missing.Count -eq 0) {
+                $state = if ($rel.isDraft) { 'draft (опубликуйте — включится авто-обновление у пользователей)' } else { 'published' }
+                Write-Host "Release $tag ready: $($names -join ', '), state = $state"
+                exit 0
+              }
             }
             Start-Sleep -Seconds 6
           }
-          Write-Host "::warning::exe asset not found on release $tag — проверьте шаг Attach exe выше"
+          Write-Host "::warning::на релизе $tag нет ассетов: $($missing -join ', ') — проверьте шаги Attach выше"
           exit 0
 
       - name: Upload artifact (manual runs)

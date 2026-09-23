@@ -87,14 +87,20 @@ header h1{font-size:15px;font-weight:700;letter-spacing:-.01em}
 #status-badge.done{background:var(--ok-bg);color:var(--ok-strong);border:1px solid var(--ok-bdr)}
 #status-badge.stopped{background:var(--bdr);color:var(--txt);border:1px solid var(--bdr-h)}
 #status-badge.error{background:var(--err-bg);color:var(--err-strong);border:1px solid var(--err-bdr)}
-/* One base style for every header button; variants below */
-.hdr-right button{
+/* One base style for every header button; variants below.
+   Селектор — по ПРЯМЫМ детям (и кнопка уведомлений внутри .notify-wrap):
+   попап уведомлений живёт внутри .hdr-right, и раньше это правило с большей
+   специфичностью перебивало его содержимое — тумблеры теряли фон, «Сохранить»
+   становился белым на белом, «▶» — белой стрелкой на белой карточке. */
+.hdr-right > button,
+.hdr-right .notify-wrap > button{
   padding:6px 12px;border:none;border-radius:6px;
   background:transparent;border:1px solid rgba(255,255,255,.3);color:var(--on-accent);
   font-size:13px;font-weight:500;cursor:pointer;font-family:inherit;
   display:inline-flex;align-items:center;gap:6px;transition:all .15s;
 }
-.hdr-right button:hover{opacity:.9}
+.hdr-right > button:hover,
+.hdr-right .notify-wrap > button:hover{opacity:.9}
 /* ⏸ Пауза — оранжевая в ОБЕИХ темах (красный остался за ⏹ «Остановить»):
    два действия не путаются, а тёмный текст держит контраст выше 4.5:1.
    Градиент берётся из --pause-from/--pause-to, поэтому отдельного правила
@@ -164,7 +170,7 @@ header h1{font-size:15px;font-weight:700;letter-spacing:-.01em}
 .logs-list .log-actions a:hover{opacity:.8}
 .logs-empty{color:var(--muted);font-size:13px;padding:20px;text-align:center}
 #btn-notify,#btn-theme{
-  /* base ghost style from .hdr-right button */
+  /* базовый «призрачный» вид берётся из .hdr-right > button */
 }
 #btn-notify:hover,#btn-theme:hover{background:rgba(255,255,255,.12)}
 #btn-notify.granted{background:rgba(40,130,90,.45);border-color:rgba(40,190,110,.35)}
@@ -212,6 +218,33 @@ header h1{font-size:15px;font-weight:700;letter-spacing:-.01em}
 .tgl.on::after{left:22px}
 .tgl:disabled{opacity:.45;cursor:not-allowed}
 .tgl:focus-visible{outline:2px solid var(--c);outline-offset:2px}
+
+/* Выбор звука: список пресетов + «▶ прослушать» рядом. Список тянется,
+   кнопка не сжимается; на узком экране попап развернётся на всю ширину. */
+.notify-snd{display:flex;align-items:center;gap:6px;flex:0 1 auto;min-width:0}
+.notify-snd select{
+  max-width:158px;padding:5px 6px;border:1.5px solid var(--bdr);border-radius:6px;
+  background:var(--card);color:var(--txt);font-size:12px;font-family:inherit;
+  cursor:pointer;transition:border-color .15s;
+}
+.notify-snd select:hover{border-color:var(--focus-ring)}
+.notify-snd select:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px}
+.notify-play{
+  width:28px;height:27px;flex:0 0 auto;padding:0;border:1.5px solid var(--bdr);
+  border-radius:6px;background:var(--card);color:var(--txt);font-size:11px;
+  font-family:inherit;line-height:1;cursor:pointer;transition:background .15s,border-color .15s;
+}
+.notify-play:hover{background:var(--c-soft);border-color:var(--focus-ring)}
+.notify-play:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px}
+.notify-row-vol{gap:10px}
+.notify-row-vol input[type="range"]{
+  flex:1 1 auto;min-width:0;height:20px;margin:0;accent-color:var(--c);cursor:pointer;
+}
+.notify-row-vol input[type="range"]:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px}
+.notify-vol-val{
+  min-width:36px;text-align:right;font-size:11.5px;font-weight:700;color:var(--sub);
+  font-variant-numeric:tabular-nums;
+}
 
 /* ── Progress ── */
 #prog-wrap{height:3px;background:rgba(255,255,255,.2);overflow:hidden;display:none}
@@ -1378,8 +1411,10 @@ html.theme-anim #log-output{
    «Готово», и состояния сливались с ней. Отдельный токен --hdr держит
    контраст текста и бейджей выше 4.5:1. */
 [data-theme="dark"] header{background:var(--hdr)}
-[data-theme="dark"] .hdr-right button{border-color:rgba(255,255,255,.34);color:var(--txt)}
-[data-theme="dark"] .hdr-right button:hover{background:rgba(255,255,255,.1);opacity:1}
+[data-theme="dark"] .hdr-right > button,
+[data-theme="dark"] .hdr-right .notify-wrap > button{border-color:rgba(255,255,255,.34);color:var(--txt)}
+[data-theme="dark"] .hdr-right > button:hover,
+[data-theme="dark"] .hdr-right .notify-wrap > button:hover{background:rgba(255,255,255,.1);opacity:1}
 [data-theme="dark"] #status-badge.done{background:var(--grn);color:var(--ok-on);border-color:var(--ok-txt)}
 [data-theme="dark"] input[type=text],[data-theme="dark"] input[type=number],
 [data-theme="dark"] input[type=password],[data-theme="dark"] textarea,
@@ -1441,6 +1476,10 @@ html.theme-anim #log-output{
   #notify-txt{display:none}
   #btn-notify{padding:6px 9px}
   .notify-pop{position:fixed;left:8px;right:8px;top:60px;width:auto;max-height:70vh;overflow-y:auto}
+  /* На телефоне список пресетов и ползунок получают всю ширину строки. */
+  .notify-snd{flex:1 1 auto}
+  .notify-snd select{max-width:none;flex:1 1 auto;min-width:0}
+  .notify-row-vol input[type="range"]{flex:1 1 auto}
   .tab-btn{padding:8px 11px;font-size:11px}
   aside{position:static}
   details.advanced-settings>.dbody{grid-template-columns:1fr}
@@ -2131,7 +2170,8 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
   background:var(--warn-bg);border-color:var(--warn-bdr);color:var(--warn-txt)}
 [data-theme="dark"] .btn-sm.warn:hover,[data-theme="dark"] .files-bulk-arch:hover{
   background:var(--warn-on);border-color:var(--warn-strong);color:var(--warn-strong)}
-[data-theme="dark"] .hdr-right button{border-color:rgba(255,255,255,.3)}
+[data-theme="dark"] .hdr-right > button,
+[data-theme="dark"] .hdr-right .notify-wrap > button{border-color:rgba(255,255,255,.3)}
 /* Dark theme header is teal, so a 15%-alpha badge washed out (contrast ~1.5:1).
    Solid fills with dark text keep every state readable on the teal bar. */
 [data-theme="dark"] #status-badge{background:rgba(255,255,255,.22);color:var(--on-accent);border:1px solid rgba(255,255,255,.38)}
@@ -2244,6 +2284,9 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 .bulk-persist-btn:disabled{opacity:.6;cursor:progress}
 .bulk-stats{font-size:12px;color:var(--muted);font-weight:600}
 .bulk-stats b{color:var(--txt);font-size:13px}
+/* Порядок обхода = порядок строк таблицы (иначе вкладки открывались вразброс) */
+.bulk-order{font-size:11.5px;color:var(--muted);font-weight:600;margin-top:2px}
+.bulk-order:empty{display:none}
 /* Статус автосохранения отметок «Просмотрено» */
 .rev-save-row{min-height:16px}
 .rev-save-status{font-size:11.5px;font-weight:700}

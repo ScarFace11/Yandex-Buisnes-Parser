@@ -353,3 +353,103 @@ class TestNotificationSettings:
         assert 'notifyCityComplete({ name, idx, total, status, records })' in APP_JS
         assert 'notifySearchComplete({' in APP_JS
         assert APP_JS.count("notificationsEnabled && Notification") == 0
+
+    def test_sound_pickers_and_volume_slider_are_in_the_popover(self):
+        for needle in ('id="notify-sound-city"', 'id="notify-sound-search"',
+                       'id="notify-play-city"', 'id="notify-play-search"',
+                       'id="notify-volume"', 'id="notify-vol-val"'):
+            assert needle in TEMPLATE, needle
+        assert 'type="range"' in TEMPLATE, 'нет ползунка громкости'
+        # Кнопка «Прослушать» на каждый тип события.
+        assert TEMPLATE.count('onclick="previewNotifySound(') == 2
+        assert 'onchange="notifySoundChanged(\'city\')"' in TEMPLATE
+        assert 'onchange="notifySoundChanged(\'search\')"' in TEMPLATE
+        assert 'oninput="notifyVolumeInput()"' in TEMPLATE
+        assert 'onchange="notifyVolumeCommit()"' in TEMPLATE
+
+    def test_presets_live_in_one_registry_and_stay_pure_code(self):
+        """Пресеты — только тоны Web Audio: ни .mp3, ни base64 в разметке."""
+        assert 'const SOUND_PRESETS = {' in APP_JS
+        assert 'const SOUND_DEFAULTS' in APP_JS
+        assert 'const VOLUME_DEFAULT' in APP_JS
+        for fn in ('_fillSoundSelect', 'previewNotifySound', 'notifySoundChanged',
+                   'playNotifySound', 'notifyVolumeInput', 'notifyVolumeCommit'):
+            assert 'function ' + fn + '(' in APP_JS, fn
+        # Звук синтезируется кодом: ни файлов, ни base64-вложений.
+        assert 'data:audio' not in APP_JS
+        assert 'new Audio(' not in APP_JS
+        # Пресетов несколько и подписи — в реестре, а не в разметке.
+        assert APP_JS.count('label:') >= 4
+        assert 'id="notify-sound-city" aria-label' in TEMPLATE
+
+    def test_volume_and_preset_are_persisted_with_the_type_flags(self):
+        for key in ('volume:', 'sound_city:', 'sound_search:'):
+            assert key in APP_JS, key
+        # Громкость 0 — валидная настройка: exponentialRamp от нуля уронил бы звук.
+        assert 'Math.max(0.0001' in APP_JS
+        assert 'function _notifyVolume(' in APP_JS
+        assert 'function _notifySound(' in APP_JS
+
+    def test_header_button_base_does_not_leak_into_the_popover(self):
+        """Попап живёт ВНУТРИ .hdr-right, и базовый стиль кнопок шапки
+        (прозрачный фон + белая рамка) перебивал его содержимое: тумблеры
+        теряли фон, «Сохранить» становился белым на белом в светлой теме,
+        «▶» — белой стрелкой на белой карточке. Селектор шапки теперь только
+        по прямым детям.
+        """
+        assert '.hdr-right > button,' in STYLE
+        assert '.hdr-right .notify-wrap > button' in STYLE, 'кнопка уведомлений потеряла вид'
+        assert '.hdr-right button{' not in STYLE, 'базовое правило снова ловит попап'
+        assert '.hdr-right button,' not in STYLE.replace('.hdr-right > button,', '')
+
+    def test_popover_controls_declare_their_own_look(self):
+        """Фон, рамка и цвет у тумблера, «Сохранить» и «▶» — свои."""
+        for sel in ('.notify-save{', '.notify-play{', '.tgl{', '.notify-snd select{'):
+            block = STYLE[STYLE.index(sel) + len(sel):]
+            block = block[: block.index('}')]
+            assert 'background' in block, sel
+            assert 'font-family:inherit' in block or sel == '.tgl{', sel
+        for sel in ('.notify-save{', '.notify-play{'):
+            block = STYLE[STYLE.index(sel) + len(sel):]
+            block = block[: block.index('}')]
+            assert 'color:var' in block, sel
+
+    def test_sound_row_styles_use_theme_tokens(self):
+        assert '.notify-snd{' in STYLE and '.notify-play{' in STYLE
+        assert '.notify-row-vol input[type="range"]' in STYLE
+        assert '.notify-vol-val{' in STYLE
+        assert 'accent-color:var(--c)' in STYLE
+
+
+class TestBulkCrawlOrder:
+    """«Массовый обход» открывает профили в том же порядке, что и таблица.
+
+    Регрессия: сервер отдавал записи в порядке файла, поэтому очередь
+    начиналась не с самых горячих, хотя таблица отсортирована по оценке.
+    """
+
+    def test_panel_tells_the_user_the_order(self):
+        assert 'id="bulk-order-note"' in TEMPLATE
+        assert 'function bulkOrderLabel(' in APP_JS
+        assert 'function bulkSortSpec(' in APP_JS
+        assert '.bulk-order{' in STYLE
+
+    def test_client_sends_the_table_sort_to_the_server(self):
+        assert 'sort_col: sort.col,' in APP_JS
+        assert 'sort_asc: sort.asc,' in APP_JS
+        assert 'sort_col: p.sort_col, sort_asc: p.sort_asc' in APP_JS
+
+    def test_server_sorts_records_the_way_the_table_shows_them(self):
+        api = (ROOT / "routes" / "api.py").read_text(encoding="utf-8")
+        for fn in ('def _sort_like_table(', 'def _lead_score_num('):
+            assert fn in api, fn
+        assert '_sort_like_table(_collect_records(' in api
+        assert 'sort_col' in api and 'sort_asc' in api
+        # 6 — оценка лида, 2..5 — название/категория/адрес/телефон (sortTable).
+        assert '_VIEW_SORT_KEYS = {2: "name", 3: "category", 4: "address", 5: "phone"}' in api
+
+    def test_refiltering_drops_a_stale_column_sort(self):
+        body = APP_JS[APP_JS.index('function filterTable('):]
+        body = body[: body.index('function minScoreThreshold(')]
+        assert 'sortCol = -1;' in body, 'стрелка в шапке разошлась бы с порядком строк'
+        assert 'sortAsc = true;' in body

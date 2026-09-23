@@ -85,6 +85,7 @@ for (const id of [
   'city-tabs', 'tbl-search', 'tbl-count', 'tbl-body', 'pager', 'pg-info', 'pg-prev', 'pg-next',
   'export-sel-wrap', 'f-collapse-chains', 'results-table',
   'bulk-panel', 'bulk-social', 'bulk-count', 'bulk-stats-note', 'unviewed-count', 'bulk-open-btn',
+  'bulk-order-note',
   'bulk-collapse', 'bulk-body', 'bulk-progress', 'bulk-progress-fill', 'bulk-progress-txt',
   'bulk-skip-viewed', 'bulk-mark-viewed', 'bulk-warn', 'bulk-copy-btn', 'bulk-persist-btn',
   'reviewed-save-status',
@@ -153,6 +154,7 @@ globalThis.allResults = [];
 globalThis.filteredRows = [];
 globalThis.curPage = 1;
 globalThis.sortCol = -1;
+globalThis.sortAsc = true;
 globalThis.activeSocialFilters = new Set();
 globalThis.requiredSocials = new Set();
 globalThis.socialMode = 'all';
@@ -212,6 +214,8 @@ const fns = [
   'bulkScopeRows', 'bulkScopeStats', 'bulkOpenable', 'bulkWillOpen', 'renderCityTabs', 'setCityTab',
   'updateBulkStats', 'renderBulkProgress', 'resetBulkProgress', 'setBulkCount',
   'toggleUnviewedOnly', 'fileCardHTML', 'renderFiles', 'bulkParams',
+  // Порядок обхода = порядок строк в таблице
+  'bulkSortSpec', 'bulkOrderLabel', 'resetSortHeaders', 'sortTable',
   // File history: bulk archive / clear selection
   'onFileSelect', 'updateBulkDeleteBtn', 'clearFileSelection', 'bulkArchiveSelected',
   'bulkDeleteSelected',
@@ -261,6 +265,10 @@ function resetState(rows = ROWS) {
   els['bulk-count'].value = 5;
   els['bulk-skip-viewed'].checked = true;
   els['bulk-social'].value = 'vk';
+  els['f-sort-score'].checked = false;      // таблица — в порядке файла
+  els['bulk-order-note'].textContent = '';
+  globalThis.sortCol = -1;
+  globalThis.sortAsc = true;
   els['city-tabs'].innerHTML = '';
   els['city-tabs'].hidden = false;
   els['tbl-search'].value = '';
@@ -521,6 +529,63 @@ test('bulkParams sends the opened file so the crawl follows the file view', () =
   assert.equal(p.scope, 'current', 'обход идёт по текущему поиску, а не по всей папке');
   assert.equal(p.skip_viewed, true);
   assert.equal(p.mark_viewed, true);
+});
+
+// ── 4б. Порядок обхода = порядок строк в таблице ──────────────
+test('по умолчанию обход повторяет «Сначала горячие»: оценка по убыванию', () => {
+  resetState();
+  els['f-sort-score'].checked = true;      // как в интерфейсе из коробки
+  assert.deepEqual(globalThis.bulkSortSpec(), { col: 6, asc: false });
+  assert.equal(globalThis.bulkParams().sort_col, 6);
+  assert.equal(globalThis.bulkParams().sort_asc, false);
+  assert.match(globalThis.bulkOrderLabel(), /горячие/);
+});
+
+test('клик по колонке важнее чекбокса — обход идёт по ней', () => {
+  resetState();
+  els['f-sort-score'].checked = true;
+  globalThis.sortCol = 2;
+  globalThis.sortAsc = true;
+  assert.deepEqual(globalThis.bulkSortSpec(), { col: 2, asc: true });
+  assert.match(globalThis.bulkOrderLabel(), /колонке/);
+
+  globalThis.sortCol = 6;
+  globalThis.sortAsc = true;
+  assert.deepEqual(globalThis.bulkSortSpec(), { col: 6, asc: true }, 'порядок как выбрал пользователь');
+});
+
+test('без «Сначала горячие» и без колонки обход идёт в порядке файла', () => {
+  resetState();
+  els['f-sort-score'].checked = false;
+  assert.deepEqual(globalThis.bulkSortSpec(), { col: null, asc: true });
+  assert.equal(globalThis.bulkParams().sort_col, null);
+  assert.match(globalThis.bulkOrderLabel(), /файле/);
+});
+
+test('смена фильтров сбрасывает сортировку по клику', () => {
+  resetState();
+  els['f-sort-score'].checked = true;
+  globalThis.sortCol = 3;
+  globalThis.sortAsc = false;
+  globalThis.filterTable();
+  assert.equal(globalThis.sortCol, -1, 'прежняя колонка к новому списку не относится');
+  assert.equal(globalThis.sortAsc, true);
+  assert.deepEqual(globalThis.bulkSortSpec(), { col: 6, asc: false }, 'снова порядок по оценке');
+});
+
+test('панель обхода показывает выбранный порядок', () => {
+  resetState();
+  els['f-sort-score'].checked = true;
+  globalThis.updateBulkStats();
+  assert.match(els['bulk-order-note'].textContent, /горячие/);
+});
+
+test('bulkOpenBatch отправляет порядок таблицы на сервер', async () => {
+  await runBulk([{ url: 'https://vk.com/a', key: 'k1', name: 'А' }], { count: '1' });
+  const call = fetchCalls.find(c => c.url === '/bulk/urls');
+  assert.ok(call, 'запрос ушёл');
+  assert.equal('sort_col' in call.body, true, 'сервер должен знать колонку сортировки');
+  assert.equal('sort_asc' in call.body, true);
 });
 
 // ── 5. Table filters ──────────────────────────────────────────

@@ -63,6 +63,10 @@ function mkEl(id) {
     },
     setAttribute: (k, v) => { attrs[k] = String(v); },
     getAttribute: k => (k in attrs ? attrs[k] : null),
+    // Как в DOM: <select>.innerHTML = '' действительно убирает опции —
+    // именно на это рассчитывает _fillSoundSelect().
+    get innerHTML() { return ''; },
+    set innerHTML(v) { if (v === '') el.children.length = 0; },
     _focused: false,
     focus() { el._focused = true; },
     contains: () => false,
@@ -73,7 +77,9 @@ function mkEl(id) {
 }
 
 const IDS = ['btn-notify', 'notify-icon', 'notify-txt', 'notify-pop', 'notify-master',
-             'notify-city', 'notify-search', 'notify-save', 'notify-perm-hint'];
+             'notify-city', 'notify-search', 'notify-save', 'notify-perm-hint',
+             'notify-sound-city', 'notify-sound-search', 'notify-play-city',
+             'notify-play-search', 'notify-volume', 'notify-vol-val'];
 const els = {};
 for (const id of IDS) els[id] = mkEl(id);
 els['notify-pop'].hidden = true;
@@ -106,7 +112,8 @@ globalThis.pluralNum = (n, one, few, many) => {
 };
 
 // ── Web Audio + Notification stubs ───────────────────────────
-const scheduled = [];      // notes handed to the oscillators
+const scheduled = [];      // notes handed to the oscillators (with their gain)
+let pendingNote = null;    // нота, которой _tone() сейчас настраивает громкость
 let ctxCreated = 0;
 globalThis.AudioContext = function FakeAudioContext() {
   ctxCreated++;
@@ -115,15 +122,27 @@ globalThis.AudioContext = function FakeAudioContext() {
     destination: {}, _resumes: 0,
     resume() { ctx._resumes++; ctx.state = 'running'; },
     createOscillator() {
+      pendingNote = { freq: 0, at: 0, type: '', gain: 0 };
       const osc = {
         type: '', frequency: { value: 0 }, connect() {},
-        start(at) { scheduled.push({ freq: osc.frequency.value, at, type: osc.type }); },
+        start(at) {
+          pendingNote.freq = osc.frequency.value;
+          pendingNote.at = at;
+          pendingNote.type = osc.type;
+          scheduled.push(pendingNote);
+        },
         stop() {},
       };
       return osc;
     },
     createGain() {
-      return { gain: { setValueAtTime() {}, exponentialRampToValueAtTime() {} }, connect() {} };
+      return {
+        gain: {
+          setValueAtTime(v) { if (pendingNote) pendingNote.gain = v; },
+          exponentialRampToValueAtTime() {},
+        },
+        connect() {},
+      };
     },
   };
   globalThis.__lastCtx = ctx;
@@ -153,9 +172,19 @@ const fns = [
   'toggleNotifications', 'audioCtx', 'unlockAudio', '_tone', '_chime',
   'playCityDoneSound', 'playDoneSound',
   '_notifyOutsideClick', '_notifyEscape',
+  '_notifyVolume', '_notifySound', '_preset', '_soundKey', 'playNotifySound',
+  'previewNotifySound', '_fillSoundSelect', '_renderSoundPickers', '_renderVolume',
+  'notifySoundChanged', '_volumeFromSlider', 'notifyVolumeInput', 'notifyVolumeCommit',
 ];
+// Объект пресетов и дефолты вытаскиваем наружу явным присваиванием: они
+// объявлены через const и в node-тесте по имени не видны.
 (0, eval)(fns.map(grab).join('\n') + '\n'
-  + ['NOTIFY_KEY', 'NOTIFY_DEFAULTS'].map(grabConst).join('\n'));
+  + ['NOTIFY_KEY', 'NOTIFY_DEFAULTS', 'VOLUME_DEFAULT', 'SOUND_DEFAULTS',
+     'SOUND_PRESETS'].map(grabConst).join('\n')
+  + '\nglobalThis.__consts = { SOUND_PRESETS, SOUND_DEFAULTS, VOLUME_DEFAULT };\n');
+const PRESETS = globalThis.__consts.SOUND_PRESETS;
+const SOUND_DEFAULTS = globalThis.__consts.SOUND_DEFAULTS;
+const VOLUME_DEFAULT = globalThis.__consts.VOLUME_DEFAULT;
 
 // Module state the sliced functions close over — pre-seeded as globals.
 globalThis.notifySettings = { enabled: true, city_complete: true, search_complete: true };
@@ -171,6 +200,7 @@ function reset(permissionValue = 'granted', stored = null) {
   globalThis._notifyHintShown = false;
   globalThis._audioCtx = null;
   scheduled.length = 0;
+  pendingNote = null;
   windowsShown.length = 0;
   toasts.length = 0;
   ctxCreated = 0;
@@ -184,12 +214,22 @@ function reset(permissionValue = 'granted', stored = null) {
     els[id]._classes.clear();
     els[id].contains = () => false;
   }
-  // …после общего сброса: попап закрыт, подсказка скрыта.
+  // …после общего сброса: попап закрыт, подсказка скрыта, списки пусты.
   els['notify-pop'].hidden = true;
   els['notify-perm-hint'].hidden = true;
+  for (const id of IDS) els[id].children.length = 0;
+  els['notify-sound-city'].innerHTML = '';
+  els['notify-sound-search'].innerHTML = '';
 }
 
 // ── 1. Хранение настроек ─────────────────────────────────────
+// Полная форма настроек: три флага + громкость и пресет на каждый тип.
+function defs(over) {
+  return Object.assign({ enabled: true, city_complete: true, search_complete: true,
+                         volume: 0.7, sound_city: 'chime', sound_search: 'fanfare' },
+                       over || {});
+}
+
 test('ключ хранения — ровно notifications_settings', () => {
   assert.match(grabConst('NOTIFY_KEY'), new RegExp("'" + NOTIFY_KEY + "'"));
 });
@@ -197,26 +237,23 @@ test('ключ хранения — ровно notifications_settings', () => {
 test('без сохранённых настроек берутся дефолты (всё включено)', () => {
   reset('granted', null);
   const s = loadNotifySettings();
-  assert.deepEqual(s, { enabled: true, city_complete: true, search_complete: true });
+  assert.deepEqual(s, defs());
   assert.equal(notificationsEnabled, true, 'мастер-флаг синхронизирован');
 });
 
 test('битый JSON в localStorage не ломает уведомления', () => {
   reset('granted', '{это не json');
-  assert.deepEqual(loadNotifySettings(),
-    { enabled: true, city_complete: true, search_complete: true });
+  assert.deepEqual(loadNotifySettings(), defs());
 });
 
 test('частичные и неверные типы нормализуются к дефолтам по полю', () => {
   reset('granted', JSON.stringify({ enabled: false, city_complete: 'да' }));
-  assert.deepEqual(loadNotifySettings(),
-    { enabled: false, city_complete: true, search_complete: true });
+  assert.deepEqual(loadNotifySettings(), defs({ enabled: false }));
 });
 
 test('массив вместо объекта игнорируется целиком', () => {
   reset('granted', '[1,2,3]');
-  assert.deepEqual(loadNotifySettings(),
-    { enabled: true, city_complete: true, search_complete: true });
+  assert.deepEqual(loadNotifySettings(), defs());
 });
 
 test('сохранение пишет ровно ключ notifications_settings и нужную форму', () => {
@@ -229,13 +266,45 @@ test('сохранение пишет ровно ключ notifications_settings
   assert.equal(notificationsEnabled, true);
 });
 
+test('звук и громкость сохраняются вместе с типами', () => {
+  reset();
+  notifySettings = defs({ sound_city: 'bell', sound_search: 'pulse', volume: 0.4 });
+  saveNotifySettings();
+  assert.deepEqual(JSON.parse(store.get(NOTIFY_KEY)),
+    defs({ sound_city: 'bell', sound_search: 'pulse', volume: 0.4 }));
+});
+
+test('мусор в громкости и пресете откатывается к дефолтам по полю', () => {
+  reset('granted', JSON.stringify({ volume: 'громко', sound_city: 'нет-такого',
+                                    sound_search: 42 }));
+  assert.deepEqual(loadNotifySettings(), defs());
+});
+
+test('громкость из строки и границы 0…1 — как есть', () => {
+  assert.equal(_notifyVolume('0.35', 0.7), 0.35);   // число строкой из старого JSON
+  assert.equal(_notifyVolume(5, 0.7), 1);           // больше единицы — не громче
+  assert.equal(_notifyVolume(-2, 0.7), 0);          // отрицательная — тишина
+  assert.equal(_notifyVolume('мусор', 0.7), 0.7);
+  assert.equal(_notifyVolume(undefined, 0.7), 0.7);
+  assert.equal(_notifyVolume(null, 0.7), 0.7);
+});
+
+test('пресет проверяется по реестру: неизвестный id не глушит звук', () => {
+  assert.equal(_notifySound('bell', 'chime'), 'bell');
+  assert.equal(_notifySound('удалённый-в-новой-версии', 'chime'), 'chime');
+  assert.equal(_notifySound('', 'fanfare'), 'fanfare');
+  assert.equal(_notifySound(7, 'fanfare'), 'fanfare');
+});
+
 test('настройки переживают перезагрузку (save → load)', () => {
   reset();
-  notifySettings = { enabled: true, city_complete: false, search_complete: false };
+  notifySettings = defs({ city_complete: false, search_complete: false,
+                          sound_city: 'beacon', volume: 0.2 });
   saveNotifySettings();
-  notifySettings = { enabled: false, city_complete: true, search_complete: true };
+  notifySettings = defs();
   assert.deepEqual(loadNotifySettings(),
-    { enabled: true, city_complete: false, search_complete: false });
+    defs({ city_complete: false, search_complete: false,
+           sound_city: 'beacon', volume: 0.2 }));
 });
 
 test('недоступный localStorage — работаем на дефолтах и не падаем', () => {
@@ -243,8 +312,7 @@ test('недоступный localStorage — работаем на дефолт
   const saved = globalThis.localStorage;
   globalThis.localStorage = undefined;
   try {
-    assert.deepEqual(loadNotifySettings(),
-      { enabled: true, city_complete: true, search_complete: true });
+    assert.deepEqual(loadNotifySettings(), defs());
     assert.doesNotThrow(() => saveNotifySettings());
   } finally {
     globalThis.localStorage = saved;
@@ -579,4 +647,176 @@ test('звук не падает, если Web Audio недоступен', () =
     globalThis.AudioContext = saved;
     globalThis.window.AudioContext = saved;
   }
+});
+
+// ── 7. Пресеты звука, громкость, предпросмотр ────────────────
+// Как _chime(): пара [основная, обертон] — два тона.
+function tonesOf(id) {
+  const out = [];
+  for (const note of PRESETS[id].notes) {
+    if (Array.isArray(note)) { out.push(note[0]); if (note[1]) out.push(note[1]); }
+    else out.push(note);
+  }
+  return out;
+}
+
+test('в реестре несколько пресетов с подписями и разными тонами', () => {
+  const ids = Object.keys(PRESETS);
+  assert.ok(ids.length >= 4, 'мало пресетов: ' + ids.length);
+  const signatures = new Set();
+  for (const id of ids) {
+    assert.ok(PRESETS[id].label && PRESETS[id].label.trim(), 'пресет без подписи: ' + id);
+    assert.ok(tonesOf(id).length > 0, 'пресет без тонов: ' + id);
+    signatures.add(JSON.stringify(tonesOf(id)));
+  }
+  assert.equal(signatures.size, ids.length, 'два пресета звучат одинаково');
+  assert.notEqual(SOUND_DEFAULTS.city_complete, SOUND_DEFAULTS.search_complete,
+    'у города и поиска должны быть разные звуки по умолчанию');
+  assert.equal(VOLUME_DEFAULT > 0 && VOLUME_DEFAULT <= 1, true);
+});
+
+test('город и поиск играют пресеты из настроек, громкость — их множитель', () => {
+  reset();
+  notifySettings = defs({ sound_city: 'bell', sound_search: 'drop', volume: 0.5 });
+
+  playCityDoneSound();
+  assert.deepEqual(scheduled.map(n => n.freq), tonesOf('bell'));
+  assert.ok(Math.abs(scheduled[0].gain - PRESETS.bell.gain * 0.5) < 1e-9,
+    'громкость не применилась: ' + scheduled[0].gain);
+
+  reset();
+  notifySettings = defs({ sound_city: 'bell', sound_search: 'drop', volume: 0.5 });
+  playDoneSound();
+  assert.deepEqual(scheduled.map(n => n.freq), tonesOf('drop'));
+});
+
+test('неизвестный пресет в настройках откатывается к дефолту своего типа', () => {
+  reset();
+  notifySettings = defs({ sound_city: 'удалён-в-новой-версии' });
+  playCityDoneSound();
+  assert.deepEqual(scheduled.map(n => n.freq), tonesOf(SOUND_DEFAULTS.city_complete));
+});
+
+test('нулевая громкость не ломает Web Audio (рампа от нуля)', () => {
+  reset();
+  notifySettings = defs({ volume: 0 });
+  assert.equal(playCityDoneSound(), true);
+  assert.equal(scheduled.length > 0, true);
+  assert.ok(Math.min(...scheduled.map(n => n.gain)) > 0,
+    'усиление должно остаться положительным');
+});
+
+test('предпросмотр играет черновик, а не сохранённые настройки', () => {
+  reset();
+  notifySettings = defs({ sound_city: 'chime', volume: 1 });
+  notifyDraft = defs({ sound_city: 'beacon', volume: 0.3 });
+
+  previewNotifySound('city');
+  assert.deepEqual(scheduled.map(n => n.freq), tonesOf('beacon'));
+  assert.ok(Math.abs(scheduled[0].gain - PRESETS.beacon.gain * 0.3) < 1e-9);
+
+  reset();
+  notifySettings = defs({ sound_city: 'chime', volume: 1 });
+  notifyDraft = defs({ sound_city: 'beacon', volume: 0.3 });
+  playCityDoneSound();
+  assert.deepEqual(scheduled.map(n => n.freq), tonesOf('chime'),
+    'уведомление играет сохранённый звук, а не черновик');
+});
+
+// ── 8. Попап: списки пресетов и ползунок громкости ───────────
+test('открытие попапа заполняет списки пресетов и ползунок', () => {
+  reset();
+  notifySettings = defs({ sound_city: 'drop', sound_search: 'bell', volume: 0.2 });
+  openNotifyPopover();
+
+  const city = els['notify-sound-city'];
+  assert.equal(city.children.length, Object.keys(PRESETS).length,
+    'в списке должны быть все пресеты реестра');
+  assert.equal(city.value, 'drop');
+  assert.equal(els['notify-sound-search'].value, 'bell');
+  assert.equal(els['notify-volume'].value, '20');
+  assert.equal(els['notify-vol-val'].textContent, '20%');
+  assert.equal(city.children.map(o => o.value).join(','), Object.keys(PRESETS).join(','));
+  assert.equal(city.children.filter(o => o.selected).length, 1, 'выбран ровно один');
+});
+
+test('смена пресета в попапе меняет черновик и сразу проигрывает звук', () => {
+  reset();
+  notifySettings = defs();
+  openNotifyPopover();
+  els['notify-sound-city'].value = 'beacon';
+  notifySoundChanged('city');
+
+  assert.equal(notifyDraft.sound_city, 'beacon');
+  assert.equal(notifySettings.sound_city, 'chime', 'настройки ещё не изменены');
+  assert.equal(els['notify-save'].disabled, false, 'есть что сохранять');
+  assert.deepEqual(scheduled.map(n => n.freq), tonesOf('beacon'), 'пресет прослушан');
+});
+
+test('неизвестное значение списка не попадает в черновик', () => {
+  reset();
+  notifySettings = defs();
+  openNotifyPopover();
+  els['notify-sound-search'].value = 'мусор';
+  notifySoundChanged('search');
+  assert.equal(notifyDraft.sound_search, SOUND_DEFAULTS.search_complete);
+});
+
+test('ползунок: oninput показывает проценты, onchange играет звук', () => {
+  reset();
+  notifySettings = defs();
+  openNotifyPopover();
+
+  els['notify-volume'].value = '35';
+  notifyVolumeInput();
+  assert.equal(notifyDraft.volume, 0.35);
+  assert.equal(els['notify-vol-val'].textContent, '35%');
+  assert.deepEqual(scheduled, [], 'во время движения ползунка звук не тарахтит');
+
+  notifyVolumeCommit();
+  assert.equal(scheduled.length > 0, true, 'отпустили — услышали результат');
+  assert.ok(Math.abs(scheduled[0].gain - PRESETS[notifyDraft.sound_city].gain * 0.35) < 1e-9);
+});
+
+test('изменение только звука или громкости включает «Сохранить»', () => {
+  reset();
+  notifySettings = defs();
+  openNotifyPopover();
+  assert.equal(els['notify-save'].disabled, true);
+
+  els['notify-volume'].value = '70';                 // как было — не изменение
+  notifyVolumeInput();
+  assert.equal(els['notify-save'].disabled, true);
+
+  els['notify-volume'].value = '65';
+  notifyVolumeInput();
+  assert.equal(els['notify-save'].disabled, false);
+});
+
+test('сохранение звука из попапа переносит черновик в настройки', () => {
+  reset();
+  notifySettings = defs();
+  openNotifyPopover();
+  els['notify-sound-search'].value = 'pulse';
+  notifySoundChanged('search');
+  els['notify-volume'].value = '45';
+  notifyVolumeInput();
+  saveNotifySettingsFromPopover();
+
+  assert.equal(notifySettings.sound_search, 'pulse');
+  assert.equal(notifySettings.volume, 0.45);
+  assert.deepEqual(JSON.parse(store.get(NOTIFY_KEY)),
+    defs({ sound_search: 'pulse', volume: 0.45 }));
+  assert.equal(els['notify-pop'].hidden, true);
+});
+
+test('закрытие попапа без сохранения откатывает звук и громкость', () => {
+  reset();
+  notifySettings = defs();
+  openNotifyPopover();
+  els['notify-volume'].value = '10';
+  notifyVolumeInput();
+  closeNotifyPopover();
+  assert.equal(notifyDraft.volume, VOLUME_DEFAULT);
+  assert.equal(notifySettings.volume, VOLUME_DEFAULT);
 });

@@ -62,6 +62,36 @@
                   onclick="toggleNotifySetting('search_complete')"></button>
         </div>
         <hr class="notify-sep">
+        <div class="notify-row-lbl">Звук:</div>
+        <div class="notify-row">
+          <span class="notify-row-lbl">Город завершён</span>
+          <span class="notify-snd">
+            <select id="notify-sound-city" aria-label="Звук завершения города"
+                    onchange="notifySoundChanged('city')"></select>
+            <button type="button" class="notify-play" id="notify-play-city"
+                    title="Прослушать выбранный звук" aria-label="Прослушать звук завершения города"
+                    onclick="previewNotifySound('city')">▶</button>
+          </span>
+        </div>
+        <div class="notify-row">
+          <span class="notify-row-lbl">Поиск завершён</span>
+          <span class="notify-snd">
+            <select id="notify-sound-search" aria-label="Звук завершения поиска"
+                    onchange="notifySoundChanged('search')"></select>
+            <button type="button" class="notify-play" id="notify-play-search"
+                    title="Прослушать выбранный звук" aria-label="Прослушать звук завершения поиска"
+                    onclick="previewNotifySound('search')">▶</button>
+          </span>
+        </div>
+        <div class="notify-row notify-row-vol">
+          <span class="notify-row-lbl">Громкость</span>
+          <input type="range" id="notify-volume" min="0" max="100" step="5" value="70"
+                 aria-label="Громкость звука уведомлений"
+                 oninput="notifyVolumeInput()" onchange="notifyVolumeCommit()">
+          <span class="notify-vol-val" id="notify-vol-val">70%</span>
+        </div>
+        <div class="notify-hint">Звук играет, только когда включён мастер и уведомления этого типа.</div>
+        <hr class="notify-sep">
         <div class="notify-hint" id="notify-perm-hint" hidden></div>
         <button type="button" class="notify-save" id="notify-save"
                 onclick="saveNotifySettingsFromPopover()" disabled>Сохранить</button>
@@ -665,6 +695,7 @@
                 <button class="bulk-persist-btn" id="bulk-persist-btn" onclick="persistReviewedMarks()" title="Отметки записываются в xlsx автоматически — эта кнопка нужна, только чтобы записать их прямо сейчас (не дожидаясь автосохранения)">💾 Сохранить сейчас</button>
               </div>
               <div class="bulk-stats">Осталось непросмотренных: <b id="unviewed-count">0</b><span id="bulk-stats-note"></span></div>
+              <div class="bulk-order" id="bulk-order-note">Порядок: сначала горячие (по оценке)</div>
               <div class="rev-save-row"><span class="rev-save-status" id="reviewed-save-status"></span></div>
               <div class="bulk-progress" id="bulk-progress" hidden>
                 <div class="bulk-progress-bar"><div class="bulk-progress-fill" id="bulk-progress-fill"></div></div>

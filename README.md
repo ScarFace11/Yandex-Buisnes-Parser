@@ -212,6 +212,22 @@ APPLE_ID=you@example.com APPLE_APP_SPECIFIC_PASSWORD=xxxx APPLE_TEAM_ID=TEAMID \
 > обновление ровно тогда, когда его можно скачать (иначе ссылка
 > `releases/latest` отдаёт предыдущий релиз — «скачал, а версия та же»).
 
+### Две истории изменений
+
+Одна правка заводит две записи с одним и тем же номером версии:
+
+| Файл | Для кого | Что внутри |
+|---|---|---|
+| [CHANGELOG.md](CHANGELOG.md) | пользователи | 1–2 абзаца на фичу: что стало удобнее, что починили |
+| [CHANGES-DEV.md](CHANGES-DEV.md) | разработчики | файлы, функции, шаги CI, инварианты и тесты |
+
+Тело GitHub Release собирается из `CHANGELOG.md`
+(`scripts/release_notes.py`), после чего к нему добавляется свёрнутый блок
+«Для разработчиков» из `CHANGES-DEV.md`, а оба файла прикладываются к релизу
+ассетами. Нерелизнутые правки живут в разделе `[Unreleased]` и при выпуске
+переименовываются в номер версии; совпадение номеров в двух файлах проверяет
+`tests/test_changelogs.py`.
+
 Плюс `dependabot.yml`: еженедельные PR на обновление pip-зависимостей и
 версий GitHub Actions (мажоры PyInstaller игнорируются — они ломают spec'и).
 
@@ -226,7 +242,8 @@ CI прогоняет оба набора на Ubuntu, Windows и macOS.
 
 ## 📄 Документация
 
-- [CHANGELOG.md](CHANGELOG.md) — история изменений по версиям.
+- [CHANGELOG.md](CHANGELOG.md) — что изменилось для пользователя, по версиям.
+- [CHANGES-DEV.md](CHANGES-DEV.md) — те же версии техническим языком.
 - [Issues](https://github.com/ScarFace11/Yandex-Buisnes-Parser/issues) — баги
   и предложения.
 

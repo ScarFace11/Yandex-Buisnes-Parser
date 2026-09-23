@@ -840,6 +840,44 @@ def _collect_records(view: str, rel_file: str | None = None,
     return _fill_lead_scores(recs)
 
 
+# Колонки таблицы результатов, по которым «Массовый обход» умеет повторять
+# порядок строк (см. sortTable() в app.js): 2 — название, 3 — категория,
+# 4 — адрес, 5 — телефон. 6 — оценка лида, её считаем отдельно (числом).
+_VIEW_SORT_KEYS = {2: "name", 3: "category", 4: "address", 5: "phone"}
+
+
+def _lead_score_num(rec: dict) -> float:
+    """Оценка лида числом для сортировки.
+
+    Порядок должен совпадать с таблицей, где строки сравниваются как
+    `+r.lead_score || 0`: нечисловое и пустое значение — ноль.
+    """
+    raw = rec.get("lead_score")
+    if isinstance(raw, bool) or raw in (None, ""):
+        return 0.0
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _sort_like_table(recs: list, sort_col, sort_asc: bool = True) -> list:
+    """Копия записей в том порядке, в каком их показывает таблица.
+
+    Сортировка нужна «Массовому обходу»: раньше профили открывались в порядке
+    файла, а таблица по умолчанию отсортирована по оценке лида — пользователь
+    видел один порядок, а вкладки открывались в другом. Python-сортировка
+    устойчивая, как и Array.sort в браузере, поэтому записи с одинаковым
+    ключом идут в порядке файла — как и строки таблицы.
+    """
+    if sort_col == 6:
+        return sorted(recs, key=_lead_score_num, reverse=not sort_asc)
+    key = _VIEW_SORT_KEYS.get(sort_col)
+    if not key:
+        return list(recs)          # колонка не выбрана — порядок файла
+    return sorted(recs, key=lambda r: str(r.get(key) or ""), reverse=not sort_asc)
+
+
 def _cities_of(recs: list) -> list[dict]:
     """[{city, count}] sorted by count desc (records without a city grouped)."""
     counts: dict = {}
@@ -951,8 +989,11 @@ def process_filters():
 def bulk_urls():
     """Next batch of social profile URLs to open manually.
 
-    Body: {view, city?, social, count, skip_viewed}
+    Body: {view, city?, social, count, skip_viewed, sort_col?, sort_asc?}
     Reply: {urls:[{url,key,name}], returned, total, remaining}
+
+    Порядок выдачи повторяет порядок строк в таблице: клиент присылает
+    колонку и направление своей сортировки (sort_col = 6 — оценка лида).
     """
     data = request.get_json(silent=True) or {}
     view = str(data.get("view") or "raw").lower()
@@ -978,8 +1019,14 @@ def bulk_urls():
     rel_file = str(data.get("file") or "").strip() or None
     if rel_file and not _safe_output_file(rel_file):
         return jsonify({"error": "file not found"}), 404
+    # Колонка сортировки таблицы; без неё — порядок файла (как было раньше).
+    try:
+        sort_col = int(data["sort_col"]) if data.get("sort_col") not in (None, "") else None
+    except (TypeError, ValueError):
+        sort_col = None
 
-    recs = _collect_records(view, rel_file, scope)
+    recs = _sort_like_table(_collect_records(view, rel_file, scope),
+                            sort_col, bool(data.get("sort_asc", True)))
     rev = _load_reviewed()
     pool: list[dict] = []
     for r in recs:

@@ -21,12 +21,23 @@ from yandex_maps_parser.exporters import save_excel
 
 # ── Fixtures ──────────────────────────────────────────────────
 
-def _rec(name, city, url, vk=None, query="кафе"):
+def _rec(name, city, url, vk=None, query="кафе", score=None):
     r = {"name": name, "city": city, "query": query,
          "yandex_maps_url": url, "address": f"ул. {name}, 1"}
     if vk:
         r["vk"] = vk
+    if score is not None:
+        r["lead_score"] = score
     return r
+
+
+# Один и тот же набор для проверки порядка: в файле — от тёплого к горячему,
+# а таблица по умолчанию показывает наоборот, от высокой оценки к низкой.
+SCORED = [
+    _rec("Тёплый", "Уфа", "https://ya.ru/1", vk="https://vk.com/1", score=10),
+    _rec("Горячий", "Уфа", "https://ya.ru/2", vk="https://vk.com/2", score=90),
+    _rec("Средний", "Уфа", "https://ya.ru/3", vk="https://vk.com/3", score=50),
+]
 
 
 @pytest.fixture
@@ -312,6 +323,122 @@ class TestBulkUrls:
         _make_raw(client, "raw_a.xlsx", [bad])
         d = client.post("/bulk/urls", json={"view": "raw", "social": "vk"}).get_json()
         assert d["total"] == 0
+
+
+# ── Порядок обхода: как строки в таблице ──────────────────────
+
+class TestBulkOrder:
+    """«Массовый обход» открывает профили в том же порядке, что и таблица.
+
+    Регрессия: сервер отдавал записи в порядке файла, поэтому кнопка
+    «🚀 Открыть N профилей» начинала не с самых горячих, а с тех, кто записан
+    выше, — хотя таблица отсортирована по оценке лида.
+    """
+
+    def test_without_a_column_the_order_is_the_file_order(self, client):
+        _make_raw(client, "raw_a.xlsx", SCORED)
+        d = client.post("/bulk/urls", json={"view": "raw", "social": "vk",
+                                            "count": 10}).get_json()
+        assert [u["name"] for u in d["urls"]] == ["Тёплый", "Горячий", "Средний"]
+
+    def test_score_column_opens_the_hottest_first(self, client):
+        _make_raw(client, "raw_a.xlsx", SCORED)
+        d = client.post("/bulk/urls", json={"view": "raw", "social": "vk", "count": 10,
+                                            "sort_col": 6, "sort_asc": False}).get_json()
+        assert [u["name"] for u in d["urls"]] == ["Горячий", "Средний", "Тёплый"]
+        assert [u["name"] for u in d["urls"][:1]] == ["Горячий"]
+
+    def test_score_column_ascending_when_the_user_sorted_that_way(self, client):
+        _make_raw(client, "raw_a.xlsx", SCORED)
+        d = client.post("/bulk/urls", json={"view": "raw", "social": "vk", "count": 10,
+                                            "sort_col": 6, "sort_asc": True}).get_json()
+        assert [u["name"] for u in d["urls"]] == ["Тёплый", "Средний", "Горячий"]
+
+    def test_other_columns_follow_the_table_too(self, client):
+        _make_raw(client, "raw_a.xlsx", SCORED)
+        asc = client.post("/bulk/urls", json={"view": "raw", "social": "vk", "count": 10,
+                                             "sort_col": 2, "sort_asc": True}).get_json()
+        assert [u["name"] for u in asc["urls"]] == ["Горячий", "Средний", "Тёплый"]
+        desc = client.post("/bulk/urls", json={"view": "raw", "social": "vk", "count": 10,
+                                              "sort_col": 2, "sort_asc": False}).get_json()
+        assert [u["name"] for u in desc["urls"]] == ["Тёплый", "Средний", "Горячий"]
+
+    def test_unknown_column_does_not_break_the_order(self, client):
+        _make_raw(client, "raw_a.xlsx", SCORED)
+        d = client.post("/bulk/urls", json={"view": "raw", "social": "vk", "count": 10,
+                                            "sort_col": "мусор", "sort_asc": False}).get_json()
+        assert [u["name"] for u in d["urls"]] == ["Тёплый", "Горячий", "Средний"]
+
+    def test_order_applies_before_viewed_profiles_are_skipped(self, client):
+        """Порядок важнее фильтра: после «Горячего» идёт следующий по оценке."""
+        _make_raw(client, "raw_a.xlsx", SCORED)
+        hottest = client.post("/bulk/urls", json={"view": "raw", "social": "vk", "count": 1,
+                                                 "sort_col": 6, "sort_asc": False}).get_json()
+        assert hottest["urls"][0]["name"] == "Горячий"
+        client.post("/reviewed/batch", json={"keys": [hottest["urls"][0]["key"]],
+                                             "reviewed": True})
+        nxt = client.post("/bulk/urls", json={"view": "raw", "social": "vk", "count": 1,
+                                             "skip_viewed": True,
+                                             "sort_col": 6, "sort_asc": False}).get_json()
+        assert nxt["urls"][0]["name"] == "Средний"
+
+    def test_records_without_a_score_go_last(self, client):
+        _make_raw(client, "raw_a.xlsx", SCORED + [
+            _rec("Без оценки", "Уфа", "https://ya.ru/4", vk="https://vk.com/4", score=0)])
+        d = client.post("/bulk/urls", json={"view": "raw", "social": "vk", "count": 10,
+                                            "sort_col": 6, "sort_asc": False}).get_json()
+        assert [u["name"] for u in d["urls"]][-1] == "Без оценки"
+
+
+class TestSortLikeTable:
+    """Юнит-тесты самой сортировки: она зеркалит sortTable() в app.js."""
+
+    def _sort(self, recs, col, asc=True):
+        from routes import api as api_mod
+        return [r["name"] for r in api_mod._sort_like_table(recs, col, asc)]
+
+    def test_no_column_keeps_the_file_order(self):
+        recs = [{"name": "a", "lead_score": 10}, {"name": "b", "lead_score": 90}]
+        assert self._sort(recs, None) == ["a", "b"]
+        assert self._sort(recs, 1) == ["a", "b"]
+
+    def test_score_is_compared_as_a_number(self):
+        recs = [{"name": "low", "lead_score": 9}, {"name": "high", "lead_score": 80},
+                {"name": "mid", "lead_score": 40}]
+        assert self._sort(recs, 6, False) == ["high", "mid", "low"]
+        assert self._sort(recs, 6, True) == ["low", "mid", "high"]
+
+    def test_score_from_a_string_column_is_a_number(self):
+        recs = [{"name": "low", "lead_score": "9"}, {"name": "high", "lead_score": "80"}]
+        assert self._sort(recs, 6, False) == ["high", "low"]
+
+    def test_garbage_score_counts_as_zero_and_goes_last(self):
+        recs = [{"name": "broken", "lead_score": "нет"}, {"name": "ok", "lead_score": 5},
+                {"name": "empty", "lead_score": None}]
+        assert self._sort(recs, 6, False) == ["ok", "broken", "empty"]
+
+    def test_ties_keep_the_file_order(self):
+        recs = [{"name": "first", "lead_score": 50}, {"name": "second", "lead_score": 50},
+                {"name": "third", "lead_score": 50}]
+        assert self._sort(recs, 6, False) == ["first", "second", "third"]
+
+    def test_text_columns_compare_as_text_and_empty_is_not_a_crash(self):
+        recs = [{"name": "Б", "category": "Кафе"},
+                {"name": "А", "category": None},
+                {"name": "В"}]                       # категории нет вовсе
+        # Пустая категория — как '' в JS-компараторе: она не роняет сортировку.
+        assert self._sort(recs, 3) == ["А", "В", "Б"]
+        assert self._sort(recs, 3, False) == ["Б", "А", "В"]
+
+    def test_phone_column_compares_as_text_like_the_table(self):
+        recs = [{"name": "a", "phone": "9"}, {"name": "b", "phone": "10"}]
+        assert self._sort(recs, 5) == ["b", "a"]     # «10» < «9» — строки, не числа
+
+    def test_original_list_is_not_mutated(self):
+        from routes import api as api_mod
+        recs = [{"name": "a", "lead_score": 1}, {"name": "b", "lead_score": 2}]
+        api_mod._sort_like_table(recs, 6, False)
+        assert [r["name"] for r in recs] == ["a", "b"]
 
 
 # ── /reviewed/batch ───────────────────────────────────────────

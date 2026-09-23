@@ -22,6 +22,18 @@ let notificationsEnabled = false;  // производный мастер-фла
 // ── Настройки уведомлений: что именно присылать (localStorage + попап) ──
 const NOTIFY_KEY = 'notifications_settings';
 const NOTIFY_DEFAULTS = { enabled: true, city_complete: true, search_complete: true };
+// Звук настраивается отдельно: пресет на каждый тип события и общая
+// громкость. Пресеты — только тоны Web Audio, никаких .mp3.
+const VOLUME_DEFAULT = 0.7;
+const SOUND_DEFAULTS = { city_complete: 'chime', search_complete: 'fanfare' };
+const SOUND_PRESETS = {
+  chime:   {label: 'Динь',        notes: [[880, 1760]],                    gain: 0.16, step: 0,    tail: 0.45},
+  bell:    {label: 'Колокольчик', notes: [[1047, 2093], [1568, 3136]],      gain: 0.20, step: 0.14, tail: 0.72, type: 'triangle'},
+  fanfare: {label: 'Мелодия',     notes: [523, 659, 784, [1047, 2093]],    gain: 0.26, step: 0.18, tail: 0.60},
+  drop:    {label: 'Капля',       notes: [[1175, 2350], [784, 1568]],       gain: 0.18, step: 0.15, tail: 0.50},
+  pulse:   {label: 'Импульс',     notes: [660, 660],                        gain: 0.18, step: 0.16, tail: 0.22, type: 'square'},
+  beacon:  {label: 'Маяк',        notes: [[440, 880], [440, 880], [660, 1320]], gain: 0.20, step: 0.22, tail: 0.30, type: 'triangle'},
+};
 let notifySettings = Object.assign({}, NOTIFY_DEFAULTS);  // сохранённые настройки
 let notifyDraft    = Object.assign({}, NOTIFY_DEFAULTS);  // черновик попапа
 let _notifyHintShown = false;   // подсказку про разрешение — раз за прогон
@@ -2751,6 +2763,11 @@ function filterTable() {
   if (sortCb && sortCb.checked && filteredRows.some(r => r.lead_score != null && r.lead_score !== '')) {
     filteredRows = filteredRows.slice().sort((a, b) => (+b.lead_score || 0) - (+a.lead_score || 0));
   }
+  // Список строк собирается заново — прежняя сортировка по клику заголовка
+  // к нему больше не относится: без сброса стрелка и порядок расходились бы,
+  // и «Массовый обход» повторял бы порядок, которого на экране нет.
+  sortCol = -1;
+  sortAsc = true;
   curPage = 1;
   renderPage();
 }
@@ -3135,6 +3152,9 @@ function updateBulkStats() {
   const note = document.getElementById('bulk-stats-note');
   if (note) note.textContent = ` · с ${SNAMES[social] || social}: ${stats.by_social[social] || 0}`;
 
+  const order = document.getElementById('bulk-order-note');
+  if (order) order.textContent = bulkOrderLabel();
+
   if (sel) {
     [...sel.options].forEach(o => {
       const base = o.dataset.base || o.textContent;
@@ -3204,8 +3224,26 @@ function hideBulkWarn() {
   if (box) { box.hidden = true; box.innerHTML = ''; }
 }
 
+// Порядок обхода = порядок строк в таблице. По умолчанию таблица отсортирована
+// по оценке лида («Сначала горячие»), а клик по заголовку сортирует по своей
+// колонке: раньше обход шёл в порядке файла и вкладки открывались вразброс
+// относительно того, что видит пользователь.
+function bulkSortSpec() {
+  if (sortCol >= 2) return {col: sortCol, asc: !!sortAsc};
+  const cb = document.getElementById('f-sort-score');
+  return (cb && cb.checked) ? {col: 6, asc: false} : {col: null, asc: true};
+}
+
+function bulkOrderLabel() {
+  const spec = bulkSortSpec();
+  if (spec.col === 6) return 'Порядок: сначала горячие (по оценке)';
+  if (spec.col) return 'Порядок: как в таблице (по колонке)';
+  return 'Порядок: как в файле';
+}
+
 function bulkParams() {
   const sel = document.getElementById('bulk-social');
+  const sort = bulkSortSpec();
   return {
     view: _resultsView,
     scope: _resultsScope,       // обход идёт по тому же срезу, что и таблица
@@ -3214,6 +3252,8 @@ function bulkParams() {
     social: (sel && sel.value) || 'vk',
     skip_viewed: !!(document.getElementById('bulk-skip-viewed') || {}).checked,
     mark_viewed: !!(document.getElementById('bulk-mark-viewed') || {}).checked,
+    sort_col: sort.col,
+    sort_asc: sort.asc,
   };
 }
 
@@ -3240,6 +3280,8 @@ async function bulkOpenBatch() {
     const data = await postJSON('/bulk/urls', {
       view: p.view, scope: p.scope, file: p.file, city: p.city, social: p.social,
       count: wanted, skip_viewed: p.skip_viewed, exclude_keys: [...bulkState.keys],
+      // Порядок вкладок — как порядок строк в таблице.
+      sort_col: p.sort_col, sort_asc: p.sort_asc,
     });
     const list = (data.urls || []).filter(i => i && i.url);
     if (!list.length) {
@@ -4407,6 +4449,21 @@ function _notifyFlag(value, fallback) {
   return typeof value === 'boolean' ? value : fallback;
 }
 
+// Громкость — доля 0…1. Ни число строкой, ни мусор из старой версии
+// настроек не должны превращать звук в «то играет, то нет».
+function _notifyVolume(value, fallback) {
+  const num = (typeof value === 'number') ? value : parseFloat(value);
+  if (!isFinite(num)) return fallback;
+  return Math.min(1, Math.max(0, num));
+}
+
+// Пресет проверяем по реестру: удалённый в новой версии id не должен
+// оставлять пользователя без звука.
+function _notifySound(value, fallback) {
+  return (typeof value === 'string' && Object.prototype.hasOwnProperty.call(SOUND_PRESETS, value))
+    ? value : fallback;
+}
+
 function loadNotifySettings() {
   let raw = null;
   try {
@@ -4419,6 +4476,9 @@ function loadNotifySettings() {
     enabled:         _notifyFlag(src.enabled,         NOTIFY_DEFAULTS.enabled),
     city_complete:   _notifyFlag(src.city_complete,   NOTIFY_DEFAULTS.city_complete),
     search_complete: _notifyFlag(src.search_complete, NOTIFY_DEFAULTS.search_complete),
+    volume:          _notifyVolume(src.volume,        VOLUME_DEFAULT),
+    sound_city:      _notifySound(src.sound_city,     SOUND_DEFAULTS.city_complete),
+    sound_search:    _notifySound(src.sound_search,   SOUND_DEFAULTS.search_complete),
   };
   notifyDraft = Object.assign({}, notifySettings);
   _syncNotifyGlobals();
@@ -4592,20 +4652,24 @@ function _tone(ctx, freq, at, dur, gain, type) {
     g.connect(ctx.destination);
     osc.type = type || 'sine';
     osc.frequency.value = freq;
-    g.gain.setValueAtTime(gain, at);
+    // Громкость 0 — это валидная настройка (звук выключен), а exponentialRamp
+    // от нуля браузеры считают ошибкой: держим нижнюю границу.
+    g.gain.setValueAtTime(Math.max(0.0001, gain), at);
     g.gain.exponentialRampToValueAtTime(0.001, at + dur);
     osc.start(at);
     osc.stop(at + dur);
   } catch (e) { /* Web Audio unavailable */ }
 }
 
-// notes: частоты или пары [основная, обертон]; opts: gain/step/tail/type
+// notes: частоты или пары [основная, обертон]; opts: gain/step/tail/type/volume
 function _chime(notes, opts) {
   const ctx = audioCtx();
   if (!ctx) return false;
   unlockAudio();
   const o = opts || {};
-  const gain = o.gain || 0.2, step = o.step || 0.15, tail = o.tail || 0.35;
+  const vol = _notifyVolume(o.volume, 1);          // множитель громкости (0…1)
+  const gain = (o.gain || 0.2) * vol;
+  const step = o.step || 0.15, tail = o.tail || 0.35;
   notes.forEach((note, i) => {
     const pair = Array.isArray(note);
     const at = ctx.currentTime + i * step;
@@ -4615,15 +4679,41 @@ function _chime(notes, opts) {
   return true;
 }
 
-// Город: мягкий короткий «динь» — тише и короче финального.
-function playCityDoneSound() {
-  return _chime([[880, 1760]], { gain: 0.16, tail: 0.45, step: 0 });
+// Пресет по id (неизвестный — дефолт своего типа, чтобы звук не пропадал).
+function _preset(id, fallback) {
+  return SOUND_PRESETS[id] || SOUND_PRESETS[fallback] || SOUND_PRESETS[SOUND_DEFAULTS.city_complete];
 }
 
-// Поиск: финальная мелодия (C5–E5–G5–C6) с длинным хвостом и завершающим
-// аккордом — слышно, что закончился весь поиск, а не очередной город.
+function _soundKey(kind) {
+  return kind === 'search' ? 'sound_search' : 'sound_city';
+}
+
+// Единая точка воспроизведения: пресет и громкость берутся из настроек, а
+// для предпросмотра — из черновика попапа (слышно ровно то, что сохранится).
+function playNotifySound(kind, opts) {
+  const o = opts || {};
+  const src = o.draft ? notifyDraft : notifySettings;
+  const fallback = kind === 'search' ? SOUND_DEFAULTS.search_complete : SOUND_DEFAULTS.city_complete;
+  const id = _notifySound(src[_soundKey(kind)], fallback);
+  const preset = _preset(id, fallback);
+  return _chime(preset.notes, {
+    gain: preset.gain, step: preset.step, tail: preset.tail, type: preset.type,
+    volume: _notifyVolume(src.volume, VOLUME_DEFAULT),
+  });
+}
+
+// Город: по умолчанию мягкий короткий «динь»; поиск — финальная мелодия.
+function playCityDoneSound() {
+  return playNotifySound('city');
+}
+
 function playDoneSound() {
-  return _chime([523, 659, 784, [1047, 2093]], { gain: 0.26, step: 0.18, tail: 0.6 });
+  return playNotifySound('search');
+}
+
+// Кнопка «▶ Прослушать» в попапе — играет выбранный в черновике звук.
+function previewNotifySound(kind) {
+  return playNotifySound(kind, { draft: true });
 }
 
 // ── Попап настроек ──────────────────────────────────
@@ -4631,8 +4721,68 @@ function _renderNotifyPopover() {
   notifyDraft = Object.assign({}, notifySettings);
   _setSwitch(document.getElementById('notify-master'), notifyDraft.enabled);
   _syncSubSwitches();
+  _renderSoundPickers();
   _renderNotifyPermHint();
   _syncNotifySaveBtn();
+}
+
+// ── Звук: пресет на каждый тип + громкость ──────────────────
+// Варианты списка берём из реестра пресетов: подписи живут в одном месте,
+// и добавленный пресет появляется в попапе сам.
+function _fillSoundSelect(sel, value) {
+  if (!sel) return;
+  sel.innerHTML = '';                    // перерисовка не должна копить опции
+  Object.keys(SOUND_PRESETS).forEach(id => {
+    const opt = document.createElement('option');
+    opt.value = id;
+    opt.textContent = SOUND_PRESETS[id].label;
+    opt.selected = (id === value);
+    sel.appendChild(opt);
+  });
+  sel.value = value;
+}
+
+function _renderSoundPickers() {
+  _fillSoundSelect(document.getElementById('notify-sound-city'), notifyDraft.sound_city);
+  _fillSoundSelect(document.getElementById('notify-sound-search'), notifyDraft.sound_search);
+  _renderVolume();
+}
+
+function _renderVolume() {
+  const pct = Math.round(_notifyVolume(notifyDraft.volume, VOLUME_DEFAULT) * 100);
+  const el  = document.getElementById('notify-volume');
+  const out = document.getElementById('notify-vol-val');
+  if (el) el.value = String(pct);
+  if (out) out.textContent = pct + '%';
+}
+
+// Смена пресета сразу его проигрывает — выбор звука без прослушивания
+// был бы выбором наугад.
+function notifySoundChanged(kind) {
+  const key     = _soundKey(kind);
+  const sel     = document.getElementById('notify-sound-' + (kind === 'search' ? 'search' : 'city'));
+  const fallback = kind === 'search' ? SOUND_DEFAULTS.search_complete : SOUND_DEFAULTS.city_complete;
+  if (key in notifyDraft) notifyDraft[key] = _notifySound(sel ? sel.value : '', fallback);
+  _syncNotifySaveBtn();
+  previewNotifySound(kind);
+}
+
+function _volumeFromSlider(el) {
+  const raw = el ? parseFloat(el.value) : NaN;
+  if (!isFinite(raw)) return VOLUME_DEFAULT;
+  return Math.min(1, Math.max(0, raw / 100));
+}
+
+// oninput — только цифра рядом с ползунком; onchange (отпустили) — прослушка.
+function notifyVolumeInput() {
+  notifyDraft.volume = _volumeFromSlider(document.getElementById('notify-volume'));
+  _renderVolume();
+  _syncNotifySaveBtn();
+}
+
+function notifyVolumeCommit() {
+  notifyVolumeInput();
+  previewNotifySound('city');
 }
 
 function _setSwitch(el, on) {
@@ -4655,7 +4805,11 @@ function _syncSubSwitches() {
 function notifyDraftDirty() {
   return notifyDraft.enabled         !== notifySettings.enabled
       || notifyDraft.city_complete   !== notifySettings.city_complete
-      || notifyDraft.search_complete !== notifySettings.search_complete;
+      || notifyDraft.search_complete !== notifySettings.search_complete
+      || _notifyVolume(notifyDraft.volume, VOLUME_DEFAULT)
+         !== _notifyVolume(notifySettings.volume, VOLUME_DEFAULT)
+      || notifyDraft.sound_city      !== notifySettings.sound_city
+      || notifyDraft.sound_search    !== notifySettings.sound_search;
 }
 
 function _syncNotifySaveBtn() {
