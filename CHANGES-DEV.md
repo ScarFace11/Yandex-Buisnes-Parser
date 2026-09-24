@@ -76,6 +76,46 @@
   совпадает, у каждой версии есть непустой раздел, текущая `config.APP_VERSION`
   описана в обоих файлах, в инструментах релиза есть включение dev-файла.
 
+**Аккордеон «Фильтрация результата»: группы, «⚙️ Дополнительно», sticky-футер**
+(`templates/index.html`, `static/css/style.css`, `static/js/app.js`,
+`tests/test_ui_markup.py`, `tests/ui/filterspanel.test.mjs`)
+
+- Разметка: одиннадцать блоков свёрнуты в четыре группы `.flt-group`
+  (заголовок `.flt-group-title` + тело `.flt-group-body`) плюс
+  `<details class="flt-extra" id="filters-extra">`. Все `id`, `name` и
+  обработчики сохранены: `#lead-score-block` переехал на тело своей группы,
+  `#vk-filter-block` — в «Активность», `#social-network-filter` вложен в блок
+  соцсетей (плитки — уточнение к режиму «С соцсетями», а не отдельный пункт).
+  Списки в «Дополнительно» читают `refilterNow()`/пресеты по `id` из DOM, так
+  что свёрнутость на них не влияет — проверяет
+  `TestFilterAccordionGroups::test_every_control_survived_the_regrouping`.
+- CSS: `.flt-group{padding-top:16px}`, разделитель
+  `.flt-group+.flt-group{border-top:1px solid var(--bdr);margin-top:16px}`,
+  заголовок — 11px uppercase `var(--muted)` с рейкой `3px var(--c)`;
+  `#acc-filters .acc-inner{gap:0;padding-bottom:0}` — ритм задают группы, а не
+  flex-gap, иначе у разделителя было бы по 13px вместо 16/16.
+- Sticky-футер: `.flt-footer{position:sticky;bottom:calc(var(--dock-h,0px) + 6px)}`
+  — полоса во всю ширину аккордеона (`margin:16px -13px 0`) с кнопкой
+  `#btn-refilter` на 100% и подсказкой (инлайновый `style` кнопки убран в CSS).
+  Инвариант: у предка не должно быть скролл-порта, иначе `sticky` считается
+  относительно него и не сдвигается вовсе — поэтому `#acc-filters` и
+  `#acc-filters .acc-body>.acc-inner` используют `overflow:clip` (подрезает как
+  `hidden`, но скролл-порта не создаёт). В браузере без поддержки `clip`
+  объявление отбрасывается и остаётся прежний `hidden`: вид не меняется,
+  пропадает только прилипание — мягкая деградация.
+- `syncDockHeight()` (`app.js`): меряет `offsetHeight` у `#run-dock` и кладёт
+  значение в `--dock-h` на `document.documentElement`; запасные значения —
+  `:root{--dock-h:62px}` и `0px` в `@media(max-width:860px)` (там `#run-dock`
+  статичный). Меряем, а не хардкодим: высота дока зависит от шрифта, зума и
+  брейкпоинта, а две прилипающие панели на нижней кромке накладывались бы друг
+  на друга. Вызов — при инициализации, на `resize` и через `ResizeObserver` на
+  самом доке.
+- Тесты: `TestFilterAccordionGroups` (группы и их порядок, разделители,
+  свёрнутое по умолчанию «Дополнительно», состав футера, `overflow:clip` вместо
+  `hidden`, замер дока), `tests/ui/filterspanel.test.mjs` — семь кейсов
+  `syncDockHeight` (широкий экран, телефон, старый браузер без `matchMedia`,
+  отсутствие дока, нулевая высота, пересчёт при смене высоты).
+
 ## [2.3.1]
 
 - `routes/update.py`: батник установщика писался с `\r\r\n` (текстовый режим

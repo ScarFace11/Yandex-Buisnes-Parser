@@ -421,6 +421,143 @@ class TestNotificationSettings:
         assert 'accent-color:var(--c)' in STYLE
 
 
+class TestFilterAccordionGroups:
+    """«Фильтрация результата»: группы вместо одиннадцати блоков подряд.
+
+    Аккордеон читался как один длинный список, редкие настройки тонули в
+    середине, а кнопка «Применить фильтры заново» уезжала за нижнюю кромку
+    сайдбора. Теперь это группы с подзаголовками, «⚙️ Дополнительно»
+    свёрнуто по умолчанию, а действие — в sticky-футере.
+    """
+
+    def _section(self) -> str:
+        """Разметка одного аккордеона «03. Фильтрация результата»."""
+        body = TEMPLATE[TEMPLATE.index('id="acc-filters"'):]
+        return body[: body.index("</section>")]
+
+    def _rule(self, selector: str) -> str:
+        assert selector in STYLE, f"нет правила {selector}"
+        block = STYLE[STYLE.index(selector) + len(selector):]
+        return block[: block.index("}")]
+
+    def test_four_groups_with_subtitles(self):
+        sec = self._section()
+        for title in ("🎯 Качество", "📊 Оценка лида", "🔍 Активность", "🔧 Обработка"):
+            assert f'<div class="flt-group-title">{title}</div>' in sec, title
+        assert sec.count('class="flt-group"') == 4
+        # Порядок — от частого к редкому: оценка лида идёт ПЕРЕД активностью ВК.
+        assert sec.index("📊 Оценка лида") < sec.index("🔍 Активность")
+
+    def test_every_control_survived_the_regrouping(self):
+        sec = self._section()
+        for needle in ('id="parse-mode-hint"', 'id="social-mode-hint"',
+                       'id="social-network-filter"', 'id="social-net-chk-grid"',
+                       'id="social-net-hint"', 'id="f-vk-check"', 'id="vk-check-hint"',
+                       'id="vk-filter-block"', 'id="f-vk-max-days"', 'id="f-vk-min-followers"',
+                       'id="f-sort-score"', 'id="f-min-score"', 'id="score-presets"',
+                       'id="score-hint"', 'id="f-collapse-chains"', 'id="f-chain-key"',
+                       'id="f-raw-mode"', 'id="btn-refilter"'):
+            assert needle in sec, f"{needle} потерялся при перегруппировке"
+        for needle in ('name="parse_mode"', 'name="social_mode"', 'name="vk_mode"'):
+            assert needle in sec, needle
+        # Режимы свёрнутых блоков обрабатывает тот же appendLog/JS — id плиток
+        # и грид соцсетей читает initSocialNetCheckboxes.
+        assert 'class="parse-mode-opt active"' in sec
+        assert 'class="score-preset active"' in sec
+
+    def test_socials_are_one_block_with_nested_tiles(self):
+        """«Соцсети в результате» + «Обязательные соцсети» — один блок."""
+        sec = self._section()
+        social = sec.index("Соцсети в результате")
+        vk = sec.index("Проверять активность ВКонтакте")
+        tiles = sec.index('id="social-network-filter"')
+        next_group = sec.index("📊 Оценка лида")
+        assert social < tiles < next_group < vk, "плитки обязательных соцсетей оторвались от режима"
+        # Между режимом и плитками нет границы группы — это ОДИН блок.
+        assert "flt-group-title" not in sec[social:tiles], "соцсети снова стали двумя пунктами"
+        assert "Обязательные соцсети" in sec[tiles:next_group]
+        # Плитки по-прежнему раскрываются классом .open из setSocialMode.
+        assert 'class="tiles-reveal"' in sec[tiles:next_group]
+        assert '<div class="tiles-grid" id="social-net-chk-grid"></div>' in sec[tiles:next_group]
+        assert "netFilter.classList.toggle('open', mode === 'with_socials')" in APP_JS
+
+    def test_group_title_looks_like_the_sidebar_group_title(self):
+        rule = self._rule(".flt-group-title{")
+        assert "font-size:11px" in rule
+        assert "text-transform:uppercase" in rule
+        assert "color:var(--muted)" in rule
+        assert "border-left:3px solid var(--c)" in rule
+        assert "padding:0 0 8px 9px" in rule, "16/8 из макета: сверху группу отбивает .flt-group"
+        body = self._rule(".flt-group-body{")
+        assert "gap:12px" in body
+        assert ".flt-group{padding-top:16px}" in STYLE
+        assert ".flt-group+.flt-group{border-top:1px solid var(--bdr);margin-top:16px}" in STYLE
+
+    def test_rare_settings_are_collapsed_by_default(self):
+        sec = self._section()
+        assert '<details class="flt-extra" id="filters-extra">' in sec
+        assert "<summary>⚙️ Дополнительно</summary>" in sec
+        # Свёрнуто: атрибута open у <details> нет (разметка, а не CSS).
+        at = sec.index('id="filters-extra"')
+        tag = sec[sec.rindex("<details", 0, at): sec.index(">", at) + 1]
+        assert "open" not in tag, f"«Дополнительно» должно быть свёрнуто: {tag}"
+        assert sec.count('id="filters-extra"') == 1
+        box = sec[sec.index('id="filters-extra"'):]
+        box = box[: box.index("</details>")]
+        for needle in ('id="f-chain-key"', 'id="f-raw-mode"'):
+            assert needle in box, f"{needle} должен жить в «⚙️ Дополнительно»"
+        # Значения селектов — контракт для refilterNow/preset-ов.
+        assert '<option value="name_city" selected>' in box
+        assert '<option value="keep" selected>' in box
+        rule = self._rule(".flt-extra-body{")
+        assert "padding:11px" in rule
+
+    def test_footer_is_the_last_block_and_carries_the_action(self):
+        sec = self._section()
+        footer = sec.index('class="flt-footer"')
+        assert sec.index('</details>') < footer, "футер должен идти после «Дополнительно»"
+        assert 'id="btn-refilter"' in sec[footer:]
+        assert 'onclick="refilterNow()"' in sec[footer:]
+        assert "🔄 Применить фильтры заново</button>" in sec[footer:]
+        assert "refilterNow()" in sec[footer:]
+        # Футер — последний блок аккордеона: после него ни групп, ни настроек.
+        assert "flt-group-title" not in sec[footer:]
+        assert sec.count('class="flt-footer"') == 1
+
+    def test_sticky_footer_parks_above_the_dock(self):
+        rule = self._rule(".flt-footer{")
+        assert "position:sticky" in rule
+        assert "bottom:calc(var(--dock-h" in rule
+        assert "z-index:5" in rule
+        assert "background:var(--card)" in rule
+        assert "box-shadow:0 -4px 12px" in rule
+        assert "margin:16px -13px 0" in rule, "футер должен быть во всю ширину аккордеона"
+        assert "width:100%" in self._rule(".flt-footer #btn-refilter{")
+        # Запасное значение токена + ноль на телефоне (там док статичный).
+        assert ":root{--dock-h:62px}" in STYLE
+        assert "@media(max-width:860px){:root{--dock-h:0px}}" in STYLE
+        assert "@media(max-width:860px){#run-dock{position:static}}" in STYLE
+
+    def test_sticky_needs_clip_where_hidden_would_kill_it(self):
+        """overflow:hidden у предка делает его скролл-портом: футер «прилипал» бы
+        к самому аккордеону и не сдвинулся бы ни на пиксель."""
+        assert "#acc-filters{overflow:clip}" in STYLE
+        assert "#acc-filters .acc-body>.acc-inner{overflow:clip}" in STYLE
+        assert "#acc-filters{overflow:hidden}" not in STYLE
+        assert "#acc-filters .acc-body>.acc-inner{overflow:hidden}" not in STYLE
+        # Ритм групп задаёт сам аккордеон, а не flex-gap (иначе разделитель
+        # получал бы 13px сверху и 13px снизу вместо 16/16).
+        assert "#acc-filters .acc-inner{gap:0;padding-bottom:0}" in STYLE
+
+    def test_js_measures_the_dock_instead_of_hard_coding_it(self):
+        assert "function syncDockHeight()" in APP_JS
+        assert "root.style.setProperty('--dock-h'" in APP_JS
+        assert "dock.offsetHeight" in APP_JS
+        assert "syncDockHeight();" in APP_JS
+        assert "addEventListener('resize', syncDockHeight)" in APP_JS
+        assert "new ResizeObserver(syncDockHeight).observe(_dockEl)" in APP_JS
+
+
 class TestBulkCrawlOrder:
     """«Массовый обход» открывает профили в том же порядке, что и таблица.
 

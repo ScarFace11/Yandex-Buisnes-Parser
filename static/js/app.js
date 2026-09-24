@@ -815,6 +815,21 @@ function updateRunBtnState() {
   btn.classList.toggle('run-ready', isRunReady());
 }
 
+// ── Sticky-футер «Фильтрация результата» ─────────────────────
+// Две прилипающие панели не должны накладываться друг на друга: кнопка
+// «🔄 Применить фильтры заново» паркуется прямо НАД доком сайдбора
+// («🚀 Найти компании»). Высоту дока замеряем, а не хардкодим — она зависит
+// от шрифта, зума и брейкпоинта. На телефоне док статичный (медиа-запрос
+// #run-dock), нижнюю кромку занимать нечему — там 0.
+function syncDockHeight() {
+  const dock = document.getElementById('run-dock');
+  const root = document.documentElement;
+  if (!dock || !root || !root.style || !root.style.setProperty) return;
+  const mq = window.matchMedia && window.matchMedia('(min-width: 861px)');
+  const pinned = mq ? mq.matches : true;
+  root.style.setProperty('--dock-h', (pinned ? (dock.offsetHeight || 0) : 0) + 'px');
+}
+
 // While the run is live the dock button reads red «⏸ Пауза» and clicking it
 // pauses the search (graceful unwind + checkpoint); the small ⏹ button next
 // to it stops the run entirely after a confirmation.
@@ -5876,6 +5891,13 @@ async function selfUpdate() {
   const _advBox = document.getElementById('f-output-advanced');
   if (_advBox && _advSaved === '1') _advBox.checked = true;
   loadOutputDir();
+
+  // Sticky-футер «Фильтрация результата» паркуется над доком сайдбора —
+  // его высота живёт в токене --dock-h (медленно меняется от шрифта/зума).
+  syncDockHeight();
+  window.addEventListener('resize', syncDockHeight);
+  const _dockEl = document.getElementById('run-dock');
+  if (_dockEl && window.ResizeObserver) new ResizeObserver(syncDockHeight).observe(_dockEl);
 
   // Check for updates from GitHub
   checkForUpdates();

@@ -1549,6 +1549,68 @@ html.theme-anim #log-output{
 .acc.open .acc-inner{border-top-color:var(--bdr)}
 
 /* ══════════════════════════════════════════════════════════
+   «ФИЛЬТРАЦИЯ РЕЗУЛЬТАТА»: логические группы, «⚙️ Дополнительно»
+   и sticky-футер с действием
+   ══════════════════════════════════════════════════════════ */
+/* Одиннадцать блоков подряд читались как один длинный список: было непонятно,
+   что к чему относится, а кнопка «Применить фильтры заново» уезжала за нижнюю
+   кромку. Теперь это группы с подзаголовками, редкие настройки — в свёрнутом
+   «⚙️ Дополнительно», действие — в футере. */
+
+/* Ритм задают группы, а не flex-gap аккордеона: у разделителя между группами
+   должен быть ровный отступ сверху и снизу. */
+#acc-filters .acc-inner{gap:0;padding-bottom:0}
+
+/* ВАЖНО для sticky-футера: `overflow:hidden` делает элемент скролл-портом, и
+   «прилипание» считается к нему, а не к сайдбору — то есть не работает вовсе.
+   `overflow:clip` подрезает так же, но скролл-порта не создаёт. */
+#acc-filters{overflow:clip}
+#acc-filters .acc-body>.acc-inner{overflow:clip}
+
+.flt-group{padding-top:16px}
+.flt-group+.flt-group{border-top:1px solid var(--bdr);margin-top:16px}
+.flt-group-title{
+  font-size:11px;font-weight:800;color:var(--muted);
+  text-transform:uppercase;letter-spacing:.05em;line-height:1.25;
+  padding:0 0 8px 9px;border-left:3px solid var(--c);
+}
+.flt-group-body{display:flex;flex-direction:column;gap:12px}
+
+/* «⚙️ Дополнительно»: редкие настройки, свёрнуто по умолчанию. */
+.flt-extra{
+  margin-top:20px;border:1.5px solid var(--bdr);border-radius:9px;
+  background:var(--row-alt);overflow:hidden;
+}
+.flt-extra>summary{
+  display:flex;align-items:center;gap:6px;
+  padding:9px 11px;cursor:pointer;user-select:none;list-style:none;
+  font-size:12px;font-weight:700;color:var(--sub);
+  transition:background .13s,color .13s;
+}
+.flt-extra>summary::-webkit-details-marker{display:none}
+.flt-extra>summary::after{
+  content:"▾";margin-left:auto;font-size:12px;color:var(--muted);
+  transition:transform .18s;
+}
+.flt-extra[open]>summary::after{transform:rotate(180deg)}
+.flt-extra>summary:hover{background:var(--cl);color:var(--c)}
+.flt-extra[open]>summary{border-bottom:1px solid var(--bdr)}
+.flt-extra-body{padding:11px;display:flex;flex-direction:column;gap:10px}
+
+/* Футер аккордеона: кнопка действия всегда на виду. Паркуется НАД sticky-доком
+   сайдбора — иначе две прилипающие панели накладывались бы друг на друга.
+   Высоту дока меряет app.js (syncDockHeight); значение ниже — запасное. */
+:root{--dock-h:62px}
+@media(max-width:860px){:root{--dock-h:0px}}   /* на телефоне док статичный */
+.flt-footer{
+  position:sticky;bottom:calc(var(--dock-h,0px) + 6px);z-index:5;
+  margin:16px -13px 0;padding:8px 13px 11px;
+  background:var(--card);border-top:1px solid var(--bdr);
+  box-shadow:0 -4px 12px rgba(0,0,0,.05);
+}
+.flt-footer #btn-refilter{width:100%;padding:11px 12px;font-size:13px;font-weight:700}
+
+/* ══════════════════════════════════════════════════════════
    2. TECH BOX (grey panel for technical parameters)
    ══════════════════════════════════════════════════════════ */
 .tech-box{

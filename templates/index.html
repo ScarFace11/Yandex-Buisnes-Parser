@@ -354,143 +354,192 @@
             <span class="acc-chev" aria-hidden="true"></span>
           </button>
           <div class="acc-body">
-            <div class="acc-inner">
+            <div class="acc-inner acc-inner-filters">
 
-              <div>
-                <label class="lbl">Тип организаций</label>
-                <div class="social-mode-bar">
-                  <label class="parse-mode-opt active" onclick="setParseMode('without_website')">
-                    <input type="radio" name="parse_mode" value="without_website" checked style="display:none">
-                    <span>🚫 Только без сайтов</span>
-                  </label>
-                  <label class="parse-mode-opt" onclick="setParseMode('all')">
-                    <input type="radio" name="parse_mode" value="all" style="display:none">
-                    <span>🌐 Все организации</span>
-                  </label>
-                </div>
-                <div class="hint" id="parse-mode-hint">Фильтр этапа 2: сбор всегда сохраняет все организации, этот фильтр применяется при обработке</div>
-              </div>
+              <!-- 11 блоков подряд читались как один длинный список: было
+                   непонятно, что к чему относится и где искать действие.
+                   Теперь это логические группы с подзаголовками, порядок —
+                   от частого к редкому: качество → оценка лида → активность →
+                   обработка. Редкие настройки — в свёрнутом «⚙️ Дополнительно»,
+                   а «Применить фильтры заново» — в sticky-футере внизу. -->
 
-              <!-- Socials are a STAGE-2 filter: the crawl always keeps every
-                   organization in output/raw/, so a different social slice
-                   needs no re-crawl — just «Применить фильтры заново». -->
-              <div>
-                <label class="lbl">Соцсети в результате</label>
-                <div class="social-mode-bar">
-                  <label class="social-mode-opt active" onclick="setSocialMode('all')">
-                    <input type="radio" name="social_mode" value="all" checked style="display:none">
-                    <span>Все</span>
-                  </label>
-                  <label class="social-mode-opt" onclick="setSocialMode('with_socials')">
-                    <input type="radio" name="social_mode" value="with_socials" style="display:none">
-                    <span>С соцсетями</span>
-                  </label>
-                  <label class="social-mode-opt" onclick="setSocialMode('without_socials')">
-                    <input type="radio" name="social_mode" value="without_socials" style="display:none">
-                    <span>Без соцсетей</span>
-                  </label>
-                </div>
-                <div class="hint" id="social-mode-hint">Попадут все организации из сырых данных</div>
-              </div>
+              <!-- ══ 🎯 КАЧЕСТВО: какие организации попадут в отчёт ══ -->
+              <div class="flt-group">
+                <div class="flt-group-title">🎯 Качество</div>
+                <div class="flt-group-body">
 
-              <!-- Network tiles: revealed only for «С соцсетями» — leaving the
-                   mode clears the selection, so a filter never stays active
-                   while its controls are hidden. -->
-              <div id="social-network-filter" class="tiles-reveal">
-                <div class="tiles-inner">
-                  <div class="tiles-title">Обязательные соцсети</div>
-                  <div class="tiles-grid" id="social-net-chk-grid"></div>
-                  <div class="hint" id="social-net-hint">Отметьте нужные — останутся только организации, у которых есть ВСЕ отмеченные сети</div>
-                </div>
-              </div>
-
-              <!-- VK activity: needs the VK token from the «API-ключи» block.
-                   Only what was actually measured is filtered — an unknown
-                   community is never treated as inactive. -->
-              <div>
-                <label class="chk"><input type="checkbox" id="f-vk-check" onchange="onVkCheckChange()">
-                  Проверять активность ВКонтакте</label>
-                <div class="hint" id="vk-check-hint">Нужен VK-ключ в блоке «API-ключи» — без него шаг будет пропущен с предупреждением.</div>
-                <div id="vk-filter-block" class="tiles-reveal">
-                  <div class="tiles-inner">
+                  <div>
+                    <label class="lbl">Тип организаций</label>
                     <div class="social-mode-bar">
-                      <label class="vk-mode-opt active" onclick="setVkMode('all')">
-                        <input type="radio" name="vk_mode" value="all" checked style="display:none">
+                      <label class="parse-mode-opt active" onclick="setParseMode('without_website')">
+                        <input type="radio" name="parse_mode" value="without_website" checked style="display:none">
+                        <span>🚫 Только без сайтов</span>
+                      </label>
+                      <label class="parse-mode-opt" onclick="setParseMode('all')">
+                        <input type="radio" name="parse_mode" value="all" style="display:none">
+                        <span>🌐 Все организации</span>
+                      </label>
+                    </div>
+                    <div class="hint" id="parse-mode-hint">Фильтр этапа 2: сбор всегда сохраняет все организации, этот фильтр применяется при обработке</div>
+                  </div>
+
+                  <!-- Socials are a STAGE-2 filter: the crawl always keeps every
+                       organization in output/raw/, so a different social slice
+                       needs no re-crawl — just «Применить фильтры заново». -->
+                  <div>
+                    <label class="lbl">Соцсети в результате</label>
+                    <div class="social-mode-bar">
+                      <label class="social-mode-opt active" onclick="setSocialMode('all')">
+                        <input type="radio" name="social_mode" value="all" checked style="display:none">
                         <span>Все</span>
                       </label>
-                      <label class="vk-mode-opt" onclick="setVkMode('active_semi')">
-                        <input type="radio" name="vk_mode" value="active_semi" style="display:none">
-                        <span>Активные + полуактивные</span>
+                      <label class="social-mode-opt" onclick="setSocialMode('with_socials')">
+                        <input type="radio" name="social_mode" value="with_socials" style="display:none">
+                        <span>С соцсетями</span>
                       </label>
-                      <label class="vk-mode-opt" onclick="setVkMode('active')">
-                        <input type="radio" name="vk_mode" value="active" style="display:none">
-                        <span>Только активные</span>
+                      <label class="social-mode-opt" onclick="setSocialMode('without_socials')">
+                        <input type="radio" name="social_mode" value="without_socials" style="display:none">
+                        <span>Без соцсетей</span>
                       </label>
                     </div>
-                    <div class="num-row">
-                      <label class="lbl" for="f-vk-max-days">Последний пост не старше</label>
-                      <input type="number" id="f-vk-max-days" min="0" max="3650" value="0" placeholder="0">
-                      <span class="num-unit">дней</span>
-                      <label class="lbl" for="f-vk-min-followers" style="margin-top:8px">Подписчиков не меньше</label>
-                      <input type="number" id="f-vk-min-followers" min="0" max="10000000" value="0" placeholder="0">
-                      <span class="num-unit">чел.</span>
+                    <div class="hint" id="social-mode-hint">Попадут все организации из сырых данных</div>
+
+                    <!-- Network tiles: revealed only for «С соцсетями» — leaving the
+                         mode clears the selection, so a filter never stays active
+                         while its controls are hidden. Плитки — УТОЧНЕНИЕ к режиму
+                         «С соцсетями», поэтому живут в том же блоке, а не отдельным
+                         пунктом списка. -->
+                    <div id="social-network-filter" class="tiles-reveal">
+                      <div class="tiles-inner">
+                        <div class="tiles-title">Обязательные соцсети</div>
+                        <div class="tiles-grid" id="social-net-chk-grid"></div>
+                        <div class="hint" id="social-net-hint">Отметьте нужные — останутся только организации, у которых есть ВСЕ отмеченные сети</div>
+                      </div>
                     </div>
-                    <div class="hint">0 = не важно. «Активный» — пост за 30 дней, «полуактивный» — за 180.</div>
                   </div>
+
                 </div>
               </div>
 
-              <!-- Lead score: computed on the raw records before the filters. -->
-              <div id="lead-score-block">
-                <div class="sec">Оценка лида</div>
-                <label class="chk"><input type="checkbox" id="f-sort-score" checked>
-                  Сортировать по оценке — сначала горячие</label>
-                <label class="lbl" style="margin-top:8px">Минимальная оценка</label>
-                <div class="score-presets" id="score-presets" role="group" aria-label="Минимальная оценка лида">
-                  <button type="button" class="score-preset active" data-score="0" onclick="setMinScore(0)">Все</button>
-                  <button type="button" class="score-preset" data-score="35" onclick="setMinScore(35)">≥35</button>
-                  <button type="button" class="score-preset" data-score="50" onclick="setMinScore(50)">≥50</button>
-                  <button type="button" class="score-preset" data-score="65" onclick="setMinScore(65)">≥65 🔥</button>
-                </div>
-                <input type="hidden" id="f-min-score" value="0">
-                <div class="hint" id="score-hint">Порог 0: показывать все записи</div>
-                <details class="score-formula">
-                  <summary>ℹ️ Как считается оценка</summary>
-                  <div class="score-formula-body">
-                    <div class="sf-row"><span>Нет своего сайта</span><b>+30</b></div>
-                    <div class="sf-row"><span>Активный ВКонтакте</span><b>+20</b></div>
-                    <div class="sf-row"><span>Полуактивный ВК</span><b>+10</b></div>
-                    <div class="sf-row"><span>Рейтинг ≥ 4.5</span><b>+15</b></div>
-                    <div class="sf-row"><span>Отзывов ≥ 50</span><b>+15</b></div>
-                    <div class="sf-row"><span>Есть телефон</span><b>+5</b></div>
-                    <div class="sf-row"><span>Дорогая категория</span><b>+5</b></div>
-                    <div class="sf-total">Максимум — <b>90</b> баллов. Отсутствующие данные не добавляют и не убавляют баллы.</div>
+              <!-- ══ 📊 ОЦЕНКА ЛИДА: кому звонить первым ══ -->
+              <div class="flt-group">
+                <div class="flt-group-title">📊 Оценка лида</div>
+                <!-- Lead score: computed on the raw records before the filters. -->
+                <div class="flt-group-body" id="lead-score-block">
+                  <label class="chk"><input type="checkbox" id="f-sort-score" checked>
+                    Сортировать по оценке — сначала горячие</label>
+                  <label class="lbl">Минимальная оценка</label>
+                  <div class="score-presets" id="score-presets" role="group" aria-label="Минимальная оценка лида">
+                    <button type="button" class="score-preset active" data-score="0" onclick="setMinScore(0)">Все</button>
+                    <button type="button" class="score-preset" data-score="35" onclick="setMinScore(35)">≥35</button>
+                    <button type="button" class="score-preset" data-score="50" onclick="setMinScore(50)">≥50</button>
+                    <button type="button" class="score-preset" data-score="65" onclick="setMinScore(65)">≥65 🔥</button>
                   </div>
-                </details>
+                  <input type="hidden" id="f-min-score" value="0">
+                  <div class="hint" id="score-hint">Порог 0: показывать все записи</div>
+                  <details class="score-formula">
+                    <summary>ℹ️ Как считается оценка</summary>
+                    <div class="score-formula-body">
+                      <div class="sf-row"><span>Нет своего сайта</span><b>+30</b></div>
+                      <div class="sf-row"><span>Активный ВКонтакте</span><b>+20</b></div>
+                      <div class="sf-row"><span>Полуактивный ВК</span><b>+10</b></div>
+                      <div class="sf-row"><span>Рейтинг ≥ 4.5</span><b>+15</b></div>
+                      <div class="sf-row"><span>Отзывов ≥ 50</span><b>+15</b></div>
+                      <div class="sf-row"><span>Есть телефон</span><b>+5</b></div>
+                      <div class="sf-row"><span>Дорогая категория</span><b>+5</b></div>
+                      <div class="sf-total">Максимум — <b>90</b> баллов. Отсутствующие данные не добавляют и не убавляют баллы.</div>
+                    </div>
+                  </details>
+                </div>
               </div>
 
-              <div>
-                <div class="sec">Обработка</div>
-                <label class="chk"><input type="checkbox" id="f-collapse-chains">
-                  Объединять филиалы сетей</label>
-                <label class="lbl" for="f-chain-key" style="margin-top:6px">Правило объединения</label>
-                <select id="f-chain-key">
-                  <option value="name_city" selected>По названию + городу</option>
-                  <option value="name">По названию (все города)</option>
-                  <option value="phone">По телефону</option>
-                  <option value="email">По email</option>
-                </select>
-                <div class="hint">Сначала объединяет филиалы по выбранному правилу, потом применяет фильтры — контакты не теряются</div>
-                <label class="lbl" style="margin-top:10px">Сырые файлы после обработки</label>
-                <select id="f-raw-mode">
-                  <option value="keep" selected>Хранить (можно перефильтровать)</option>
-                  <option value="archive">Архивировать в output/_archive/</option>
-                  <option value="delete">Удалять</option>
-                </select>
-                <button type="button" class="btn-sm" id="btn-refilter" onclick="refilterNow()" style="margin-top:10px;width:100%">
-                  🔄 Применить фильтры заново
-                </button>
-                <div class="hint">Обрабатывает уже собранные сырые данные без повторного парсинга</div>
+              <!-- ══ 🔍 АКТИВНОСТЬ: живой ли ВК-паблик ══ -->
+              <div class="flt-group">
+                <div class="flt-group-title">🔍 Активность</div>
+                <div class="flt-group-body">
+
+                  <!-- VK activity: needs the VK token from the «API-ключи» block.
+                       Only what was actually measured is filtered — an unknown
+                       community is never treated as inactive. -->
+                  <div>
+                    <label class="chk"><input type="checkbox" id="f-vk-check" onchange="onVkCheckChange()">
+                      Проверять активность ВКонтакте</label>
+                    <div class="hint" id="vk-check-hint">Нужен VK-ключ в блоке «API-ключи» — без него шаг будет пропущен с предупреждением.</div>
+                    <div id="vk-filter-block" class="tiles-reveal">
+                      <div class="tiles-inner">
+                        <div class="social-mode-bar">
+                          <label class="vk-mode-opt active" onclick="setVkMode('all')">
+                            <input type="radio" name="vk_mode" value="all" checked style="display:none">
+                            <span>Все</span>
+                          </label>
+                          <label class="vk-mode-opt" onclick="setVkMode('active_semi')">
+                            <input type="radio" name="vk_mode" value="active_semi" style="display:none">
+                            <span>Активные + полуактивные</span>
+                          </label>
+                          <label class="vk-mode-opt" onclick="setVkMode('active')">
+                            <input type="radio" name="vk_mode" value="active" style="display:none">
+                            <span>Только активные</span>
+                          </label>
+                        </div>
+                        <div class="num-row">
+                          <label class="lbl" for="f-vk-max-days">Последний пост не старше</label>
+                          <input type="number" id="f-vk-max-days" min="0" max="3650" value="0" placeholder="0">
+                          <span class="num-unit">дней</span>
+                          <label class="lbl" for="f-vk-min-followers">Подписчиков не меньше</label>
+                          <input type="number" id="f-vk-min-followers" min="0" max="10000000" value="0" placeholder="0">
+                          <span class="num-unit">чел.</span>
+                        </div>
+                        <div class="hint">0 = не важно. «Активный» — пост за 30 дней, «полуактивный» — за 180.</div>
+                      </div>
+                    </div>
+                  </div>
+
+                </div>
+              </div>
+
+              <!-- ══ 🔧 ОБРАБОТКА: что делать с найденным ══ -->
+              <div class="flt-group">
+                <div class="flt-group-title">🔧 Обработка</div>
+                <div class="flt-group-body">
+
+                  <div>
+                    <label class="chk"><input type="checkbox" id="f-collapse-chains">
+                      Объединять филиалы сетей</label>
+                    <div class="hint">Сначала объединяет филиалы по выбранному правилу, потом применяет фильтры — контакты не теряются</div>
+                  </div>
+
+                </div>
+              </div>
+
+              <!-- ══ ⚙️ ДОПОЛНИТЕЛЬНО: редкие настройки, свёрнуто по умолчанию ══ -->
+              <details class="flt-extra" id="filters-extra">
+                <summary>⚙️ Дополнительно</summary>
+                <div class="flt-extra-body">
+                  <div>
+                    <label class="lbl" for="f-chain-key">Правило объединения</label>
+                    <select id="f-chain-key">
+                      <option value="name_city" selected>По названию + городу</option>
+                      <option value="name">По названию (все города)</option>
+                      <option value="phone">По телефону</option>
+                      <option value="email">По email</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="lbl" for="f-raw-mode">Сырые файлы после обработки</label>
+                    <select id="f-raw-mode">
+                      <option value="keep" selected>Хранить (можно перефильтровать)</option>
+                      <option value="archive">Архивировать в output/_archive/</option>
+                      <option value="delete">Удалять</option>
+                    </select>
+                  </div>
+                </div>
+              </details>
+
+              <!-- Действие живёт в sticky-футере: из-за одиннадцати блоков выше
+                   кнопка уезжала за нижнюю кромку и её приходилось искать. -->
+              <div class="flt-footer">
+                <button type="button" class="btn-sm" id="btn-refilter" onclick="refilterNow()" title="Применить текущие фильтры к собранным сырым данным — без повторного парсинга">🔄 Применить фильтры заново</button>
+                <div class="hint">Без повторного парсинга — по сырым данным</div>
               </div>
 
             </div>
