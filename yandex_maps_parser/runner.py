@@ -1034,6 +1034,9 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None, pause_event=
                     "vk_min_followers": params.get("vk_min_followers") or 0,
                     "min_lead_score":   params.get("min_lead_score") or 0,
                     "sort_by_score":    bool(params.get("sort_by_score", True)),
+                    # Чёрный список («🚫 Исключить по словам»): слова приезжают
+                    # из формы и снимают записи ДО остальных фильтров.
+                    "blacklist_words":  params.get("blacklist_words") or [],
                 }
                 _formats = []
                 if params.get("output_excel"): _formats.append("excel")

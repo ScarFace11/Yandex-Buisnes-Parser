@@ -31,6 +31,8 @@
   --bdr-hover:var(--bdr-h);
   --bdr-soft:#e3ecef;     /* тонкие разделители внутри таблицы */
   --acc-soft:#e6f4f8;     /* бирюзовая подсветка-подложка */
+  --chip-bg:#F3F4F6;      /* чип слова-исключения («🚫 Исключить по словам») */
+  --chip-txt:#374151;
   --ok-bg:#e4f5ed;--ok-bdr:#87c4a4;--ok-txt:#1b5e36;--ok-strong:#0b6b45;--ok-on:#ffffff;
   --warn-bg:#fdf3e0;--warn-bdr:#c8912f;--warn-txt:#7a4b00;--warn-strong:#8a5a00;--warn-on:#2a1b00;
   --err-bg:#fdeaea;--err-bdr:#d98b8b;--err-txt:#7b1616;--err-strong:#a02020;--err-on:#2a1212;
@@ -1351,6 +1353,10 @@ input:focus-visible,textarea:focus-visible,select:focus-visible{
   --red:#D9736F;--red-btn:#A8453F;--red-btn-2:#8E3630;
   --yel:#D3A24C;--grn:#5FB88C;--blu:#7FA8CE;
   --acc-soft:rgba(95,191,174,.12);
+  /* Чип: нейтральная серая плашка, но в тон графита (как остальные
+     поверхности), а не чистый Gray-700 из макета. */
+  --chip-bg:#333A47;
+  --chip-txt:#E3E7EE;
   --ok-bg:rgba(95,184,140,.16);--ok-bdr:rgba(95,184,140,.45);
   --ok-txt:#8FD3B0;--ok-strong:#7FD1A6;--ok-on:#12261C;
   --warn-bg:rgba(211,162,76,.16);--warn-bdr:rgba(211,162,76,.45);
@@ -1609,6 +1615,53 @@ html.theme-anim #log-output{
   box-shadow:0 -4px 12px rgba(0,0,0,.05);
 }
 .flt-footer #btn-refilter{width:100%;padding:11px 12px;font-size:13px;font-weight:700}
+
+/* ── Чёрный список слов («🚫 Исключить по словам») ── */
+.bl-block{display:flex;flex-direction:column}
+/* Список чипов: тянется по строке, но не растёт бесконечно — при сотне слов
+   аккордеон должен остаться аккордеоном, а не простыней. */
+.bl-chips{
+  display:flex;flex-wrap:wrap;gap:6px;align-content:flex-start;
+  max-height:150px;overflow-y:auto;overflow-x:hidden;
+  margin:8px 0 0;padding:0 2px 0 0;scrollbar-width:thin;
+}
+.bl-chip{
+  display:inline-flex;align-items:center;gap:5px;max-width:100%;
+  padding:5px 8px 5px 10px;border-radius:6px;
+  background:var(--chip-bg);color:var(--chip-txt);
+  font-size:12px;font-weight:600;line-height:1.2;
+  transition:opacity .15s,transform .15s;
+  animation:bl-chip-in .15s ease-out;
+}
+/* Слово может быть длинным («автосервисный центр») — чип не ломает строку. */
+.bl-chip>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bl-chip .bl-chip-x{
+  flex:0 0 auto;cursor:pointer;font-size:12px;font-weight:800;line-height:1;
+  color:var(--muted);transition:color .12s;
+}
+.bl-chip .bl-chip-x:hover{color:var(--err-strong)}
+.bl-chip.bl-out{opacity:0;transform:translateX(-6px)}
+@keyframes bl-chip-in{from{opacity:0;transform:scale(.9)}to{opacity:1;transform:scale(1)}}
+.bl-input-wrap{display:flex;gap:6px;align-items:stretch;margin-top:8px}
+.bl-input-wrap input{
+  flex:1;min-width:0;padding:9px 11px;font-size:13px;
+  border:1.5px solid var(--bdr);border-radius:8px;
+  background:var(--card);color:var(--txt);font-family:inherit;
+  transition:border-color .14s,box-shadow .14s;
+}
+.bl-input-wrap input::placeholder{color:var(--muted)}
+.bl-input-wrap input:focus{
+  outline:none;border-color:var(--c);box-shadow:0 0 0 3px var(--focus-ring);
+}
+.bl-input-wrap #btn-blacklist-add{
+  flex:0 0 auto;width:38px;padding:0;font-size:17px;font-weight:800;line-height:1;
+}
+.bl-input-wrap #btn-blacklist-add:hover:not(:disabled){border-color:var(--c);color:var(--c)}
+.bl-err{font-size:11px;font-weight:600;color:var(--err-strong);margin-top:6px}
+.bl-err[hidden]{display:none}
+.bl-block #blacklist-template{margin-top:10px}
+.bl-actions{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px}
+.bl-actions .btn-sm{width:100%;padding:9px 6px;font-size:11.5px}
 
 /* ══════════════════════════════════════════════════════════
    2. TECH BOX (grey panel for technical parameters)

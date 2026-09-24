@@ -163,6 +163,9 @@ globalThis.vkMode = 'all';
 // appendLog пишет в журнал — в тестах копим строки, чтобы проверить текст.
 const logLines = [];
 globalThis.appendLog = (lvl, msg) => logLines.push({ lvl, msg });
+// «🚫 Исключить по словам» уезжает в рефильтр вместе с остальными фильтрами;
+// сам список (чипы, storage, дебаунс) живёт в tests/ui/blacklist.test.mjs.
+globalThis.blacklistWords = [];
 globalThis.unviewedOnly = false;
 globalThis.activeCity = '';
 globalThis._lastCities = [];

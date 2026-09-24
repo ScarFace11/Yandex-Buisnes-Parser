@@ -511,6 +511,40 @@
                 </div>
               </div>
 
+              <!-- ══ 🚫 ИСКЛЮЧИТЬ ПО СЛОВАМ: чёрный список для отчёта ══ -->
+              <div class="flt-group">
+                <div class="flt-group-title">🚫 Исключить по словам</div>
+                <div class="flt-group-body">
+
+                  <div class="bl-block">
+                    <label class="lbl" for="f-blacklist-input">Добавьте слова, которые исключат компанию</label>
+                    <div class="bl-chips" id="blacklist-chips"></div>
+                    <div class="bl-input-wrap">
+                      <input type="text" id="f-blacklist-input" maxlength="50" autocomplete="off" spellcheck="false"
+                             placeholder="Добавьте слово и нажмите Enter или +" onkeydown="onBlacklistKey(event)">
+                      <button type="button" class="btn-sm" id="btn-blacklist-add" onclick="addBlacklistFromField()"
+                              title="Добавить слово в список" aria-label="Добавить слово">+</button>
+                    </div>
+                    <div class="hint">Слова ищутся в названии и категории. Регистр не важен.</div>
+                    <div class="bl-err" id="blacklist-err" hidden></div>
+                    <!-- Шаблоны добавляются К ТЕКУЩЕМУ списку, а не заменяют его:
+                         так два шаблона складываются в один список. -->
+                    <select id="blacklist-template" onchange="applyBlacklistTemplate(this.value)"
+                            aria-label="Загрузить шаблон слов-исключений">
+                      <option value="">📂 Загрузить шаблон</option>
+                    </select>
+                    <div class="bl-actions">
+                      <button type="button" class="btn-sm" id="btn-blacklist-save" onclick="saveBlacklistNow()"
+                              title="Сохранить список в этом браузере">💾 Сохранить список</button>
+                      <button type="button" class="btn-sm danger" id="btn-blacklist-clear" onclick="clearBlacklist()"
+                              title="Убрать все слова-исключения">🗑 Очистить список</button>
+                    </div>
+                    <div class="hint" id="blacklist-count">Список пуст — исключений нет</div>
+                  </div>
+
+                </div>
+              </div>
+
               <!-- ══ ⚙️ ДОПОЛНИТЕЛЬНО: редкие настройки, свёрнуто по умолчанию ══ -->
               <details class="flt-extra" id="filters-extra">
                 <summary>⚙️ Дополнительно</summary>

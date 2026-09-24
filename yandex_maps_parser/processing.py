@@ -128,6 +128,66 @@ def _int_or_zero(value) -> int:
         return 0
 
 
+# ── Blacklist («🚫 Исключить по словам») ──────────────────────
+# Ограничения держим на сервере, а не только в интерфейсе: список приезжает
+# ещё и из пресета/настроек и по сети, а этап 2 не должен падать или
+# тормозить на списке из тысячи слов.
+BLACKLIST_MAX_WORDS = 100   # больше — уже не «исключения», а второй поиск
+BLACKLIST_MAX_LEN = 50      # слово длиннее — опечатка или вставленный абзац
+# Поля, по которым ищем подстроку: название, категория и (если есть) описание.
+BLACKLIST_FIELDS = ("name", "category", "description")
+
+
+def parse_blacklist_words(value) -> list[str]:
+    """«Франшиза, VIP; сеть\nдубль» → ['франшиза', 'vip', 'сеть', 'дубль'].
+
+    Сплит по запятой, точке с запятой и переводу строки; trim; lowercase;
+    пустые выброшены; дубликаты убраны; слова длиннее `BLACKLIST_MAX_LEN`
+    отброшены (это не слово, а вставленный текст); список обрезан до
+    `BLACKLIST_MAX_WORDS`. Идемпотентно: повторный прогон ничего не меняет,
+    поэтому результат можно спокойно сохранять.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        raw_items = [value]
+    elif isinstance(value, (list, tuple, set)):
+        raw_items = list(value)
+    else:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        for part in re.split(r"[,;\n]+", str(item)):
+            word = part.strip().lower()
+            if not word or len(word) > BLACKLIST_MAX_LEN or word in seen:
+                continue
+            seen.add(word)
+            out.append(word)
+            if len(out) >= BLACKLIST_MAX_WORDS:
+                return out
+    return out
+
+
+def blacklist_matcher(words):
+    """Регистронезависимый поиск подстрок — или None, если список пуст.
+
+    Сила blacklist в том, что он побеждает остальные фильтры: слово
+    снимает запись до проверок по сайтам, соцсетям и оценке. Спецсимволы
+    (`C++`, `[акция]`) экранируются: ищется ровно то, что ввёл пользователь,
+    а не регулярка, которую он не писал.
+    """
+    words = [w for w in (words or []) if w]
+    if not words:
+        return None
+    pattern = re.compile("|".join(re.escape(w) for w in words), re.IGNORECASE)
+
+    def _hit(rec: dict) -> bool:
+        return any(pattern.search(str(rec.get(f) or "")) for f in BLACKLIST_FIELDS)
+
+    return _hit
+
+
 def _has_own_website(rec: dict) -> bool:
     # Aggregators (taplink/linktree) are link pages, not a website —
     # same rule as the live PARSE_MODE filter during collection.
@@ -156,8 +216,13 @@ def apply_filters(raw_files: list[str], filters: dict, log_fn=None) -> dict:
         vk_min_followers — drop smaller communities (0 = off)
         min_lead_score   — drop leads below this score (0 = off)
         sort_by_score    — order by lead_score, hottest first
+        blacklist_words  — слова-исключения (название/категория/описание)
     Returns {"groups": {query: {city: [records]}}, "count": int}.
     Empty result → {"groups": {}, "count": 0, "empty": True}.
+
+    Blacklist применяется ПОСЛЕ объединения филиалов и ДО остальных фильтров:
+    если слово исключает компанию, она не вернётся ни соцсетями, ни оценкой
+    лида — иначе «исключено» зависело бы от остальных галочек.
 
     Socials live here (not at collection time) so that output/raw/ always
     keeps every organization found and a different social slice can be
@@ -168,7 +233,8 @@ def apply_filters(raw_files: list[str], filters: dict, log_fn=None) -> dict:
         if os.path.isfile(rf):
             records.extend(load_raw_records(rf))
     if not records:
-        return {"groups": {}, "count": 0, "empty": True}
+        return {"groups": {}, "count": 0, "empty": True,
+                "blacklist_words": [], "blacklist_excluded": 0}
 
     log = log_fn or (lambda *_: None)
     collapse = bool(filters.get("collapse_chains"))
@@ -203,6 +269,10 @@ def apply_filters(raw_files: list[str], filters: dict, log_fn=None) -> dict:
         _score_annotate(records)
     except Exception:
         pass
+
+    blacklist_words = parse_blacklist_words(filters.get("blacklist_words"))
+    blacklist_hit = blacklist_matcher(blacklist_words)
+    blacklist_excluded = 0
 
     vk_mode = filters.get("vk_mode") or "all"
     vk_max_days = _int_or_zero(filters.get("vk_max_post_days"))
@@ -243,6 +313,10 @@ def apply_filters(raw_files: list[str], filters: dict, log_fn=None) -> dict:
     required = {str(p) for p in (filters.get("required_socials") or []) if str(p) in KNOWN_PLATFORMS}
     out: list[dict] = []
     for r in records:
+        # Blacklist побеждает другие фильтры — проверяем его первым.
+        if blacklist_hit and blacklist_hit(r):
+            blacklist_excluded += 1
+            continue
         if parse_mode == "without_website" and _has_own_website(r):
             continue
         has_any_social = any(r.get(p) for p in KNOWN_PLATFORMS)
@@ -261,6 +335,9 @@ def apply_filters(raw_files: list[str], filters: dict, log_fn=None) -> dict:
             continue
         out.append(r)
 
+    if blacklist_words:
+        log("info", f"  🚫 Blacklist: исключено {blacklist_excluded} компаний")
+
     out = dedupe_records(out)
     if filters.get("sort_by_score"):
         out.sort(key=lambda r: _int_or_zero(r.get("lead_score")), reverse=True)
@@ -271,9 +348,11 @@ def apply_filters(raw_files: list[str], filters: dict, log_fn=None) -> dict:
         c = r.get("city") or "прочее"
         groups.setdefault(q, {}).setdefault(c, []).append(r)
 
+    blacklist_info = {"blacklist_words": blacklist_words,
+                      "blacklist_excluded": blacklist_excluded}
     if not out:
-        return {"groups": {}, "count": 0, "empty": True}
-    return {"groups": groups, "count": len(out)}
+        return {"groups": {}, "count": 0, "empty": True, **blacklist_info}
+    return {"groups": groups, "count": len(out), **blacklist_info}
 
 
 # ── Stage 2 output ────────────────────────────────────────────

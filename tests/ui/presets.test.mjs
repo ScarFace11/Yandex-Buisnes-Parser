@@ -160,12 +160,28 @@ globalThis.localStorage = {
   removeItem(k) { delete this._s[k]; },
 };
 globalThis.markAppliedPreset = name => { globalThis.__appliedPreset = name; };
+// Чёрный список слов теперь часть пресета. Отрисовку чипов и счётчик
+// исключений проверяет tests/ui/blacklist.test.mjs — здесь важна одна
+// середина: список доехал до settings и вернулся обратно.
+globalThis.blacklistWords = [];
+globalThis.scheduleBlacklistSave = () => {};
+globalThis.renderBlacklistChips = () => {};
 globalThis.getPresets = () => globalThis.__presets || [];
 globalThis.savePresets = p => { globalThis.__presets = p; };
 globalThis.__presets = [];
 
+// Лимиты чёрного списка — числа, а не объект: берём их из исходника
+// регуляркой, чтобы тест не дублировал значения из processing.py.
+for (const name of ['BLACKLIST_MAX_WORDS', 'BLACKLIST_MAX_LEN']) {
+  const m = new RegExp('const ' + name + ' = (\\d+);').exec(src);
+  assert.ok(m, 'const not found in app.js: ' + name);
+  globalThis[name] = Number(m[1]);
+}
+
 (0, eval)([
   grabConst('FORM_DEFAULTS'),
+  grab('normalizeBlacklist'),
+  grab('setBlacklistWords'),
   grab('getCurrentSettings'),
   grab('applySettings'),
   grab('resetToDefaults'),
@@ -263,10 +279,12 @@ test('applySettings restores the full preset (round-trip)', () => {
   globalThis._gridMode = 'manual';
   globalThis.socialMode = 'with_socials';
   globalThis.requiredSocials = new Set(['vk', 'tg']);
+  globalThis.blacklistWords = ['Франшиза', 'Vip'];
   els['f-grad'].value = '30';
   els['f-pages'].value = '10';
 
   const saved = globalThis.getCurrentSettings();
+  assert.deepEqual(saved.blacklist, ['Франшиза', 'Vip'], 'чёрный список входит в пресет');
   // wipe the form
   globalThis.resetToDefaults();
   assert.equal(globalThis.selectedCities.length, 0);
@@ -279,6 +297,7 @@ test('applySettings restores the full preset (round-trip)', () => {
   assert.deepEqual([...globalThis.requiredSocials].sort(), ['tg', 'vk'], 'social tiles restored');
   assert.equal(els['f-grad'].value, '30');
   assert.equal(els['f-pages'].value, '10');
+  assert.deepEqual(globalThis.blacklistWords, ['франшиза', 'vip'], 'список слов вернулся нормализованным');
 });
 
 // ── 3. localStorage path keeps the «no cities» contract ─────

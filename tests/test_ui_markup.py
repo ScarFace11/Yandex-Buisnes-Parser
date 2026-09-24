@@ -440,11 +440,12 @@ class TestFilterAccordionGroups:
         block = STYLE[STYLE.index(selector) + len(selector):]
         return block[: block.index("}")]
 
-    def test_four_groups_with_subtitles(self):
+    def test_groups_with_subtitles(self):
         sec = self._section()
-        for title in ("🎯 Качество", "📊 Оценка лида", "🔍 Активность", "🔧 Обработка"):
+        for title in ("🎯 Качество", "📊 Оценка лида", "🔍 Активность", "🔧 Обработка",
+                      "🚫 Исключить по словам"):
             assert f'<div class="flt-group-title">{title}</div>' in sec, title
-        assert sec.count('class="flt-group"') == 4
+        assert sec.count('class="flt-group"') == 5
         # Порядок — от частого к редкому: оценка лида идёт ПЕРЕД активностью ВК.
         assert sec.index("📊 Оценка лида") < sec.index("🔍 Активность")
 
@@ -556,6 +557,110 @@ class TestFilterAccordionGroups:
         assert "syncDockHeight();" in APP_JS
         assert "addEventListener('resize', syncDockHeight)" in APP_JS
         assert "new ResizeObserver(syncDockHeight).observe(_dockEl)" in APP_JS
+
+
+class TestBlacklistChips:
+    """«🚫 Исключить по словам»: чипы, шаблоны и счётчик в аккордеоне 03.
+
+    Логику (валидация, storage, debounce, шаблоны) ловят node-тесты в
+    tests/ui/blacklist.test.mjs, а здесь — то, что живёт только в разметке
+    и стилях: id-контракты обработчиков, лимиты в maxlength и токены темы.
+    """
+
+    def _section(self) -> str:
+        body = TEMPLATE[TEMPLATE.index('id="acc-filters"'):]
+        return body[: body.index("</section>")]
+
+    def _rule(self, selector: str) -> str:
+        assert selector in STYLE, f"нет правила {selector}"
+        block = STYLE[STYLE.index(selector) + len(selector):]
+        return block[: block.index("}")]
+
+    def test_block_has_its_own_group_and_every_control(self):
+        sec = self._section()
+        assert '<div class="flt-group-title">🚫 Исключить по словам</div>' in sec
+        for needle in ('id="blacklist-chips"', 'id="f-blacklist-input"',
+                       'id="btn-blacklist-add"', 'id="btn-blacklist-save"',
+                       'id="btn-blacklist-clear"', 'id="blacklist-template"',
+                       'id="blacklist-count"', 'id="blacklist-err"'):
+            assert needle in sec, needle
+        for handler in ('onclick="addBlacklistFromField()"', 'onkeydown="onBlacklistKey(event)"',
+                        'onclick="saveBlacklistNow()"', 'onclick="clearBlacklist()"',
+                        'onchange="applyBlacklistTemplate(this.value)"'):
+            assert handler in sec, handler
+
+    def test_block_sits_before_the_advanced_box_and_the_footer(self):
+        """Список — обычная группа: редкое живёт в «Дополнительно», а действие — в
+        футере, поэтому исключения не должны оказаться после них."""
+        sec = self._section()
+        block = sec.index('id="blacklist-chips"')
+        assert block < sec.index('id="filters-extra"')
+        assert block < sec.index('class="flt-footer"')
+        # и после групп качества/оценки/активности/обработки
+        assert block > sec.index("🔧 Обработка")
+
+    def test_copy_and_limits_live_in_the_markup(self):
+        sec = self._section()
+        assert 'Добавьте слова, которые исключат компанию' in sec
+        assert 'Добавьте слово и нажмите Enter или +' in sec
+        assert 'Слова ищутся в названии и категории. Регистр не важен.' in sec
+        assert '💾 Сохранить список' in sec and '🗑 Очистить список' in sec
+        assert '📂 Загрузить шаблон' in sec
+        # 50 символов — тот же лимит, что в processing.BLACKLIST_MAX_LEN.
+        assert 'id="f-blacklist-input" maxlength="50"' in sec
+
+    def test_template_options_are_built_from_the_registry(self):
+        """В разметке — только плейсхолдер: подписи шаблонов не дублируются."""
+        sec = self._section()
+        sel = sec[sec.index('id="blacklist-template"'):]
+        sel = sel[: sel.index("</select>")]
+        assert sel.count("<option") == 1
+        assert "const BLACKLIST_TEMPLATES = {" in APP_JS
+        assert "function fillBlacklistTemplateSelect(" in APP_JS
+        assert "document.createElement('option')" in APP_JS
+
+    def test_chips_follow_the_design_and_the_theme_tokens(self):
+        chips = self._rule(".bl-chips{")
+        assert "flex-wrap:wrap" in chips
+        assert "max-height:150px" in chips
+        assert "overflow-y:auto" in chips
+        chip = self._rule(".bl-chip{")
+        assert "border-radius:6px" in chip
+        assert "background:var(--chip-bg)" in chip
+        assert "color:var(--chip-txt)" in chip
+        assert "animation:bl-chip-in .15s" in chip, "появление — scale + fade (0.15s)"
+        assert "@keyframes bl-chip-in{" in STYLE
+        assert "scale(.9)" in STYLE
+        assert ".bl-chip .bl-chip-x:hover{color:var(--err-strong)}" in STYLE
+        assert ".bl-chip.bl-out{opacity:0;transform:translateX(-6px)}" in STYLE
+        # Ни одного hex-литерала в правилах — цвет переключается токенами темы.
+        for rule in (".bl-chips{", ".bl-chip{", ".bl-chip .bl-chip-x{"):
+            assert not re.search(r"#[0-9a-fA-F]{3,8}\b", self._rule(rule)), rule
+
+    def test_chip_tokens_are_declared_for_both_themes(self):
+        light = STYLE[STYLE.index(":root{"):]
+        light = light[: light.index("\n}")]
+        dark = DARK_TOKEN_BLOCK[: DARK_TOKEN_BLOCK.index("\n}")]
+        for token in ("--chip-bg:", "--chip-txt:"):
+            assert token in light, f"{token} не объявлен в светлой теме"
+            assert token in dark, f"{token} не объявлен в тёмной теме"
+        # Плашка из макета (#F3F4F6 / #374151) — светлая тема; в тёмной
+        # нейтральный Gray-700 выбивался бы из графитовой палитры.
+        assert "--chip-bg:#F3F4F6" in light and "--chip-txt:#374151" in light
+
+    def test_storage_key_and_handlers_are_wired(self):
+        assert "const BLACKLIST_KEY = 'blacklist_words'" in APP_JS
+        assert "version: BLACKLIST_VERSION" in APP_JS
+        assert "updated_at: new Date().toISOString()" in APP_JS
+        for fn in ("normalizeBlacklist", "parseBlacklistInput", "addBlacklistWords",
+                   "removeBlacklistWord", "clearBlacklist", "applyBlacklistTemplate",
+                   "loadBlacklistWords", "setBlacklistWords", "previewBlacklist",
+                   "saveBlacklistNow"):
+            assert f"function {fn}(" in APP_JS, fn
+        assert "'/preview-blacklist'" in APP_JS
+        # Живой счётчик исключений доступен на обоих путях: загрузка и debounce.
+        assert "scheduleBlacklistPreview" in APP_JS
+        assert "loadBlacklistWords();" in APP_JS
 
 
 class TestBulkCrawlOrder:

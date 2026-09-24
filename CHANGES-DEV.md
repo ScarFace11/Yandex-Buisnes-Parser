@@ -116,6 +116,60 @@
   `syncDockHeight` (широкий экран, телефон, старый браузер без `matchMedia`,
   отсутствие дока, нулевая высота, пересчёт при смене высоты).
 
+**Чёрный список слов («🚫 Исключить по словам»)**
+(`yandex_maps_parser/processing.py`, `routes/api.py`, `yandex_maps_parser/runner.py`,
+`static/js/app.js`, `templates/index.html`, `static/css/style.css`)
+
+- `processing.py`: `parse_blacklist_words()` — сплит по `[,;\n]`, trim,
+  lowercase, пустые и дубликаты выброшены, слово длиннее `BLACKLIST_MAX_LEN=50`
+  отброшено (это не слово, а вставленный абзац), список обрезан до
+  `BLACKLIST_MAX_WORDS=100`; функция идемпотентна, поэтому результат можно
+  сохранять как есть. `blacklist_matcher()` — одна скомпилированная
+  alternation из `re.escape(w)`: спецсимволы (`C++`, `[акция]`) ищутся
+  буквально, сравнение `re.IGNORECASE` в `BLACKLIST_FIELDS = name, category,
+  description`; пустой список → `None` (в цикле фильтрации нулевая работа).
+- Место в этапе 2: blacklist проверяется ПЕРВЫМ в цикле фильтрации — после
+  `collapse_chains*`, до parse_mode / соцсетей / оценки / VK, поэтому
+  «исключено» не зависит от остальных галочек (тест
+  `test_blacklist_wins_over_the_other_filters`). Счётчик `blacklist_excluded`
+  возвращается из `apply_filters` (в т.ч. в `empty`-ответе) и пишется в журнал
+  строкой `🚫 Blacklist: исключено N компаний`.
+- `routes/api.py`: `/process-filters` прокидывает `blacklist_words` в фильтры и
+  отдаёт `blacklist_excluded` в ответе — у рефильтра нет потоковых логов, и без
+  этого слово-исключение «работало бы молча». Новый `POST /preview-blacklist`
+  (`{words}` → `{ok, words, total, excluded, remaining}`) считает исключения по
+  сырым данным текущего поиска ТОЙ ЖЕ парой функций, что этап 2, — цифра в
+  подсказке не может разойтись с результатом обработки.
+- `runner.py`: `blacklist_words` из params обычного запуска уезжает в те же
+  stage-2 фильтры.
+- `app.js`: состояние `blacklistWords`; `normalizeBlacklist()` /
+  `parseBlacklistInput()` (те же лимиты, что на сервере); `addBlacklistWords()`
+  / `addBlacklistFromField()` / `onBlacklistKey()` (Enter добавляет, Backspace
+  в пустом поле снимает последний чип); `removeBlacklistWord()`;
+  `clearBlacklist()` (чипы гаснут классом `.bl-out` — как у городов);
+  `applyBlacklistTemplate()` добавляет шаблон К текущему списку, опции строит
+  `fillBlacklistTemplateSelect()` из реестра `BLACKLIST_TEMPLATES` (подписи не
+  дублируются в разметке); `scheduleBlacklistSave()` / `saveBlacklistNow()` —
+  ключ `blacklist_words`, формат `{words, version: 1, updated_at}`, debounce
+  1 с; `loadBlacklistWords()` читает и старый формат (голый массив) и битый
+  JSON; `scheduleBlacklistPreview()` / `previewBlacklist()` — debounce 600 мс и
+  `_blPreviewSeq`, чтобы устаревший ответ не перетирал свежий счётчик.
+- Пресеты и сброс: `getCurrentSettings().blacklist`, `applySettings()` →
+  `setBlacklistWords()`, `FORM_DEFAULTS.blacklist = []` (сброс чистит и список).
+  В payload идут `getParams().blacklist_words` и `refilterNow()` — иначе новый
+  поиск и рефильтр давали бы разные срезы.
+- Тема: токены `--chip-bg` / `--chip-txt` в обоих блоках. Светлый — из макета
+  (#F3F4F6 / #374151), тёмный — #333A47 / #E3E7EE: нейтральный Gray-700 из
+  макета выбивался из графитовой палитры, а hex-литерал в тёмном правиле
+  запрещён `test_ui_markup`. Пара добавлена в `PAIRS`
+  `tests/test_theme_contrast.py` — контраст чипа ≥ 4.5:1 в обеих темах.
+- Тесты: `tests/test_blacklist.py` (17 кейсов — парсинг, лимиты, спецсимволы,
+  приоритет над соцсетями, «после объединения филиалов», строка журнала,
+  `/preview-blacklist`), `tests/ui/blacklist.test.mjs` (25 кейсов — чипы,
+  валидация, storage с debounce, шаблоны, счётчик без «гонки» ответов),
+  `TestBlacklistChips` в `tests/test_ui_markup.py`, а также поля в
+  `tests/test_refilter_filters.py` и round-trip в `tests/ui/presets.test.mjs`.
+
 ## [2.3.1]
 
 - `routes/update.py`: батник установщика писался с `\r\r\n` (текстовый режим

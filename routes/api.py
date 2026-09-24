@@ -958,6 +958,8 @@ def process_filters():
         "vk_min_followers": data.get("vk_min_followers") or 0,
         "min_lead_score":   data.get("min_lead_score") or 0,
         "sort_by_score":    bool(data.get("sort_by_score", True)),
+        # Чёрный список («🚫 Исключить по словам») — нормализует apply_filters.
+        "blacklist_words":  data.get("blacklist_words") or [],
     }
     cleanup_mode = data.get("raw_mode", "keep")
     try:
@@ -974,9 +976,44 @@ def process_filters():
             # Полный путь — фронтенд показывает его в журнале (папка может
             # быть пользовательской, «output/processed/» уже не всегда правда).
             "out_dir": _results_dir(),
+            # Сколько записей снял blacklist — клиент пишет это в свой журнал
+            # (у рефильтра нет потоковых логов, но счётчик должен быть виден).
+            "blacklist_excluded": int(res.get("blacklist_excluded") or 0),
         })
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@bp.route("/preview-blacklist", methods=["POST"])
+def preview_blacklist():
+    """Сколько компаний отсечёт список слов — без запуска этапа 2.
+
+    Body: {words: ["франшиза", "vip"]}
+    Reply: {ok, words, total, excluded, remaining}
+
+    Считаем по СЫРЫМ данным текущего поиска: именно их перефильтровывает
+    этап 2, и счётчик должен отвечать на вопрос «что будет, если я нажму
+    применить». Логика та же, что в apply_filters (общие
+    parse_blacklist_words/blacklist_matcher), — цифра в подсказке не может
+    разойтись с результатом обработки.
+    """
+    from yandex_maps_parser.processing import blacklist_matcher, parse_blacklist_words
+
+    data = request.get_json(silent=True) or {}
+    words = parse_blacklist_words(data.get("words"))
+    try:
+        recs = _collect_records("raw", None, "current")
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    hit = blacklist_matcher(words)
+    excluded = sum(1 for r in recs if hit and hit(r)) if hit else 0
+    return jsonify({
+        "ok": True,
+        "words": words,
+        "total": len(recs),
+        "excluded": excluded,
+        "remaining": len(recs) - excluded,
+    })
 
 
 # ═══════════════════════════════════════════════════════════════

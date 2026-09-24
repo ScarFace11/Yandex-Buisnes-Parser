@@ -106,6 +106,8 @@ PAIRS = [
     ("--ok-txt", "--ok-bg"), ("--ok-strong", "--ok-bg"),
     ("--warn-txt", "--warn-bg"), ("--warn-strong", "--warn-bg"),
     ("--err-txt", "--err-bg"), ("--err-strong", "--err-bg"),
+    # Чип слова-исключения («🚫 Исключить по словам») — текст на своей плашке.
+    ("--chip-txt", "--chip-bg"),
 ]
 SURFACES = ("--card", "--bg", "--hdr")
 

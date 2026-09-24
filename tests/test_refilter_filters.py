@@ -51,6 +51,8 @@ def test_every_stage_two_filter_reaches_processing(app_client):
         "vk_min_followers": 250,
         "min_lead_score": 50,
         "sort_by_score": True,
+        # Чёрный список слов («🚫 Исключить по словам"),
+        "blacklist_words": ["Франшиза", "vip"],
     })
     data = resp.get_json()
 
@@ -62,6 +64,7 @@ def test_every_stage_two_filter_reaches_processing(app_client):
     assert f["vk_min_followers"] == 250
     assert f["min_lead_score"] == 50
     assert f["sort_by_score"] is True
+    assert f["blacklist_words"] == ["Франшиза", "vip"]
     assert f["parse_mode"] == "without_website"
     assert f["required_socials"] == ["vk", "telegram"]
     assert captured["cleanup_mode"] == "archive"
@@ -79,6 +82,7 @@ def test_defaults_are_safe_when_the_body_is_thin(app_client):
     assert f["vk_check"] is False
     assert f["vk_mode"] == "all"
     assert f["min_lead_score"] == 0
+    assert f["blacklist_words"] == []
     assert f["parse_mode"] == "all"
     assert captured["cleanup_mode"] == "keep"
 

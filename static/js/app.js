@@ -1104,6 +1104,278 @@ function removeCity(idx) {
 }
 
 // ═══════════════════════════════════════════
+//  🚫 Чёрный список слов («Исключить по словам»)
+// ═══════════════════════════════════════════
+// UX повторяет чипы городов: слово вводится в поле, Enter или «+» добавляет
+// чип, «✕» убирает, Backspace в пустом поле снимает последний. Список живёт
+// в своём ключе localStorage (с версией и датой) и автосохраняется с задержкой,
+// но есть и явная кнопка «💾 Сохранить список» — она сохраняет сразу.
+// Лимиты те же, что в yandex_maps_parser/processing.py.
+const BLACKLIST_KEY = 'blacklist_words';
+const BLACKLIST_VERSION = 1;
+const BLACKLIST_MAX_WORDS = 100;
+const BLACKLIST_MAX_LEN = 50;
+const BLACKLIST_SAVE_MS = 1000;      // автосохранение в localStorage (debounce)
+const BLACKLIST_PREVIEW_MS = 600;    // пересчёт счётчика исключений (debounce)
+
+let blacklistWords = [];
+let _blSaveTimer = null;
+let _blPreviewTimer = null;
+let _blErrTimer = null;
+let _blPreviewSeq = 0;               // ответы приходят не по порядку — берём последний
+
+// Шаблоны — готовые наборы слов под частые задачи. Добавляются К текущему
+// списку (не заменяют его), поэтому два шаблона складываются в один.
+const BLACKLIST_TEMPLATES = {
+  franchise:   {label: '🏪 Франшизы и сети',        words: ['франшиза', 'франчайзи', 'филиал', 'сеть']},
+  gov:         {label: '🏛 Госсектор',              words: ['администрация', 'министерство', 'мфц', 'гбу', 'муп']},
+  marketplace: {label: '📦 Маркетплейсы и ПВЗ',     words: ['пункт выдачи', 'пвз', 'wildberries', 'ozon']},
+  delivery:    {label: '🛵 Доставка и тёмные кухни', words: ['доставка', 'тёмная кухня', 'dark kitchen']},
+};
+
+// Опции строим из реестра шаблонов — подписи не дублируются в разметке.
+function fillBlacklistTemplateSelect() {
+  const sel = document.getElementById('blacklist-template');
+  if (!sel || sel.dataset.filled === '1') return;
+  Object.entries(BLACKLIST_TEMPLATES).forEach(([key, tpl]) => {
+    const o = document.createElement('option');
+    o.value = key;
+    o.textContent = tpl.label;
+    sel.appendChild(o);
+  });
+  sel.dataset.filled = '1';
+}
+
+// Сплит по [,;\n], trim, lowercase, пустые и дубликаты выброшены, слова
+// длиннее 50 символов отброшены (это не слово, а вставленный текст).
+function normalizeBlacklist(value) {
+  const out = [];
+  (Array.isArray(value) ? value : []).forEach(item => {
+    String(item == null ? '' : item).split(/[,;\n]+/).forEach(part => {
+      const w = part.trim().toLowerCase();
+      if (!w || w.length > BLACKLIST_MAX_LEN) return;
+      if (out.includes(w) || out.length >= BLACKLIST_MAX_WORDS) return;
+      out.push(w);
+    });
+  });
+  return out;
+}
+
+// Что именно произойдёт с введённой строкой — до того, как список изменится:
+// столько-то добавим, столько-то уже есть, столько-то не слова.
+function parseBlacklistInput(text, existing) {
+  const have = Array.isArray(existing) ? existing : blacklistWords;
+  const parts = String(text == null ? '' : text).split(/[,;\n]+/)
+    .map(s => s.trim().toLowerCase()).filter(Boolean);
+  const added = [];
+  let tooLong = 0, duplicates = 0, limitReached = false;
+  for (const w of parts) {
+    if (w.length > BLACKLIST_MAX_LEN) { tooLong++; continue; }
+    if (have.includes(w) || added.includes(w)) { duplicates++; continue; }
+    if (have.length + added.length >= BLACKLIST_MAX_WORDS) { limitReached = true; continue; }
+    added.push(w);
+  }
+  return {added, tooLong, duplicates, limitReached, empty: !parts.length};
+}
+
+function renderBlacklistChips() {
+  const box = document.getElementById('blacklist-chips');
+  if (box) {
+    box.innerHTML = blacklistWords.map((w, i) =>
+      '<span class="bl-chip"><span>' + escapeHtml(w) + '</span>'
+      + '<span class="bl-chip-x" role="button" tabindex="0" aria-label="Убрать слово «' + escapeHtml(w) + '»"'
+      + ' onclick="removeBlacklistWord(' + i + ')">✕</span></span>'
+    ).join('');
+  }
+  updateBlacklistCount();
+  scheduleBlacklistPreview();
+}
+
+// Сразу видно, что список не пуст; точные цифры (сколько компаний исключится)
+// приезжают с сервера — считать их на клиенте значило бы держать вторую
+// копию логики поиска.
+function updateBlacklistCount(text) {
+  const el = document.getElementById('blacklist-count');
+  if (!el) return;
+  if (text != null) { el.textContent = text; return; }
+  el.textContent = blacklistWords.length
+    ? `Слов в списке: ${blacklistWords.length}. Считаю, сколько компаний исключится…`
+    : 'Список пуст — исключений нет';
+}
+
+function showBlacklistError(msg) {
+  const el = document.getElementById('blacklist-err');
+  if (!el) return;
+  el.textContent = msg;
+  el.hidden = false;
+  if (_blErrTimer) clearTimeout(_blErrTimer);
+  _blErrTimer = setTimeout(() => { el.hidden = true; }, 4000);
+}
+
+function clearBlacklistError() {
+  const el = document.getElementById('blacklist-err');
+  if (el) { el.hidden = true; el.textContent = ''; }
+  if (_blErrTimer) { clearTimeout(_blErrTimer); _blErrTimer = null; }
+}
+
+// Добавляет слова из строки (поле ввода или шаблон). Возвращает, сколько слов
+// реально добавилось, — на это опираются тосты и тесты.
+function addBlacklistWords(text, opts) {
+  const silent = !!(opts && opts.silent);
+  const res = parseBlacklistInput(text);
+  if (res.empty) {
+    if (!silent) showBlacklistError('Введите слово');
+    return 0;
+  }
+  if (res.tooLong) {
+    if (!silent) showBlacklistError(`Слово длиннее ${BLACKLIST_MAX_LEN} символов — не добавлено`);
+  } else if (res.limitReached) {
+    if (!silent) showBlacklistError(`В списке уже ${BLACKLIST_MAX_WORDS} слов — больше нельзя`);
+  } else if (!res.added.length && res.duplicates) {
+    if (!silent) showBlacklistError('Такое слово уже в списке');
+  } else {
+    clearBlacklistError();
+  }
+  if (!res.added.length) return 0;
+  blacklistWords.push(...res.added);
+  renderBlacklistChips();
+  scheduleBlacklistSave();
+  return res.added.length;
+}
+
+// «+» и Enter: слово из поля. Поле очищается, но фокус остаётся — так можно
+// вводить слова одно за другим, не возвращаясь мышью к полю.
+function addBlacklistFromField() {
+  const inp = document.getElementById('f-blacklist-input');
+  if (!inp) return 0;
+  const n = addBlacklistWords(inp.value);
+  if (n) inp.value = '';
+  if (inp.focus) inp.focus();
+  return n;
+}
+
+function onBlacklistKey(e) {
+  if (e.key === 'Enter') { e.preventDefault(); addBlacklistFromField(); return; }
+  // Backspace в пустом поле убирает последний чип — как в поле городов.
+  if (e.key === 'Backspace' && !e.target.value && blacklistWords.length) {
+    removeBlacklistWord(blacklistWords.length - 1);
+  }
+}
+
+function removeBlacklistWord(i) {
+  if (typeof i !== 'number' || i < 0 || i >= blacklistWords.length) return;
+  blacklistWords.splice(i, 1);
+  renderBlacklistChips();
+  scheduleBlacklistSave();
+}
+
+function clearBlacklist() {
+  if (!blacklistWords.length) { showToast('Список исключений уже пуст', 'info'); return; }
+  blacklistWords = [];
+  const box = document.getElementById('blacklist-chips');
+  // Гасим чипы так же, как «Очистить города», и лишь потом перерисовываем.
+  if (box && box.querySelectorAll) {
+    box.querySelectorAll('.bl-chip').forEach(c => c.classList.add('bl-out'));
+    setTimeout(() => { renderBlacklistChips(); }, 190);
+  } else {
+    renderBlacklistChips();
+  }
+  updateBlacklistCount('Список пуст — исключений нет');
+  scheduleBlacklistSave();
+  scheduleBlacklistPreview();
+}
+
+// Шаблон добавляется К списку: два шаблона складываются, ничего не теряется.
+function applyBlacklistTemplate(key) {
+  const sel = document.getElementById('blacklist-template');
+  const tpl = BLACKLIST_TEMPLATES[key];
+  if (sel) sel.selectedIndex = 0;      // вернуть плейсхолдер «Загрузить шаблон»
+  if (!tpl) return 0;
+  const n = addBlacklistWords(tpl.words.join('\n'), {silent: true});
+  showToast(n ? `Шаблон «${tpl.label}»: добавлено слов — ${n}`
+              : 'Слова шаблона уже в списке', n ? 'success' : 'info');
+  return n;
+}
+
+// Сохранение: ключ свой (`blacklist_words`), с версией и датой — так формат
+// можно будет поменять, не гадая, что лежит в браузере.
+function saveBlacklistState(showMsg) {
+  try {
+    localStorage.setItem(BLACKLIST_KEY, JSON.stringify({
+      words: [...blacklistWords],
+      version: BLACKLIST_VERSION,
+      updated_at: new Date().toISOString(),
+    }));
+  } catch (e) { /* приватный режим или квота: список просто не переживёт перезагрузку */ }
+  if (showMsg) {
+    showToast(blacklistWords.length
+      ? `Список сохранён: ${blacklistWords.length} ${_pluralRu(blacklistWords.length, 'слово', 'слова', 'слов')}`
+      : 'Список исключений сохранён (пустой)', 'success');
+  }
+}
+
+function scheduleBlacklistSave() {
+  if (_blSaveTimer) clearTimeout(_blSaveTimer);
+  _blSaveTimer = setTimeout(() => { _blSaveTimer = null; saveBlacklistState(false); }, BLACKLIST_SAVE_MS);
+}
+
+function saveBlacklistNow() {
+  if (_blSaveTimer) { clearTimeout(_blSaveTimer); _blSaveTimer = null; }
+  saveBlacklistState(true);
+}
+
+function loadBlacklistWords() {
+  let stored = null;
+  try { stored = JSON.parse(localStorage.getItem(BLACKLIST_KEY)); } catch (e) { stored = null; }
+  // Текущий формат — {words, version, updated_at}; голый массив — старый.
+  const raw = Array.isArray(stored) ? stored : (stored && Array.isArray(stored.words) ? stored.words : []);
+  blacklistWords = normalizeBlacklist(raw);
+  renderBlacklistChips();
+  return blacklistWords;
+}
+
+// Полная замена списка (пресет, настройки) — нормализует и сохраняет.
+function setBlacklistWords(list) {
+  blacklistWords = normalizeBlacklist(list);
+  renderBlacklistChips();
+  scheduleBlacklistSave();
+  return blacklistWords;
+}
+
+function scheduleBlacklistPreview() {
+  if (_blPreviewTimer) clearTimeout(_blPreviewTimer);
+  if (!blacklistWords.length) {
+    updateBlacklistCount('Список пуст — исключений нет');
+    return;
+  }
+  _blPreviewTimer = setTimeout(() => { _blPreviewTimer = null; previewBlacklist(); }, BLACKLIST_PREVIEW_MS);
+}
+
+// POST /preview-blacklist: сколько компаний снимает текущий список — по сырым
+// данным текущего поиска, той же логикой, что и этап 2.
+function previewBlacklist() {
+  const words = [...blacklistWords];
+  if (!words.length) { updateBlacklistCount('Список пуст — исключений нет'); return Promise.resolve(); }
+  const seq = ++_blPreviewSeq;
+  return fetch('/preview-blacklist', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({words}),
+  })
+    .then(r => r.json())
+    .then(j => {
+      if (seq !== _blPreviewSeq) return;   // список уже изменился — ответ устарел
+      if (!j || !j.ok) { updateBlacklistCount('Не удалось посчитать исключения'); return; }
+      if (!j.total) { updateBlacklistCount('Нет сырых данных текущего поиска — сначала запустите сбор'); return; }
+      const many = _pluralRu(j.total, 'компании', 'компаний', 'компаний');
+      updateBlacklistCount(j.excluded
+        ? `🚫 Исключит ${j.excluded} из ${j.total} ${many} — останется ${j.remaining}`
+        : `Ничего не исключается — слова не совпали (проверено ${j.total} ${many})`);
+    })
+    .catch(() => { if (seq === _blPreviewSeq) updateBlacklistCount('Не удалось посчитать исключения'); });
+}
+
+// ═══════════════════════════════════════════
 //  Tabs
 // ═══════════════════════════════════════════
 // ═══════════════════════════════════════════
@@ -1733,6 +2005,8 @@ function getParams() {
     vk_min_followers: parseInt((document.getElementById('f-vk-min-followers')||{}).value, 10) || 0,
     min_lead_score:   parseInt((document.getElementById('f-min-score')||{}).value, 10) || 0,
     sort_by_score:    (document.getElementById('f-sort-score')||{}).checked !== false,
+    // «🚫 Исключить по словам»: слова снимают записи до остальных фильтров.
+    blacklist_words:  [...blacklistWords],
   };
 }
 
@@ -2485,6 +2759,7 @@ function refilterNow() {
     vk_min_followers: (document.getElementById('f-vk-min-followers') || {}).value || 0,
     min_lead_score:   (document.getElementById('f-min-score') || {}).value || 0,
     sort_by_score:    (document.getElementById('f-sort-score') || {}).checked !== false,
+    blacklist_words:  [...blacklistWords],
   };
   fetch('/process-filters', {
     method: 'POST',
@@ -2505,6 +2780,11 @@ function refilterNow() {
       }
       // Полный путь: папка результатов может быть пользовательской.
       const outDir = data.out_dir ? data.out_dir.replace(/[\\/]+$/, '') : 'output';
+      // У рефильтра нет потоковых логов сервера, поэтому строку про blacklist
+      // пишем по счётчику из ответа — иначе слово-исключение «работает молча».
+      if (blacklistWords.length) {
+        appendLog('info', `  🚫 Blacklist: исключено ${data.blacklist_excluded || 0} компаний`);
+      }
       showToast(`Готово: ${data.count} организаций → ${data.files.length} файлов`, 'success');
       appendLog('ok', `  🎯 Processed: ${data.count} организаций → ${data.files.length} файлов в ${outDir}/processed/`);
       // The file lists just changed under the user's feet — refresh them.
@@ -4149,6 +4429,9 @@ function getCurrentSettings() {
     vkMinFollowers: (document.getElementById('f-vk-min-followers')||{}).value || 0,
     sortScore: (document.getElementById('f-sort-score')||{}).checked !== false,
     minScore: (document.getElementById('f-min-score')||{}).value || 0,
+    // Пресет забирает и чёрный список слов — иначе он «терял» половину
+    // настроек этапа 2.
+    blacklist: [...blacklistWords],
     parseMode: parseMode,
     continueMode: (document.getElementById('f-continue')||{}).checked || false,
     continueLimit: parseInt((document.getElementById('f-continue-limit')||{}).value, 10) || 5,
@@ -4187,6 +4470,7 @@ function applySettings(s) {
   if (s.vkMinFollowers != null) { const el = document.getElementById('f-vk-min-followers'); if (el) el.value = s.vkMinFollowers; }
   if (s.sortScore != null) { const cb = document.getElementById('f-sort-score'); if (cb) cb.checked = !!s.sortScore; }
   if (s.minScore != null) { const el = document.getElementById('f-min-score'); if (el) { el.value = s.minScore; onMinScoreInput(); } }
+  if (Array.isArray(s.blacklist)) setBlacklistWords(s.blacklist);
   if (s.chainKey != null) { const el = document.getElementById('f-chain-key'); if (el) el.value = s.chainKey; }
   if (s.grid     != null) setGridMode(s.grid ? 'manual' : 'whole');
   if (s.grad     != null) document.getElementById('f-grad').value    = s.grad;
@@ -4439,6 +4723,8 @@ const FORM_DEFAULTS = {
   vkCheck: false, vkMode: 'all', vkMaxDays: 0, vkMinFollowers: 0,
   sortScore: true, minScore: 0,
   continueMode: false, continueLimit: 5,
+  // Сброс к значениям по умолчанию чистит и чёрный список слов.
+  blacklist: [],
 };
 
 function resetToDefaults() {
@@ -5884,6 +6170,11 @@ async function selfUpdate() {
       }
     }
   }, 800);
+
+  // Чёрный список слов («🚫 Исключить по словам»): список и шаблоны — до первого
+  // рендера счётчика, чтобы подсказка не мигала пустой строкой.
+  fillBlacklistTemplateSelect();
+  loadBlacklistWords();
 
   // Папка для сохранения результатов: источник правды — сервер (settings.json),
   // поэтому форма заполняется ответом /output-dir, а не localStorage.
