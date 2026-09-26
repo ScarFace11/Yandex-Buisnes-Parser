@@ -1164,46 +1164,74 @@ function saveBlacklistLists(lists) {
   } catch (e) { /* приватный режим или квота — список просто не сохранится */ }
 }
 
-// Опции строим из реестра встроенных шаблонов и сохранённых списков —
-// подписи не дублируются в разметке. Селект пересобирается при каждом
+// Дропдаун «📂 Загрузить шаблон» — кастомный вместо <select>: у нативного
+// не бывает кнопок внутри опций, а сохранённым спискам нужны ✎/🗑 прямо
+// в строке. Панель строится из реестра встроенных шаблонов и сохранённых
+// списков — подписи не дублируются в разметке; пересобирается при каждом
 // изменении списков, поэтому кэш заполнения не нужен.
 function fillBlacklistTemplateSelect() {
-  const sel = document.getElementById('blacklist-template');
-  if (!sel) return;
+  const btn = document.getElementById('blacklist-template');
+  const panel = document.getElementById('blacklist-dd-panel');
+  if (!btn || !panel) return;
   const builtins = Object.entries(BLACKLIST_TEMPLATES);
   const saved = getBlacklistLists();
-  sel.innerHTML = '<option value="">📂 Загрузить шаблон</option>'
+  panel.innerHTML = ''
     + (builtins.length
-      ? '<optgroup label="Встроенные шаблоны">' + builtins.map(([key, tpl]) =>
-          '<option value="builtin:' + key + '">' + escapeHtml(tpl.label) + '</option>').join('') + '</optgroup>'
+      ? '<div class="bl-dd-group">Встроенные шаблоны</div>'
+        + builtins.map(([key, tpl]) =>
+          '<button type="button" class="bl-dd-item" data-value="builtin:' + key + '"'
+          + ' title="Добавить слова шаблона к текущему списку">'
+          + escapeHtml(tpl.label) + '</button>').join('')
       : '')
+    + '<div class="bl-dd-group' + (saved.length ? ' bl-dd-group-gap' : '') + '">Мои списки</div>'
     + (saved.length
-      ? '<optgroup label="Мои списки">' + saved.map(l =>
-          '<option value="saved:' + escapeHtml(l.name) + '">' + escapeHtml(l.name)
-          + ' (' + l.words.length + ')</option>').join('') + '</optgroup>'
-      : '');
+      ? saved.map(l =>
+          '<div class="bl-dd-row" data-name="' + escapeHtml(l.name) + '">'
+          + '<button type="button" class="bl-dd-item bl-dd-apply" data-value="saved:' + escapeHtml(l.name) + '"'
+          + ' title="Добавить слова списка к текущему">' + escapeHtml(l.name)
+          + ' <span class="bl-dd-n">(' + l.words.length + ')</span></button>'
+          + '<span class="bl-dd-actions">'
+          + '<button type="button" class="bl-tpl-act" data-act="edit" title="Перезаписать этот список текущими словами"'
+          + ' aria-label="Перезаписать список «' + escapeHtml(l.name) + '»">✎</button>'
+          + '<button type="button" class="bl-tpl-act bl-tpl-del" data-act="del" title="Удалить сохранённый список"'
+          + ' aria-label="Удалить список «' + escapeHtml(l.name) + '»">✕</button>'
+          + '</span></div>').join('')
+      : '<div class="bl-dd-empty">Пока нет сохранённых списков — «💾 Сохранить список» создаст первый</div>')
+    + '<div class="bl-dd-note">Шаблон добавляется к списку, а не заменяет его</div>';
   renderBlacklistListManage(saved);
 }
 
-// Управление сохранёнными списками: применить — из селекта, перезаписать/
-// удалить — кнопками в строке. Встроенные шаблоны неизменяемы.
+function toggleBlacklistDropdown(event) {
+  if (event) event.stopPropagation();
+  const btn = document.getElementById('blacklist-template');
+  const panel = document.getElementById('blacklist-dd-panel');
+  if (!btn || !panel) return;
+  const open = panel.hidden;
+  if (open) fillBlacklistTemplateSelect();   // свежие списки на каждое открытие
+  panel.hidden = !open;
+  btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
+function closeBlacklistDropdown() {
+  const btn = document.getElementById('blacklist-template');
+  const panel = document.getElementById('blacklist-dd-panel');
+  if (panel) panel.hidden = true;
+  if (btn) btn.setAttribute('aria-expanded', 'false');
+}
+
+// Управление сохранёнными списками: применить — кликом по строке,
+// перезаписать/удалить — кнопками рядом. Встроенные шаблоны неизменяемы.
 function renderBlacklistListManage(saved) {
-  const box = document.getElementById('blacklist-tpl-manage');
-  if (!box) return;
+  const panel = document.getElementById('blacklist-dd-panel');
+  if (!panel) return;
   const lists = Array.isArray(saved) ? saved : getBlacklistLists();
-  if (!lists.length) { box.hidden = true; box.innerHTML = ''; return; }
-  box.hidden = false;
-  box.innerHTML = lists.map(l =>
-    '<div class="bl-tpl-row" data-name="' + escapeHtml(l.name) + '">'
-    + '<span class="bl-tpl-name">' + escapeHtml(l.name) + '</span>'
-    + '<span class="bl-tpl-actions">'
-    + '<button type="button" class="bl-tpl-act" data-act="edit" title="Перезаписать этот список текущими словами"'
-    + ' aria-label="Перезаписать список «' + escapeHtml(l.name) + '»">✎</button>'
-    + '<button type="button" class="bl-tpl-act bl-tpl-del" data-act="del" title="Удалить сохранённый список"'
-    + ' aria-label="Удалить список «' + escapeHtml(l.name) + '»">✕</button>'
-    + '</span></div>').join('');
-  box.querySelectorAll('[data-act]').forEach(btn => btn.addEventListener('click', async () => {
-    const row = btn.closest('.bl-tpl-row');
+  // Применение шаблона (встроенного и своего).
+  panel.querySelectorAll('.bl-dd-item[data-value]').forEach(item =>
+    item.addEventListener('click', () => { closeBlacklistDropdown(); applyBlacklistTemplate(item.dataset.value); }));
+  // Кнопки ✎/🗑 у своих списков.
+  panel.querySelectorAll('[data-act]').forEach(btn => btn.addEventListener('click', async e => {
+    e.stopPropagation();
+    const row = btn.closest('.bl-dd-row');
     const name = row ? row.dataset.name : null;
     if (!name) return;
     const all = getBlacklistLists();
@@ -1438,8 +1466,7 @@ function clearBlacklist() {
 // складываются, ничего не теряется. После применения селект возвращается
 // к плейсхолдеру, чтобы тот же шаблон можно было выбрать повторно.
 function applyBlacklistTemplate(value) {
-  const sel = document.getElementById('blacklist-template');
-  if (sel) sel.selectedIndex = 0;      // вернуть плейсхолдер «Загрузить шаблон»
+  closeBlacklistDropdown();            // панель закрывается после выбора
   const v = String(value || '');
   let label = '', words = null;
   if (v.startsWith('builtin:')) {
@@ -5574,6 +5601,15 @@ document.addEventListener('click', e => {
   const wrap = document.querySelector('.col-toggle-wrap');
   if (wrap && !wrap.contains(e.target)) {
     document.getElementById('col-dropdown')?.classList.remove('open');
+  }
+  // Дропдаун шаблонов исключений закрывается кликом мимо.
+  const dd = document.getElementById('blacklist-dd');
+  if (dd && !dd.contains(e.target)) closeBlacklistDropdown();
+});
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && document.getElementById('blacklist-dd-panel')?.hidden === false) {
+    closeBlacklistDropdown();
   }
 });
 

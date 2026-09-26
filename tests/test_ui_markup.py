@@ -587,7 +587,7 @@ class TestBlacklistChips:
             assert needle in sec, needle
         for handler in ('onclick="addBlacklistFromField()"', 'onkeydown="onBlacklistKey(event)"',
                         'onclick="openBlacklistSaveModal()"', 'onclick="clearBlacklist()"',
-                        'onchange="applyBlacklistTemplate(this.value)"'):
+                        'onclick="toggleBlacklistDropdown(event)"'):
             assert handler in sec, handler
 
     def test_block_sits_before_the_advanced_box_and_the_footer(self):
@@ -614,14 +614,19 @@ class TestBlacklistChips:
         assert 'Таблица и файлы обновятся после «Применить фильтры заново».' in sec
 
     def test_template_options_are_built_from_the_registry(self):
-        """В разметке — только плейсхолдер: подписи шаблонов не дублируются."""
+        """Дропдаун — кастомный (у select не бывает кнопок в опциях): в разметке
+        только кнопка и пустая панель, содержимое строит JS из реестра."""
         sec = self._section()
-        sel = sec[sec.index('id="blacklist-template"'):]
-        sel = sel[: sel.index("</select>")]
-        assert sel.count("<option") == 1
+        dd = sec[sec.index('id="blacklist-dd"'):]
+        dd = dd[: dd.index('id="blacklist-tpl-hint"')]
+        assert 'id="blacklist-dd-panel" hidden' in dd
+        assert '<option' not in dd, "опции рисует JS — в разметке их нет"
         assert "const BLACKLIST_TEMPLATES = {" in APP_JS
         assert "function fillBlacklistTemplateSelect(" in APP_JS
-        assert "document.createElement('option')" in APP_JS
+        assert "function toggleBlacklistDropdown(" in APP_JS
+        assert "function closeBlacklistDropdown(" in APP_JS
+        assert "function renderBlacklistListManage(" in APP_JS
+        assert 'data-act="edit"' in APP_JS and 'data-act="del"' in APP_JS
 
     def test_chips_follow_the_design_and_the_theme_tokens(self):
         chips = self._rule(".bl-chips{")

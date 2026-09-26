@@ -529,13 +529,16 @@
                     <div class="bl-err" id="blacklist-err" hidden></div>
                     <!-- Шаблоны (встроенные и сохранённые списки) добавляются
                          К ТЕКУЩЕМУ списку, а не заменяют его: два шаблона
-                         складываются в один список. -->
-                    <select id="blacklist-template" onchange="applyBlacklistTemplate(this.value)"
-                            aria-label="Загрузить шаблон слов-исключений">
-                      <option value="">📂 Загрузить шаблон</option>
-                    </select>
-                    <!-- Сохранённые списки: перезаписать текущими словами или удалить. -->
-                    <div class="bl-tpl-manage" id="blacklist-tpl-manage" hidden></div>
+                         складываются в один список. Кастомный дропдаун вместо
+                         <select>: у «Моих списков» внутри панели кнопки
+                         перезаписи/удаления, нативный select этого не умеет. -->
+                    <div class="bl-dd" id="blacklist-dd">
+                      <button type="button" class="bl-dd-btn" id="blacklist-template"
+                              onclick="toggleBlacklistDropdown(event)"
+                              aria-haspopup="listbox" aria-expanded="false"
+                              aria-label="Загрузить шаблон слов-исключений">📂 Загрузить шаблон</button>
+                      <div class="bl-dd-panel" id="blacklist-dd-panel" hidden></div>
+                    </div>
                     <div class="hint" id="blacklist-tpl-hint" hidden></div>
                     <div class="bl-actions">
                       <button type="button" class="btn-sm" id="btn-blacklist-save" onclick="openBlacklistSaveModal()"

@@ -81,6 +81,9 @@ function mkEl(id) {
       contains: c => classes.has(c),
     },
     _classes: classes,
+    _attrs: {},
+    setAttribute(name, v) { this._attrs[name] = String(v); },
+    getAttribute(name) { return (name in this._attrs) ? this._attrs[name] : null; },
     appendChild(child) { this.children.push(child); },
     remove() {},
     focus() { this._focused++; this.ownerDocument.activeElement = this; },
@@ -93,7 +96,8 @@ function mkEl(id) {
 
 const els = {};
 for (const id of ['blacklist-chips', 'blacklist-count', 'blacklist-err',
-                  'blacklist-template', 'f-blacklist-input', 'blacklist-tpl-manage']) {
+                  'blacklist-template', 'f-blacklist-input', 'blacklist-tpl-manage',
+                  'blacklist-dd', 'blacklist-dd-panel']) {
   els[id] = mkEl(id);
 }
 els['f-blacklist-input'].ownerDocument = null;
@@ -170,6 +174,8 @@ globalThis._pluralRu = (n, one, few, many) => {
   grab('scheduleBlacklistPreview'),
   grab('previewBlacklist'),
   grab('fillBlacklistTemplateSelect'),
+  grab('toggleBlacklistDropdown'),
+  grab('closeBlacklistDropdown'),
   grab('getBlacklistLists'),
   grab('saveBlacklistLists'),
   grab('renderBlacklistListManage'),
@@ -189,7 +195,8 @@ function reset({ words = [], stored = null } = {}) {
   for (const k of Object.keys(storage)) delete storage[k];
   if (stored !== null) storage[BLACKLIST_KEY] = stored;
   for (const id of ['blacklist-chips', 'blacklist-count', 'blacklist-err',
-                    'blacklist-template', 'f-blacklist-input', 'blacklist-tpl-manage']) {
+                    'blacklist-template', 'f-blacklist-input', 'blacklist-tpl-manage',
+                    'blacklist-dd', 'blacklist-dd-panel']) {
     els[id].innerHTML = ''; els[id].value = ''; els[id].hidden = false;
     els[id].textContent = ''; els[id].children = []; els[id].selectedIndex = 0;
     els[id].dataset = {}; els[id]._focused = 0; els[id]._classes.clear();
@@ -400,7 +407,7 @@ test('шаблон добавляется К списку, а не вместо 
   assert.equal(added, TEMPLATES[key].words.filter(w => w !== 'франшиза').length);
   assert.ok(globalThis.blacklistWords.includes('франшиза'), 'прежние слова на месте');
   TEMPLATES[key].words.forEach(w => assert.ok(globalThis.blacklistWords.includes(w.toLowerCase()), w));
-  assert.equal(els['blacklist-template'].selectedIndex, 0, 'селект возвращается к плейсхолдеру');
+  assert.equal(els['blacklist-dd-panel'].hidden, true, 'панель дропдауна закрывается после выбора');
 });
 
 test('повторный шаблон сообщает, что слова уже в списке', () => {
@@ -415,26 +422,45 @@ test('повторный шаблон сообщает, что слова уже
   assert.equal(globalThis.applyBlacklistTemplate(''), 0, 'пустое значение безопасно');
 });
 
-test('селект строится из реестра + сохранённых списков и не дублируется', () => {
+test('дропдаун строится из реестра + сохранённых списков и не дублируется', () => {
   reset();
   globalThis.fillBlacklistTemplateSelect();
-  // 1 плейсхолдер + 1 optgroup со встроенными; сохранённых списков нет.
-  assert.match(els['blacklist-template'].innerHTML, /<optgroup label="Встроенные шаблоны">/);
-  assert.match(els['blacklist-template'].innerHTML, new RegExp('value="builtin:' + Object.keys(TEMPLATES)[0] + '"'));
-  assert.ok(!/Мои списки/.test(els['blacklist-template'].innerHTML));
-  assert.equal(els['blacklist-tpl-manage'].hidden, true, 'без списков управление скрыто');
+  // Группа встроенных; сохранённых списков нет — заглушка вместо строк.
+  assert.match(els['blacklist-dd-panel'].innerHTML, /Встроенные шаблоны/);
+  assert.match(els['blacklist-dd-panel'].innerHTML, new RegExp('data-value="builtin:' + Object.keys(TEMPLATES)[0] + '"'));
+  assert.match(els['blacklist-dd-panel'].innerHTML, /Мои списки/);
+  assert.match(els['blacklist-dd-panel'].innerHTML, /нет сохранённых списков/);
 
   globalThis.saveBlacklistLists([{name: 'Мой список', words: ['франшиза'], updated_at: 'x'}]);
   globalThis.fillBlacklistTemplateSelect();
-  assert.match(els['blacklist-template'].innerHTML, /<optgroup label="Мои списки">/);
-  assert.match(els['blacklist-template'].innerHTML, /value="saved:Мой список"/);
-  assert.match(els['blacklist-template'].innerHTML, /Мой список \(1\)/);
-  assert.equal(els['blacklist-tpl-manage'].hidden, false);
+  assert.match(els['blacklist-dd-panel'].innerHTML, /data-value="saved:Мой список"/);
+  assert.match(els['blacklist-dd-panel'].innerHTML, /Мой список/);
+  assert.match(els['blacklist-dd-panel'].innerHTML, /\(1\)/);
+  // Кнопки перезаписи/удаления прямо в строке списка.
+  assert.match(els['blacklist-dd-panel'].innerHTML, /data-act="edit"/);
+  assert.match(els['blacklist-dd-panel'].innerHTML, /data-act="del"/);
+  assert.ok(!/нет сохранённых списков/.test(els['blacklist-dd-panel'].innerHTML));
 
-  // Повторный вызов не дублирует optgroup-ы.
-  const groups = els['blacklist-template'].innerHTML.match(/<optgroup/g).length;
+  // Повторный вызов не дублирует группы.
+  const groups = els['blacklist-dd-panel'].innerHTML.match(/Встроенные шаблоны/g).length;
   globalThis.fillBlacklistTemplateSelect();
-  assert.equal(els['blacklist-template'].innerHTML.match(/<optgroup/g).length, groups);
+  assert.equal(els['blacklist-dd-panel'].innerHTML.match(/Встроенные шаблоны/g).length, groups);
+});
+
+test('toggleBlacklistDropdown открывает/закрывает панель, aria синхронно', () => {
+  reset();
+  els['blacklist-dd-panel'].hidden = true;   // в DOM панель стартует закрытой
+  els['blacklist-template']._attrs = {};
+  globalThis.fillBlacklistTemplateSelect();
+  assert.equal(els['blacklist-dd-panel'].hidden, true);
+  globalThis.toggleBlacklistDropdown({stopPropagation() {}});
+  assert.equal(els['blacklist-dd-panel'].hidden, false, 'открыта');
+  assert.equal(els['blacklist-template'].getAttribute('aria-expanded'), 'true');
+  globalThis.toggleBlacklistDropdown({stopPropagation() {}});
+  assert.equal(els['blacklist-dd-panel'].hidden, true, 'закрыта');
+  assert.equal(els['blacklist-template'].getAttribute('aria-expanded'), 'false');
+  globalThis.closeBlacklistDropdown();
+  assert.equal(els['blacklist-dd-panel'].hidden, true);
 });
 
 test('getBlacklistLists нормализует мусор', () => {
@@ -550,11 +576,11 @@ test('renderBlacklistListManage: перезапись и удаление', asyn
   reset({ words: ['свежее'] });
   globalThis.saveBlacklistLists([{name: 'Список', words: ['старое'], updated_at: 'x'}]);
   globalThis.fillBlacklistTemplateSelect();
-  // Кнопка edit в первой строке.
-  const box = els['blacklist-tpl-manage'];
-  assert.match(box.innerHTML, /data-act="edit"/);
-  assert.match(box.innerHTML, /data-act="del"/);
-  assert.match(box.innerHTML, /data-name="Список"/);
+  // Кнопки ✎/🗑 живут в строке дропдауна.
+  const panel = els['blacklist-dd-panel'];
+  assert.match(panel.innerHTML, /data-act="edit"/);
+  assert.match(panel.innerHTML, /data-act="del"/);
+  assert.match(panel.innerHTML, /data-name="Список"/);
 
   // Эмуляция: слушатели навешиваются через querySelectorAll — в стабе он
   // пустой, поэтому проверяем логику напрямую через applyBlacklistTemplate.
