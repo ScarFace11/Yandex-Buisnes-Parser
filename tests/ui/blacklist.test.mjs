@@ -134,6 +134,7 @@ globalThis.fetch = (url, opts) => {
 for (const name of ['blacklistWords', '_blSaveTimer', '_blPreviewTimer', '_blErrTimer', '_blPreviewSeq']) {
   globalThis[name] = name === 'blacklistWords' ? [] : (name === '_blPreviewSeq' ? 0 : null);
 }
+globalThis._blAnimateWords = new Set();
 globalThis._pluralRu = (n, one, few, many) => {
   const m10 = n % 10, m100 = n % 100;
   if (m10 === 1 && m100 !== 11) return one;
@@ -153,7 +154,9 @@ globalThis._pluralRu = (n, one, few, many) => {
   grab('addBlacklistFromField'),
   grab('onBlacklistKey'),
   grab('removeBlacklistWord'),
+  grab('onBlacklistChipKey'),
   grab('clearBlacklist'),
+  grab('toggleAccordion'),
   grab('applyBlacklistTemplate'),
   grab('saveBlacklistState'),
   grab('scheduleBlacklistSave'),
@@ -171,6 +174,7 @@ function reset({ words = [], stored = null } = {}) {
   globalThis._blPreviewTimer = null;
   globalThis._blErrTimer = null;
   globalThis._blPreviewSeq = 0;
+  globalThis._blAnimateWords = new Set();
   timers.splice(0, timers.length);
   requests.splice(0, requests.length);
   toasts.splice(0, toasts.length);
@@ -192,7 +196,7 @@ test('addBlacklistWords добавляет слово, чип и обновля�
   reset();
   assert.equal(globalThis.addBlacklistWords('Франшиза'), 1);
   assert.deepEqual(globalThis.blacklistWords, ['франшиза'], 'регистр приводится к нижнему');
-  assert.match(els['blacklist-chips'].innerHTML, /class="bl-chip"/);
+  assert.match(els['blacklist-chips'].innerHTML, /class="bl-chip/);
   assert.match(els['blacklist-chips'].innerHTML, /франшиза/);
   assert.match(els['blacklist-chips'].innerHTML, /removeBlacklistWord\(0\)/, 'крестик снимает свой чип');
   assert.match(els['blacklist-count'].textContent, /Слов в списке: 1/);
@@ -269,9 +273,31 @@ test('removeBlacklistWord убирает только свой чип', () => {
   globalThis.removeBlacklistWord(1);
   assert.deepEqual(globalThis.blacklistWords, ['франшиза', 'сеть']);
   assert.ok(!/vip/.test(els['blacklist-chips'].innerHTML));
-  assert.match(els['blacklist-chips'].innerHTML, /removeBlacklistWord\(1\)">✕<\/span><\/span>$/, 'индексы пересчитаны');
+  assert.match(els['blacklist-chips'].innerHTML,
+               /removeBlacklistWord\(1\)" onkeydown="onBlacklistChipKey\(event, 1\)">✕<\/span><\/span>$/, 'индексы пересчитаны');
   globalThis.removeBlacklistWord(9);            // вне диапазона — молча игнорируем
   assert.deepEqual(globalThis.blacklistWords, ['франшиза', 'сеть']);
+});
+
+test('крестик чипа снимается с клавиатуры по Enter и пробелу', () => {
+  reset({ words: ['франшиза', 'vip'] });
+  globalThis.onBlacklistChipKey({ key: 'Enter', preventDefault() {} }, 1);
+  assert.deepEqual(globalThis.blacklistWords, ['франшиза'], 'Enter снимает свой чип');
+  globalThis.onBlacklistChipKey({ key: ' ', preventDefault() {} }, 0);
+  assert.deepEqual(globalThis.blacklistWords, [], 'пробел тоже');
+  globalThis.blacklistWords = ['x'];
+  globalThis.onBlacklistChipKey({ key: 'a' }, 0);
+  assert.deepEqual(globalThis.blacklistWords, ['x'], 'прочие клавиши ничего не делают');
+});
+
+test('анимируется только свежедобавленный чип, а не весь список', () => {
+  reset();
+  globalThis.addBlacklistWords('франшиза');
+  assert.match(els['blacklist-chips'].innerHTML, /class="bl-chip bl-new"/, 'первый чип появляется с анимацией');
+  globalThis.addBlacklistWords('vip');
+  const chips = els['blacklist-chips'].innerHTML.match(/class="bl-chip(?: bl-new)?"/g);
+  assert.deepEqual(chips, ['class="bl-chip"', 'class="bl-chip bl-new"'],
+                   'старый чип не переанимируется, новый — да');
 });
 
 test('Backspace в пустом поле снимает последний чип, в непустом — нет', () => {
@@ -417,6 +443,37 @@ test('ответ на устаревший список не перетирае�
   assert.equal(requests.length, 2);
   assert.ok(/Исключит 7 из 100/.test(els['blacklist-count'].textContent) === false,
             'первый ответ должен быть проигнорирован');
+});
+
+test('ответ на старый список не воскресает после очистки', async () => {
+  reset();
+  globalThis.addBlacklistWords('франшиза');
+  flushTimers();                         // запрос №1 ещё в пути
+  globalThis.clearBlacklist();           // список опустел
+  await tick();
+  assert.equal(els['blacklist-count'].textContent, 'Список пуст — исключений нет',
+               'устаревший «Исключит N…» не перетирает пустой список');
+});
+
+test('на загрузке страницы счётчик не ходит в сеть — только число слов', async () => {
+  reset({ stored: JSON.stringify({ words: ['франшиза', 'vip'], version: 1, updated_at: 'x' }) });
+  globalThis.loadBlacklistWords();
+  flushTimers();
+  await tick();
+  assert.equal(requests.length, 0, 'загрузка страницы не дёргает сервер');
+  assert.equal(els['blacklist-count'].textContent, 'Слов в списке: 2');
+});
+
+test('счётчик считается при открытии раздела «Фильтрация результата»', async () => {
+  reset({ stored: JSON.stringify({ words: ['франшиза', 'vip'], version: 1, updated_at: 'x' }) });
+  globalThis.loadBlacklistWords();
+  const sec = { id: 'acc-filters', classList: { toggle: () => true } };
+  const hdr = { closest: () => sec, setAttribute: () => {} };
+  globalThis.toggleAccordion(hdr);
+  flushTimers();
+  await tick();
+  assert.equal(requests.length, 1, 'открытие раздела считает исключения');
+  assert.equal(els['blacklist-count'].textContent, '🚫 Исключит 7 из 100 компаний — останется 93');
 });
 
 test('пустой список не ходит в сеть, ноль исключений объясняется словами', async () => {

@@ -564,7 +564,8 @@ class TestBlacklistChips:
 
     Логику (валидация, storage, debounce, шаблоны) ловят node-тесты в
     tests/ui/blacklist.test.mjs, а здесь — то, что живёт только в разметке
-    и стилях: id-контракты обработчиков, лимиты в maxlength и токены темы.
+    и стилях: id-контракты обработчиков, отсутствие обрезки на поле и
+    токены темы.
     """
 
     def _section(self) -> str:
@@ -606,8 +607,11 @@ class TestBlacklistChips:
         assert 'Слова ищутся в названии и категории. Регистр не важен.' in sec
         assert '💾 Сохранить список' in sec and '🗑 Очистить список' in sec
         assert '📂 Загрузить шаблон' in sec
-        # 50 символов — тот же лимит, что в processing.BLACKLIST_MAX_LEN.
-        assert 'id="f-blacklist-input" maxlength="50"' in sec
+        # Поле НЕ ограничивает длину: maxlength обрезал бы вставленный список
+        # слов до 50 символов. Лимит на одно слово проверяет JS
+        # (BLACKLIST_MAX_LEN), а не атрибут поля.
+        assert 'maxlength=' not in sec
+        assert 'Таблица и файлы обновятся после «Применить фильтры заново».' in sec
 
     def test_template_options_are_built_from_the_registry(self):
         """В разметке — только плейсхолдер: подписи шаблонов не дублируются."""
@@ -628,7 +632,11 @@ class TestBlacklistChips:
         assert "border-radius:6px" in chip
         assert "background:var(--chip-bg)" in chip
         assert "color:var(--chip-txt)" in chip
-        assert "animation:bl-chip-in .15s" in chip, "появление — scale + fade (0.15s)"
+        # Анимация — только у свежедобавленных чипов (.bl-new): базовый чип
+        # сам не анимируется, иначе перерисовка списка прыгала бы целиком.
+        assert "animation:" not in chip, "базовый .bl-chip не анимируется сам"
+        assert "animation:bl-chip-in .15s" in self._rule(".bl-chip.bl-new{"), \
+            "появление нового чипа — scale + fade (0.15s)"
         assert "@keyframes bl-chip-in{" in STYLE
         assert "scale(.9)" in STYLE
         assert ".bl-chip .bl-chip-x:hover{color:var(--err-strong)}" in STYLE
@@ -658,9 +666,15 @@ class TestBlacklistChips:
                    "saveBlacklistNow"):
             assert f"function {fn}(" in APP_JS, fn
         assert "'/preview-blacklist'" in APP_JS
-        # Живой счётчик исключений доступен на обоих путях: загрузка и debounce.
+        assert "function onBlacklistChipKey(" in APP_JS, "крестик доступен с клавиатуры"
+        assert 'onkeydown="onBlacklistChipKey(event,' in APP_JS
+        # Живой счётчик исключений ленивый: на загрузке — только число слов,
+        # запрос уходит при открытии раздела (acc-filters).
         assert "scheduleBlacklistPreview" in APP_JS
         assert "loadBlacklistWords();" in APP_JS
+        assert "renderBlacklistChips({preview: false})" in APP_JS
+        assert "sec.id === 'acc-filters'" in APP_JS
+        assert "_blAnimateWords" in APP_JS
 
 
 class TestBulkCrawlOrder:

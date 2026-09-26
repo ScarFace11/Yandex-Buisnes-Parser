@@ -520,7 +520,7 @@
                     <label class="lbl" for="f-blacklist-input">Добавьте слова, которые исключат компанию</label>
                     <div class="bl-chips" id="blacklist-chips"></div>
                     <div class="bl-input-wrap">
-                      <input type="text" id="f-blacklist-input" maxlength="50" autocomplete="off" spellcheck="false"
+                      <input type="text" id="f-blacklist-input" autocomplete="off" spellcheck="false"
                              placeholder="Добавьте слово и нажмите Enter или +" onkeydown="onBlacklistKey(event)">
                       <button type="button" class="btn-sm" id="btn-blacklist-add" onclick="addBlacklistFromField()"
                               title="Добавить слово в список" aria-label="Добавить слово">+</button>
@@ -540,6 +540,7 @@
                               title="Убрать все слова-исключения">🗑 Очистить список</button>
                     </div>
                     <div class="hint" id="blacklist-count">Список пуст — исключений нет</div>
+                    <div class="hint">Таблица и файлы обновятся после «Применить фильтры заново».</div>
                   </div>
 
                 </div>

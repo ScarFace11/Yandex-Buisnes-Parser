@@ -170,6 +170,36 @@
   `TestBlacklistChips` в `tests/test_ui_markup.py`, а также поля в
   `tests/test_refilter_filters.py` и round-trip в `tests/ui/presets.test.mjs`.
 
+**Чёрный список слов: пять правок по итогам аудита** (`static/js/app.js`,
+`templates/index.html`, `static/css/style.css`, тесты)
+
+- `scheduleBlacklistPreview()`: `_blPreviewSeq++` выполняется ДО ветки пустого
+  списка — иначе ответ на старый список воскрешал «🚫 Исключит N…» поверх
+  «Список пуст» после очистки (гонка счётчика).
+- `renderBlacklistChips(opts)` пересобирает список через `innerHTML`, поэтому
+  `animation:bl-chip-in` снята с базового `.bl-chip` и повешена на
+  `.bl-chip.bl-new`; какие слова новые, знает `_blAnimateWords` (заполняют
+  `addBlacklistWords()` и `setBlacklistWords()`), а после рендера набор
+  сбрасывается — анимируются только свежие чипы, а не весь список при каждой
+  правке.
+- Поле `#f-blacklist-input` больше без `maxlength="50"`: атрибут резал вставку
+  списка слов до 50 символов целиком; лимит на ОДНО слово остался в JS
+  (`BLACKLIST_MAX_LEN`, `parseBlacklistInput`).
+- Ленивый счётчик: `loadBlacklistWords()` рисует чипы через
+  `renderBlacklistChips({preview: false})` и показывает только «Слов в
+  списке: N» — запрос `/preview-blacklist` больше не уходит на каждой загрузке
+  страницы. Счётчик запускается при открытии раздела (`toggleAccordion`,
+  `sec.id === 'acc-filters'`) и на каждое изменение списка; в разметке под
+  счётчиком добавлена подсказка про «Применить фильтры заново».
+- Крестик чипа получил `onkeydown="onBlacklistChipKey(event, i)"` —
+  `onBlacklistChipKey()` снимает слово по Enter и пробелу (роль кнопки была, а
+  клавиатура не работала).
+- Тесты: `tests/ui/blacklist.test.mjs` +5 кейсов (гонка после очистки,
+  анимация только новых чипов, отсутствие запроса на загрузке, счёт при
+  открытии раздела, снятие чипа с клавиатуры); `tests/test_ui_markup.py` —
+  нет `maxlength`, анимация на `.bl-chip.bl-new`, `onBlacklistChipKey`,
+  ленивый рендер и подсказка.
+
 ## [2.3.1]
 
 - `routes/update.py`: батник установщика писался с `\r\r\n` (текстовый режим

@@ -1631,8 +1631,10 @@ html.theme-anim #log-output{
   background:var(--chip-bg);color:var(--chip-txt);
   font-size:12px;font-weight:600;line-height:1.2;
   transition:opacity .15s,transform .15s;
-  animation:bl-chip-in .15s ease-out;
 }
+/* Появление анимируется только у свежедобавленных слов: при перерисовке
+   списка (innerHTML пересобирается целиком) остальные чипы не должны прыгать. */
+.bl-chip.bl-new{animation:bl-chip-in .15s ease-out}
 /* Слово может быть длинным («автосервисный центр») — чип не ломает строку. */
 .bl-chip>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .bl-chip .bl-chip-x{

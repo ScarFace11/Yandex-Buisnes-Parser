@@ -121,6 +121,9 @@ function toggleAccordion(hdr) {
   hdr.setAttribute('aria-expanded', open ? 'true' : 'false');
   // Summary under «Основные параметры» reflects edits made while open/closed
   if (sec.id === 'acc-basic') updateBasicSummary();
+  // Ленивый счётчик чёрного списка: считаем исключения, только когда раздел
+  // реально открыли, а не на каждой загрузке страницы.
+  if (open && sec.id === 'acc-filters') scheduleBlacklistPreview();
 }
 
 // ═══════════════════════════════════════════
@@ -1123,6 +1126,7 @@ let _blSaveTimer = null;
 let _blPreviewTimer = null;
 let _blErrTimer = null;
 let _blPreviewSeq = 0;               // ответы приходят не по порядку — берём последний
+let _blAnimateWords = new Set();     // слова, которые надо анимировать при ближайшем рендере
 
 // Шаблоны — готовые наборы слов под частые задачи. Добавляются К текущему
 // списку (не заменяют его), поэтому два шаблона складываются в один.
@@ -1178,17 +1182,24 @@ function parseBlacklistInput(text, existing) {
   return {added, tooLong, duplicates, limitReached, empty: !parts.length};
 }
 
-function renderBlacklistChips() {
+function renderBlacklistChips(opts) {
   const box = document.getElementById('blacklist-chips');
+  // Анимируем только слова, добавленные этой правкой: иначе при каждом
+  // перерендере (innerHTML пересобирается целиком) прыгали бы все чипы.
+  const animate = _blAnimateWords;
   if (box) {
     box.innerHTML = blacklistWords.map((w, i) =>
-      '<span class="bl-chip"><span>' + escapeHtml(w) + '</span>'
+      '<span class="bl-chip' + (animate.has(w) ? ' bl-new' : '') + '"><span>' + escapeHtml(w) + '</span>'
       + '<span class="bl-chip-x" role="button" tabindex="0" aria-label="Убрать слово «' + escapeHtml(w) + '»"'
-      + ' onclick="removeBlacklistWord(' + i + ')">✕</span></span>'
+      + ' onclick="removeBlacklistWord(' + i + ')"'
+      + ' onkeydown="onBlacklistChipKey(event, ' + i + ')">✕</span></span>'
     ).join('');
   }
+  _blAnimateWords = new Set();
   updateBlacklistCount();
-  scheduleBlacklistPreview();
+  // Ленивый счётчик: на загрузке страницы (opts.preview === false) в сеть не
+  // ходим — исключения считаются при открытии раздела и на каждое изменение.
+  if (!opts || opts.preview !== false) scheduleBlacklistPreview();
 }
 
 // Сразу видно, что список не пуст; точные цифры (сколько компаний исключится)
@@ -1199,7 +1210,7 @@ function updateBlacklistCount(text) {
   if (!el) return;
   if (text != null) { el.textContent = text; return; }
   el.textContent = blacklistWords.length
-    ? `Слов в списке: ${blacklistWords.length}. Считаю, сколько компаний исключится…`
+    ? `Слов в списке: ${blacklistWords.length}`
     : 'Список пуст — исключений нет';
 }
 
@@ -1238,6 +1249,7 @@ function addBlacklistWords(text, opts) {
   }
   if (!res.added.length) return 0;
   blacklistWords.push(...res.added);
+  _blAnimateWords = new Set(res.added);
   renderBlacklistChips();
   scheduleBlacklistSave();
   return res.added.length;
@@ -1267,6 +1279,12 @@ function removeBlacklistWord(i) {
   blacklistWords.splice(i, 1);
   renderBlacklistChips();
   scheduleBlacklistSave();
+}
+
+// Крестик чипа — тоже кнопка: с клавиатуры он должен срабатывать по Enter и
+// пробелу, а не только мышью.
+function onBlacklistChipKey(e, i) {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); removeBlacklistWord(i); }
 }
 
 function clearBlacklist() {
@@ -1330,13 +1348,17 @@ function loadBlacklistWords() {
   // Текущий формат — {words, version, updated_at}; голый массив — старый.
   const raw = Array.isArray(stored) ? stored : (stored && Array.isArray(stored.words) ? stored.words : []);
   blacklistWords = normalizeBlacklist(raw);
-  renderBlacklistChips();
+  // На загрузке страницы только показываем число слов: счётчик исключений
+  // считается при открытии раздела (см. toggleAccordion).
+  renderBlacklistChips({preview: false});
   return blacklistWords;
 }
 
 // Полная замена списка (пресет, настройки) — нормализует и сохраняет.
 function setBlacklistWords(list) {
+  const before = new Set(blacklistWords);
   blacklistWords = normalizeBlacklist(list);
+  _blAnimateWords = new Set(blacklistWords.filter(w => !before.has(w)));
   renderBlacklistChips();
   scheduleBlacklistSave();
   return blacklistWords;
@@ -1344,10 +1366,15 @@ function setBlacklistWords(list) {
 
 function scheduleBlacklistPreview() {
   if (_blPreviewTimer) clearTimeout(_blPreviewTimer);
+  // Любое изменение списка отменяет ответы в пути — в том числе когда список
+  // опустел: иначе «🚫 Исключит N…» от старого списка воскресало бы поверх
+  // «Список пуст».
+  _blPreviewSeq++;
   if (!blacklistWords.length) {
     updateBlacklistCount('Список пуст — исключений нет');
     return;
   }
+  updateBlacklistCount(`Слов в списке: ${blacklistWords.length}. Считаю, сколько компаний исключится…`);
   _blPreviewTimer = setTimeout(() => { _blPreviewTimer = null; previewBlacklist(); }, BLACKLIST_PREVIEW_MS);
 }
 
