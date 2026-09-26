@@ -51,7 +51,7 @@ function grabConstValue(name) {
 globalThis.FILE_ACT_ICONS = { delete: '<svg data-icon="trash"></svg>' };
 for (const name of ['TEMPLATE_CATEGORIES', 'TEMPLATE_CAT_LABELS', 'TEMPLATE_MAX_TEXT',
                     'TEMPLATE_MAX_NAME', 'TEMPLATE_VARS', 'TEMPLATE_VAR_FIELD',
-                    'TEMPLATE_VAR_ALIASES', 'TEMPLATE_ICONS']) {
+                    'TEMPLATE_VAR_ALIASES', 'TEMPLATE_ICONS', 'TEMPLATE_DEMO_COMPANY']) {
   (0, eval)('globalThis.' + name + ' = ' + grabConstValue(name) + ';');
 }
 
@@ -83,8 +83,9 @@ function mkEl(id) {
 const els = {};
 const IDS = ['tpl-list', 'tpl-var-list', 'tpl-show-missing', 'tpl-modal', 'tpl-modal-title',
              'tpl-name', 'tpl-category', 'tpl-text', 'tpl-var-insert', 'tpl-preview-body',
-             'tpl-modal-err', 'tbl-template', 'bulk-template', 'bulk-social', 's-template',
-             's-message', 'bulk-queue', 'tpl-import-file'];
+             'tpl-preview-title', 'tpl-preview-note', 'tpl-modal-err', 'tbl-template',
+             'bulk-template', 'bulk-social', 's-template', 's-message', 'bulk-queue',
+             'tpl-import-file', 'tpl-search', 'tpl-search-count', 'tpl-empty-box', 'btn-tpl-add'];
 for (const id of IDS) els[id] = mkEl(id);
 els['bulk-social'].value = 'vk';
 
@@ -171,6 +172,9 @@ for (const name of ['messageTemplates', 'activeTemplateIds', 'showMissingAsVar',
   grab('bulkCopyNext'),
   grab('fillSenderFromTemplate'),
   grab('firstCompanyForPreview'),
+  grab('_fmtTemplateDate'),
+  grab('onTemplateSearch'),
+  grab('updateTemplateSearchCount'),
 ].join('\n'));
 
 const TEMPLATES = [
@@ -195,6 +199,7 @@ function reset({ templates = TEMPLATES, active = {}, missing = false } = {}) {
   globalThis._tplFilterCat = 'all';
   globalThis._tplEditId = null;
   globalThis._tplSaveTimer = null;
+  globalThis._tplSearchQuery = '';
   globalThis.filteredRows = [{ ...COMPANY }];
   globalThis.allResults = [];
   globalThis.activeSocialFilters = new Set();
@@ -209,6 +214,7 @@ function reset({ templates = TEMPLATES, active = {}, missing = false } = {}) {
     els[id].dataset = {}; els[id]._focused = 0; els[id].selectionStart = 0; els[id].selectionEnd = 0;
   }
   els['bulk-social'].value = 'vk';
+  els['tpl-list'].querySelectorAll = () => [];
 }
 
 // ── 1. Подстановка ────────────────────────────────────────────
@@ -291,10 +297,51 @@ test('фильтр категорий оставляет только её ша�
   assert.match(els['tpl-list'].innerHTML, /В этой категории шаблонов нет/);
 });
 
-test('пустой список показывает заглушку', () => {
+test('пустой список показывает канвас с кнопками', () => {
   reset({ templates: [] });
   globalThis.renderTemplates();
-  assert.match(els['tpl-list'].innerHTML, /Шаблонов пока нет/);
+  assert.equal(els['tpl-empty-box'].hidden, false);
+  assert.equal(els['btn-tpl-add'].hidden, true);
+  assert.equal(els['tpl-list'].innerHTML, '');
+});
+
+test('нет шаблонов в категории — мягкая заглушка, канвас скрыт', () => {
+  reset();
+  globalThis.filterTemplatesByCategory('whatsapp');
+  assert.match(els['tpl-list'].innerHTML, /В этой категории шаблонов нет/);
+  assert.equal(els['tpl-empty-box'].hidden, true, 'канвас только когда шаблонов нет вообще');
+  assert.equal(els['btn-tpl-add'].hidden, false);
+});
+
+test('поиск фильтрует по названию и тексту, считает найденное', () => {
+  reset();
+  globalThis.onTemplateSearch('выгода');
+  assert.match(els['tpl-list'].innerHTML, /VK benefit/);
+  assert.ok(!/VK intro/.test(els['tpl-list'].innerHTML));
+  assert.equal(els['tpl-search-count'].hidden, false);
+  assert.match(els['tpl-search-count'].textContent, /1 из 3/);
+
+  // Поиск по тексту шаблона.
+  globalThis.onTemplateSearch('Привет');
+  assert.match(els['tpl-list'].innerHTML, /VK intro/);
+  assert.equal(els['tpl-search-count'].textContent, '1 из 3');
+
+  // Мимо всего — заглушка поиска, не канвас.
+  globalThis.onTemplateSearch('гххгх');
+  assert.match(els['tpl-list'].innerHTML, /Ничего не найдено/);
+  assert.equal(els['tpl-empty-box'].hidden, true);
+
+  // Сброс поиска возвращает всё и прячет счётчик.
+  globalThis.onTemplateSearch('');
+  assert.equal(els['tpl-search-count'].hidden, true);
+  assert.match(els['tpl-list'].innerHTML, /VK intro/);
+  assert.match(els['tpl-list'].innerHTML, /TG короткое/);
+});
+
+test('поиск нечувствителен к регистру', () => {
+  reset();
+  globalThis.onTemplateSearch('VK INTRO');
+  assert.match(els['tpl-list'].innerHTML, /VK intro/);
 });
 
 // ── 5. Модалка ────────────────────────────────────────────────
@@ -343,6 +390,28 @@ test('saveTemplateFromModal запрещает дубликат имени в к
   assert.match(els['tpl-modal-err'].textContent, /уже есть/);
 });
 
+test('карточка показывает дату обновления', () => {
+  reset();
+  globalThis.messageTemplates[0].updated_at = new Date(Date.UTC(2026, 8, 26, 11, 30)).toISOString();
+  globalThis.renderTemplates();
+  assert.match(els['tpl-list'].innerHTML, /Обновлено: 26\.09 14:30/, 'локальная дата MSK = UTC+3');
+  // Шаблон без updated_at — без даты.
+  globalThis.messageTemplates[1].updated_at = null;
+  globalThis.renderTemplates();
+  const html = els['tpl-list'].innerHTML;
+  assert.ok(!/VK benefit[\s\S]{0,400}Обновлено:/.test(html), 'без даты подписи нет');
+});
+
+test('saveTemplateFromModal проставляет updated_at', () => {
+  reset();
+  globalThis.openTemplateModal('vk1');
+  els['tpl-name'].value = 'Обновлённый';
+  els['tpl-text'].value = 'Новый текст';
+  assert.equal(globalThis.saveTemplateFromModal(), true);
+  assert.ok(globalThis.messageTemplates.find(t => t.id === 'vk1').updated_at, 'дата обновления проставлена');
+  assert.match(toasts.at(-1).msg, /сохранён/i);
+});
+
 test('saveTemplateFromModal добавляет и редактирует шаблон', () => {
   reset();
   globalThis.openTemplateModal();
@@ -386,9 +455,23 @@ test('updateTemplatePreview подставляет данные первой к�
   els['tpl-text'].value = 'Привет, {name} из {city}!';
   globalThis.updateTemplatePreview();
   assert.equal(els['tpl-preview-body'].textContent, 'Привет, Клининг-Про из Москва!');
+  assert.equal(els['tpl-preview-note'].hidden, true);
+});
+
+test('без данных таблицы превью показывает пример с пометкой', () => {
+  reset();
   globalThis.filteredRows = [];
+  els['tpl-text'].value = 'Здравствуйте! Увидел, что у вас {category} в {city}.';
   globalThis.updateTemplatePreview();
-  assert.match(els['tpl-preview-body'].textContent, /Нет данных таблицы/);
+  assert.match(els['tpl-preview-title'].textContent, /пример/i);
+  assert.match(els['tpl-preview-body'].textContent, /Стоматология в Москва/);
+  assert.ok(!/Нет данных таблицы/.test(els['tpl-preview-body'].textContent), 'без категоричной заглушки');
+  assert.equal(els['tpl-preview-note'].hidden, false);
+  assert.match(els['tpl-preview-note'].textContent, /пример/i);
+  // Пустой текст — превью тоже пустое, но подсказка остаётся честной.
+  els['tpl-text'].value = '';
+  globalThis.updateTemplatePreview();
+  assert.equal(els['tpl-preview-body'].textContent, '');
 });
 
 test('onShowMissingChange меняет подстановку и сохраняет настройку', () => {
@@ -492,6 +575,19 @@ test('renderTemplatePickers наполняет селекты и ставит а
   assert.equal(els['tbl-template'].value, 'vk1');
   assert.equal(els['bulk-template'].value, 'vk1');
   assert.equal(els['s-template'].value, 'vk1');
+});
+
+test('опции селектов — только имя шаблона, категории через optgroup', () => {
+  reset({ active: { vk: 'vk1' } });
+  globalThis.renderTemplatePickers();
+  const html = els['tbl-template'].innerHTML;
+  // Категория — в optgroup, не в тексте опции.
+  assert.match(html, /<optgroup label="ВКонтакте">/);
+  assert.match(html, /<optgroup label="Telegram">/);
+  assert.ok(!/ · ВКонтакте/.test(html), 'имя опции без категории');
+  assert.ok(!/ · Telegram/.test(html));
+  // Пустые категории не рисуются.
+  assert.ok(!/WhatsApp/.test(html));
 });
 
 test('fillSenderFromTemplate кладёт текст шаблона в поле рассылки', () => {

@@ -1120,6 +1120,12 @@ const BLACKLIST_MAX_WORDS = 100;
 const BLACKLIST_MAX_LEN = 50;
 const BLACKLIST_SAVE_MS = 1000;      // автосохранение в localStorage (debounce)
 const BLACKLIST_PREVIEW_MS = 600;    // пересчёт счётчика исключений (debounce)
+// Пользовательские списки («💾 Сохранить список»): отдельный ключ, чтобы
+// их нельзя было случайно снести очисткой текущего списка слов.
+const BLACKLIST_LISTS_KEY = 'blacklist_lists';
+const BLACKLIST_LISTS_VERSION = 1;
+const BLACKLIST_MAX_LISTS = 20;
+const BLACKLIST_LIST_NAME_MAX = 40;
 
 let blacklistWords = [];
 let _blSaveTimer = null;
@@ -1137,17 +1143,142 @@ const BLACKLIST_TEMPLATES = {
   delivery:    {label: '🛵 Доставка и тёмные кухни', words: ['доставка', 'тёмная кухня', 'dark kitchen']},
 };
 
-// Опции строим из реестра шаблонов — подписи не дублируются в разметке.
+// Сохранённые списки: {version, lists:[{name, words, updated_at}]}.
+function getBlacklistLists() {
+  try {
+    const j = JSON.parse(localStorage.getItem(BLACKLIST_LISTS_KEY));
+    if (!j || !Array.isArray(j.lists)) return [];
+    return j.lists
+      .filter(l => l && typeof l.name === 'string' && l.name.trim() && Array.isArray(l.words))
+      .map(l => ({name: String(l.name).trim().slice(0, BLACKLIST_LIST_NAME_MAX),
+                  words: normalizeBlacklist(l.words), updated_at: l.updated_at || null}));
+  } catch (e) { return []; }
+}
+
+function saveBlacklistLists(lists) {
+  try {
+    localStorage.setItem(BLACKLIST_LISTS_KEY, JSON.stringify({
+      version: BLACKLIST_LISTS_VERSION,
+      lists: (Array.isArray(lists) ? lists : []).slice(0, BLACKLIST_MAX_LISTS),
+    }));
+  } catch (e) { /* приватный режим или квота — список просто не сохранится */ }
+}
+
+// Опции строим из реестра встроенных шаблонов и сохранённых списков —
+// подписи не дублируются в разметке. Селект пересобирается при каждом
+// изменении списков, поэтому кэш заполнения не нужен.
 function fillBlacklistTemplateSelect() {
   const sel = document.getElementById('blacklist-template');
-  if (!sel || sel.dataset.filled === '1') return;
-  Object.entries(BLACKLIST_TEMPLATES).forEach(([key, tpl]) => {
-    const o = document.createElement('option');
-    o.value = key;
-    o.textContent = tpl.label;
-    sel.appendChild(o);
-  });
-  sel.dataset.filled = '1';
+  if (!sel) return;
+  const builtins = Object.entries(BLACKLIST_TEMPLATES);
+  const saved = getBlacklistLists();
+  sel.innerHTML = '<option value="">📂 Загрузить шаблон</option>'
+    + (builtins.length
+      ? '<optgroup label="Встроенные шаблоны">' + builtins.map(([key, tpl]) =>
+          '<option value="builtin:' + key + '">' + escapeHtml(tpl.label) + '</option>').join('') + '</optgroup>'
+      : '')
+    + (saved.length
+      ? '<optgroup label="Мои списки">' + saved.map(l =>
+          '<option value="saved:' + escapeHtml(l.name) + '">' + escapeHtml(l.name)
+          + ' (' + l.words.length + ')</option>').join('') + '</optgroup>'
+      : '');
+  renderBlacklistListManage(saved);
+}
+
+// Управление сохранёнными списками: применить — из селекта, перезаписать/
+// удалить — кнопками в строке. Встроенные шаблоны неизменяемы.
+function renderBlacklistListManage(saved) {
+  const box = document.getElementById('blacklist-tpl-manage');
+  if (!box) return;
+  const lists = Array.isArray(saved) ? saved : getBlacklistLists();
+  if (!lists.length) { box.hidden = true; box.innerHTML = ''; return; }
+  box.hidden = false;
+  box.innerHTML = lists.map(l =>
+    '<div class="bl-tpl-row" data-name="' + escapeHtml(l.name) + '">'
+    + '<span class="bl-tpl-name">' + escapeHtml(l.name) + '</span>'
+    + '<span class="bl-tpl-actions">'
+    + '<button type="button" class="bl-tpl-act" data-act="edit" title="Перезаписать этот список текущими словами"'
+    + ' aria-label="Перезаписать список «' + escapeHtml(l.name) + '»">✎</button>'
+    + '<button type="button" class="bl-tpl-act bl-tpl-del" data-act="del" title="Удалить сохранённый список"'
+    + ' aria-label="Удалить список «' + escapeHtml(l.name) + '»">✕</button>'
+    + '</span></div>').join('');
+  box.querySelectorAll('[data-act]').forEach(btn => btn.addEventListener('click', async () => {
+    const row = btn.closest('.bl-tpl-row');
+    const name = row ? row.dataset.name : null;
+    if (!name) return;
+    const all = getBlacklistLists();
+    const idx = all.findIndex(l => l.name === name);
+    if (idx < 0) return;
+    if (btn.dataset.act === 'del') {
+      if (!(await uiConfirm('Удалить сохранённый список «' + name + '»?', 'Удалить список', 'Удалить'))) return;
+      all.splice(idx, 1);
+      saveBlacklistLists(all);
+      fillBlacklistTemplateSelect();
+      showToast('Список «' + name + '» удалён', 'success');
+    } else {
+      if (!blacklistWords.length) { showToast('Текущий список пуст — перезаписывать нечем', 'info'); return; }
+      if (!(await uiConfirm('Перезаписать список «' + name + '» текущими словами ('
+          + blacklistWords.length + ')?', 'Редактировать список', 'Перезаписать'))) return;
+      all[idx] = {name, words: [...blacklistWords], updated_at: new Date().toISOString()};
+      saveBlacklistLists(all);
+      fillBlacklistTemplateSelect();
+      showToast('Список «' + name + '» обновлён', 'success');
+    }
+  }));
+}
+
+// «💾 Сохранить список» → модалка с именем (замена браузерного prompt()).
+// Дубликат имени не блокирует: предлагается перезаписать существующий список.
+function openBlacklistSaveModal() {
+  if (!blacklistWords.length) { showToast('Список пуст — сначала добавьте слова', 'info'); return; }
+  const overlay = document.createElement('div');
+  overlay.className = 'ui-modal-overlay';
+  overlay.innerHTML = `
+    <div class="ui-modal preset-modal">
+      <h3>Сохранить список</h3>
+      <p>В шаблон войдут текущие слова: ${blacklistWords.length} ${_pluralRu(blacklistWords.length, 'слово', 'слова', 'слов')}.</p>
+      <input type="text" id="blacklist-list-name" maxlength="${BLACKLIST_LIST_NAME_MAX}" placeholder="Например: Франшизы и сети" autocomplete="off">
+      <div class="preset-modal-meta">Появится в «📂 Загрузить шаблон» → «Мои списки»</div>
+      <div class="ui-modal-btns">
+        <button type="button" class="m-cancel">Отмена</button>
+        <button type="button" class="m-ok">💾 Сохранить</button>
+      </div>
+    </div>`;
+  const input = overlay.querySelector('#blacklist-list-name');
+  const done = val => { overlay.remove(); document.removeEventListener('keydown', onKey, true); if (val) finishSaveList(val); };
+  const onKey = e => {
+    if (e.key === 'Escape') { e.stopPropagation(); done(false); }
+    else if (e.key === 'Enter' && input.value.trim()) { e.stopPropagation(); done(input.value.trim()); }
+  };
+  const finishSaveList = name => {
+    const lists = getBlacklistLists();
+    const idx = lists.findIndex(l => l.name === name);
+    if (idx >= 0) {
+      uiConfirm('Список «' + name + '» уже есть — перезаписать его текущими словами?',
+        'Перезаписать список', 'Перезаписать').then(ok => {
+        if (!ok) { setTimeout(() => { openBlacklistSaveModal(); const again = document.getElementById('blacklist-list-name'); if (again) again.value = name; }, 0); return; }
+        lists[idx] = {name, words: [...blacklistWords], updated_at: new Date().toISOString()};
+        saveBlacklistLists(lists);
+        fillBlacklistTemplateSelect();
+        showToast('Список «' + name + '» обновлён — он в «Загрузить шаблон» → «Мои списки»', 'success');
+      });
+      return;
+    }
+    lists.unshift({name, words: [...blacklistWords], updated_at: new Date().toISOString()});
+    saveBlacklistLists(lists);
+    fillBlacklistTemplateSelect();
+    showToast('Список «' + name + '» сохранён — он в «Загрузить шаблон» → «Мои списки»', 'success');
+  };
+  overlay.querySelector('.m-cancel').onclick = () => done(false);
+  overlay.querySelector('.m-ok').onclick = () => {
+    const name = input.value.trim();
+    if (!name) { input.classList.add('field-invalid'); input.focus(); return; }
+    done(name);
+  };
+  overlay.addEventListener('click', e => { if (e.target === overlay) done(false); });
+  document.addEventListener('keydown', onKey, true);
+  document.body.appendChild(overlay);
+  input.focus();
 }
 
 // Сплит по [,;\n], trim, lowercase, пустые и дубликаты выброшены, слова
@@ -1303,14 +1434,25 @@ function clearBlacklist() {
   scheduleBlacklistPreview();
 }
 
-// Шаблон добавляется К списку: два шаблона складываются, ничего не теряется.
-function applyBlacklistTemplate(key) {
+// Шаблон (builtin:<key> или saved:<имя>) добавляется К списку: два шаблона
+// складываются, ничего не теряется. После применения селект возвращается
+// к плейсхолдеру, чтобы тот же шаблон можно было выбрать повторно.
+function applyBlacklistTemplate(value) {
   const sel = document.getElementById('blacklist-template');
-  const tpl = BLACKLIST_TEMPLATES[key];
   if (sel) sel.selectedIndex = 0;      // вернуть плейсхолдер «Загрузить шаблон»
-  if (!tpl) return 0;
-  const n = addBlacklistWords(tpl.words.join('\n'), {silent: true});
-  showToast(n ? `Шаблон «${tpl.label}»: добавлено слов — ${n}`
+  const v = String(value || '');
+  let label = '', words = null;
+  if (v.startsWith('builtin:')) {
+    const tpl = BLACKLIST_TEMPLATES[v.slice(8)];
+    if (tpl) { label = tpl.label; words = tpl.words; }
+  } else if (v.startsWith('saved:')) {
+    const name = v.slice(6);
+    const list = getBlacklistLists().find(l => l.name === name);
+    if (list) { label = name; words = list.words; }
+  }
+  if (!words) return 0;
+  const n = addBlacklistWords(words.join('\n'), {silent: true});
+  showToast(n ? `Шаблон «${label}»: добавлено слов — ${n}`
               : 'Слова шаблона уже в списке', n ? 'success' : 'info');
   return n;
 }
@@ -6183,6 +6325,15 @@ let templatesLoading = null;
 let _tplFilterCat = 'all';
 let _tplEditId = null;
 let _tplSaveTimer = null;
+let _tplSearchQuery = '';
+// Примерные данные для превью, когда таблица пуста: пользователь видит,
+// как шаблон выглядит с реальными значениями, а не заглушку.
+const TEMPLATE_DEMO_COMPANY = {
+  name: 'Стоматология «Улыбка»', city: 'Москва', category: 'Стоматология',
+  rating: 4.7, reviews_count: 128, address: 'ул. Тверская, 1',
+  phone: '+7 495 123-45-67', lead_score: 85, website: 'example.com',
+  vk: 'https://vk.com/demo', telegram: 'https://t.me/demo',
+};
 
 function firstCompanyForPreview() {
   if (typeof filteredRows !== 'undefined' && filteredRows && filteredRows.length) return filteredRows[0];
@@ -6238,6 +6389,7 @@ function normalizeTemplatesClient(raw) {
       category: cat, name, text,
       is_default: !!item.is_default,
       created_at: item.created_at || new Date().toISOString(),
+      updated_at: item.updated_at || null,
     });
   }
   return out;
@@ -6322,44 +6474,74 @@ const TEMPLATE_ICONS = {
 function renderTemplates() {
   const list = document.getElementById('tpl-list');
   if (list) {
-    const items = _tplFilterCat === 'all'
-      ? messageTemplates
+    let items = _tplFilterCat === 'all'
+      ? messageTemplates.slice()
       : messageTemplates.filter(t => t.category === _tplFilterCat);
+    // Поиск по названию и тексту (регистр не важен).
+    const q = _tplSearchQuery.trim().toLowerCase();
+    if (q) {
+      items = items.filter(t =>
+        t.name.toLowerCase().includes(q) || t.text.toLowerCase().includes(q));
+    }
+    const emptyBox = document.getElementById('tpl-empty-box');
+    const addBtn = document.getElementById('btn-tpl-add');
     if (!items.length) {
-      list.innerHTML = '<div class="tpl-empty">'
-        + (messageTemplates.length ? 'В этой категории шаблонов нет' : 'Шаблонов пока нет — нажмите «+ Добавить шаблон»')
+      list.innerHTML = '';
+      const noTemplates = !messageTemplates.length;
+      // Совсем нет шаблонов — канвас с кнопками; поиск/фильтр — мягкая заглушка.
+      if (emptyBox) emptyBox.hidden = !(noTemplates && !q);
+      if (addBtn) addBtn.hidden = noTemplates && !q;
+      list.innerHTML = (noTemplates && !q) ? '' : '<div class="tpl-empty">'
+        + (q ? 'Ничего не найдено по «' + escapeHtml(q) + '»' : 'В этой категории шаблонов нет')
         + '</div>';
     } else {
+      if (emptyBox) emptyBox.hidden = true;
+      if (addBtn) addBtn.hidden = false;
       list.innerHTML = items.map(t => {
         const vars = usedVariables(t.text);
+        const upd = t.updated_at ? _fmtTemplateDate(t.updated_at) : null;
         return '<div class="template-card" data-id="' + escapeHtml(t.id) + '">'
           + '<div class="template-head">'
           + '<span class="template-name">📝 ' + escapeHtml(t.name) + '</span>'
           + '<span class="template-cat">' + escapeHtml(TEMPLATE_CAT_LABELS[t.category] || t.category) + '</span>'
           + '<span class="template-actions">'
-          + '<button type="button" class="template-more" data-act="edit" title="Редактировать">' + TEMPLATE_ICONS.edit + '</button>'
-          + '<button type="button" class="template-more" data-act="copy" title="Скопировать текст">' + TEMPLATE_ICONS.copy + '</button>'
-          + '<button type="button" class="template-more" data-act="dup" title="Дублировать">' + TEMPLATE_ICONS.dup + '</button>'
-          + '<button type="button" class="template-more danger" data-act="del" title="Удалить">' + TEMPLATE_ICONS.del + '</button>'
+          + '<button type="button" class="template-more" data-act="edit" title="Редактировать" aria-label="Редактировать">' + TEMPLATE_ICONS.edit + '</button>'
+          + '<button type="button" class="template-more" data-act="copy" title="Скопировать текст" aria-label="Скопировать текст">' + TEMPLATE_ICONS.copy + '</button>'
+          + '<button type="button" class="template-more danger" data-act="del" title="Удалить" aria-label="Удалить">' + TEMPLATE_ICONS.del + '</button>'
+          + '<span class="tpl-more-wrap">'
+          + '<button type="button" class="template-more" data-act="menu" title="Ещё" aria-label="Ещё действия" aria-haspopup="true">⋮</button>'
+          + '<span class="tpl-menu" hidden>'
+          + '<button type="button" data-act="dup">Дублировать</button>'
+          + '</span></span>'
           + '</span></div>'
           + '<div class="template-text">' + escapeHtml(t.text) + '</div>'
-          + '<div class="template-vars">Переменные: '
+          + '<div class="template-meta">'
+          + '<span class="template-vars">Переменные: '
           + (vars.length ? vars.map(v => '<code>{' + escapeHtml(v) + '}</code>').join(' ') : '—')
+          + '</span>'
+          + (upd ? '<span class="template-upd">Обновлено: ' + escapeHtml(upd) + '</span>' : '')
           + '</div></div>';
       }).join('');
       list.querySelectorAll('.template-card').forEach(card => {
         const id = card.dataset.id;
         card.querySelectorAll('[data-act]').forEach(btn => {
-          btn.addEventListener('click', () => {
+          btn.addEventListener('click', e => {
+            e.stopPropagation();
             const act = btn.dataset.act;
             if (act === 'edit') openTemplateModal(id);
             else if (act === 'copy') copyTemplateText(id);
             else if (act === 'dup') duplicateTemplate(id);
             else if (act === 'del') deleteTemplate(id);
+            else if (act === 'menu') {
+              // Меню «ещё»: открытие/закрытие, чужие клики его закрывают.
+              const menu = card.querySelector('.tpl-menu');
+              if (menu) menu.hidden = !menu.hidden;
+            }
           });
         });
       });
     }
+    updateTemplateSearchCount(items.length);
   }
   const varlist = document.getElementById('tpl-var-list');
   if (varlist) {
@@ -6370,18 +6552,50 @@ function renderTemplates() {
   document.querySelectorAll('.tpl-cat').forEach(b => b.classList.toggle('active', b.dataset.cat === _tplFilterCat));
 }
 
+// «Обновлено: 26.09 14:30» — локальная дата без секунд.
+function _fmtTemplateDate(iso) {
+  try {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    const p = n => String(n).padStart(2, '0');
+    return p(d.getDate()) + '.' + p(d.getMonth() + 1) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+  } catch (e) { return ''; }
+}
+
+function onTemplateSearch(value) {
+  _tplSearchQuery = String(value || '');
+  renderTemplates();
+}
+
+function updateTemplateSearchCount(n) {
+  const el = document.getElementById('tpl-search-count');
+  if (!el) return;
+  const q = _tplSearchQuery.trim();
+  if (!q) { el.hidden = true; el.textContent = ''; return; }
+  el.hidden = false;
+  el.textContent = n + ' из ' + messageTemplates.length;
+}
+
 function filterTemplatesByCategory(cat) {
   _tplFilterCat = cat || 'all';
   renderTemplates();
 }
 
+// Селекты выбора шаблона: опция — только название (категория и так видна
+// по контексту: селект таблицы показывает активную соцсеть, у обхода и
+// рассылки она своя), шаблоны сгруппированы по категориям через optgroup.
 function fillTemplateSelect(sel, includeEmpty) {
   if (!sel) return;
   const prev = sel.value;
+  const groups = TEMPLATE_CATEGORIES
+    .map(cat => ({cat, items: messageTemplates.filter(t => t.category === cat)}))
+    .filter(g => g.items.length);
   sel.innerHTML = (includeEmpty ? '<option value="">— шаблон не выбран —</option>' : '')
-    + messageTemplates.map(t =>
-        '<option value="' + escapeHtml(t.id) + '">' + escapeHtml(t.name)
-        + ' · ' + escapeHtml(TEMPLATE_CAT_LABELS[t.category] || t.category) + '</option>').join('');
+    + groups.map(g =>
+        '<optgroup label="' + escapeHtml(TEMPLATE_CAT_LABELS[g.cat]) + '">'
+        + g.items.map(t =>
+            '<option value="' + escapeHtml(t.id) + '">' + escapeHtml(t.name) + '</option>').join('')
+        + '</optgroup>').join('');
   if (prev && messageTemplates.some(t => t.id === prev)) sel.value = prev;
 }
 
@@ -6492,14 +6706,28 @@ function insertTemplateVariable(name) {
   if (ta.focus) ta.focus();
 }
 
+// Превью в модалке обновляется при вводе (oninput) и при вставке переменной.
+// Нет данных таблицы — показываем шаблон на примерных данных с пометкой
+// «Пример», а не категоричную заглушку.
 function updateTemplatePreview() {
   const body = document.getElementById('tpl-preview-body');
   if (!body) return;
   const text = (document.getElementById('tpl-text') || {}).value || '';
+  const title = document.getElementById('tpl-preview-title');
+  const note = document.getElementById('tpl-preview-note');
   const company = firstCompanyForPreview();
-  body.textContent = company
-    ? substituteTemplate(text, company)
-    : 'Нет данных таблицы — откройте «Результаты» с загруженными компаниями.';
+  if (company) {
+    if (title) title.textContent = '👁 Превью с данными из первой компании:';
+    if (note) note.hidden = true;
+    body.textContent = substituteTemplate(text, company);
+  } else {
+    if (title) title.textContent = '👁 Превью (пример):';
+    body.textContent = substituteTemplate(text, TEMPLATE_DEMO_COMPANY);
+    if (note) {
+      note.textContent = 'ℹ️ Это пример на вымышленных данных. Реальные данные компаний подставятся при работе с таблицей.';
+      note.hidden = false;
+    }
+  }
 }
 
 function saveTemplateFromModal() {
@@ -6522,11 +6750,12 @@ function saveTemplateFromModal() {
   if (dup) return fail('Шаблон с таким названием уже есть в этой категории');
   if (_tplEditId) {
     const t = messageTemplates.find(x => x.id === _tplEditId);
-    if (t) { t.name = name; t.text = text; t.category = category; }
+    if (t) { t.name = name; t.text = text; t.category = category; t.updated_at = new Date().toISOString(); }
   } else {
     messageTemplates.push({
       id: genTemplateId(), category, name, text,
       is_default: false, created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     });
   }
   closeTemplateModal();
@@ -6543,6 +6772,7 @@ function duplicateTemplate(id) {
   messageTemplates.push({
     id: genTemplateId(), category: t.category, name: t.name + ' (копия)',
     text: t.text, is_default: false, created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
   });
   renderTemplates();
   saveTemplatesState();
@@ -6687,7 +6917,7 @@ async function importTemplates(input) {
 }
 
 async function resetTemplates() {
-  const ok = await uiConfirm('Вернуть пять стандартных шаблонов? Ваши шаблоны будут заменены.',
+  const ok = await uiConfirm('Сбросить все шаблоны к стандартным? Ваши изменения будут потеряны.',
     'Сброс шаблонов', 'Сбросить', true);
   if (!ok) return;
   try {

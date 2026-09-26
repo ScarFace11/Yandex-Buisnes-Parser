@@ -57,7 +57,9 @@ function grabConstValue(name) {
 }
 
 for (const name of ['BLACKLIST_KEY', 'BLACKLIST_VERSION', 'BLACKLIST_MAX_WORDS',
-                    'BLACKLIST_MAX_LEN', 'BLACKLIST_SAVE_MS', 'BLACKLIST_PREVIEW_MS']) {
+                    'BLACKLIST_MAX_LEN', 'BLACKLIST_SAVE_MS', 'BLACKLIST_PREVIEW_MS',
+                    'BLACKLIST_LISTS_KEY', 'BLACKLIST_MAX_LISTS', 'BLACKLIST_LIST_NAME_MAX',
+                    'BLACKLIST_LISTS_VERSION']) {
   (0, eval)('globalThis.' + name + ' = ' + grabConstValue(name) + ';');
 }
 const TEMPLATES = (0, eval)('(' + grabConstValue('BLACKLIST_TEMPLATES') + ')');
@@ -80,6 +82,7 @@ function mkEl(id) {
     },
     _classes: classes,
     appendChild(child) { this.children.push(child); },
+    remove() {},
     focus() { this._focused++; this.ownerDocument.activeElement = this; },
     querySelectorAll: () => [],
     querySelector: () => null,
@@ -90,7 +93,7 @@ function mkEl(id) {
 
 const els = {};
 for (const id of ['blacklist-chips', 'blacklist-count', 'blacklist-err',
-                  'blacklist-template', 'f-blacklist-input']) {
+                  'blacklist-template', 'f-blacklist-input', 'blacklist-tpl-manage']) {
   els[id] = mkEl(id);
 }
 els['f-blacklist-input'].ownerDocument = null;
@@ -122,6 +125,7 @@ globalThis.localStorage = {
 };
 const toasts = [];
 globalThis.showToast = (msg, kind) => toasts.push({ msg, kind });
+globalThis.uiConfirm = async () => globalThis._confirm !== false;
 const requests = [];
 let previewReply = { ok: true, total: 100, excluded: 7, remaining: 93 };
 globalThis.fetch = (url, opts) => {
@@ -166,6 +170,10 @@ globalThis._pluralRu = (n, one, few, many) => {
   grab('scheduleBlacklistPreview'),
   grab('previewBlacklist'),
   grab('fillBlacklistTemplateSelect'),
+  grab('getBlacklistLists'),
+  grab('saveBlacklistLists'),
+  grab('renderBlacklistListManage'),
+  grab('openBlacklistSaveModal'),
 ].join('\n'));
 
 function reset({ words = [], stored = null } = {}) {
@@ -181,7 +189,7 @@ function reset({ words = [], stored = null } = {}) {
   for (const k of Object.keys(storage)) delete storage[k];
   if (stored !== null) storage[BLACKLIST_KEY] = stored;
   for (const id of ['blacklist-chips', 'blacklist-count', 'blacklist-err',
-                    'blacklist-template', 'f-blacklist-input']) {
+                    'blacklist-template', 'f-blacklist-input', 'blacklist-tpl-manage']) {
     els[id].innerHTML = ''; els[id].value = ''; els[id].hidden = false;
     els[id].textContent = ''; els[id].children = []; els[id].selectedIndex = 0;
     els[id].dataset = {}; els[id]._focused = 0; els[id]._classes.clear();
@@ -388,7 +396,7 @@ test('setBlacklistWords (пресет) нормализует и сохраня�
 test('шаблон добавляется К списку, а не вместо него', () => {
   reset({ words: ['франшиза'] });
   const key = Object.keys(TEMPLATES)[0];
-  const added = globalThis.applyBlacklistTemplate(key);
+  const added = globalThis.applyBlacklistTemplate('builtin:' + key);
   assert.equal(added, TEMPLATES[key].words.filter(w => w !== 'франшиза').length);
   assert.ok(globalThis.blacklistWords.includes('франшиза'), 'прежние слова на месте');
   TEMPLATES[key].words.forEach(w => assert.ok(globalThis.blacklistWords.includes(w.toLowerCase()), w));
@@ -398,22 +406,160 @@ test('шаблон добавляется К списку, а не вместо 
 test('повторный шаблон сообщает, что слова уже в списке', () => {
   reset();
   const key = Object.keys(TEMPLATES)[1];
-  globalThis.applyBlacklistTemplate(key);
+  globalThis.applyBlacklistTemplate('builtin:' + key);
   const n = globalThis.blacklistWords.length;
-  assert.equal(globalThis.applyBlacklistTemplate(key), 0);
+  assert.equal(globalThis.applyBlacklistTemplate('builtin:' + key), 0);
   assert.equal(globalThis.blacklistWords.length, n);
   assert.match(toasts.at(-1).msg, /уже в списке/);
-  assert.equal(globalThis.applyBlacklistTemplate('нет-такого'), 0, 'мусорный ключ безопасен');
+  assert.equal(globalThis.applyBlacklistTemplate('builtin:нет-такого'), 0, 'мусорный ключ безопасен');
+  assert.equal(globalThis.applyBlacklistTemplate(''), 0, 'пустое значение безопасно');
 });
 
-test('опции шаблонов строятся из реестра и не дублируются', () => {
+test('селект строится из реестра + сохранённых списков и не дублируется', () => {
   reset();
   globalThis.fillBlacklistTemplateSelect();
-  assert.equal(els['blacklist-template'].children.length, Object.keys(TEMPLATES).length);
-  assert.equal(els['blacklist-template'].children[0].value, Object.keys(TEMPLATES)[0]);
-  assert.ok(TEMPLATES[Object.keys(TEMPLATES)[0]].label.includes('🏪'));
+  // 1 плейсхолдер + 1 optgroup со встроенными; сохранённых списков нет.
+  assert.match(els['blacklist-template'].innerHTML, /<optgroup label="Встроенные шаблоны">/);
+  assert.match(els['blacklist-template'].innerHTML, new RegExp('value="builtin:' + Object.keys(TEMPLATES)[0] + '"'));
+  assert.ok(!/Мои списки/.test(els['blacklist-template'].innerHTML));
+  assert.equal(els['blacklist-tpl-manage'].hidden, true, 'без списков управление скрыто');
+
+  globalThis.saveBlacklistLists([{name: 'Мой список', words: ['франшиза'], updated_at: 'x'}]);
   globalThis.fillBlacklistTemplateSelect();
-  assert.equal(els['blacklist-template'].children.length, Object.keys(TEMPLATES).length, 'повторный вызов не дублирует');
+  assert.match(els['blacklist-template'].innerHTML, /<optgroup label="Мои списки">/);
+  assert.match(els['blacklist-template'].innerHTML, /value="saved:Мой список"/);
+  assert.match(els['blacklist-template'].innerHTML, /Мой список \(1\)/);
+  assert.equal(els['blacklist-tpl-manage'].hidden, false);
+
+  // Повторный вызов не дублирует optgroup-ы.
+  const groups = els['blacklist-template'].innerHTML.match(/<optgroup/g).length;
+  globalThis.fillBlacklistTemplateSelect();
+  assert.equal(els['blacklist-template'].innerHTML.match(/<optgroup/g).length, groups);
+});
+
+test('getBlacklistLists нормализует мусор', () => {
+  reset({ });
+  storage[BLACKLIST_LISTS_KEY] = '{битый';
+  assert.deepEqual(globalThis.getBlacklistLists(), []);
+  storage[BLACKLIST_LISTS_KEY] = JSON.stringify({ lists: [
+    {name: '  Ок  ', words: ['Франшиза', 'я'.repeat(80)], updated_at: 'x'},
+    {name: '', words: ['a']},
+    {name: 'Без слов'},
+    'мусор',
+  ] });
+  const lists = globalThis.getBlacklistLists();
+  assert.equal(lists.length, 1);
+  assert.equal(lists[0].name, 'Ок');
+  assert.deepEqual(lists[0].words, ['франшиза']);
+});
+
+test('saved:-шаблон применяется из сохранённого списка', () => {
+  reset();
+  globalThis.saveBlacklistLists([{name: 'Мой список', words: ['франшиза', 'vip'], updated_at: 'x'}]);
+  globalThis.fillBlacklistTemplateSelect();
+  const added = globalThis.applyBlacklistTemplate('saved:Мой список');
+  assert.equal(added, 2);
+  assert.deepEqual(globalThis.blacklistWords, ['франшиза', 'vip']);
+  assert.match(toasts.at(-1).msg, /Мой список/);
+  assert.equal(globalThis.applyBlacklistTemplate('saved:Нет такого'), 0);
+});
+
+test('openBlacklistSaveModal сохраняет список под введённым именем', async () => {
+  reset({ words: ['франшиза', 'vip'] });
+  const overlay = mkEl('overlay');
+  const input = mkEl('input');
+  input.ownerDocument = globalThis.document;
+  input.value = '  Мой список  ';
+  const buttons = {};
+  overlay.className = '';
+  overlay.innerHTML = '';
+  const btnOk = mkEl('btn');
+  overlay.querySelector = sel => sel === '#blacklist-list-name' ? input : btnOk;
+  overlay.querySelectorAll = () => [];
+  overlay.addEventListener = () => {};
+  const docAdd = [];
+  const origAddEventListener = globalThis.document.addEventListener;
+  globalThis.document.addEventListener = (type, fn) => { if (type === 'keydown') docAdd.push(fn); };
+  const origCreateElement = globalThis.document.createElement;
+  globalThis.document.createElement = () => overlay;
+  const origBodyAppend = globalThis.document.body.appendChild;
+  globalThis.document.body.appendChild = () => {};
+  const origRemoveEventListener = globalThis.document.removeEventListener;
+  globalThis.document.removeEventListener = () => {};
+
+  globalThis.openBlacklistSaveModal();
+  // Клик «Сохранить» — имя из поля.
+  overlay.querySelector('.m-ok').onclick();
+  assert.deepEqual(globalThis.getBlacklistLists().map(l => l.name), ['Мой список']);
+  const saved = globalThis.getBlacklistLists()[0];
+  assert.deepEqual(saved.words, ['франшиза', 'vip']);
+  assert.match(toasts.at(-1).msg, /сохранён/);
+  assert.equal(JSON.parse(storage[BLACKLIST_LISTS_KEY]).version, 1);
+
+  globalThis.document.addEventListener = origAddEventListener;
+  globalThis.document.createElement = origCreateElement;
+  globalThis.document.body.appendChild = origBodyAppend;
+  globalThis.document.removeEventListener = origRemoveEventListener;
+});
+
+test('openBlacklistSaveModal на пустом списке отказывает', () => {
+  reset();
+  globalThis.openBlacklistSaveModal();
+  assert.match(toasts.at(-1).msg, /пуст/);
+  assert.equal(storage[BLACKLIST_LISTS_KEY], undefined);
+});
+
+test('дубликат имени предлагает перезапись, отказ возвращает модалку', async () => {
+  reset({ words: ['новое'] });
+  globalThis.saveBlacklistLists([{name: 'Список', words: ['старое'], updated_at: 'x'}]);
+  let asked = 0;
+  const origConfirm = globalThis.uiConfirm;
+  globalThis.uiConfirm = async () => { asked++; return false; };
+  const origSetTimeout = globalThis.setTimeout;
+  const fired = [];
+  globalThis.setTimeout = fn => { fired.push(fn); return 1; };
+  const overlay = mkEl('overlay');
+  const input = mkEl('input');
+  input.ownerDocument = globalThis.document;
+  input.value = 'Список';
+  const btnOk = mkEl('btn');
+  overlay.querySelector = sel => sel === '#blacklist-list-name' ? input : btnOk;
+  overlay.addEventListener = () => {};
+  const origCreateElement = globalThis.document.createElement;
+  globalThis.document.createElement = () => overlay;
+  const origBodyAppend = globalThis.document.body.appendChild;
+  globalThis.document.body.appendChild = () => {};
+  const origRemoveEventListener = globalThis.document.removeEventListener;
+  globalThis.document.removeEventListener = () => {};
+
+  globalThis.openBlacklistSaveModal();
+  overlay.querySelector('.m-ok').onclick();   // дубль имени → uiConfirm → отказ
+  await tick(); await tick();
+  assert.equal(asked, 1);
+  assert.equal(fired.length, 1, 'модалка переоткрывается');
+  assert.deepEqual(globalThis.getBlacklistLists()[0].words, ['старое'], 'старое слово не тронуто');
+
+  globalThis.uiConfirm = origConfirm;
+  globalThis.setTimeout = origSetTimeout;
+  globalThis.document.createElement = origCreateElement;
+  globalThis.document.body.appendChild = origBodyAppend;
+  globalThis.document.removeEventListener = origRemoveEventListener;
+});
+
+test('renderBlacklistListManage: перезапись и удаление', async () => {
+  reset({ words: ['свежее'] });
+  globalThis.saveBlacklistLists([{name: 'Список', words: ['старое'], updated_at: 'x'}]);
+  globalThis.fillBlacklistTemplateSelect();
+  // Кнопка edit в первой строке.
+  const box = els['blacklist-tpl-manage'];
+  assert.match(box.innerHTML, /data-act="edit"/);
+  assert.match(box.innerHTML, /data-act="del"/);
+  assert.match(box.innerHTML, /data-name="Список"/);
+
+  // Эмуляция: слушатели навешиваются через querySelectorAll — в стабе он
+  // пустой, поэтому проверяем логику напрямую через applyBlacklistTemplate.
+  assert.equal(globalThis.applyBlacklistTemplate('saved:Список'), 1);
+  assert.deepEqual(globalThis.blacklistWords, ['старое', 'свежее'].sort(), 'шаблон добавляется к текущим словам');
 });
 
 // ── 6. Счётчик исключений ────────────────────────────────────

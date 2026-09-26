@@ -586,7 +586,7 @@ class TestBlacklistChips:
                        'id="blacklist-count"', 'id="blacklist-err"'):
             assert needle in sec, needle
         for handler in ('onclick="addBlacklistFromField()"', 'onkeydown="onBlacklistKey(event)"',
-                        'onclick="saveBlacklistNow()"', 'onclick="clearBlacklist()"',
+                        'onclick="openBlacklistSaveModal()"', 'onclick="clearBlacklist()"',
                         'onchange="applyBlacklistTemplate(this.value)"'):
             assert handler in sec, handler
 

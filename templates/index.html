@@ -527,15 +527,19 @@
                     </div>
                     <div class="hint">Слова ищутся в названии и категории. Регистр не важен.</div>
                     <div class="bl-err" id="blacklist-err" hidden></div>
-                    <!-- Шаблоны добавляются К ТЕКУЩЕМУ списку, а не заменяют его:
-                         так два шаблона складываются в один список. -->
+                    <!-- Шаблоны (встроенные и сохранённые списки) добавляются
+                         К ТЕКУЩЕМУ списку, а не заменяют его: два шаблона
+                         складываются в один список. -->
                     <select id="blacklist-template" onchange="applyBlacklistTemplate(this.value)"
                             aria-label="Загрузить шаблон слов-исключений">
                       <option value="">📂 Загрузить шаблон</option>
                     </select>
+                    <!-- Сохранённые списки: перезаписать текущими словами или удалить. -->
+                    <div class="bl-tpl-manage" id="blacklist-tpl-manage" hidden></div>
+                    <div class="hint" id="blacklist-tpl-hint" hidden></div>
                     <div class="bl-actions">
-                      <button type="button" class="btn-sm" id="btn-blacklist-save" onclick="saveBlacklistNow()"
-                              title="Сохранить список в этом браузере">💾 Сохранить список</button>
+                      <button type="button" class="btn-sm" id="btn-blacklist-save" onclick="openBlacklistSaveModal()"
+                              title="Сохранить текущий список как шаблон — появится в «Загрузить шаблон»">💾 Сохранить список</button>
                       <button type="button" class="btn-sm danger" id="btn-blacklist-clear" onclick="clearBlacklist()"
                               title="Убрать все слова-исключения">🗑 Очистить список</button>
                     </div>
@@ -934,10 +938,13 @@
 
       <!-- TEMPLATES -->
       <div class="tab-panel" id="p-templates">
+        <div class="tpl-scroll">
         <div class="tpl-wrap">
           <div class="tpl-intro">
             <h2>📝 Шаблоны сообщений</h2>
             <p>Создавайте шаблоны с переменными. При клике на соцсеть в таблице — текст подставится автоматически. Шаблоны общие для команды и хранятся на сервере.</p>
+            <p class="tpl-intro-hint">💡 Порядок работы: создайте шаблон для нужной соцсети → выберите его в списке «Шаблон» над таблицей →
+               кликните по значку соцсети у компании. Текст с подставленными данными скопируется в буфер — вставьте его в открытый чат (Ctrl+V).</p>
           </div>
 
           <div class="tpl-cat-filter" role="tablist" aria-label="Категория шаблона">
@@ -952,14 +959,30 @@
             <button type="button" class="btn-sm" id="btn-tpl-import" onclick="importTemplatesClick()">📂 Импорт</button>
             <input type="file" id="tpl-import-file" accept="application/json,.json" hidden onchange="importTemplates(this)">
             <button type="button" class="btn-sm" id="btn-tpl-export" onclick="exportTemplates()">💾 Экспорт</button>
-            <button type="button" class="btn-sm danger" id="btn-tpl-reset" onclick="resetTemplates()">🔄 Сброс к стандартным</button>
+            <button type="button" class="btn-sm" id="btn-tpl-reset" onclick="resetTemplates()">🔄 Сброс к стандартным</button>
             <label class="chk tpl-missing-chk" title="Если данных для переменной нет — оставить {переменную} как есть вместо «—»">
               <input type="checkbox" id="tpl-show-missing" onchange="onShowMissingChange()">
               Показывать {переменную}, если данных нет
             </label>
           </div>
 
+          <div class="tpl-search">
+            <input type="search" id="tpl-search" placeholder="🔍 Поиск по названию и тексту…" autocomplete="off"
+                   oninput="onTemplateSearch(this.value)">
+            <span class="tpl-search-count" id="tpl-search-count" hidden></span>
+          </div>
+
           <div class="tpl-list" id="tpl-list"></div>
+          <!-- Пустое состояние рисует JS, разметка ниже — канон текста. -->
+          <div class="tpl-empty-box" id="tpl-empty-box" hidden>
+            <div class="tpl-empty-title">У вас нет шаблонов</div>
+            <p>Создайте первый шаблон или верните пять стандартных — они уже
+               содержат переменные {name}, {city}, {category}.</p>
+            <div class="tpl-empty-btns">
+              <button type="button" class="btn-sm" onclick="openTemplateModal()">+ Добавить шаблон</button>
+              <button type="button" class="btn-sm" onclick="resetTemplates()">🔄 Сброс к стандартным</button>
+            </div>
+          </div>
 
           <button type="button" class="tpl-add" id="btn-tpl-add" onclick="openTemplateModal()">+ Добавить шаблон</button>
 
@@ -967,7 +990,8 @@
             <div class="tpl-vars-title">📖 Доступные переменные:</div>
             <div class="tpl-var-list" id="tpl-var-list"></div>
           </div>
-        </div>
+        </div><!-- /tpl-wrap -->
+        </div><!-- /tpl-scroll -->
 
         <!-- Модалка редактирования -->
         <div class="tpl-modal-overlay" id="tpl-modal" hidden>
@@ -975,8 +999,9 @@
             <h3 id="tpl-modal-title">✏️ Редактировать шаблон</h3>
             <label class="lbl" for="tpl-name">Название</label>
             <input type="text" id="tpl-name" maxlength="120" autocomplete="off">
-            <label class="lbl" for="tpl-category">Категория</label>
+            <label class="lbl" for="tpl-category">Категория — для какой соцсети шаблон</label>
             <select id="tpl-category"></select>
+            <div class="tpl-hint">Категория определяет, где шаблон предлагается: в таблице, массовом обходе и рассылке.</div>
             <label class="lbl" for="tpl-text">Текст</label>
             <textarea id="tpl-text" rows="6" maxlength="4096" oninput="updateTemplatePreview()"></textarea>
             <div class="tpl-insert-row">
@@ -984,8 +1009,9 @@
               <select id="tpl-var-insert" onchange="insertTemplateVariable(this.value)"></select>
             </div>
             <div class="tpl-preview">
-              <div class="tpl-preview-title">👁 Превью с данными из первой компании:</div>
+              <div class="tpl-preview-title" id="tpl-preview-title">👁 Превью с данными из первой компании:</div>
               <div class="tpl-preview-body" id="tpl-preview-body"></div>
+              <div class="tpl-hint" id="tpl-preview-note" hidden></div>
             </div>
             <div class="tpl-modal-err" id="tpl-modal-err" hidden></div>
             <div class="ui-modal-btns">

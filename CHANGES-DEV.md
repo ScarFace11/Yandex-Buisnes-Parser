@@ -200,6 +200,51 @@
   нет `maxlength`, анимация на `.bl-chip.bl-new`, `onBlacklistChipKey`,
   ленивый рендер и подсказка.
 
+**Пресеты списков исключений и UX вкладки «📝 Шаблоны»** (`static/js/app.js`,
+`templates/index.html`, `static/css/style.css`, `tests/ui/blacklist.test.mjs`,
+`tests/ui/templates.test.mjs`, `tests/test_ui_markup.py`)
+
+- Сохранённые списки исключений: ключ `blacklist_lists` (отдельно от текущего
+  списка `blacklist_words` — очистка списка не сносит сохранённые), структура
+  `{version, lists:[{name, words, updated_at}]}`, лимиты `BLACKLIST_MAX_LISTS`
+  и `BLACKLIST_LIST_NAME_MAX`, нормализация в `getBlacklistLists()`.
+- «💾 Сохранить список» открывает модалку `openBlacklistSaveModal()` вместо
+  `prompt()`: имя + Esc/Enter/клик по подложке; дубликат имени не блокирует —
+  `uiConfirm` предлагает перезаписать, при отказе модалка переоткрывается через
+  `setTimeout(…, 0)` с прежним именем в поле.
+- «📂 Загрузить шаблон» (`fillBlacklistTemplateSelect()`) строится из реестра
+  `BLACKLIST_TEMPLATES` + сохранённых списков: optgroup «Встроенные шаблоны» и
+  «Мои списки», значения `builtin:<key>` / `saved:<имя>`. Под селектом блок
+  `#blacklist-tpl-manage` (`renderBlacklistListManage()`): перезаписать список
+  текущими словами или удалить (с `uiConfirm`); встроенные шаблоны неизменяемы.
+  `applyBlacklistTemplate()` принимает оба префикса и добавляет слова К списку.
+- Шаблоны сообщений: прокрутка вкладки (`.tpl-scroll` с `flex:1;min-height:0;
+  overflow-y:auto`), подсказка-порядок работы `.tpl-intro-hint`, поиск
+  `#tpl-search` (`onTemplateSearch()` фильтрует по названию и тексту, счётчик
+  «N из M» в `#tpl-search-count`), пустое состояние `#tpl-empty-box` с кнопками
+  «+ Добавить шаблон» и «🔄 Сброс к стандартным».
+- Превью без данных таблицы: `TEMPLATE_DEMO_COMPANY` — вымышленная компания,
+  заголовок «👁 Превью (пример):», пояснение в `#tpl-preview-note`; при живых
+  данных — реальная первая компания из `filteredRows`/`allResults`. Превью
+  обновляется oninput (debounce не нужен — подстановка дешёвая).
+- Категория в модалке — `<select id="tpl-category">` (4 категории) со
+  стрелкой в CSS; чекбокс «показывать {переменную}» перенесён влево от текста;
+  «Сброс к стандартным» — ghost-кнопка с подтверждением через `uiConfirm`
+  (текст «Ваши изменения будут потеряны»).
+- Карточки: 3 основные кнопки (редактировать / копировать текст / удалить) +
+  меню «⋮» (`.tpl-menu`) с «Дублировать»; действия видны на hover и
+  focus-within; дата «Обновлено: ДД.ММ ЧЧ:ММ» (`_fmtTemplateDate()`); тост
+  «Шаблон сохранён» после записи.
+- Селекты выбора шаблона (`fillTemplateSelect()`): опция — только название,
+  группировка по категориям через `<optgroup>` (в таблице категория и так
+  видна по активной соцсети).
+- Тесты: `tests/ui/blacklist.test.mjs` +7 кейсов (селект из реестра и списков,
+  `saved:`-применение, модалка сохранения/дубликат/пустой список, управление),
+  `tests/ui/templates.test.mjs` +8 кейсов (прокрутка-обёртка не тестируется
+  изолированно — проверяется разметкой; поиск, пустое состояние, пример-превью,
+  optgroup-селекты, дата, меню), `TestBlacklistChips` обновлён на
+  `openBlacklistSaveModal()`.
+
 **Шаблоны сообщений («📝 Шаблоны»)** (`yandex_maps_parser/message_templates.py`,
 `routes/api.py`, `vk_sender/`, `static/js/app.js`, `templates/index.html`,
 `static/css/style.css`, `tests/test_message_templates.py`,

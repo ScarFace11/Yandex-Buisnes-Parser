@@ -1900,6 +1900,20 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 [data-theme="dark"] .ui-modal .m-cancel{background:var(--track);color:var(--txt)}
 [data-theme="dark"] .hist-dl{background:var(--panel)}
 
+/* ── Управление сохранёнными списками исключений ────────── */
+.bl-tpl-manage{margin-top:8px;border-top:1px dashed var(--bdr);padding-top:8px}
+.bl-tpl-manage[hidden]{display:none}
+.bl-tpl-row{display:flex;align-items:center;gap:8px;padding:3px 0;font-size:11.5px}
+.bl-tpl-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--sub);font-weight:600}
+.bl-tpl-actions{display:flex;gap:4px;opacity:0;transition:opacity .15s}
+.bl-tpl-row:hover .bl-tpl-actions,.bl-tpl-row:focus-within .bl-tpl-actions{opacity:1}
+.bl-tpl-act{
+  display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;
+  border:1px solid var(--bdr);border-radius:6px;background:transparent;color:var(--sub);
+  font:inherit;font-size:11px;cursor:pointer;transition:all .12s;
+}
+.bl-tpl-act:hover{border-color:var(--c);color:var(--c);background:var(--c-soft)}
+.bl-tpl-del:hover{border-color:var(--err-strong);color:var(--err-strong);background:var(--err-bg)}
 /* ── «Сохранить пресет» in-app modal ─────────────────────── */
 .preset-modal input[type=text]{
   width:100%;padding:10px 12px;border:1.5px solid var(--bdr);border-radius:8px;
@@ -2514,6 +2528,11 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 .ui-modal .m-mark{background:var(--brand);color:var(--on-accent)}
 
 /* ── Шаблоны сообщений («📝 Шаблоны») ── */
+/* Панель вкладки — flex-колонка; контент скроллится внутри рамки таба.
+   Без этого длинный список карточек уезжал за нижнюю кромку и его
+   нельзя было прокрутить. */
+#p-templates{overflow:hidden}
+.tpl-scroll{flex:1;min-height:0;overflow-y:auto}
 .tpl-wrap{max-width:820px;margin:0 auto;padding:18px 16px 28px}
 .tpl-intro h2{margin:0 0 6px;font-size:18px}
 .tpl-intro p{margin:0 0 16px;color:var(--muted);font-size:12.5px;line-height:1.6}
@@ -2559,6 +2578,52 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
   background:transparent;color:var(--c);font:inherit;font-size:12.5px;font-weight:700;cursor:pointer;transition:all .12s;
 }
 .tpl-add:hover{border-color:var(--c);background:var(--c-soft)}
+/* Поиск по шаблонам */
+.tpl-search{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+.tpl-search input{
+  flex:1;min-width:0;padding:8px 12px;font-size:12.5px;font-family:inherit;
+  border:1.5px solid var(--bdr);border-radius:8px;background:var(--field);color:var(--txt);
+}
+.tpl-search input:focus{outline:none;border-color:var(--c);box-shadow:0 0 0 3px var(--focus-ring)}
+.tpl-search-count{font-size:11.5px;font-weight:700;color:var(--muted);white-space:nowrap}
+/* Пустое состояние — канвас вместо заглушки */
+.tpl-empty-box{
+  border:1px dashed var(--bdr);border-radius:10px;padding:28px 20px;text-align:center;
+  color:var(--muted);background:var(--panel);
+}
+.tpl-empty-box[hidden]{display:none}
+.tpl-empty-title{font-size:14px;font-weight:800;color:var(--sub);margin-bottom:6px}
+.tpl-empty-box p{font-size:12px;line-height:1.6;margin:0 auto 14px;max-width:420px}
+.tpl-empty-btns{display:flex;gap:8px;justify-content:center;flex-wrap:wrap}
+/* Мета-строка карточки: переменные + дата обновления */
+.template-meta{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;font-size:11px;color:var(--muted)}
+.template-upd{margin-left:auto;font-size:10.5px;color:var(--muted);white-space:nowrap}
+/* Меню «ещё» (⋮) — дублирование спрятано сюда, чтобы карточка не тонула в кнопках */
+.tpl-more-wrap{position:relative;display:inline-flex}
+.tpl-menu{
+  position:absolute;top:calc(100% + 4px);right:0;z-index:20;min-width:140px;
+  background:var(--card);border:1px solid var(--bdr);border-radius:8px;box-shadow:var(--sh);
+  padding:4px;display:flex;flex-direction:column;
+}
+.tpl-menu[hidden]{display:none}
+.tpl-menu button{
+  text-align:left;padding:7px 10px;border:none;border-radius:6px;background:transparent;
+  color:var(--sub);font:inherit;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;
+}
+.tpl-menu button:hover{background:var(--c-soft);color:var(--c)}
+/* Подсказки внутри модалки и интро */
+.tpl-hint{font-size:11px;line-height:1.5;color:var(--muted);margin-top:5px}
+.tpl-preview-note{font-size:11px;line-height:1.5;color:var(--muted);margin-top:6px}
+.tpl-intro-hint{
+  font-size:11.5px;line-height:1.6;color:var(--sub);background:var(--panel);
+  border:1px solid var(--bdr);border-radius:8px;padding:8px 12px;margin-bottom:16px;
+}
+/* Select категории — явный dropdown: стрелка справа, не «поле ввода» */
+.tpl-modal select{
+  appearance:none;-webkit-appearance:none;
+  background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2352686f' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 11px center;padding-right:32px;
+}
 .tpl-vars{margin-top:22px;border-top:1px solid var(--bdr);padding-top:14px}
 .tpl-vars-title{font-size:12px;font-weight:800;color:var(--sub);margin-bottom:8px}
 .tpl-var-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:4px 16px;font-size:12px;color:var(--sub)}
@@ -2614,6 +2679,11 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 [data-theme="dark"] .tpl-modal input[type=text],[data-theme="dark"] .tpl-modal select,[data-theme="dark"] .tpl-modal textarea{
   background:var(--field);border-color:var(--bdr);color:var(--txt)}
 [data-theme="dark"] .tpl-preview-body{background:var(--panel);border-color:var(--bdr)}
+[data-theme="dark"] .tpl-search input{background:var(--field);border-color:var(--bdr);color:var(--txt)}
+[data-theme="dark"] .tpl-empty-box{background:var(--panel);border-color:var(--bdr)}
+[data-theme="dark"] .tpl-menu{background:var(--card);border-color:var(--bdr)}
+[data-theme="dark"] .tpl-menu button:hover{background:var(--c-soft);color:var(--c)}
+[data-theme="dark"] .tpl-intro-hint{background:var(--panel);border-color:var(--bdr)}
 [data-theme="dark"] .tbl-tpl-wrap select{background:var(--field);border-color:var(--bdr);color:var(--txt)}
 [data-theme="dark"] .template-more{border-color:var(--bdr-h);color:var(--sub)}
 [data-theme="dark"] .bulk-queue{border-color:var(--bdr)}
