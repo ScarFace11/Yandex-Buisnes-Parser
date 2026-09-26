@@ -660,6 +660,7 @@
       <button class="tab-btn"        onclick="showTab('map')"    id="t-map">На карте</button>
       <button class="tab-btn"        onclick="showTab('stats')"  id="t-stats">Статистика</button>
       <button class="tab-btn"        onclick="showTab('history')" id="t-history">История</button>
+      <button class="tab-btn"        onclick="showTab('templates')" id="t-templates">📝 Шаблоны</button>
       <button class="tab-btn"        onclick="showTab('excel')"  id="t-excel">Форматы вывода</button>
       <button class="tab-btn"        onclick="showTab('sender')" id="t-sender">Отправить в VK</button>
     </div>
@@ -751,6 +752,10 @@
             </div>
             <div class="bulk-body" id="bulk-body">
               <div class="bulk-row">
+                <label class="bulk-lbl" for="bulk-template">Шаблон:</label>
+                <select id="bulk-template" onchange="onBulkTemplateChange()"></select>
+              </div>
+              <div class="bulk-row">
                 <label class="bulk-lbl" for="bulk-social">Соцсеть:</label>
                 <select id="bulk-social" onchange="updateBulkStats()">
                   <option value="vk">ВКонтакте</option>
@@ -780,6 +785,7 @@
               </div>
               <div class="bulk-stats">Осталось непросмотренных: <b id="unviewed-count">0</b><span id="bulk-stats-note"></span></div>
               <div class="bulk-order" id="bulk-order-note">Порядок: сначала горячие (по оценке)</div>
+              <div class="bulk-queue" id="bulk-queue" hidden></div>
               <div class="rev-save-row"><span class="rev-save-status" id="reviewed-save-status"></span></div>
               <div class="bulk-progress" id="bulk-progress" hidden>
                 <div class="bulk-progress-bar"><div class="bulk-progress-fill" id="bulk-progress-fill"></div></div>
@@ -801,6 +807,9 @@
             <button id="btn-scope-all" class="tbl-filter-btn" onclick="toggleScopeAll()" title="Показаны только результаты текущего поиска. Нажмите, чтобы увидеть все файлы в папке (прошлые поиски).">☐ Все поиски</button>
             <input type="text" id="tbl-search" placeholder="🔍  Поиск по таблице…" oninput="filterTable()">
             <span class="tbl-count" id="tbl-count"></span>
+            <label class="tbl-tpl-wrap" for="tbl-template" title="Шаблон, который подставится при клике по соцсети в таблице">Шаблон:
+              <select id="tbl-template" onchange="onTableTemplateChange()"></select>
+            </label>
             <button id="btn-unviewed" class="tbl-filter-btn" onclick="toggleUnviewedOnly()" title="Показать только компании без отметки «Просмотрено»">☐ Непросмотренные</button>
             <div class="col-toggle-wrap">
               <button id="btn-cols" onclick="toggleColDropdown(event)">⚙ Столбцы</button>
@@ -923,6 +932,70 @@
         </div>
       </div>
 
+      <!-- TEMPLATES -->
+      <div class="tab-panel" id="p-templates">
+        <div class="tpl-wrap">
+          <div class="tpl-intro">
+            <h2>📝 Шаблоны сообщений</h2>
+            <p>Создавайте шаблоны с переменными. При клике на соцсеть в таблице — текст подставится автоматически. Шаблоны общие для команды и хранятся на сервере.</p>
+          </div>
+
+          <div class="tpl-cat-filter" role="tablist" aria-label="Категория шаблона">
+            <button type="button" class="tpl-cat active" data-cat="all"        onclick="filterTemplatesByCategory('all')">Все</button>
+            <button type="button" class="tpl-cat"        data-cat="vk"         onclick="filterTemplatesByCategory('vk')">ВКонтакте</button>
+            <button type="button" class="tpl-cat"        data-cat="telegram"   onclick="filterTemplatesByCategory('telegram')">Telegram</button>
+            <button type="button" class="tpl-cat"        data-cat="whatsapp"   onclick="filterTemplatesByCategory('whatsapp')">WhatsApp</button>
+            <button type="button" class="tpl-cat"        data-cat="instagram"  onclick="filterTemplatesByCategory('instagram')">Instagram</button>
+          </div>
+
+          <div class="tpl-toolbar">
+            <button type="button" class="btn-sm" id="btn-tpl-import" onclick="importTemplatesClick()">📂 Импорт</button>
+            <input type="file" id="tpl-import-file" accept="application/json,.json" hidden onchange="importTemplates(this)">
+            <button type="button" class="btn-sm" id="btn-tpl-export" onclick="exportTemplates()">💾 Экспорт</button>
+            <button type="button" class="btn-sm danger" id="btn-tpl-reset" onclick="resetTemplates()">🔄 Сброс к стандартным</button>
+            <label class="chk tpl-missing-chk" title="Если данных для переменной нет — оставить {переменную} как есть вместо «—»">
+              <input type="checkbox" id="tpl-show-missing" onchange="onShowMissingChange()">
+              Показывать {переменную}, если данных нет
+            </label>
+          </div>
+
+          <div class="tpl-list" id="tpl-list"></div>
+
+          <button type="button" class="tpl-add" id="btn-tpl-add" onclick="openTemplateModal()">+ Добавить шаблон</button>
+
+          <div class="tpl-vars">
+            <div class="tpl-vars-title">📖 Доступные переменные:</div>
+            <div class="tpl-var-list" id="tpl-var-list"></div>
+          </div>
+        </div>
+
+        <!-- Модалка редактирования -->
+        <div class="tpl-modal-overlay" id="tpl-modal" hidden>
+          <div class="tpl-modal" role="dialog" aria-modal="true" aria-labelledby="tpl-modal-title">
+            <h3 id="tpl-modal-title">✏️ Редактировать шаблон</h3>
+            <label class="lbl" for="tpl-name">Название</label>
+            <input type="text" id="tpl-name" maxlength="120" autocomplete="off">
+            <label class="lbl" for="tpl-category">Категория</label>
+            <select id="tpl-category"></select>
+            <label class="lbl" for="tpl-text">Текст</label>
+            <textarea id="tpl-text" rows="6" maxlength="4096" oninput="updateTemplatePreview()"></textarea>
+            <div class="tpl-insert-row">
+              <label class="lbl" for="tpl-var-insert">📖 Вставить переменную:</label>
+              <select id="tpl-var-insert" onchange="insertTemplateVariable(this.value)"></select>
+            </div>
+            <div class="tpl-preview">
+              <div class="tpl-preview-title">👁 Превью с данными из первой компании:</div>
+              <div class="tpl-preview-body" id="tpl-preview-body"></div>
+            </div>
+            <div class="tpl-modal-err" id="tpl-modal-err" hidden></div>
+            <div class="ui-modal-btns">
+              <button type="button" class="m-cancel" onclick="closeTemplateModal()">Отмена</button>
+              <button type="button" class="m-ok" onclick="saveTemplateFromModal()">💾 Сохранить</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- EXCEL EXPORT SETTINGS -->
       <div class="tab-panel" id="p-excel">
         <div class="history-body">
@@ -969,6 +1042,13 @@
                   <label class="lbl">Ключ доступа VK <span style="font-weight:400;text-transform:none">(нужны права на сообщения)</span></label>
                   <input type="password" id="s-token" placeholder="vk1.a.xxxxx…" autocomplete="off">
                   </div>
+                <div id="fw-send-tpl">
+                  <label class="lbl">Шаблон сообщения</label>
+                  <div class="sender-tpl-row">
+                    <select id="s-template" onchange="onSenderTemplateChange()"></select>
+                    <button type="button" class="btn-sm" id="btn-sender-fill-tpl" onclick="fillSenderFromTemplate()" title="Подставить текст выбранного шаблона в поле ниже">Заполнить текст</button>
+                  </div>
+                </div>
                 <div id="fw-send-msg">
                   <label class="lbl">Текст сообщения <span style="font-weight:400;text-transform:none">— можно вставить {название_бизнеса}</span></label>
                   <textarea id="s-message" style="min-height:100px" placeholder="Здравствуйте, {название_бизнеса}! …"></textarea>

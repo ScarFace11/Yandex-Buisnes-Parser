@@ -200,6 +200,49 @@
   нет `maxlength`, анимация на `.bl-chip.bl-new`, `onBlacklistChipKey`,
   ленивый рендер и подсказка.
 
+**Шаблоны сообщений («📝 Шаблоны»)** (`yandex_maps_parser/message_templates.py`,
+`routes/api.py`, `vk_sender/`, `static/js/app.js`, `templates/index.html`,
+`static/css/style.css`, `tests/test_message_templates.py`,
+`tests/ui/templates.test.mjs`)
+
+- `message_templates.py`: `VARIABLES` (10 переменных) + `VARIABLE_ALIASES`
+  (`название_бизнеса → name`, `reviews_count → reviews`), `DEFAULT_TEMPLATES`
+  (5 пресетов), `normalize_templates()`, `normalize_active_ids()`,
+  `migrate_templates()` (версия в settings.json; файл новее сборки не разрушаем —
+  сохраняем и предупреждаем), `substitute()` — regex `\{(\w+)\}`, известная
+  пустая переменная → «—» (или `{var}` при `show_missing_as_var`), неизвестная
+  остаётся как есть. Хранение — ключ `message_templates` в settings.json (общее
+  для команды), `active_template_ids` — по каждой категории.
+- `routes/api.py`: `GET/POST /templates`, `POST /templates/reset`;
+  `/bulk/urls` принимает `template` + `show_missing_as_var` и отдаёт `text` на
+  каждую запись (та же подстановка, что в рассылке).
+- `vk_sender/runner.py` использует `substitute()` вместо `.replace()` — работают
+  и `{name}`, и `{название_бизнеса}`, и остальные переменные;
+  `excel_manager.iter_recipients()` кладёт в запись `record` (все колонки по
+  `HEADER_LABELS`), иначе в рассылке был бы только название.
+- `app.js`: состояние `messageTemplates`/`activeTemplateIds`/`showMissingAsVar`;
+  `substituteTemplate()` — зеркало Python-подстановки (regex с `А-Яа-я`: `\w`
+  в JS не покрывает кириллицу и `{название_бизнеса}` иначе не заменится),
+  `usedVariables()`, карточки CRUD, модалка с вставкой переменной и живым
+  превью, `uiChoose()` — модалка на N вариантов (у `uiConfirm` их два) для
+  конфликтов импорта («Заменить / Дублировать / Пропустить» + «применить ко
+  всем»), экспорт/импорт JSON, сброс. Клик по бейджу соцсети
+  (`onSocialBadgeClick`) копирует подставленный текст и открывает профиль;
+  обход кладёт тексты в `bulkState.texts` и рисует очередь `#bulk-queue`
+  с «Скопировать следующее»; `fillSenderFromTemplate()` заполняет поле рассылки.
+  Иконки карточек — SVG на `currentColor` (эмодзи-мусорка запрещена
+  `test_ui_markup`).
+- Разметка/CSS: вкладка `t-templates` между «История» и «Форматы вывода»,
+  панель `p-templates`, модалка `#tpl-modal`, селекты `#tbl-template`/
+  `#bulk-template`/`#s-template`. `.template-card`, `.template-actions`
+  (hover/focus-within), `.tpl-modal`, `.bulk-queue`; тёмная тема на токенах
+  (hex-литералов нет).
+- Тесты: `tests/test_message_templates.py` (24 кейса — хранение, нормализация,
+  миграции, подстановка, API, `/bulk/urls`, рассылка VK),
+  `tests/ui/templates.test.mjs` (31 кейс — подстановка, карточки, модалка,
+  интеграции с таблицей и обходом, конфликты импорта), `TestMessageTemplates`
+  в `tests/test_ui_markup.py`.
+
 ## [2.3.1]
 
 - `routes/update.py`: батник установщика писался с `\r\r\n` (текстовый режим

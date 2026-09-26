@@ -677,6 +677,91 @@ class TestBlacklistChips:
         assert "_blAnimateWords" in APP_JS
 
 
+class TestMessageTemplates:
+    """«📝 Шаблоны»: вкладка, панель, модалка и интеграции в разметке.
+
+    Логику (подстановка, карточки, очередь, импорт) ловят node-тесты в
+    tests/ui/templates.test.mjs, а здесь — id-контракты обработчиков,
+    порядок вкладки и стили/тема.
+    """
+
+    def _panel(self) -> str:
+        body = TEMPLATE[TEMPLATE.index('id="p-templates"'):]
+        return body[: body.index('id="p-excel"')]
+
+    def test_tab_sits_between_history_and_export(self):
+        assert 'id="t-templates"' in TEMPLATE
+        assert 'onclick="showTab(\'templates\')"' in TEMPLATE
+        assert TEMPLATE.index('id="t-history"') < TEMPLATE.index('id="t-templates"') \
+            < TEMPLATE.index('id="t-excel"')
+        assert 'id="p-templates"' in TEMPLATE
+
+    def test_panel_has_every_control(self):
+        sec = self._panel()
+        for needle in ('id="tpl-list"', 'id="tpl-var-list"', 'id="tpl-show-missing"',
+                       'id="btn-tpl-import"', 'id="btn-tpl-export"', 'id="btn-tpl-reset"',
+                       'id="btn-tpl-add"', 'id="tpl-import-file"'):
+            assert needle in sec, needle
+        for handler in ('filterTemplatesByCategory(', 'importTemplates(', 'exportTemplates()',
+                        'resetTemplates()', 'openTemplateModal()', 'onShowMissingChange()'):
+            assert handler in sec, handler
+
+    def test_edit_modal_has_fields_and_variable_insert(self):
+        for needle in ('id="tpl-modal"', 'id="tpl-name"', 'id="tpl-category"',
+                       'id="tpl-text"', 'id="tpl-var-insert"', 'id="tpl-preview-body"',
+                       'id="tpl-modal-err"'):
+            assert needle in TEMPLATE, needle
+        assert 'onclick="saveTemplateFromModal()"' in TEMPLATE
+        assert 'onclick="closeTemplateModal()"' in TEMPLATE
+        assert 'oninput="updateTemplatePreview()"' in TEMPLATE
+
+    def test_category_filter_covers_four_networks(self):
+        sec = self._panel()
+        for cat in ('all', 'vk', 'telegram', 'whatsapp', 'instagram'):
+            assert 'data-cat="' + cat + '"' in sec, cat
+
+    def test_table_bulk_and_sender_pickers_exist(self):
+        assert 'id="tbl-template"' in TEMPLATE
+        assert 'id="bulk-template"' in TEMPLATE
+        assert 'id="s-template"' in TEMPLATE
+        assert 'id="bulk-queue"' in TEMPLATE
+        assert 'onclick="fillSenderFromTemplate()"' in TEMPLATE
+
+    def test_client_wires_handlers_and_endpoints(self):
+        for fn in ('loadTemplates', 'renderTemplates', 'openTemplateModal', 'saveTemplateFromModal',
+                   'substituteTemplate', 'usedVariables', 'importTemplates', 'exportTemplates',
+                   'resetTemplates', 'uiChoose', 'onSocialBadgeClick', 'renderBulkQueue',
+                   'bulkCopyNext', 'getActiveTemplateFor', 'setActiveTemplate', 'onShowMissingChange'):
+            assert f'function {fn}(' in APP_JS, fn
+        assert "'/templates'" in APP_JS
+        assert "'/templates/reset'" in APP_JS
+        assert 'data-act="edit"' in APP_JS
+
+    def test_substitution_supports_cyrillic_alias(self):
+        # \w в JS не покрывает кириллицу — {название_бизнеса} иначе не заменится.
+        assert 'А-Яа-я' in APP_JS
+        assert "'название_бизнеса': 'name'" in APP_JS
+
+    def test_cards_and_queue_are_styled(self):
+        for rule in ('.template-card{', '.template-actions{', '.bulk-queue{', '.tpl-modal{'):
+            assert rule in STYLE, rule
+        assert '.template-card:hover .template-actions' in STYLE
+        assert 'white-space:pre-wrap' in STYLE
+        assert '[data-theme="dark"] .template-card' in STYLE
+        assert '[data-theme="dark"] .bulk-queue' in STYLE
+
+    def test_server_endpoints_and_module_exist(self):
+        api = (ROOT / "routes" / "api.py").read_text(encoding="utf-8")
+        assert '@bp.route("/templates", methods=["GET"])' in api
+        assert '@bp.route("/templates", methods=["POST"])' in api
+        assert '@bp.route("/templates/reset", methods=["POST"])' in api
+        mod = (ROOT / "yandex_maps_parser" / "message_templates.py").read_text(encoding="utf-8")
+        for fn in ('def substitute(', 'def normalize_templates(', 'def normalize_active_ids(',
+                   'def migrate_templates(', 'def load_templates(', 'def save_templates('):
+            assert fn in mod, fn
+        assert 'active_template_ids' in mod
+
+
 class TestBulkCrawlOrder:
     """«Массовый обход» открывает профили в том же порядке, что и таблица.
 

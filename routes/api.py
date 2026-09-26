@@ -1017,6 +1017,48 @@ def preview_blacklist():
 
 
 # ═══════════════════════════════════════════════════════════════
+#  Шаблоны сообщений («📝 Шаблоны»)
+#  Хранятся в settings.json — общие для всей команды, а не в браузере:
+#  цель — единый tone of voice. Подстановка переменных живёт в
+#  yandex_maps_parser.message_templates и переиспользуется рассылкой VK
+#  и /bulk/urls, чтобы текст не расходился.
+# ═══════════════════════════════════════════════════════════════
+
+@bp.route("/templates", methods=["GET"])
+def get_templates():
+    """Шаблоны, активные по категориям и флаг «показывать {var}»."""
+    from yandex_maps_parser.message_templates import load_templates
+    return jsonify({"ok": True, **load_templates()})
+
+
+@bp.route("/templates", methods=["POST"])
+def set_templates():
+    """Сохранить шаблоны (полный набор) и выбор активных.
+
+    Body: {templates: [...], active_template_ids?, show_missing_as_var?}
+    Пустой список допустим (заглушка «нет шаблонов»), но не-список — 400.
+    """
+    from yandex_maps_parser import message_templates as mt
+    data = _json_body()
+    raw = data.get("templates")
+    if not isinstance(raw, list):
+        return jsonify({"ok": False, "error": "templates must be a list"}), 400
+    state, _warnings = mt.normalize_state({
+        "templates": raw,
+        "active_template_ids": data.get("active_template_ids"),
+        "show_missing_as_var": data.get("show_missing_as_var"),
+    })
+    return jsonify({"ok": True, **mt.save_templates(state)})
+
+
+@bp.route("/templates/reset", methods=["POST"])
+def reset_templates():
+    """Вернуть пять стандартных шаблонов."""
+    from yandex_maps_parser import message_templates as mt
+    return jsonify({"ok": True, **mt.save_templates(mt.default_state())})
+
+
+# ═══════════════════════════════════════════════════════════════
 #  Bulk social outreach (manual) — «Массовый обход»
 #  The server decides *what* to open (view + city + social + unviewed),
 #  the client never sends file paths.
@@ -1026,11 +1068,14 @@ def preview_blacklist():
 def bulk_urls():
     """Next batch of social profile URLs to open manually.
 
-    Body: {view, city?, social, count, skip_viewed, sort_col?, sort_asc?}
-    Reply: {urls:[{url,key,name}], returned, total, remaining}
+    Body: {view, city?, social, count, skip_viewed, sort_col?, sort_asc?,
+           template?, show_missing_as_var?}
+    Reply: {urls:[{url,key,name,text?}], returned, total, remaining}
 
     Порядок выдачи повторяет порядок строк в таблице: клиент присылает
     колонку и направление своей сортировки (sort_col = 6 — оценка лида).
+    Если передан `template`, каждая запись получает `text` — сообщение с
+    подставленными переменными (подстановка та же, что в рассылке VK).
     """
     data = request.get_json(silent=True) or {}
     view = str(data.get("view") or "raw").lower()
@@ -1062,6 +1107,13 @@ def bulk_urls():
     except (TypeError, ValueError):
         sort_col = None
 
+    template = str(data.get("template") or "")
+    show_missing = bool(data.get("show_missing_as_var", False))
+    substitute = None
+    if template:
+        from yandex_maps_parser.message_templates import substitute as _subst
+        substitute = _subst
+
     recs = _sort_like_table(_collect_records(view, rel_file, scope),
                             sort_col, bool(data.get("sort_asc", True)))
     rev = _load_reviewed()
@@ -1077,7 +1129,10 @@ def bulk_urls():
             continue
         if key and key in skip_keys:
             continue
-        pool.append({"url": url, "key": key, "name": str(r.get("name") or "")})
+        item = {"url": url, "key": key, "name": str(r.get("name") or "")}
+        if substitute is not None:
+            item["text"] = substitute(template, r, show_missing)
+        pool.append(item)
     urls = pool[:count]
     return jsonify({
         "urls": urls,

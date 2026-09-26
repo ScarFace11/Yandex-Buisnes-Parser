@@ -1442,6 +1442,10 @@ function showTab(name) {
     loadSeenStatus();
     loadCityHistoryMeta();
   }
+  // Шаблоны сообщений: состояние общее, догружаем и перерисовываем карточки.
+  if (name === 'templates') {
+    loadTemplates().then(() => renderTemplates());
+  }
   // Re-render stats when switching to the stats tab. During an active run
   // only finished cities are shown (stable numbers); after the run ends the
   // full result set is rendered.
@@ -2874,9 +2878,11 @@ function safeUrl(value) {
 
 function socialsHTML(row) {
   let h = '';
+  const key = escapeHtml(reviewKey(row));
   for (const [p, color] of Object.entries(SOCIALS)) {
     const url = row[p];
-    if (url) h += `<a class="social-badge" style="background:${color}" href="${escapeHtml(safeUrl(url))}" target="_blank" rel="noopener noreferrer">${SLABELS[p]}</a>`;
+    if (url) h += `<a class="social-badge" style="background:${color}" href="${escapeHtml(safeUrl(url))}" target="_blank" rel="noopener noreferrer"`
+      + ` data-social="${p}" data-key="${key}" onclick="onSocialBadgeClick(event, this)">${SLABELS[p]}</a>`;
   }
   return h || '—';
 }
@@ -3092,6 +3098,8 @@ function filterTable() {
   sortAsc = true;
   curPage = 1;
   renderPage();
+  // Смена фильтра соцсети в таблице — подтянуть активный для неё шаблон.
+  syncTableTemplatePicker();
 }
 
 function minScoreThreshold() {
@@ -3233,7 +3241,7 @@ let unviewedOnly = false;       // фильтр «только непросмо�
 let currentFileNote = '';       // «· файл: …» когда таблица показывает один файл
 let currentFile = '';           // rel-путь файла, открытого из «Истории файлов»
 let bulkBusy = false;
-let bulkState = { social: 'vk', opened: 0, blocked: 0, keys: new Set(), copied: new Set() };
+let bulkState = { social: 'vk', opened: 0, blocked: 0, keys: new Set(), copied: new Set(), texts: new Map(), copiedTexts: new Set() };
 let filesLoaded = false;
 let filesData = { raw: [], processed: [], archive: [] };
 let filesFilter = '';
@@ -3490,6 +3498,9 @@ function updateBulkStats() {
   document.querySelectorAll('#bulk-panel .bulk-preset').forEach(b =>
     b.classList.toggle('active', Number(b.dataset.count) === count));
 
+  // Выбор шаблона следует за выбранной соцсетью.
+  syncTemplateSelects();
+
   const btn = document.getElementById('bulk-open-btn');
   if (btn) {
     const openable = stats.by_social[social] || 0;
@@ -3529,7 +3540,7 @@ function renderBulkProgress() {
 }
 
 function resetBulkProgress() {
-  bulkState = { social: bulkState.social, opened: 0, blocked: 0, keys: new Set(), copied: new Set() };
+  bulkState = { social: bulkState.social, opened: 0, blocked: 0, keys: new Set(), copied: new Set(), texts: new Map(), copiedTexts: new Set() };
   hideBulkWarn();
   updateBulkStats();
 }
@@ -3587,7 +3598,7 @@ async function bulkOpenBatch() {
 
   // Другая соцсеть — начинаем сессию обхода заново.
   if (bulkState.social !== p.social) {
-    bulkState = { social: p.social, opened: 0, blocked: 0, keys: new Set(), copied: new Set() };
+    bulkState = { social: p.social, opened: 0, blocked: 0, keys: new Set(), copied: new Set(), texts: new Map(), copiedTexts: new Set() };
     hideBulkWarn();
   }
 
@@ -3599,11 +3610,15 @@ async function bulkOpenBatch() {
   bulkBusy = true;
   updateBulkStats();
   try {
+    // Шаблон для этой соцсети — сервер вернёт готовый текст на каждую запись.
+    const bulkTpl = getActiveTemplateFor(p.social);
     const data = await postJSON('/bulk/urls', {
       view: p.view, scope: p.scope, file: p.file, city: p.city, social: p.social,
       count: wanted, skip_viewed: p.skip_viewed, exclude_keys: [...bulkState.keys],
       // Порядок вкладок — как порядок строк в таблице.
       sort_col: p.sort_col, sort_asc: p.sort_asc,
+      template: bulkTpl ? bulkTpl.text : '',
+      show_missing_as_var: showMissingAsVar,
     });
     const list = (data.urls || []).filter(i => i && i.url);
     if (!list.length) {
@@ -3627,6 +3642,15 @@ async function bulkOpenBatch() {
     if (openedItems.length) {
       bulkState.opened += openedItems.length;
       openedItems.forEach(i => { if (i.key) bulkState.keys.add(i.key); });
+      // Готовые тексты кладём в очередь: браузер не даёт копировать при
+      // переключении внешней вкладки, поэтому копируем по кнопке.
+      if (bulkTpl) {
+        if (!(bulkState.texts instanceof Map)) bulkState.texts = new Map();
+        openedItems.forEach(i => {
+          if (i.key) bulkState.texts.set(i.key, {name: i.name || '', text: i.text || '', url: i.url});
+        });
+        renderBulkQueue();
+      }
       if (p.mark_viewed) await markReviewedBatch(openedItems.map(i => i.key), true);
     }
     bulkState.blocked += blocked;
@@ -6122,6 +6146,634 @@ async function selfUpdate() {
     if (typeof showToast === 'function') showToast('Не удалось обновиться: ' + e.message, 'error');
   }
 }
+// ═══════════════════════════════════════════════════════════════
+//  Шаблоны сообщений («📝 Шаблоны»)
+// ═══════════════════════════════════════════════════════════════
+// Хранятся на сервере (settings.json) — общие для команды. Подстановка
+// переменных зеркалит yandex_maps_parser/message_templates.py: держать их
+// надо синхронно, иначе текст в таблице разойдётся с рассылкой.
+const TEMPLATE_CATEGORIES = ['vk', 'telegram', 'whatsapp', 'instagram'];
+const TEMPLATE_CAT_LABELS = {vk: 'ВКонтакте', telegram: 'Telegram', whatsapp: 'WhatsApp', instagram: 'Instagram'};
+const TEMPLATE_MAX_TEXT = 4096;
+const TEMPLATE_MAX_NAME = 120;
+const TEMPLATE_VARS = [
+  ['name', 'название компании'],
+  ['city', 'город'],
+  ['category', 'категория'],
+  ['rating', 'рейтинг'],
+  ['reviews', 'количество отзывов'],
+  ['address', 'адрес'],
+  ['phone', 'телефон'],
+  ['lead_score', 'оценка лида'],
+  ['website', 'сайт'],
+  ['socials', 'список соцсетей'],
+];
+const TEMPLATE_VAR_FIELD = {
+  name: 'name', city: 'city', category: 'category', rating: 'rating',
+  reviews: 'reviews_count', address: 'address', phone: 'phone',
+  lead_score: 'lead_score', website: 'website',
+};
+const TEMPLATE_VAR_ALIASES = {'название_бизнеса': 'name', 'reviews_count': 'reviews'};
+
+let messageTemplates = [];
+let activeTemplateIds = {vk: null, telegram: null, whatsapp: null, instagram: null};
+let showMissingAsVar = false;
+let templatesLoaded = false;
+let templatesLoading = null;
+let _tplFilterCat = 'all';
+let _tplEditId = null;
+let _tplSaveTimer = null;
+
+function firstCompanyForPreview() {
+  if (typeof filteredRows !== 'undefined' && filteredRows && filteredRows.length) return filteredRows[0];
+  if (typeof allResults !== 'undefined' && allResults && allResults.length) return allResults[0];
+  return null;
+}
+
+function usedVariables(text) {
+  const out = [];
+  // \w в JS не покрывает кириллицу, а алиас {название_бизнеса} — наш.
+  const re = /\{([\wА-Яа-яЁё]+)\}/g;
+  const s = String(text == null ? '' : text);
+  let m;
+  while ((m = re.exec(s)) !== null) {
+    if (!out.includes(m[1])) out.push(m[1]);
+  }
+  return out;
+}
+
+// Зеркало message_templates.substitute: алиасы, «—» для пустого,
+// неизвестная переменная остаётся {как_есть}.
+function substituteTemplate(text, company) {
+  company = company || {};
+  return String(text == null ? '' : text).replace(/\{([\wА-Яа-яЁё]+)\}/g, (match, key) => {
+    const canonical = TEMPLATE_VAR_ALIASES[key] || key;
+    if (canonical !== 'socials' && !(canonical in TEMPLATE_VAR_FIELD)) return match;
+    let value;
+    if (canonical === 'socials') {
+      value = ['vk', 'telegram', 'whatsapp', 'instagram']
+        .filter(k => company[k]).map(k => SLABELS[k]).join(', ');
+    } else {
+      value = company[TEMPLATE_VAR_FIELD[canonical]];
+    }
+    if (value === undefined || value === null || String(value).trim() === '') {
+      return showMissingAsVar ? match : '—';
+    }
+    return String(value);
+  });
+}
+
+function normalizeTemplatesClient(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (let i = 0; i < raw.length; i++) {
+    const item = raw[i];
+    if (!item || typeof item !== 'object') continue;
+    const name = String(item.name || '').trim().slice(0, TEMPLATE_MAX_NAME);
+    const text = String(item.text || '').trim().slice(0, TEMPLATE_MAX_TEXT);
+    if (!name || !text) continue;
+    const cat = TEMPLATE_CATEGORIES.includes(item.category) ? item.category : 'vk';
+    out.push({
+      id: String(item.id || '').trim() || ('tpl_' + (i + 1)),
+      category: cat, name, text,
+      is_default: !!item.is_default,
+      created_at: item.created_at || new Date().toISOString(),
+    });
+  }
+  return out;
+}
+
+function genTemplateId() {
+  return 'tpl_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7);
+}
+
+// Активный шаблон категории → первый её шаблон → первый вообще.
+function getActiveTemplateFor(social) {
+  const id = activeTemplateIds[social];
+  if (id) {
+    const t = messageTemplates.find(x => x.id === id);
+    if (t) return t;
+  }
+  return messageTemplates.find(t => t.category === social) || messageTemplates[0] || null;
+}
+
+function setActiveTemplate(social, id) {
+  if (!TEMPLATE_CATEGORIES.includes(social)) return;
+  activeTemplateIds[social] = id || null;
+  saveTemplatesState();
+}
+
+function loadTemplates() {
+  if (templatesLoaded) return Promise.resolve(messageTemplates);
+  if (templatesLoading) return templatesLoading;
+  templatesLoading = fetch('/templates')
+    .then(r => r.json())
+    .then(j => {
+      applyTemplatesState(j || {});
+      templatesLoaded = true;
+      templatesLoading = null;
+      return messageTemplates;
+    })
+    .catch(() => { templatesLoading = null; return messageTemplates; });
+  return templatesLoading;
+}
+
+function applyTemplatesState(j) {
+  messageTemplates = Array.isArray(j.templates) ? j.templates : [];
+  const ids = {vk: null, telegram: null, whatsapp: null, instagram: null};
+  if (j.active_template_ids && typeof j.active_template_ids === 'object') {
+    TEMPLATE_CATEGORIES.forEach(c => { ids[c] = j.active_template_ids[c] || null; });
+  }
+  activeTemplateIds = ids;
+  showMissingAsVar = !!j.show_missing_as_var;
+  const chk = document.getElementById('tpl-show-missing');
+  if (chk) chk.checked = showMissingAsVar;
+  renderTemplates();
+  renderTemplatePickers();
+}
+
+async function postTemplatesState() {
+  try {
+    const j = await postJSON('/templates', {
+      templates: messageTemplates,
+      active_template_ids: activeTemplateIds,
+      show_missing_as_var: showMissingAsVar,
+    });
+    if (j && j.ok) applyTemplatesState(j);
+  } catch (e) {
+    showToast('Не удалось сохранить шаблоны: ' + e.message, 'error');
+  }
+}
+
+function saveTemplatesState() {
+  if (_tplSaveTimer) clearTimeout(_tplSaveTimer);
+  _tplSaveTimer = setTimeout(() => { _tplSaveTimer = null; postTemplatesState(); }, 400);
+}
+
+// Иконки карточек — SVG на currentColor (как у карточек файлов): эмодзи-мусорка
+// не наследует цвет темы и выбивается в тёмной (тест test_ui_markup следит).
+const TEMPLATE_ICONS = {
+  edit: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4L18 10l-4-4L4 16z"/><path d="M13.5 6.5 17.5 10.5"/></svg>',
+  copy: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg>',
+  dup: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M12 8.5v7"/><path d="M8.5 12h7"/></svg>',
+  del: FILE_ACT_ICONS.delete,
+};
+
+function renderTemplates() {
+  const list = document.getElementById('tpl-list');
+  if (list) {
+    const items = _tplFilterCat === 'all'
+      ? messageTemplates
+      : messageTemplates.filter(t => t.category === _tplFilterCat);
+    if (!items.length) {
+      list.innerHTML = '<div class="tpl-empty">'
+        + (messageTemplates.length ? 'В этой категории шаблонов нет' : 'Шаблонов пока нет — нажмите «+ Добавить шаблон»')
+        + '</div>';
+    } else {
+      list.innerHTML = items.map(t => {
+        const vars = usedVariables(t.text);
+        return '<div class="template-card" data-id="' + escapeHtml(t.id) + '">'
+          + '<div class="template-head">'
+          + '<span class="template-name">📝 ' + escapeHtml(t.name) + '</span>'
+          + '<span class="template-cat">' + escapeHtml(TEMPLATE_CAT_LABELS[t.category] || t.category) + '</span>'
+          + '<span class="template-actions">'
+          + '<button type="button" class="template-more" data-act="edit" title="Редактировать">' + TEMPLATE_ICONS.edit + '</button>'
+          + '<button type="button" class="template-more" data-act="copy" title="Скопировать текст">' + TEMPLATE_ICONS.copy + '</button>'
+          + '<button type="button" class="template-more" data-act="dup" title="Дублировать">' + TEMPLATE_ICONS.dup + '</button>'
+          + '<button type="button" class="template-more danger" data-act="del" title="Удалить">' + TEMPLATE_ICONS.del + '</button>'
+          + '</span></div>'
+          + '<div class="template-text">' + escapeHtml(t.text) + '</div>'
+          + '<div class="template-vars">Переменные: '
+          + (vars.length ? vars.map(v => '<code>{' + escapeHtml(v) + '}</code>').join(' ') : '—')
+          + '</div></div>';
+      }).join('');
+      list.querySelectorAll('.template-card').forEach(card => {
+        const id = card.dataset.id;
+        card.querySelectorAll('[data-act]').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const act = btn.dataset.act;
+            if (act === 'edit') openTemplateModal(id);
+            else if (act === 'copy') copyTemplateText(id);
+            else if (act === 'dup') duplicateTemplate(id);
+            else if (act === 'del') deleteTemplate(id);
+          });
+        });
+      });
+    }
+  }
+  const varlist = document.getElementById('tpl-var-list');
+  if (varlist) {
+    varlist.innerHTML = TEMPLATE_VARS
+      .map(([k, label]) => '<div><code>{' + k + '}</code> — ' + escapeHtml(label) + '</div>')
+      .join('');
+  }
+  document.querySelectorAll('.tpl-cat').forEach(b => b.classList.toggle('active', b.dataset.cat === _tplFilterCat));
+}
+
+function filterTemplatesByCategory(cat) {
+  _tplFilterCat = cat || 'all';
+  renderTemplates();
+}
+
+function fillTemplateSelect(sel, includeEmpty) {
+  if (!sel) return;
+  const prev = sel.value;
+  sel.innerHTML = (includeEmpty ? '<option value="">— шаблон не выбран —</option>' : '')
+    + messageTemplates.map(t =>
+        '<option value="' + escapeHtml(t.id) + '">' + escapeHtml(t.name)
+        + ' · ' + escapeHtml(TEMPLATE_CAT_LABELS[t.category] || t.category) + '</option>').join('');
+  if (prev && messageTemplates.some(t => t.id === prev)) sel.value = prev;
+}
+
+function currentTableSocial() {
+  if (typeof activeSocialFilters !== 'undefined' && activeSocialFilters && activeSocialFilters.size === 1) {
+    return [...activeSocialFilters][0];
+  }
+  return 'vk';
+}
+
+function syncTableTemplatePicker() {
+  const sel = document.getElementById('tbl-template');
+  if (!sel) return;
+  const t = getActiveTemplateFor(currentTableSocial());
+  sel.value = t ? t.id : '';
+}
+
+function syncTemplateSelects() {
+  const bulkSel = document.getElementById('bulk-template');
+  if (bulkSel) {
+    const social = (document.getElementById('bulk-social') || {}).value || 'vk';
+    const t = getActiveTemplateFor(social);
+    bulkSel.value = t ? t.id : '';
+  }
+  const senderSel = document.getElementById('s-template');
+  if (senderSel) {
+    const t = getActiveTemplateFor('vk');
+    senderSel.value = t ? t.id : '';
+  }
+  syncTableTemplatePicker();
+}
+
+function renderTemplatePickers() {
+  fillTemplateSelect(document.getElementById('tbl-template'), false);
+  fillTemplateSelect(document.getElementById('bulk-template'), true);
+  fillTemplateSelect(document.getElementById('s-template'), true);
+  syncTemplateSelects();
+}
+
+function onTableTemplateChange() {
+  const sel = document.getElementById('tbl-template');
+  if (sel) setActiveTemplate(currentTableSocial(), sel.value || null);
+}
+
+function onBulkTemplateChange() {
+  const sel = document.getElementById('bulk-template');
+  const social = (document.getElementById('bulk-social') || {}).value || 'vk';
+  if (sel) setActiveTemplate(social, sel.value || null);
+}
+
+function onSenderTemplateChange() {
+  const sel = document.getElementById('s-template');
+  if (sel) setActiveTemplate('vk', sel.value || null);
+}
+
+// ── Модалка редактирования ─────────────────────────────────────
+function openTemplateModal(id) {
+  if (!templatesLoaded) { loadTemplates().then(() => openTemplateModal(id)); return; }
+  _tplEditId = id || null;
+  const t = id ? messageTemplates.find(x => x.id === id) : null;
+  const title = document.getElementById('tpl-modal-title');
+  if (title) title.textContent = t ? '✏️ Редактировать шаблон' : '✏️ Новый шаблон';
+  const nameEl = document.getElementById('tpl-name');
+  if (nameEl) nameEl.value = t ? t.name : '';
+  const textEl = document.getElementById('tpl-text');
+  if (textEl) textEl.value = t ? t.text : '';
+  const catSel = document.getElementById('tpl-category');
+  if (catSel) {
+    catSel.innerHTML = TEMPLATE_CATEGORIES
+      .map(c => '<option value="' + c + '">' + escapeHtml(TEMPLATE_CAT_LABELS[c]) + '</option>').join('');
+    catSel.value = t ? t.category : (_tplFilterCat !== 'all' ? _tplFilterCat : 'vk');
+  }
+  const ins = document.getElementById('tpl-var-insert');
+  if (ins) {
+    ins.innerHTML = '<option value="">— переменная —</option>'
+      + TEMPLATE_VARS.map(([k]) => '<option value="' + k + '">' + escapeHtml('{' + k + '}') + '</option>').join('');
+    ins.selectedIndex = 0;
+  }
+  const err = document.getElementById('tpl-modal-err');
+  if (err) { err.hidden = true; err.textContent = ''; }
+  updateTemplatePreview();
+  const overlay = document.getElementById('tpl-modal');
+  if (overlay) overlay.hidden = false;
+  if (nameEl && nameEl.focus) nameEl.focus();
+}
+
+function closeTemplateModal() {
+  const overlay = document.getElementById('tpl-modal');
+  if (overlay) overlay.hidden = true;
+  _tplEditId = null;
+}
+
+function insertTemplateVariable(name) {
+  if (!name) return;
+  const ta = document.getElementById('tpl-text');
+  const ins = document.getElementById('tpl-var-insert');
+  if (!ta) return;
+  const token = '{' + name + '}';
+  if (typeof ta.selectionStart === 'number') {
+    const s = ta.selectionStart, e = ta.selectionEnd;
+    ta.value = ta.value.slice(0, s) + token + ta.value.slice(e);
+    ta.selectionStart = ta.selectionEnd = s + token.length;
+  } else {
+    ta.value += token;
+  }
+  if (ins) ins.selectedIndex = 0;
+  updateTemplatePreview();
+  if (ta.focus) ta.focus();
+}
+
+function updateTemplatePreview() {
+  const body = document.getElementById('tpl-preview-body');
+  if (!body) return;
+  const text = (document.getElementById('tpl-text') || {}).value || '';
+  const company = firstCompanyForPreview();
+  body.textContent = company
+    ? substituteTemplate(text, company)
+    : 'Нет данных таблицы — откройте «Результаты» с загруженными компаниями.';
+}
+
+function saveTemplateFromModal() {
+  const nameEl = document.getElementById('tpl-name');
+  const textEl = document.getElementById('tpl-text');
+  const catEl = document.getElementById('tpl-category');
+  const err = document.getElementById('tpl-modal-err');
+  const name = (nameEl ? nameEl.value : '').trim();
+  const text = (textEl ? textEl.value : '').trim();
+  const category = catEl ? catEl.value : 'vk';
+  const fail = msg => {
+    if (err) { err.textContent = msg; err.hidden = false; }
+    return false;
+  };
+  if (!name) return fail('Введите название шаблона');
+  if (!text) return fail('Введите текст шаблона');
+  if (text.length > TEMPLATE_MAX_TEXT) return fail('Текст длиннее ' + TEMPLATE_MAX_TEXT + ' символов');
+  const dup = messageTemplates.find(t =>
+    t.id !== _tplEditId && t.category === category && t.name.toLowerCase() === name.toLowerCase());
+  if (dup) return fail('Шаблон с таким названием уже есть в этой категории');
+  if (_tplEditId) {
+    const t = messageTemplates.find(x => x.id === _tplEditId);
+    if (t) { t.name = name; t.text = text; t.category = category; }
+  } else {
+    messageTemplates.push({
+      id: genTemplateId(), category, name, text,
+      is_default: false, created_at: new Date().toISOString(),
+    });
+  }
+  closeTemplateModal();
+  renderTemplates();
+  renderTemplatePickers();
+  saveTemplatesState();
+  showToast('Шаблон сохранён', 'success');
+  return true;
+}
+
+function duplicateTemplate(id) {
+  const t = messageTemplates.find(x => x.id === id);
+  if (!t) return;
+  messageTemplates.push({
+    id: genTemplateId(), category: t.category, name: t.name + ' (копия)',
+    text: t.text, is_default: false, created_at: new Date().toISOString(),
+  });
+  renderTemplates();
+  saveTemplatesState();
+  showToast('Шаблон продублирован', 'success');
+}
+
+async function deleteTemplate(id) {
+  const t = messageTemplates.find(x => x.id === id);
+  if (!t) return;
+  const ok = await uiConfirm('Удалить шаблон «' + t.name + '»?', 'Удалить шаблон', 'Удалить', true);
+  if (!ok) return;
+  messageTemplates = messageTemplates.filter(x => x.id !== id);
+  TEMPLATE_CATEGORIES.forEach(c => { if (activeTemplateIds[c] === id) activeTemplateIds[c] = null; });
+  renderTemplates();
+  renderTemplatePickers();
+  saveTemplatesState();
+}
+
+async function copyTemplateText(id) {
+  const t = messageTemplates.find(x => x.id === id);
+  if (!t) return;
+  const company = firstCompanyForPreview();
+  const text = company ? substituteTemplate(t.text, company) : t.text;
+  const ok = await copyText(text);
+  if (ok) showToast('📋 Текст скопирован', 'success');
+  else showCopyTextModal(text);
+}
+
+// Модалка-фолбэк, когда буфер обмена недоступен.
+function showCopyTextModal(text) {
+  const overlay = document.createElement('div');
+  overlay.className = 'ui-modal-overlay';
+  overlay.innerHTML = '<div class="ui-modal links-modal">'
+    + '<h3>Текст для отправки</h3>'
+    + '<p>Автоматически скопировать не удалось — выделите текст и скопируйте сами.</p>'
+    + '<textarea readonly rows="10">' + escapeHtml(text) + '</textarea>'
+    + '<div class="ui-modal-btns"><button type="button" class="m-ok">Понятно</button></div></div>';
+  const done = () => overlay.remove();
+  overlay.querySelector('.m-ok').onclick = done;
+  overlay.addEventListener('click', e => { if (e.target === overlay) done(); });
+  document.body.appendChild(overlay);
+}
+
+// Универсальный выбор из N вариантов (у uiConfirm их только два).
+// Возвращает {value, applyAll} или null. Чекбокс — опциональный.
+function uiChoose(message, title, options, opts) {
+  opts = opts || {};
+  return new Promise(resolve => {
+    const overlay = document.createElement('div');
+    overlay.className = 'ui-modal-overlay';
+    const btns = (options || []).map(o =>
+      '<button type="button" class="m-opt' + (o.danger ? ' danger' : '') + '" data-value="'
+      + escapeHtml(o.value) + '">' + escapeHtml(o.label) + '</button>').join('');
+    const chk = opts.checkboxLabel
+      ? '<label class="ui-modal-chk"><input type="checkbox" class="m-applyall"> '
+        + escapeHtml(opts.checkboxLabel) + '</label>'
+      : '';
+    overlay.innerHTML = '<div class="ui-modal"><h3>' + escapeHtml(title || 'Выберите действие') + '</h3>'
+      + '<p>' + escapeHtml(message || '') + '</p>' + chk
+      + '<div class="ui-modal-btns">' + btns
+      + '<button type="button" class="m-cancel">Отмена</button></div></div>';
+    const done = val => { overlay.remove(); resolve(val); };
+    overlay.querySelectorAll('.m-opt').forEach(b => b.addEventListener('click', () => {
+      const box = overlay.querySelector('.m-applyall');
+      done({value: b.dataset.value, applyAll: !!(box && box.checked)});
+    }));
+    overlay.querySelector('.m-cancel').onclick = () => done(null);
+    overlay.addEventListener('click', e => { if (e.target === overlay) done(null); });
+    document.body.appendChild(overlay);
+    const first = overlay.querySelector('.m-opt');
+    if (first && first.focus) first.focus();
+  });
+}
+
+// ── Экспорт / импорт / сброс ───────────────────────────────────
+function exportTemplates() {
+  const payload = {
+    version: 1,
+    exported_at: new Date().toISOString(),
+    active_template_ids: activeTemplateIds,
+    templates: messageTemplates,
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], {type: 'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'message-templates.json';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  showToast('Шаблоны экспортированы', 'success');
+}
+
+function importTemplatesClick() {
+  const inp = document.getElementById('tpl-import-file');
+  if (inp) inp.click();
+}
+
+async function importTemplates(input) {
+  const file = input && input.files && input.files[0];
+  if (!file) return;
+  let parsed = null;
+  try {
+    parsed = JSON.parse(await file.text());
+  } catch (e) {
+    showToast('Файл не похож на JSON', 'error');
+    input.value = '';
+    return;
+  }
+  input.value = '';
+  const incoming = Array.isArray(parsed) ? parsed : (parsed && Array.isArray(parsed.templates) ? parsed.templates : []);
+  const normalized = normalizeTemplatesClient(incoming);
+  if (!normalized.length) { showToast('В файле нет шаблонов', 'warning'); return; }
+
+  let applyAll = null;   // null | 'replace' | 'duplicate' | 'skip'
+  let added = 0, replaced = 0, duplicated = 0, skipped = 0;
+  for (const t of normalized) {
+    const existing = messageTemplates.find(x => x.id === t.id);
+    if (!existing) { messageTemplates.push(t); added++; continue; }
+    let action = applyAll;
+    if (!action) {
+      const choice = await uiChoose('Шаблон «' + existing.name + '» уже есть.', 'Конфликт шаблонов',
+        [{value: 'replace', label: 'Заменить'},
+         {value: 'duplicate', label: 'Дублировать'},
+         {value: 'skip', label: 'Пропустить'}],
+        {checkboxLabel: 'Применить ко всем'});
+      if (!choice || !choice.value) { skipped++; continue; }
+      action = choice.value;
+      if (choice.applyAll) applyAll = action;
+    }
+    if (action === 'replace') { Object.assign(existing, t); replaced++; }
+    else if (action === 'duplicate') {
+      messageTemplates.push(Object.assign({}, t, {id: genTemplateId()}));
+      duplicated++;
+    } else skipped++;
+  }
+  renderTemplates();
+  renderTemplatePickers();
+  saveTemplatesState();
+  showToast('Импорт: добавлено ' + added + ', заменено ' + replaced
+    + ', дублей ' + duplicated + ', пропущено ' + skipped, 'success');
+}
+
+async function resetTemplates() {
+  const ok = await uiConfirm('Вернуть пять стандартных шаблонов? Ваши шаблоны будут заменены.',
+    'Сброс шаблонов', 'Сбросить', true);
+  if (!ok) return;
+  try {
+    const j = await postJSON('/templates/reset', {});
+    if (j && j.ok) applyTemplatesState(j);
+    showToast('Шаблоны сброшены к стандартным', 'success');
+  } catch (e) {
+    showToast('Не удалось сбросить: ' + e.message, 'error');
+  }
+}
+
+function onShowMissingChange() {
+  const chk = document.getElementById('tpl-show-missing');
+  showMissingAsVar = !!(chk && chk.checked);
+  updateTemplatePreview();
+  saveTemplatesState();
+}
+
+// ── Интеграция с таблицей ──────────────────────────────────────
+// Клик по бейджу соцсети: подставляем активный для этой соцсети шаблон,
+// копируем и открываем профиль. Нет шаблона — ссылка работает как раньше.
+async function onSocialBadgeClick(event, el) {
+  const social = el.dataset.social;
+  const key = el.dataset.key;
+  const rows = (typeof filteredRows !== 'undefined' && filteredRows && filteredRows.length) ? filteredRows : allResults;
+  const record = (rows || []).find(r => reviewKey(r) === key);
+  const tpl = getActiveTemplateFor(social);
+  if (!tpl || !record) return;
+  event.preventDefault();
+  const text = substituteTemplate(tpl.text, record);
+  const ok = await copyText(text);
+  if (ok) showToast('📋 Текст скопирован. Вставьте (Ctrl+V)', 'success');
+  else showCopyTextModal(text);
+  window.open(el.getAttribute('href'), '_blank', 'noopener');
+}
+
+// ── Очередь сообщений массового обхода ─────────────────────────
+function renderBulkQueue() {
+  const box = document.getElementById('bulk-queue');
+  if (!box) return;
+  const texts = bulkState.texts instanceof Map ? bulkState.texts : new Map();
+  const copied = bulkState.copiedTexts instanceof Set ? bulkState.copiedTexts : new Set();
+  if (!texts.size) { box.hidden = true; box.innerHTML = ''; return; }
+  box.hidden = false;
+  const items = [...texts.entries()];
+  box.innerHTML = '<div class="bulk-queue-head"><span>Тексты готовы: '
+    + items.filter(([k]) => copied.has(k)).length + ' из ' + items.length + '</span>'
+    + '<button type="button" onclick="bulkCopyNext()">📋 Скопировать следующее</button></div>'
+    + items.map(([key, v]) =>
+        '<div class="bulk-queue-item' + (copied.has(key) ? ' done' : '') + '">'
+        + '<span class="bqi-name">' + escapeHtml(v.name || 'Без названия') + '</span>'
+        + '<button type="button" data-copy="' + escapeHtml(key) + '">📋</button></div>').join('');
+  box.querySelectorAll('[data-copy]').forEach(b =>
+    b.addEventListener('click', () => bulkCopyOne(b.dataset.copy)));
+}
+
+async function bulkCopyOne(key) {
+  const texts = bulkState.texts instanceof Map ? bulkState.texts : new Map();
+  const item = texts.get(key);
+  if (!item) return;
+  const ok = await copyText(item.text || '');
+  if (!ok) { showCopyTextModal(item.text || ''); return; }
+  if (!(bulkState.copiedTexts instanceof Set)) bulkState.copiedTexts = new Set();
+  bulkState.copiedTexts.add(key);
+  showToast('📋 Текст для «' + (item.name || 'компании') + '» скопирован', 'success');
+  renderBulkQueue();
+}
+
+async function bulkCopyNext() {
+  const texts = bulkState.texts instanceof Map ? bulkState.texts : new Map();
+  const copied = bulkState.copiedTexts instanceof Set ? bulkState.copiedTexts : new Set();
+  const next = [...texts.keys()].find(k => !copied.has(k));
+  if (!next) { showToast('Все тексты из этой пачки скопированы', 'info'); return; }
+  await bulkCopyOne(next);
+}
+
+// ── Интеграция с «Отправить в VK» ──────────────────────────────
+function fillSenderFromTemplate() {
+  const sel = document.getElementById('s-template');
+  const t = (sel && messageTemplates.find(x => x.id === sel.value)) || getActiveTemplateFor('vk');
+  if (!t) { showToast('Нет шаблонов', 'warning'); return; }
+  const ta = document.getElementById('s-message');
+  if (ta) ta.value = t.text;
+  showToast('Текст шаблона вставлен', 'success');
+}
+
 (function init() {
   // Theme
   const savedTheme = localStorage.getItem(THEME_KEY);
@@ -6202,6 +6854,14 @@ async function selfUpdate() {
   // рендера счётчика, чтобы подсказка не мигала пустой строкой.
   fillBlacklistTemplateSelect();
   loadBlacklistWords();
+
+  // Шаблоны сообщений («📝 Шаблоны»): состояние нужно таблице, обходу и
+  // рассылке, поэтому читаем сразу, а не при первом заходе на вкладку.
+  loadTemplates();
+  const _tplOverlay = document.getElementById('tpl-modal');
+  if (_tplOverlay) _tplOverlay.addEventListener('click', e => { if (e.target === _tplOverlay) closeTemplateModal(); });
+  const _tplTextEl = document.getElementById('tpl-text');
+  if (_tplTextEl) _tplTextEl.addEventListener('input', updateTemplatePreview);
 
   // Папка для сохранения результатов: источник правды — сервер (settings.json),
   // поэтому форма заполняется ответом /output-dir, а не localStorage.

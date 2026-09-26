@@ -10,6 +10,12 @@ from typing import Generator, Optional
 
 import openpyxl
 
+try:  # карта заголовок → поле записи, чтобы шаблоны видели все переменные
+    from yandex_maps_parser.constants import HEADER_LABELS
+    _HEADER_TO_FIELD = {v.strip().lower(): k for k, v in HEADER_LABELS.items()}
+except Exception:  # pragma: no cover
+    _HEADER_TO_FIELD = {}
+
 logger = logging.getLogger(__name__)
 
 # Варианты написания заголовка колонки VK в Excel-файлах парсера
@@ -65,6 +71,22 @@ def _find_name_col(ws) -> Optional[int]:
     return None
 
 
+def _record_cols(ws) -> dict:
+    """Поле записи → номер столбца: все известные заголовки книги.
+
+    Так шаблон сообщения получает не только название, но и город, категорию,
+    рейтинг и остальные переменные — из той же строки Excel.
+    """
+    cols: dict = {}
+    for cell in ws[1]:
+        if not cell.value:
+            continue
+        field = _HEADER_TO_FIELD.get(str(cell.value).strip().lower())
+        if field and field not in cols:
+            cols[field] = cell.column
+    return cols
+
+
 def iter_recipients(
     excel_path: str,
     social: str = "vk",
@@ -77,7 +99,8 @@ def iter_recipients(
       - в колонке «Отправлено» нет «+»
 
     Yields dict с ключами:
-      row_num (int), name (str), vk_url (str), sent (str)
+      row_num (int), name (str), vk_url (str), sent (str),
+      record (dict) — вся строка по известным заголовкам, для шаблонов
 
     Ограничение по числу записей (limit) применяется в runner.py
     ПОСЛЕ проверок сайта и истории, чтобы N означало N фактически
@@ -89,6 +112,7 @@ def iter_recipients(
     vk_col   = _find_vk_col(ws) if social == "vk" else _find_col(ws, social)
     sent_col = _find_col(ws, SENT_HEADER)
     name_col = _find_name_col(ws)
+    rec_cols = _record_cols(ws)
 
     if not vk_col:
         logger.warning("Колонка ВКонтакте не найдена в %s", excel_path)
@@ -111,11 +135,20 @@ def iter_recipients(
         if name_col:
             name = str(ws.cell(row=row_num, column=name_col).value or "").strip()
 
+        # Полная запись строки — для подстановки переменных в шаблон.
+        record = {
+            field: ws.cell(row=row_num, column=col).value
+            for field, col in rec_cols.items()
+        }
+        if name_col:
+            record["name"] = name
+
         yield {
             "row_num":  row_num,
             "name":     name or f"Бизнес #{row_num - 1}",
             "vk_url":   str(vk_url).strip(),
             "sent":     sent_val,
+            "record":   record,
         }
 
     wb.close()

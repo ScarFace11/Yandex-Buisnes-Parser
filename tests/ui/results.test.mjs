@@ -174,7 +174,14 @@ globalThis.currentFile = '';
 globalThis._resultsView = 'raw';
 globalThis._resultsScope = 'current';   // «Текущий результат» = последний поиск
 globalThis.bulkBusy = false;
-globalThis.bulkState = { social: 'vk', opened: 0, blocked: 0, keys: new Set(), copied: new Set() };
+globalThis.bulkState = { social: 'vk', opened: 0, blocked: 0, keys: new Set(), copied: new Set(), texts: new Map(), copiedTexts: new Set() };
+// «📝 Шаблоны» стыкуются с таблицей и обходом — здесь их подменяем
+// заглушками; сами шаблоны проверяет tests/ui/templates.test.mjs.
+globalThis.syncTemplateSelects = () => {};
+globalThis.syncTableTemplatePicker = () => {};
+globalThis.getActiveTemplateFor = () => null;
+globalThis.renderBulkQueue = () => {};
+globalThis.showMissingAsVar = false;
 globalThis.filesData = { raw: [], processed: [], archive: [] };
 globalThis.filesFilter = '';
 globalThis.updateStatsBadge = () => {};
@@ -258,7 +265,7 @@ function resetState(rows = ROWS) {
   globalThis.unviewedOnly = false;
   globalThis.currentFileNote = '';
   globalThis.currentFile = '';
-  globalThis.bulkState = { social: 'vk', opened: 0, blocked: 0, keys: new Set(), copied: new Set() };
+  globalThis.bulkState = { social: 'vk', opened: 0, blocked: 0, keys: new Set(), copied: new Set(), texts: new Map(), copiedTexts: new Set() };
   globalThis.bulkBusy = false;
   scheduled.length = 0;
   globalThis.reviewedDirty = false;

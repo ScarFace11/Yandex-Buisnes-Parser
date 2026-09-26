@@ -23,6 +23,7 @@ import logging
 from typing import Callable
 
 from .vk_adapter import VKAdapter
+from yandex_maps_parser.message_templates import substitute
 from . import excel_manager as xm
 
 logger = logging.getLogger(__name__)
@@ -178,8 +179,9 @@ def run_send(
             xm.mark_sent(excel_path, row_num, "+")
             continue
 
-        # 4. Отправить сообщение
-        text = message_tpl.replace("{название_бизнеса}", name)
+        # 4. Отправить сообщение — переменные подставляет общий с шаблонами
+        # «📝 Шаблоны» хелпер: {name}, {название_бизнеса}, {city} и т.д.
+        text = substitute(message_tpl, rec.get("record") or {"name": name})
 
         try:
             adapter.send_message(peer_id, text)
