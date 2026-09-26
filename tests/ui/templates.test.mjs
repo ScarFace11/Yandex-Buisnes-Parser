@@ -85,7 +85,10 @@ const IDS = ['tpl-list', 'tpl-var-list', 'tpl-show-missing', 'tpl-modal', 'tpl-m
              'tpl-name', 'tpl-category', 'tpl-text', 'tpl-var-insert', 'tpl-preview-body',
              'tpl-preview-title', 'tpl-preview-note', 'tpl-modal-err', 'tbl-template',
              'bulk-template', 'bulk-social', 's-template', 's-message', 'bulk-queue',
-             'tpl-import-file', 'tpl-search', 'tpl-search-count', 'tpl-empty-box', 'btn-tpl-add'];
+             'tpl-import-file', 'tpl-search', 'tpl-search-count', 'tpl-empty-box', 'btn-tpl-add',
+             'tpl-pick-box', 'tpl-pick-cat', 'tpl-pick-body', 'tpl-pick-count', 'tpl-pick-single',
+             'tpl-pick-modal', 'tpl-pick-modal-cat', 'tpl-pick-modal-list', 'tpl-pick-modal-count',
+             'tpl-pick-modal-hint', 'tpl-pick-modal-save', 'tpl-pick-avoid'];
 for (const id of IDS) els[id] = mkEl(id);
 els['bulk-social'].value = 'vk';
 
@@ -114,6 +117,12 @@ globalThis.postJSON = async () => ({ ok: true });
 globalThis.uiConfirm = async () => globalThis._confirm !== false;
 globalThis.reviewKey = r => (r && r.key) || '';
 globalThis.SLABELS = { vk: 'VK', instagram: 'IG', telegram: 'TG', whatsapp: 'WA' };
+globalThis._pluralRu = (n, one, few, many) => {
+  const m10 = n % 10, m100 = n % 100;
+  if (m10 === 1 && m100 !== 11) return one;
+  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
+  return many;
+};
 globalThis.activeSocialFilters = new Set();
 globalThis.filteredRows = [];
 globalThis.allResults = [];
@@ -123,10 +132,18 @@ globalThis.window = { open: url => opened.push(url) };
 globalThis.URL = { createObjectURL: () => 'blob:x', revokeObjectURL: () => {} };
 
 for (const name of ['messageTemplates', 'activeTemplateIds', 'showMissingAsVar', 'templatesLoaded',
-                    'templatesLoading', '_tplFilterCat', '_tplEditId', '_tplSaveTimer']) {
-  globalThis[name] = name === 'messageTemplates' ? [] : (name === 'activeTemplateIds'
-    ? { vk: null, telegram: null, whatsapp: null, instagram: null }
-    : (name === '_tplFilterCat' ? 'all' : null));
+                    'templatesLoading', '_tplFilterCat', '_tplEditId', '_tplSaveTimer',
+                    'templateModes', 'randomTemplateIds', 'avoidRepeats', '_lastPickedTpl', '_pickModalCat']) {
+  globalThis[name] = name === 'messageTemplates' ? []
+    : (name === 'activeTemplateIds'
+      ? { vk: null, telegram: null, whatsapp: null, instagram: null }
+      : (name === 'templateModes'
+        ? { vk: 'single', telegram: 'single', whatsapp: 'single', instagram: 'single' }
+        : (name === 'randomTemplateIds'
+          ? { vk: [], telegram: [], whatsapp: [], instagram: [] }
+          : (name === '_lastPickedTpl'
+            ? {}
+            : (name === '_pickModalCat' ? 'vk' : (name === '_tplFilterCat' ? 'all' : false))))));
 }
 
 (0, eval)([
@@ -136,11 +153,28 @@ for (const name of ['messageTemplates', 'activeTemplateIds', 'showMissingAsVar',
   grab('normalizeTemplatesClient'),
   grab('genTemplateId'),
   grab('getActiveTemplateFor'),
+  grab('pruneTemplatePicks'),
+  grab('pickRandomTemplate'),
+  grab('getTemplateFor'),
   grab('setActiveTemplate'),
   grab('loadTemplates'),
   grab('applyTemplatesState'),
   grab('postTemplatesState'),
   grab('saveTemplatesState'),
+  grab('renderTemplatePickPanel'),
+  grab('renderPickPanelBody'),
+  grab('updatePickCount'),
+  grab('onPickCatChange'),
+  grab('onPickModeChange'),
+  grab('onPickSingleChange'),
+  grab('onPickToggle'),
+  grab('openPickModal'),
+  grab('renderPickModalList'),
+  grab('updatePickModalCount'),
+  grab('onPickModalCatChange'),
+  grab('onPickModalToggle'),
+  grab('closePickModal'),
+  grab('savePickModal'),
   grab('renderTemplates'),
   grab('filterTemplatesByCategory'),
   grab('fillTemplateSelect'),
@@ -193,6 +227,11 @@ const COMPANY = {
 function reset({ templates = TEMPLATES, active = {}, missing = false } = {}) {
   globalThis.messageTemplates = templates.map(t => ({ ...t }));
   globalThis.activeTemplateIds = Object.assign({ vk: null, telegram: null, whatsapp: null, instagram: null }, active);
+  globalThis.templateModes = { vk: 'single', telegram: 'single', whatsapp: 'single', instagram: 'single' };
+  globalThis.randomTemplateIds = { vk: [], telegram: [], whatsapp: [], instagram: [] };
+  globalThis.avoidRepeats = false;
+  globalThis._lastPickedTpl = {};
+  globalThis._pickModalCat = 'vk';
   globalThis.showMissingAsVar = missing;
   globalThis.templatesLoaded = true;
   globalThis.templatesLoading = null;
@@ -606,4 +645,187 @@ test('exportTemplates формирует JSON с версией и шаблон�
   assert.equal(parsed.version, 1);
   assert.equal(parsed.templates.length, 3);
   assert.ok(parsed.exported_at);
+});
+
+// ── Случайный выбор шаблонов ──────────────────────────────────
+test('applyTemplatesState читает режимы, наборы и avoid_repeats', () => {
+  reset();
+  globalThis.applyTemplatesState({
+    templates: TEMPLATES,
+    template_modes: { vk: 'random' },
+    random_template_ids: { vk: ['vk1', 'vk2', 'нет-такого'] },
+    avoid_repeats: true,
+  });
+  assert.equal(globalThis.templateModes.vk, 'random');
+  assert.equal(globalThis.templateModes.telegram, 'single');
+  assert.deepEqual(globalThis.randomTemplateIds.vk, ['vk1', 'vk2'], 'битые id отброшены');
+  assert.equal(globalThis.avoidRepeats, true);
+  // Старый сервер без новых полей — дефолты.
+  globalThis.applyTemplatesState({ templates: TEMPLATES });
+  assert.equal(globalThis.templateModes.vk, 'single');
+  assert.deepEqual(globalThis.randomTemplateIds.vk, []);
+  assert.equal(globalThis.avoidRepeats, false);
+});
+
+test('getTemplateFor: random выбирает из набора, avoid не повторяет подряд', () => {
+  reset();
+  globalThis.templateModes.vk = 'random';
+  globalThis.randomTemplateIds.vk = ['vk1', 'vk2'];
+  const picks = new Set();
+  for (let i = 0; i < 40; i++) picks.add(globalThis.getTemplateFor('vk').id);
+  assert.ok(picks.size >= 1 && [...picks].every(id => ['vk1', 'vk2'].includes(id)), 'из набора');
+  // avoid_repeats: тот же шаблон не выбирается дважды подряд — при двух
+  // шаблонах идёт строгое чередование.
+  globalThis.avoidRepeats = true;
+  globalThis._lastPickedTpl.vk = 'vk1';
+  let prev = 'vk1';
+  for (let i = 0; i < 20; i++) {
+    const cur = globalThis.getTemplateFor('vk').id;
+    assert.notEqual(cur, prev, 'не повторяется дважды подряд');
+    prev = cur;
+  }
+  // Один шаблон в наборе — всегда он же.
+  globalThis.randomTemplateIds.vk = ['vk1'];
+  globalThis._lastPickedTpl.vk = 'vk1';
+  assert.equal(globalThis.getTemplateFor('vk').id, 'vk1');
+});
+
+test('getTemplateFor: пустой набор или single — fallback на активный', () => {
+  reset({ active: { vk: 'vk2' } });
+  globalThis.templateModes.vk = 'random';
+  globalThis.randomTemplateIds.vk = [];
+  assert.equal(globalThis.getTemplateFor('vk').id, 'vk2');
+  globalThis.randomTemplateIds.vk = ['tg1'];   // чужая категория не попадает
+  assert.equal(globalThis.getTemplateFor('vk').id, 'vk2');
+  globalThis.templateModes.vk = 'single';
+  assert.equal(globalThis.getTemplateFor('vk').id, 'vk2');
+});
+
+test('повторный клик по бейджу даёт случайный выбор и тост с именем шаблона', async () => {
+  reset({ active: { vk: 'vk1' } });
+  globalThis.templateModes.vk = 'random';
+  globalThis.randomTemplateIds.vk = ['vk1', 'vk2'];
+  const el = mkEl('badge');
+  el.dataset = { social: 'vk', key: 'k1' };
+  el.getAttribute = name => (name === 'href' ? 'https://vk.com/x' : null);
+  globalThis.filteredRows = [{ ...COMPANY, key: 'k1' }];
+  await globalThis.onSocialBadgeClick({ preventDefault() {} }, el);
+  assert.match(toasts.at(-1).msg, /\(/, 'в тосте имя использованного шаблона');
+  // Два клика подряд — два независимых выбора (avoid может давать разные).
+  const seen = new Set();
+  for (let i = 0; i < 30; i++) { await globalThis.onSocialBadgeClick({ preventDefault() {} }, el); seen.add(toasts.at(-1).msg); }
+  assert.ok(seen.size >= 1);
+});
+
+test('удаление шаблона и смена категории вычищают наборы', async () => {
+  reset();
+  globalThis.randomTemplateIds.vk = ['vk1', 'vk2'];
+  globalThis.randomTemplateIds.telegram = ['tg1'];
+  await globalThis.deleteTemplate('vk1');
+  assert.deepEqual(globalThis.randomTemplateIds.vk, ['vk2'], 'удалённый убран');
+  assert.deepEqual(globalThis.randomTemplateIds.telegram, ['tg1']);
+  // Смена категории шаблона: из vk-набора выпадает, в telegram-наборе становится валиден.
+  globalThis.randomTemplateIds.telegram = ['tg1', 'vk2'];
+  const t = globalThis.messageTemplates.find(x => x.id === 'vk2');
+  t.category = 'telegram';
+  globalThis.pruneTemplatePicks();
+  assert.deepEqual(globalThis.randomTemplateIds.telegram, ['tg1', 'vk2'], 'в новой категории валиден');
+  assert.deepEqual(globalThis.randomTemplateIds.vk, [], 'из старой категории вычищен');
+});
+
+test('переключение режима сохраняет состояние на сервере', () => {
+  reset();
+  globalThis.renderPickPanelBody();
+  // single → random
+  els['tpl-pick-cat'].value = 'vk';
+  const radios = [];
+  globalThis.document.querySelectorAll = sel => {
+    if (String(sel).includes('tpl-pick-mode')) {
+      return [
+        { value: 'single', checked: true },
+        { value: 'random', checked: false },
+      ];
+    }
+    return [];
+  };
+  globalThis.document.querySelector = sel =>
+    (String(sel).includes(':checked') ? { value: 'random' } : null);
+  globalThis.onPickModeChange();
+  assert.equal(globalThis.templateModes.vk, 'random');
+  // Реверс: radios для перерисовки тела.
+  globalThis.document.querySelectorAll = () => [];
+  flushTimers();   // debounce → postTemplatesState → ok:true
+});
+
+test('чекбоксы в модалке обновляют счётчик и валидацию сохранения', () => {
+  reset();
+  globalThis.openPickModal();
+  assert.equal(els['tpl-pick-modal'].hidden, false);
+  assert.equal(els['tpl-pick-modal-save'].disabled, true, '0 выбранных — Save off');
+  assert.match(els['tpl-pick-modal-count'].textContent, /Выбрано: 0 из 2/);
+  globalThis.onPickModalToggle('vk1');
+  globalThis.onPickModalToggle('vk2');
+  assert.match(els['tpl-pick-modal-count'].textContent, /Выбрано: 2 из 2/);
+  assert.equal(els['tpl-pick-modal-save'].disabled, false);
+  assert.equal(els['tpl-pick-modal-hint'].hidden, true);
+  // Один шаблон — предупреждение, но Save доступен.
+  globalThis.onPickModalToggle('vk2');
+  assert.match(els['tpl-pick-modal-hint'].textContent, /2\+/);
+  assert.equal(els['tpl-pick-modal-save'].disabled, false);
+});
+
+test('savePickModal включает random-режим категории и сохраняет', () => {
+  reset();
+  globalThis._pickModalCat = 'telegram';
+  globalThis.randomTemplateIds.telegram = ['tg1'];
+  els['tpl-pick-avoid'].checked = true;
+  globalThis.savePickModal();
+  assert.equal(globalThis.templateModes.telegram, 'random');
+  assert.equal(globalThis.avoidRepeats, true);
+  assert.equal(els['tpl-pick-modal'].hidden, true);
+  assert.match(toasts.at(-1).msg, /набор/i);
+  // 0 выбранных — сохранить нельзя.
+  reset();
+  globalThis.randomTemplateIds.telegram = [];
+  globalThis.savePickModal();
+  assert.equal(globalThis.templateModes.telegram, 'single');
+});
+
+test('модалка настроек: категория переключается, отмена не меняет набор', () => {
+  reset();
+  globalThis.openPickModal();
+  els['tpl-pick-modal-cat'].value = 'telegram';
+  globalThis.onPickModalCatChange();
+  assert.equal(globalThis._pickModalCat, 'telegram');
+  assert.match(els['tpl-pick-modal-list'].innerHTML, /tg1|TG/);
+  globalThis.onPickModalToggle('tg1');
+  globalThis.closePickModal();
+  assert.equal(els['tpl-pick-modal'].hidden, true);
+  assert.deepEqual(globalThis.randomTemplateIds.telegram, ['tg1'], 'выбор в модалке живёт до Сохранить');
+  // Смена режима не запускалась — серверное состояние не тронуто.
+  assert.equal(globalThis.templateModes.telegram, 'single');
+});
+
+test('onPickToggle обновляет набор и счётчик панели', () => {
+  reset();
+  els['tpl-pick-cat'].value = 'vk';
+  globalThis.onPickToggle('vk1');
+  assert.deepEqual(globalThis.randomTemplateIds.vk, ['vk1']);
+  globalThis.onPickToggle('vk1');
+  assert.deepEqual(globalThis.randomTemplateIds.vk, []);
+  flushTimers();
+});
+
+test('очередь обхода показывает имя шаблона', () => {
+  reset();
+  globalThis.bulkState.texts = new Map([
+    ['k1', { name: 'Клининг-Про', text: 'Текст', url: 'u', tpl_name: 'Первое знакомство' }],
+  ]);
+  globalThis.renderBulkQueue();
+  assert.match(els['bulk-queue'].innerHTML, /Клининг-Про/);
+  assert.match(els['bulk-queue'].innerHTML, /\(Первое знакомство\)/);
+  // Без tpl_name — ничего лишнего.
+  globalThis.bulkState.texts = new Map([['k2', { name: 'Б', text: 'x', url: 'u', tpl_name: '' }]]);
+  globalThis.renderBulkQueue();
+  assert.ok(!/📋 \(/.test(els['bulk-queue'].innerHTML.split('Б')[1] || ''));
 });

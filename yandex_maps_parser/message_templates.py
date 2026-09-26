@@ -12,11 +12,15 @@
         "updated_at": "2026-09-26T12:00:00+00:00",
         "active_template_ids": {"vk": "tpl_vk_intro", "telegram": null, ...},
         "show_missing_as_var": false,
+        "template_modes": {"vk": "single", "telegram": "random", ...},
+        "random_template_ids": {"vk": ["tpl_1", "tpl_2"], ...},
+        "avoid_repeats": false,
         "templates": [{id, category, name, text, is_default, created_at}],
     }
 """
 from __future__ import annotations
 
+import random
 import re
 from datetime import datetime, timezone
 
@@ -38,6 +42,9 @@ CATEGORY_LABELS = {
     "whatsapp": "WhatsApp",
     "instagram": "Instagram",
 }
+
+# Режим выбора шаблона: один выбранный или случайный из набора.
+PICK_MODES = ("single", "random")
 
 SOCIAL_KEYS = ("vk", "telegram", "whatsapp", "instagram")
 SOCIAL_LABELS = {"vk": "VK", "telegram": "TG", "whatsapp": "WA", "instagram": "IG"}
@@ -176,6 +183,43 @@ def normalize_active_ids(raw, templates) -> dict:
     return out
 
 
+def normalize_modes(raw) -> dict:
+    """Режим выбора по категориям: только single/random, мусор → single."""
+    src = raw if isinstance(raw, dict) else {}
+    out = {}
+    for cat in CATEGORIES:
+        val = src.get(cat)
+        out[cat] = val if val in PICK_MODES else "single"
+    return out
+
+
+def normalize_random_ids(raw, templates) -> dict:
+    """Наборы для случайного выбора по категориям.
+
+    Только существующие id СВОЕЙ категории (шаблон удалён или переехал в
+    другую категорию — из набора выпадает автоматически), дедуп, порядок
+    сохраняется, кап — MAX_TEMPLATES. Не-список → пустой набор.
+    """
+    by_cat = {cat: set() for cat in CATEGORIES}
+    for t in templates:
+        by_cat.setdefault(t["category"], set()).add(t["id"])
+    src = raw if isinstance(raw, dict) else {}
+    out: dict = {}
+    for cat in CATEGORIES:
+        items = src.get(cat)
+        seen: set = set()
+        ids: list = []
+        for item in items if isinstance(items, list) else []:
+            tid = str(item or "").strip()
+            if tid and tid not in seen and tid in by_cat.get(cat, set()):
+                seen.add(tid)
+                ids.append(tid)
+                if len(ids) >= MAX_TEMPLATES:
+                    break
+        out[cat] = ids
+    return out
+
+
 def migrate_templates(raw) -> tuple:
     """Привести хранилище к текущей версии. Возвращает (данные, предупреждения).
 
@@ -213,6 +257,10 @@ def normalize_state(raw) -> tuple:
         "active_template_ids": normalize_active_ids(
             migrated.get("active_template_ids"), templates),
         "show_missing_as_var": bool(migrated.get("show_missing_as_var", False)),
+        "template_modes": normalize_modes(migrated.get("template_modes")),
+        "random_template_ids": normalize_random_ids(
+            migrated.get("random_template_ids"), templates),
+        "avoid_repeats": bool(migrated.get("avoid_repeats", False)),
         "templates": templates,
     }
     return state, warnings
@@ -225,6 +273,9 @@ def default_state() -> dict:
         "updated_at": _now(),
         "active_template_ids": {cat: None for cat in CATEGORIES},
         "show_missing_as_var": False,
+        "template_modes": {cat: "single" for cat in CATEGORIES},
+        "random_template_ids": {cat: [] for cat in CATEGORIES},
+        "avoid_repeats": False,
         "templates": normalize_templates(DEFAULT_TEMPLATES),
     }
 
@@ -282,3 +333,43 @@ def substitute(text: str, record: dict, show_missing_as_var: bool = False) -> st
         return str(value)
 
     return _VAR_RE.sub(repl, str(text or ""))
+
+
+# ── Случайный выбор шаблонов ──────────────────────────────────
+
+def pick_random_text(texts: list, last_text: str | None = None, avoid_repeats: bool = False) -> str | None:
+    """Случайный текст из набора; с avoid_repeats — не повторять последний.
+
+    Исключение последнего опустошило набор (был один шаблон) — выбор из
+    полного набора: один шаблон всегда даёт один и тот же текст, и это
+    корректно. Пустой набор → None.
+    """
+    pool = [t for t in (texts or []) if isinstance(t, str) and t.strip()]
+    if not pool:
+        return None
+    if avoid_repeats and len(pool) > 1 and last_text is not None:
+        reduced = [t for t in pool if t != last_text]
+        if reduced:
+            pool = reduced
+    return random.choice(pool)
+
+
+def resolve_pick_state(social: str, state: dict) -> dict:
+    """Данные выбора для категории: {(texts, names, mode, avoid)}.
+
+    В random-режиме берутся тексты из набора random_template_ids; набор
+    пуст — значит, случайный выбор не настроен (клиент решает, что делать:
+    обычно fallback на активный шаблон).
+    """
+    state = state or {}
+    modes = state.get("template_modes") if isinstance(state.get("template_modes"), dict) else {}
+    mode = modes.get(social) if modes.get(social) in PICK_MODES else "single"
+    by_id = {t["id"]: t for t in state.get("templates") or []}
+    random_ids = state.get("random_template_ids") if isinstance(state.get("random_template_ids"), dict) else {}
+    picked = [by_id[tid] for tid in (random_ids.get(social) or []) if tid in by_id]
+    return {
+        "texts": [t["text"] for t in picked],
+        "names": [t["name"] for t in picked],
+        "mode": mode,
+        "avoid": bool(state.get("avoid_repeats", False)),
+    }

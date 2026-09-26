@@ -17,6 +17,57 @@
 
 ## [Unreleased]
 
+**Случайный выбор шаблонов** (`yandex_maps_parser/message_templates.py`,
+`routes/api.py`, `vk_sender/runner.py`, `static/js/app.js`, `templates/index.html`,
+`static/css/style.css`, `tests/test_message_templates.py`, `tests/ui/templates.test.mjs`,
+`tests/ui/results.test.mjs`)
+
+- Хранение в `message_templates` (settings.json): `template_modes`
+  (`single`/`random` per-категория), `random_template_ids` (наборы per-категория),
+  `avoid_repeats` (глобально). Новые поля аддитивные — старый settings.json
+  получает дефолты через `normalize_state` без смены версии схемы.
+- `normalize_modes()` — мусор → `single`; `normalize_random_ids(raw, templates)` —
+  только существующие id СВОЕЙ категории (удаление/переезд шаблона автоматически
+  чистит наборы при следующей нормализации), дедуп, кап MAX_TEMPLATES.
+- `pick_random_text(texts, last, avoid)` — чистая функция выбора: с
+  `avoid_repeats` исключает последний, пусто → выбор из полного набора (1 шаблон
+  всегда даёт тот же текст — корректно). `resolve_pick_state(social, state)` —
+  `(texts, names, mode, avoid)` для категории.
+- API: `POST /templates` принимает `template_modes`/`random_template_ids`/
+  `avoid_repeats` (GET отдаёт автоматически); `POST /bulk/urls` — `template_ids`
+  + `tpl_avoid_repeats`: сервер резолвит id по своему хранилищу и выбирает
+  per-record (`pick_random_text` + `substitute`), каждый item получает
+  `tpl_name`; без id — прежний контракт (`template` текстом). `/send/run`
+  прокидывает `message_tpl_ids`/`tpl_avoid_repeats` как есть (params не фильтруются).
+- `vk_sender/runner.py`: ids резолвятся через `load_templates()` по категории
+  `social`; набор пуст/невалиден — fallback на `message_tpl`. Выбор на КАЖДОЕ
+  сообщение с `last` внутри прогона; финальный лог «Использовано шаблонов: N из M».
+- Клиент: состояние `templateModes`/`randomTemplateIds`/`avoidRepeats` в
+  `applyTemplatesState`/`postTemplatesState`; `pickRandomTemplate(social)` —
+  зеркало `pick_random_text` с сессионным `_lastPickedTpl`; `getTemplateFor(social)`
+  — random → случайный из набора, иначе активный (fallback при пустом наборе).
+  `onSocialBadgeClick` берёт `getTemplateFor` и показывает имя шаблона в тосте.
+  `bulkOpenBatch` в random-режиме шлёт `template_ids` вместо текста; очередь
+  (`renderBulkQueue`) рисует «📋 (Имя шаблона)» из `tpl_name`. `startSend` при
+  `#s-random-tpl` шлёт `message_tpl_ids` и не требует непустого текста;
+  `saveSenderConfig`/`restoreSenderConfig` хранят галочку в localStorage.
+  `pruneTemplatePicks()` чистит наборы при удалении/смене категории шаблона
+  (не дожидаясь серверной нормализации).
+- UI: блок «🎲 Выбор шаблона» в `p-templates` (селект категории `#tpl-pick-cat`,
+  радио режимов, для single — селект шаблона, для random — чекбоксы + счётчик
+  «Выбрано: X из Y» + ghost «⚙️ Настроить выбор»); модалка `#tpl-pick-modal` на
+  `.tpl-modal`/`.ui-modal-btns`: чекбоксы, «Избегать повторов», счётчик,
+  подсказки (0 выбранных — Save off, 1 — предупреждение «Выберите 2+»);
+  чекбокс «🎲 Случайный из выбранных шаблонов» в `fw-send-tpl`. Все цвета на
+  токенах (hex-литералов нет); ≤860px — стек, модалка на всю ширину.
+- Тесты: `tests/test_message_templates.py` +11 (нормализация режимов/наборов,
+  prune, дефолты старых файлов, контракт `pick_random_text`, API roundtrip,
+  отбрасывание битых id, `/bulk/urls` random с per-record текстом/именем и
+  avoid-чередованием, fallback без набора, раннер с ids);
+  `tests/ui/templates.test.mjs` +11 (чтение состояния, `getTemplateFor` —
+  random/avoid/fallback, тост с именем, prune, переключение режима с сохранением,
+  валидация модалки, `savePickModal`, отмена, очередь с `tpl_name`);
+  `tests/ui/results.test.mjs` — заглушки новых глобалов для `bulkOpenBatch`.
 **Звук уведомлений: пресеты, громкость, предпросмотр** (`static/js/app.js`,
 `templates/index.html`, `static/css/style.css`)
 

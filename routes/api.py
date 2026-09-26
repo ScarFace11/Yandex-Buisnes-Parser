@@ -1026,7 +1026,7 @@ def preview_blacklist():
 
 @bp.route("/templates", methods=["GET"])
 def get_templates():
-    """Шаблоны, активные по категориям и флаг «показывать {var}»."""
+    """Шаблоны, активные по категориям, режимы выбора и флаг «показывать {var}»."""
     from yandex_maps_parser.message_templates import load_templates
     return jsonify({"ok": True, **load_templates()})
 
@@ -1035,7 +1035,8 @@ def get_templates():
 def set_templates():
     """Сохранить шаблоны (полный набор) и выбор активных.
 
-    Body: {templates: [...], active_template_ids?, show_missing_as_var?}
+    Body: {templates: [...], active_template_ids?, show_missing_as_var?,
+           template_modes?, random_template_ids?, avoid_repeats?}
     Пустой список допустим (заглушка «нет шаблонов»), но не-список — 400.
     """
     from yandex_maps_parser import message_templates as mt
@@ -1047,6 +1048,9 @@ def set_templates():
         "templates": raw,
         "active_template_ids": data.get("active_template_ids"),
         "show_missing_as_var": data.get("show_missing_as_var"),
+        "template_modes": data.get("template_modes"),
+        "random_template_ids": data.get("random_template_ids"),
+        "avoid_repeats": data.get("avoid_repeats"),
     })
     return jsonify({"ok": True, **mt.save_templates(state)})
 
@@ -1114,6 +1118,37 @@ def bulk_urls():
         from yandex_maps_parser.message_templates import substitute as _subst
         substitute = _subst
 
+    # Случайный выбор: клиент передаёт id шаблонов своей соцсети, сервер
+    # резолвит их по общему хранилищу и выбирает на КАЖДУЮ запись — так
+    # очередь обхода получает разные тексты без передачи самих текстов.
+    def _make_random_picker(ids: list, avoid: bool):
+        from yandex_maps_parser.message_templates import (
+            load_templates,
+            pick_random_text,
+            substitute as _subst2,
+        )
+        state = load_templates()
+        id_to_tpl = {t["id"]: t for t in state.get("templates")
+                     if t["category"] == social and t["id"] in set(ids)}
+        if not id_to_tpl:
+            return None
+        chosen = list(id_to_tpl.values())
+        texts = [t["text"] for t in chosen]
+        names = [t["name"] for t in chosen]
+        last = {"text": None}
+
+        def picker(record):
+            text = pick_random_text(texts, last["text"], avoid)
+            last["text"] = text
+            idx = texts.index(text) if text in texts else 0
+            return _subst2(text, record, show_missing), names[idx]
+
+        return picker
+
+    tpl_ids_raw = data.get("template_ids")
+    tpl_ids = [str(t).strip() for t in tpl_ids_raw if str(t or "").strip()] if isinstance(tpl_ids_raw, list) else []
+    random_picker = _make_random_picker(tpl_ids, bool(data.get("tpl_avoid_repeats", False))) if tpl_ids else None
+
     recs = _sort_like_table(_collect_records(view, rel_file, scope),
                             sort_col, bool(data.get("sort_asc", True)))
     rev = _load_reviewed()
@@ -1130,7 +1165,9 @@ def bulk_urls():
         if key and key in skip_keys:
             continue
         item = {"url": url, "key": key, "name": str(r.get("name") or "")}
-        if substitute is not None:
+        if random_picker is not None:
+            item["text"], item["tpl_name"] = random_picker(r)
+        elif substitute is not None:
             item["text"] = substitute(template, r, show_missing)
         pool.append(item)
     urls = pool[:count]

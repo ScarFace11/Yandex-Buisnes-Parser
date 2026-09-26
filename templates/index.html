@@ -947,6 +947,29 @@
                кликните по значку соцсети у компании. Текст с подставленными данными скопируется в буфер — вставьте его в открытый чат (Ctrl+V).</p>
           </div>
 
+          <!-- Режим выбора: один шаблон или случайный из набора (per-категория). -->
+          <div class="tpl-pick" id="tpl-pick-box">
+            <div class="tpl-pick-head">
+              <span class="tpl-pick-title">🎲 Выбор шаблона</span>
+              <select id="tpl-pick-cat" onchange="onPickCatChange()" aria-label="Категория для режима выбора"></select>
+            </div>
+            <div class="tpl-pick-modes" role="radiogroup" aria-label="Режим выбора шаблона">
+              <label class="chk tpl-pick-mode">
+                <input type="radio" name="tpl-pick-mode" value="single" onchange="onPickModeChange()">
+                Один шаблон
+              </label>
+              <label class="chk tpl-pick-mode">
+                <input type="radio" name="tpl-pick-mode" value="random" onchange="onPickModeChange()">
+                Случайный из выбранных
+              </label>
+            </div>
+            <div class="tpl-pick-body" id="tpl-pick-body"></div>
+            <div class="tpl-pick-count" id="tpl-pick-count"></div>
+            <div class="tpl-pick-foot">
+              <button type="button" class="btn-sm ghost" id="btn-tpl-pick-setup" onclick="openPickModal()">⚙️ Настроить выбор</button>
+            </div>
+          </div>
+
           <div class="tpl-cat-filter" role="tablist" aria-label="Категория шаблона">
             <button type="button" class="tpl-cat active" data-cat="all"        onclick="filterTemplatesByCategory('all')">Все</button>
             <button type="button" class="tpl-cat"        data-cat="vk"         onclick="filterTemplatesByCategory('vk')">ВКонтакте</button>
@@ -992,6 +1015,28 @@
           </div>
         </div><!-- /tpl-wrap -->
         </div><!-- /tpl-scroll -->
+
+        <!-- Модалка настройки случайного выбора -->
+        <div class="tpl-modal-overlay" id="tpl-pick-modal" hidden>
+          <div class="tpl-modal" role="dialog" aria-modal="true" aria-labelledby="tpl-pick-modal-title">
+            <h3 id="tpl-pick-modal-title">🎲 Случайный выбор шаблонов</h3>
+            <label class="lbl" for="tpl-pick-modal-cat">Категория</label>
+            <select id="tpl-pick-modal-cat" onchange="onPickModalCatChange()"></select>
+            <div class="tpl-hint">Из выбранных шаблонов при каждом клике будет случайно браться один.</div>
+            <div class="tpl-pick-modal-list" id="tpl-pick-modal-list"></div>
+            <label class="chk tpl-pick-avoid">
+              <input type="checkbox" id="tpl-pick-avoid">
+              Избегать повторов
+              <span class="tpl-hint tpl-hint-inline">— не выбирать один и тот же шаблон дважды подряд</span>
+            </label>
+            <div class="tpl-pick-count" id="tpl-pick-modal-count"></div>
+            <div class="tpl-pick-modal-hint" id="tpl-pick-modal-hint" hidden></div>
+            <div class="ui-modal-btns">
+              <button type="button" class="m-cancel" onclick="closePickModal()">Отмена</button>
+              <button type="button" class="m-ok" id="tpl-pick-modal-save" onclick="savePickModal()">💾 Сохранить</button>
+            </div>
+          </div>
+        </div>
 
         <!-- Модалка редактирования -->
         <div class="tpl-modal-overlay" id="tpl-modal" hidden>
@@ -1074,6 +1119,10 @@
                     <select id="s-template" onchange="onSenderTemplateChange()"></select>
                     <button type="button" class="btn-sm" id="btn-sender-fill-tpl" onclick="fillSenderFromTemplate()" title="Подставить текст выбранного шаблона в поле ниже">Заполнить текст</button>
                   </div>
+                  <label class="chk sender-random-chk" title="Для каждого сообщения выбирается случайный шаблон из набора, настроенного во вкладке «Шаблоны»">
+                    <input type="checkbox" id="s-random-tpl" onchange="onSenderRandomChange()">
+                    🎲 Случайный из выбранных шаблонов
+                  </label>
                 </div>
                 <div id="fw-send-msg">
                   <label class="lbl">Текст сообщения <span style="font-weight:400;text-transform:none">— можно вставить {название_бизнеса}</span></label>

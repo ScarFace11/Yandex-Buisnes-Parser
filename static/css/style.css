@@ -2672,12 +2672,45 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 .sender-tpl-row{display:flex;gap:8px;align-items:center}
 .sender-tpl-row select{flex:1;min-width:0}
 
+/* ── Режим выбора шаблона (один / случайный из выбранных) ── */
+.tpl-pick{
+  margin:14px 0;border:1px solid var(--bdr);border-radius:10px;background:var(--panel);
+  padding:12px 14px;
+}
+.tpl-pick-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+.tpl-pick-title{font-size:12.5px;font-weight:700;color:var(--txt)}
+.tpl-pick-head select{
+  margin-left:auto;padding:5px 26px 5px 9px;border:1px solid var(--bdr);border-radius:7px;
+  background:var(--card);color:var(--txt);font-size:12px;font-family:inherit;cursor:pointer;
+}
+.tpl-pick-modes{display:flex;flex-direction:column;gap:6px;margin-bottom:10px}
+.tpl-pick-mode{font-weight:600}
+.tpl-pick-body .chk{width:100%;justify-content:flex-start;font-weight:500}
+.tpl-pick-count{font-size:11.5px;color:var(--muted);font-weight:600;margin-top:8px}
+.tpl-pick-foot{margin-top:10px}
+.tpl-pick .ghost{background:transparent}
+.tpl-pick-list-empty{font-size:12px;color:var(--muted);padding:6px 0}
+.tpl-pick-avoid{margin-top:12px;justify-content:flex-start}
+.tpl-pick-avoid .tpl-hint-inline{margin-left:2px}
+.tpl-pick-modal-list{
+  margin-top:10px;border:1px solid var(--bdr);border-radius:8px;background:var(--panel);
+  padding:8px 10px;display:flex;flex-direction:column;gap:6px;max-height:220px;overflow-y:auto;
+}
+.tpl-pick-modal-list .chk{border:none;background:transparent;padding:2px 0;font-weight:500}
+.tpl-pick-modal-list .chk:hover{border:none;background:transparent;color:var(--txt)}
+.tpl-pick-modal-hint{margin-top:8px;font-size:11.5px;color:var(--muted)}
+.tpl-pick-modal-hint[hidden]{display:none}
+.sender-random-chk{margin-top:8px;font-weight:500}
+
 /* ── Dark theme ── */
 [data-theme="dark"] .template-card{background:var(--card);border-color:var(--bdr)}
 [data-theme="dark"] .template-card:hover{border-color:var(--c)}
 [data-theme="dark"] .tpl-modal{background:var(--card);border-color:var(--bdr)}
 [data-theme="dark"] .tpl-modal input[type=text],[data-theme="dark"] .tpl-modal select,[data-theme="dark"] .tpl-modal textarea{
   background:var(--field);border-color:var(--bdr);color:var(--txt)}
+[data-theme="dark"] .tpl-pick{background:var(--panel);border-color:var(--bdr)}
+[data-theme="dark"] .tpl-pick-head select{background:var(--field);border-color:var(--bdr);color:var(--txt)}
+[data-theme="dark"] .tpl-pick-modal-list{background:var(--panel);border-color:var(--bdr)}
 [data-theme="dark"] .tpl-preview-body{background:var(--panel);border-color:var(--bdr)}
 [data-theme="dark"] .tpl-search input{background:var(--field);border-color:var(--bdr);color:var(--txt)}
 [data-theme="dark"] .tpl-empty-box{background:var(--panel);border-color:var(--bdr)}
@@ -2859,3 +2892,13 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 
 /* ── Прогресс: город крупно (полоски по городам живут в верхней полосе) ── */
 .term-progress-info .tp-city{font-size:13px;font-weight:800;color:var(--txt);letter-spacing:-.01em}
+
+/* Режим выбора шаблона: на телефоне — стек, модалка на всю ширину */
+@media(max-width:860px){
+  .tpl-pick{padding:10px 12px}
+  .tpl-pick-head select{margin-left:0;width:100%}
+  .tpl-pick-modes{gap:8px}
+  .tpl-pick-foot .btn-sm{width:100%}
+  .tpl-pick-modal-list{max-height:34vh}
+  .tpl-modal{width:100%;max-width:100%;padding:14px}
+}

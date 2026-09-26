@@ -3753,7 +3753,10 @@ async function bulkOpenBatch() {
   updateBulkStats();
   try {
     // Шаблон для этой соцсети — сервер вернёт готовый текст на каждую запись.
-    const bulkTpl = getActiveTemplateFor(p.social);
+    // В random-режиме шлём id набора: сервер сам выбирает per-record.
+    const randomMode = templateModes[p.social] === 'random'
+      && (randomTemplateIds[p.social] || []).length > 0;
+    const bulkTpl = randomMode ? null : getActiveTemplateFor(p.social);
     const data = await postJSON('/bulk/urls', {
       view: p.view, scope: p.scope, file: p.file, city: p.city, social: p.social,
       count: wanted, skip_viewed: p.skip_viewed, exclude_keys: [...bulkState.keys],
@@ -3761,6 +3764,8 @@ async function bulkOpenBatch() {
       sort_col: p.sort_col, sort_asc: p.sort_asc,
       template: bulkTpl ? bulkTpl.text : '',
       show_missing_as_var: showMissingAsVar,
+      template_ids: randomMode ? randomTemplateIds[p.social] : [],
+      tpl_avoid_repeats: avoidRepeats,
     });
     const list = (data.urls || []).filter(i => i && i.url);
     if (!list.length) {
@@ -3786,10 +3791,10 @@ async function bulkOpenBatch() {
       openedItems.forEach(i => { if (i.key) bulkState.keys.add(i.key); });
       // Готовые тексты кладём в очередь: браузер не даёт копировать при
       // переключении внешней вкладки, поэтому копируем по кнопке.
-      if (bulkTpl) {
+      if (bulkTpl || randomMode) {
         if (!(bulkState.texts instanceof Map)) bulkState.texts = new Map();
         openedItems.forEach(i => {
-          if (i.key) bulkState.texts.set(i.key, {name: i.name || '', text: i.text || '', url: i.url});
+          if (i.key) bulkState.texts.set(i.key, {name: i.name || '', text: i.text || '', url: i.url, tpl_name: i.tpl_name || ''});
         });
         renderBulkQueue();
       }
@@ -5852,6 +5857,7 @@ function loadSenderFiles() {
 }
 
 function saveSenderConfig() {
+  const randomChk = document.getElementById('s-random-tpl');
   const cfg = {
     message:  document.getElementById('s-message').value,
     delayMin: document.getElementById('s-delay-min').value,
@@ -5859,6 +5865,7 @@ function saveSenderConfig() {
     limitType:document.getElementById('s-limit-type').value,
     limitN:   document.getElementById('s-limit-n').value,
     file:     document.getElementById('s-excel-file').value,
+    randomTpl: !!(randomChk && randomChk.checked),
   };
   localStorage.setItem(SENDER_CFG_KEY, JSON.stringify(cfg));
 }
@@ -5881,6 +5888,10 @@ function restoreSenderConfig() {
       toggleSenderLimit();
     }
     if (cfg.limitN   != null) document.getElementById('s-limit-n').value    = cfg.limitN;
+    if (cfg.randomTpl != null) {
+      const _rc = document.getElementById('s-random-tpl');
+      if (_rc) _rc.checked = !!cfg.randomTpl;
+    }
     // file restored after files load
     window._senderPendingFile = cfg.file;
   } catch {}
@@ -5895,6 +5906,11 @@ function startSend() {
   const delMax  = parseFloat(document.getElementById('s-delay-max').value) || 3.5;
   const ltType  = document.getElementById('s-limit-type').value;
   const limitN  = parseInt(document.getElementById('s-limit-n').value) || 10;
+  const randomChk = document.getElementById('s-random-tpl');
+  const senderRandom = !!(randomChk && randomChk.checked);
+  // Random-режим рассылки: набор для vk из настроек «🎲 Выбор шаблона».
+  const senderIds = (randomTemplateIds['vk'] || []).slice();
+  const senderRandomActive = senderRandom && senderIds.length > 0;
 
   if (!file) {
     showFieldError(document.getElementById('fw-send-file'), 'Выберите Excel-файл с результатами');
@@ -5906,7 +5922,7 @@ function startSend() {
     showToast('Введите VK access_token', 'error');
     return;
   }
-  if (!message) {
+  if (!message && !senderRandomActive) {
     showFieldError(document.getElementById('fw-send-msg'), 'Шаблон сообщения не может быть пустым');
     showToast('Шаблон сообщения не может быть пустым', 'error');
     return;
@@ -5924,6 +5940,11 @@ function startSend() {
     delay_min:    delMin,
     delay_max:    delMax,
   };
+  if (senderRandomActive) {
+    params.message_tpl_ids = senderIds;
+    params.tpl_avoid_repeats = avoidRepeats;
+    params.message_tpl = '';
+  }
 
   document.getElementById('btn-send-run').disabled = true;
   document.getElementById('send-btn-icon').innerHTML = '<span class="spin"></span>';
@@ -6319,6 +6340,13 @@ const TEMPLATE_VAR_ALIASES = {'название_бизнеса': 'name', 'review
 
 let messageTemplates = [];
 let activeTemplateIds = {vk: null, telegram: null, whatsapp: null, instagram: null};
+// Режим выбора: single — один шаблон, random — случайный из набора.
+let templateModes = {vk: 'single', telegram: 'single', whatsapp: 'single', instagram: 'single'};
+let randomTemplateIds = {vk: [], telegram: [], whatsapp: [], instagram: []};
+let avoidRepeats = false;
+// Последний выбранный шаблон по соцсети — для «избегать повторов» (сессия).
+let _lastPickedTpl = {};
+let _pickModalCat = 'vk';
 let showMissingAsVar = false;
 let templatesLoaded = false;
 let templatesLoading = null;
@@ -6399,6 +6427,20 @@ function genTemplateId() {
   return 'tpl_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7);
 }
 
+// Шаблон удалён или переехал в другую категорию — вычищаем его из наборов
+// случайного выбора и из активных (не дожидаясь нормализации сервера).
+function pruneTemplatePicks() {
+  const alive = new Set(messageTemplates.map(t => t.id));
+  TEMPLATE_CATEGORIES.forEach(c => {
+    randomTemplateIds[c] = (randomTemplateIds[c] || []).filter(id =>
+      alive.has(id) && (messageTemplates.find(t => t.id === id) || {}).category === c);
+    if (activeTemplateIds[c]) {
+      const t = messageTemplates.find(x => x.id === activeTemplateIds[c]);
+      if (!t || t.category !== c) activeTemplateIds[c] = null;
+    }
+  });
+}
+
 // Активный шаблон категории → первый её шаблон → первый вообще.
 function getActiveTemplateFor(social) {
   const id = activeTemplateIds[social];
@@ -6407,6 +6449,34 @@ function getActiveTemplateFor(social) {
     if (t) return t;
   }
   return messageTemplates.find(t => t.category === social) || messageTemplates[0] || null;
+}
+
+// ── Случайный выбор шаблона ────────────────────────────────────
+// Зеркало message_templates.pick_random_text: с avoid_repeats последний
+// использованный исключается; исключение опустошило набор (один шаблон) —
+// выбор из полного набора.
+function pickRandomTemplate(social) {
+  const ids = randomTemplateIds[social] || [];
+  const pool = messageTemplates.filter(t => ids.includes(t.id) && t.category === social);
+  if (!pool.length) return null;
+  let candidates = pool;
+  if (avoidRepeats && pool.length > 1 && _lastPickedTpl[social]) {
+    const reduced = pool.filter(t => t.id !== _lastPickedTpl[social]);
+    if (reduced.length) candidates = reduced;
+  }
+  const picked = candidates[Math.floor(Math.random() * candidates.length)];
+  _lastPickedTpl[social] = picked.id;
+  return picked;
+}
+
+// Шаблон для клика/обхода/рассылки: random-режим — случайный из набора,
+// иначе активный. Набор пуст или шаблоны удалены — fallback на активный.
+function getTemplateFor(social) {
+  if (templateModes[social] === 'random') {
+    const picked = pickRandomTemplate(social);
+    if (picked) return picked;
+  }
+  return getActiveTemplateFor(social);
 }
 
 function setActiveTemplate(social, id) {
@@ -6437,6 +6507,17 @@ function applyTemplatesState(j) {
     TEMPLATE_CATEGORIES.forEach(c => { ids[c] = j.active_template_ids[c] || null; });
   }
   activeTemplateIds = ids;
+  // Режимы и наборы случайного выбора: сервер прислал — берём, иначе дефолты.
+  templateModes = TEMPLATE_CATEGORIES.reduce((acc, c) => {
+    acc[c] = (j.template_modes && j.template_modes[c] === 'random') ? 'random' : 'single';
+    return acc;
+  }, {});
+  randomTemplateIds = TEMPLATE_CATEGORIES.reduce((acc, c) => {
+    const raw = j.random_template_ids && Array.isArray(j.random_template_ids[c]) ? j.random_template_ids[c] : [];
+    acc[c] = raw.filter(id => messageTemplates.some(t => t.id === id && t.category === c));
+    return acc;
+  }, {});
+  avoidRepeats = !!j.avoid_repeats;
   showMissingAsVar = !!j.show_missing_as_var;
   const chk = document.getElementById('tpl-show-missing');
   if (chk) chk.checked = showMissingAsVar;
@@ -6450,6 +6531,9 @@ async function postTemplatesState() {
       templates: messageTemplates,
       active_template_ids: activeTemplateIds,
       show_missing_as_var: showMissingAsVar,
+      template_modes: templateModes,
+      random_template_ids: randomTemplateIds,
+      avoid_repeats: avoidRepeats,
     });
     if (j && j.ok) applyTemplatesState(j);
   } catch (e) {
@@ -6633,6 +6717,168 @@ function renderTemplatePickers() {
   fillTemplateSelect(document.getElementById('bulk-template'), true);
   fillTemplateSelect(document.getElementById('s-template'), true);
   syncTemplateSelects();
+  renderTemplatePickPanel();
+}
+
+// ── Панель «🎲 Выбор шаблона» ──────────────────────────────────
+// Режим хранится per-категория: панель показывает настройку той соцсети,
+// что выбрана в селекте категории, и не мешает остальным.
+function renderTemplatePickPanel() {
+  const catSel = document.getElementById('tpl-pick-cat');
+  if (!catSel) return;
+  catSel.innerHTML = TEMPLATE_CATEGORIES
+    .map(c => '<option value="' + c + '">' + escapeHtml(TEMPLATE_CAT_LABELS[c]) + '</option>').join('');
+  if (!TEMPLATE_CATEGORIES.includes(_pickModalCat)) _pickModalCat = 'vk';
+  catSel.value = _pickModalCat;
+  renderPickPanelBody();
+}
+
+function renderPickPanelBody() {
+  const body = document.getElementById('tpl-pick-body');
+  if (!body) return;
+  const cat = _pickModalCat;
+  const mode = templateModes[cat] || 'single';
+  document.querySelectorAll('input[name="tpl-pick-mode"]').forEach(r => { r.checked = r.value === mode; });
+  const catTemplates = messageTemplates.filter(t => t.category === cat);
+  if (mode === 'single') {
+    const active = getActiveTemplateFor(cat);
+    body.innerHTML = catTemplates.length
+      ? '<label class="lbl" for="tpl-pick-single">Шаблон:</label>'
+        + '<select id="tpl-pick-single" onchange="onPickSingleChange()">'
+        + catTemplates.map(t => '<option value="' + escapeHtml(t.id) + '">' + escapeHtml(t.name) + '</option>').join('')
+        + '</select>'
+      : '<div class="tpl-pick-list-empty">В этой категории пока нет шаблонов.</div>';
+    const sel = document.getElementById('tpl-pick-single');
+    if (sel) sel.value = active ? active.id : '';
+  } else {
+    const ids = randomTemplateIds[cat] || [];
+    body.innerHTML = catTemplates.length
+      ? catTemplates.map(t =>
+          '<label class="chk"><input type="checkbox" data-pick-id="' + escapeHtml(t.id) + '"'
+          + (ids.includes(t.id) ? ' checked' : '') + ' onchange="onPickToggle(\'' + escapeHtml(t.id) + '\')">'
+          + escapeHtml(t.name) + '</label>').join('')
+      : '<div class="tpl-pick-list-empty">В этой категории пока нет шаблонов.</div>';
+  }
+  updatePickCount();
+}
+
+function updatePickCount() {
+  const el = document.getElementById('tpl-pick-count');
+  if (!el) return;
+  if ((templateModes[_pickModalCat] || 'single') !== 'random') { el.textContent = ''; return; }
+  const total = messageTemplates.filter(t => t.category === _pickModalCat).length;
+  el.textContent = 'Выбрано: ' + (randomTemplateIds[_pickModalCat] || []).length + ' из ' + total;
+}
+
+function onPickCatChange() {
+  const sel = document.getElementById('tpl-pick-cat');
+  _pickModalCat = (sel && sel.value) || 'vk';
+  renderPickPanelBody();
+}
+
+function onPickModeChange() {
+  const checked = document.querySelector('input[name="tpl-pick-mode"]:checked');
+  if (!checked) return;
+  templateModes[_pickModalCat] = checked.value;
+  renderPickPanelBody();
+  saveTemplatesState();
+}
+
+function onPickSingleChange() {
+  const sel = document.getElementById('tpl-pick-single');
+  if (sel) setActiveTemplate(_pickModalCat, sel.value || null);
+}
+
+function onPickToggle(id) {
+  const ids = randomTemplateIds[_pickModalCat] || [];
+  const idx = ids.indexOf(id);
+  if (idx >= 0) ids.splice(idx, 1); else ids.push(id);
+  randomTemplateIds[_pickModalCat] = ids;
+  updatePickCount();
+  saveTemplatesState();
+}
+
+// ── Модалка настройки случайного выбора ────────────────────────
+function openPickModal() {
+  if (!templatesLoaded) { loadTemplates().then(() => openPickModal()); return; }
+  const overlay = document.getElementById('tpl-pick-modal');
+  if (!overlay) return;
+  const catSel = document.getElementById('tpl-pick-modal-cat');
+  if (catSel) {
+    catSel.innerHTML = TEMPLATE_CATEGORIES
+      .map(c => '<option value="' + c + '">' + escapeHtml(TEMPLATE_CAT_LABELS[c]) + '</option>').join('');
+    catSel.value = _pickModalCat;
+  }
+  const avoid = document.getElementById('tpl-pick-avoid');
+  if (avoid) avoid.checked = avoidRepeats;
+  renderPickModalList();
+  overlay.hidden = false;
+}
+
+function renderPickModalList() {
+  const list = document.getElementById('tpl-pick-modal-list');
+  if (!list) return;
+  const catTemplates = messageTemplates.filter(t => t.category === _pickModalCat);
+  const ids = randomTemplateIds[_pickModalCat] || [];
+  list.innerHTML = catTemplates.length
+    ? catTemplates.map(t =>
+        '<label class="chk"><input type="checkbox" data-pick-id="' + escapeHtml(t.id) + '"'
+        + (ids.includes(t.id) ? ' checked' : '') + ' onchange="onPickModalToggle(\'' + escapeHtml(t.id) + '\')">'
+        + escapeHtml(t.name) + '</label>').join('')
+    : '<div class="tpl-pick-list-empty">В этой категории пока нет шаблонов — создайте их во вкладке.</div>';
+  updatePickModalCount();
+}
+
+function updatePickModalCount() {
+  const count = document.getElementById('tpl-pick-modal-count');
+  const hint = document.getElementById('tpl-pick-modal-hint');
+  const save = document.getElementById('tpl-pick-modal-save');
+  const ids = randomTemplateIds[_pickModalCat] || [];
+  const total = messageTemplates.filter(t => t.category === _pickModalCat).length;
+  if (count) count.textContent = '📊 Выбрано: ' + ids.length + ' из ' + total;
+  if (save) save.disabled = ids.length === 0;
+  if (hint) {
+    if (!ids.length) { hint.textContent = 'Выберите хотя бы один шаблон, чтобы сохранить набор.'; hint.hidden = false; }
+    else if (ids.length === 1) { hint.textContent = 'Выбран один шаблон — он будет использоваться всегда. Выберите 2+ для случайного выбора.'; hint.hidden = false; }
+    else { hint.hidden = true; }
+  }
+}
+
+function onPickModalCatChange() {
+  const sel = document.getElementById('tpl-pick-modal-cat');
+  _pickModalCat = (sel && sel.value) || 'vk';
+  renderPickModalList();
+  renderPickPanelBody();
+}
+
+function onPickModalToggle(id) {
+  const ids = randomTemplateIds[_pickModalCat] || [];
+  const idx = ids.indexOf(id);
+  if (idx >= 0) ids.splice(idx, 1); else ids.push(id);
+  randomTemplateIds[_pickModalCat] = ids;
+  updatePickModalCount();
+}
+
+function closePickModal() {
+  const overlay = document.getElementById('tpl-pick-modal');
+  if (overlay) overlay.hidden = true;
+  // Отмена — состояние не менялось до «Сохранить», но панель перерисуем:
+  // чекбоксы модалки живут в тех же массивах, синхронизируем отображение.
+  renderPickPanelBody();
+}
+
+function savePickModal() {
+  const ids = randomTemplateIds[_pickModalCat] || [];
+  if (!ids.length) return;
+  const avoid = document.getElementById('tpl-pick-avoid');
+  avoidRepeats = !!(avoid && avoid.checked);
+  templateModes[_pickModalCat] = 'random';
+  saveTemplatesState();
+  renderPickPanelBody();
+  const overlay = document.getElementById('tpl-pick-modal');
+  if (overlay) overlay.hidden = true;
+  showToast('Набор из ' + ids.length + ' ' + _pluralRu(ids.length, 'шаблона', 'шаблонов', 'шаблонов')
+    + ' сохранён для «' + (TEMPLATE_CAT_LABELS[_pickModalCat] || _pickModalCat) + '»', 'success');
 }
 
 function onTableTemplateChange() {
@@ -6751,6 +6997,7 @@ function saveTemplateFromModal() {
   if (_tplEditId) {
     const t = messageTemplates.find(x => x.id === _tplEditId);
     if (t) { t.name = name; t.text = text; t.category = category; t.updated_at = new Date().toISOString(); }
+    pruneTemplatePicks();   // смена категории убирает шаблон из чужих наборов
   } else {
     messageTemplates.push({
       id: genTemplateId(), category, name, text,
@@ -6785,7 +7032,7 @@ async function deleteTemplate(id) {
   const ok = await uiConfirm('Удалить шаблон «' + t.name + '»?', 'Удалить шаблон', 'Удалить', true);
   if (!ok) return;
   messageTemplates = messageTemplates.filter(x => x.id !== id);
-  TEMPLATE_CATEGORIES.forEach(c => { if (activeTemplateIds[c] === id) activeTemplateIds[c] = null; });
+  pruneTemplatePicks();
   renderTemplates();
   renderTemplatePickers();
   saveTemplatesState();
@@ -6937,19 +7184,21 @@ function onShowMissingChange() {
 }
 
 // ── Интеграция с таблицей ──────────────────────────────────────
-// Клик по бейджу соцсети: подставляем активный для этой соцсети шаблон,
-// копируем и открываем профиль. Нет шаблона — ссылка работает как раньше.
+// Клик по бейджу соцсети: берём шаблон (в random-режиме — случайный из
+// набора, на каждый клик новый выбор), копируем и открываем профиль.
+// Нет шаблона — ссылка работает как раньше. В тосте видно, какой шаблон
+// использован — при A/B-проверке это сразу видно.
 async function onSocialBadgeClick(event, el) {
   const social = el.dataset.social;
   const key = el.dataset.key;
   const rows = (typeof filteredRows !== 'undefined' && filteredRows && filteredRows.length) ? filteredRows : allResults;
   const record = (rows || []).find(r => reviewKey(r) === key);
-  const tpl = getActiveTemplateFor(social);
+  const tpl = getTemplateFor(social);
   if (!tpl || !record) return;
   event.preventDefault();
   const text = substituteTemplate(tpl.text, record);
   const ok = await copyText(text);
-  if (ok) showToast('📋 Текст скопирован. Вставьте (Ctrl+V)', 'success');
+  if (ok) showToast('📋 Текст скопирован (' + tpl.name + '). Вставьте (Ctrl+V)', 'success');
   else showCopyTextModal(text);
   window.open(el.getAttribute('href'), '_blank', 'noopener');
 }
@@ -6968,7 +7217,8 @@ function renderBulkQueue() {
     + '<button type="button" onclick="bulkCopyNext()">📋 Скопировать следующее</button></div>'
     + items.map(([key, v]) =>
         '<div class="bulk-queue-item' + (copied.has(key) ? ' done' : '') + '">'
-        + '<span class="bqi-name">' + escapeHtml(v.name || 'Без названия') + '</span>'
+        + '<span class="bqi-name">' + escapeHtml(v.name || 'Без названия')
+        + (v.tpl_name ? ' <span class="bqi-tpl">📋 (' + escapeHtml(v.tpl_name) + ')</span>' : '') + '</span>'
         + '<button type="button" data-copy="' + escapeHtml(key) + '">📋</button></div>').join('');
   box.querySelectorAll('[data-copy]').forEach(b =>
     b.addEventListener('click', () => bulkCopyOne(b.dataset.copy)));
@@ -6995,6 +7245,15 @@ async function bulkCopyNext() {
 }
 
 // ── Интеграция с «Отправить в VK» ──────────────────────────────
+function onSenderRandomChange() {
+  const chk = document.getElementById('s-random-tpl');
+  const ta = document.getElementById('s-message');
+  if (chk && chk.checked && ta) {
+    ta.value = '';
+    showToast('Текст для каждого сообщения выберется случайно из набора vk', 'info');
+  }
+}
+
 function fillSenderFromTemplate() {
   const sel = document.getElementById('s-template');
   const t = (sel && messageTemplates.find(x => x.id === sel.value)) || getActiveTemplateFor('vk');

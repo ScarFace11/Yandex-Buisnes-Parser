@@ -8,6 +8,8 @@ params (dict):
     excel_file   str   — имя файла в output/ (без пути)
     access_token str   — VK user access_token
     message_tpl  str   — шаблон сообщения с {название_бизнеса}
+    message_tpl_ids list — id шаблонов для случайного выбора (перекрывает message_tpl)
+    tpl_avoid_repeats bool — не выбирать один и тот же шаблон дважды подряд
     limit        int   — 0 = все, иначе N записей
     delay_min    float — мин. пауза между отправками (сек)
     delay_max    float — макс. пауза
@@ -23,7 +25,12 @@ import logging
 from typing import Callable
 
 from .vk_adapter import VKAdapter
-from yandex_maps_parser.message_templates import substitute
+from yandex_maps_parser.message_templates import (
+    load_templates,
+    pick_random_text,
+    resolve_pick_state,
+    substitute,
+)
 from . import excel_manager as xm
 
 logger = logging.getLogger(__name__)
@@ -57,6 +64,8 @@ def run_send(
     excel_file   = params.get("excel_file", "")
     access_token = params.get("access_token", "").strip()
     message_tpl  = params.get("message_tpl", "").strip()
+    tpl_ids      = [str(t).strip() for t in (params.get("message_tpl_ids") or []) if str(t or "").strip()]
+    tpl_avoid    = bool(params.get("tpl_avoid_repeats", False))
     limit        = int(params.get("limit", 0))
     delay_min    = float(params.get("delay_min", 1.5))
     delay_max    = float(params.get("delay_max", 3.0))
@@ -85,7 +94,25 @@ def run_send(
         warn("VK access_token не задан. Прерываем.")
         return stats
 
-    if not message_tpl:
+    # Случайный выбор из набора шаблонов: id резолвим по общему хранилищу.
+    # Набор не настроен/пуст — работаем по одному тексту message_tpl (как раньше).
+    pick = None
+    used_tpl_names: list = []
+    if tpl_ids:
+        state = load_templates()
+        resolved = resolve_pick_state(social, state)
+        by_id = {t["id"]: t for t in state.get("templates") or []
+                 if t["category"] == social and t["id"] in set(tpl_ids)}
+        if by_id:
+            picked = list(by_id.values())
+            pick = {
+                "texts": [t["text"] for t in picked],
+                "names": [t["name"] for t in picked],
+                "avoid": tpl_avoid or resolved["avoid"],
+                "last": None,
+            }
+
+    if pick is None and not message_tpl:
         warn("Шаблон сообщения пустой. Прерываем.")
         return stats
 
@@ -181,7 +208,14 @@ def run_send(
 
         # 4. Отправить сообщение — переменные подставляет общий с шаблонами
         # «📝 Шаблоны» хелпер: {name}, {название_бизнеса}, {city} и т.д.
-        text = substitute(message_tpl, rec.get("record") or {"name": name})
+        # В режиме случайного выбора шаблон выбирается на КАЖДОЕ сообщение.
+        if pick is not None:
+            text = pick_random_text(pick["texts"], pick["last"], pick["avoid"])
+            pick["last"] = text
+            idx = pick["texts"].index(text) if text in pick["texts"] else 0
+            used_tpl_names.append(pick["names"][idx])
+        else:
+            text = substitute(message_tpl, rec.get("record") or {"name": name})
 
         try:
             adapter.send_message(peer_id, text)
@@ -208,5 +242,8 @@ def run_send(
         f"Пропущено: {stats['skipped']}  "
         f"Ошибок: {stats['errors']}"
     )
+    if pick is not None:
+        used = len({n for n in used_tpl_names})
+        info(f"Использовано шаблонов: {used} из {len(pick['texts'])}")
 
     return stats

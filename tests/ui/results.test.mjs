@@ -182,6 +182,11 @@ globalThis.syncTableTemplatePicker = () => {};
 globalThis.getActiveTemplateFor = () => null;
 globalThis.renderBulkQueue = () => {};
 globalThis.showMissingAsVar = false;
+// Режим случайного выбора: по умолчанию single с пустым набором —
+// bulkOpenBatch шлёт template как раньше (сами режимы проверяет templates.test.mjs).
+globalThis.templateModes = { vk: 'single', telegram: 'single', whatsapp: 'single', instagram: 'single' };
+globalThis.randomTemplateIds = { vk: [], telegram: [], whatsapp: [], instagram: [] };
+globalThis.avoidRepeats = false;
 globalThis.filesData = { raw: [], processed: [], archive: [] };
 globalThis.filesFilter = '';
 globalThis.updateStatsBadge = () => {};
