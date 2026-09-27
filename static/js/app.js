@@ -6641,6 +6641,7 @@ function updateTplSelectionUi() {
     btn.disabled = n === 0;
     btn.textContent = '🗑 Удалить выбранные (' + n + ')';
   }
+  updateSelectAllBtn();
 }
 
 function toggleSelectAllTemplates() {
@@ -6712,12 +6713,15 @@ function renderTemplates() {
       list.innerHTML = items.map(t => {
         const vars = usedVariables(t.text);
         const upd = t.updated_at ? _fmtTemplateDate(t.updated_at) : null;
+        // id шаблона приходит из чужого JSON при импорте и может содержать
+        // кавычки — inline-onchange с конкатенацией здесь небезопасен
+        // (escapeHtml не защищает JS-контекст), поэтому обработчик вешается
+        // ниже через addEventListener, а id читается из dataset.
         return '<div class="template-card" data-id="' + escapeHtml(t.id) + '">'
           + '<div class="template-head">'
           + '<label class="tpl-card-chk" title="Выбрать для удаления">'
-          + '<input type="checkbox" data-tpl-check="' + escapeHtml(t.id) + '"'
-          + (_tplSelectedIds.has(t.id) ? ' checked' : '')
-          + ' onchange="toggleTemplateSelected(\'' + escapeHtml(t.id) + '\', this.checked)"></label>'
+          + '<input type="checkbox" class="tpl-check" data-tpl-check="' + escapeHtml(t.id) + '"'
+          + (_tplSelectedIds.has(t.id) ? ' checked' : '') + '></label>'
           + '<span class="template-name">📝 ' + escapeHtml(t.name) + '</span>'
           + '<span class="template-cat">' + escapeHtml(TEMPLATE_CAT_LABELS[t.category] || t.category) + '</span>'
           + '<span class="template-actions">'
@@ -6740,6 +6744,10 @@ function renderTemplates() {
       }).join('');
       list.querySelectorAll('.template-card').forEach(card => {
         const id = card.dataset.id;
+        const chk = card.querySelector('.tpl-check');
+        if (chk) {
+          chk.addEventListener('change', () => toggleTemplateSelected(id, chk.checked));
+        }
         card.querySelectorAll('[data-act]').forEach(btn => {
           btn.addEventListener('click', e => {
             e.stopPropagation();
