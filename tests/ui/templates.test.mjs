@@ -51,7 +51,8 @@ function grabConstValue(name) {
 globalThis.FILE_ACT_ICONS = { delete: '<svg data-icon="trash"></svg>' };
 for (const name of ['TEMPLATE_CATEGORIES', 'TEMPLATE_CAT_LABELS', 'TEMPLATE_MAX_TEXT',
                     'TEMPLATE_MAX_NAME', 'TEMPLATE_VARS', 'TEMPLATE_VAR_FIELD',
-                    'TEMPLATE_VAR_ALIASES', 'TEMPLATE_ICONS', 'TEMPLATE_DEMO_COMPANY']) {
+                    'TEMPLATE_VAR_ALIASES', 'TEMPLATE_ICONS', 'TEMPLATE_DEMO_COMPANY',
+                    'RESERVED_VAR_NAMES', 'TEMPLATE_MAX_CUSTOM_VARS']) {
   (0, eval)('globalThis.' + name + ' = ' + grabConstValue(name) + ';');
 }
 
@@ -76,6 +77,7 @@ function mkEl(id) {
     querySelectorAll: () => [],
     querySelector: () => null,
     closest: () => null,
+    disabled: false,
   };
   return el;
 }
@@ -88,7 +90,12 @@ const IDS = ['tpl-list', 'tpl-var-list', 'tpl-show-missing', 'tpl-modal', 'tpl-m
              'tpl-import-file', 'tpl-search', 'tpl-search-count', 'tpl-empty-box', 'btn-tpl-add',
              'tpl-pick-box', 'tpl-pick-cat', 'tpl-pick-body', 'tpl-pick-count', 'tpl-pick-single',
              'tpl-pick-modal', 'tpl-pick-modal-cat', 'tpl-pick-modal-list', 'tpl-pick-modal-count',
-             'tpl-pick-modal-hint', 'tpl-pick-modal-save', 'tpl-pick-avoid'];
+             'tpl-pick-modal-hint', 'tpl-pick-modal-save', 'tpl-pick-avoid',
+             'tpl-autocomplete', 'tpl-var-cards', 'tpl-var-count',
+             'btn-tpl-del-selected', 'btn-tpl-select-all',
+             'tpl-var-name', 'tpl-var-source', 'tpl-var-value', 'tpl-var-desc',
+             'tpl-var-column', 'tpl-var-text-wrap', 'tpl-var-column-wrap',
+             'tpl-var-modal', 'tpl-var-modal-title', 'tpl-var-modal-err'];
 for (const id of IDS) els[id] = mkEl(id);
 els['bulk-social'].value = 'vk';
 
@@ -131,19 +138,23 @@ const opened = [];
 globalThis.window = { open: url => opened.push(url) };
 globalThis.URL = { createObjectURL: () => 'blob:x', revokeObjectURL: () => {} };
 
-for (const name of ['messageTemplates', 'activeTemplateIds', 'showMissingAsVar', 'templatesLoaded',
-                    'templatesLoading', '_tplFilterCat', '_tplEditId', '_tplSaveTimer',
-                    'templateModes', 'randomTemplateIds', 'avoidRepeats', '_lastPickedTpl', '_pickModalCat']) {
-  globalThis[name] = name === 'messageTemplates' ? []
-    : (name === 'activeTemplateIds'
-      ? { vk: null, telegram: null, whatsapp: null, instagram: null }
-      : (name === 'templateModes'
-        ? { vk: 'single', telegram: 'single', whatsapp: 'single', instagram: 'single' }
-        : (name === 'randomTemplateIds'
-          ? { vk: [], telegram: [], whatsapp: [], instagram: [] }
-          : (name === '_lastPickedTpl'
-            ? {}
-            : (name === '_pickModalCat' ? 'vk' : (name === '_tplFilterCat' ? 'all' : false))))));
+const INIT_VALUES = {
+  messageTemplates: [],
+  customVariables: [],
+  _tplSelectedIds: () => new Set(),
+  activeTemplateIds: { vk: null, telegram: null, whatsapp: null, instagram: null },
+  templateModes: { vk: 'single', telegram: 'single', whatsapp: 'single', instagram: 'single' },
+  randomTemplateIds: { vk: [], telegram: [], whatsapp: [], instagram: [] },
+  _lastPickedTpl: {},
+  _tplAcItems: [],
+  _tplSubtab: 'templates',
+  _tplAcIndex: -1,
+  _pickModalCat: 'vk',
+  _tplFilterCat: 'all',
+};
+for (const name of Object.keys(INIT_VALUES)) {
+  const v = INIT_VALUES[name];
+  globalThis[name] = typeof v === 'function' ? v() : JSON.parse(JSON.stringify(v));
 }
 
 (0, eval)([
@@ -209,6 +220,28 @@ for (const name of ['messageTemplates', 'activeTemplateIds', 'showMissingAsVar',
   grab('_fmtTemplateDate'),
   grab('onTemplateSearch'),
   grab('updateTemplateSearchCount'),
+  grab('_visibleTemplates'),
+  grab('pruneTemplateSelection'),
+  grab('toggleTemplateSelected'),
+  grab('updateTplSelectionUi'),
+  grab('toggleSelectAllTemplates'),
+  grab('deleteSelectedTemplates'),
+  grab('showTplSubtab'),
+  grab('updateSelectAllBtn'),
+  grab('isValidVarName'),
+  grab('varColumnOptions'),
+  grab('renderVarCards'),
+  grab('openVarModal'),
+  grab('closeVarModal'),
+  grab('onVarSourceChange'),
+  grab('saveVarFromModal'),
+  grab('deleteCustomVar'),
+  grab('allTemplateVars'),
+  grab('closeTemplateAutocomplete'),
+  grab('applyTemplateAutocomplete'),
+  grab('renderTemplateAutocomplete'),
+  grab('onTemplateTextInput'),
+  grab('onTemplateTextKeydown'),
 ].join('\n'));
 
 const TEMPLATES = [
@@ -254,6 +287,19 @@ function reset({ templates = TEMPLATES, active = {}, missing = false } = {}) {
   }
   els['bulk-social'].value = 'vk';
   els['tpl-list'].querySelectorAll = () => [];
+  els['tpl-var-cards'].querySelectorAll = () => [];
+  els['tpl-autocomplete'].querySelectorAll = () => [];
+  globalThis.customVariables = [];
+  globalThis._tplSelectedIds = new Set();
+  globalThis._tplSubtab = 'templates';
+  globalThis._tplEditVarName = null;
+  globalThis._tplAcItems = [];
+  globalThis._tplAcIndex = -1;
+  globalThis.EXCEL_COLUMN_DEFS = [
+    { f: 'reviewed', l: '✓ Просмотрено' }, { f: 'name', l: 'Название' },
+    { f: 'city', l: 'Город' }, { f: 'phone', l: 'Телефон' },
+    { f: 'website', l: 'Сайт' }, { f: 'parsed_at', l: 'Дата сбора' },
+  ];
 }
 
 // ── 1. Подстановка ────────────────────────────────────────────
@@ -828,4 +874,192 @@ test('очередь обхода показывает имя шаблона', (
   globalThis.bulkState.texts = new Map([['k2', { name: 'Б', text: 'x', url: 'u', tpl_name: '' }]]);
   globalThis.renderBulkQueue();
   assert.ok(!/📋 \(/.test(els['bulk-queue'].innerHTML.split('Б')[1] || ''));
+});
+
+// ── Массовое удаление ──────────────────────────────────────
+test('выделение шаблонов обновляет кнопку массового удаления', () => {
+  reset();
+  globalThis.updateTplSelectionUi();   // как после renderTemplates
+  assert.equal(els['btn-tpl-del-selected'].hidden, true);
+  globalThis.toggleTemplateSelected('vk1', true);
+  assert.equal(els['btn-tpl-del-selected'].hidden, false);
+  assert.match(els['btn-tpl-del-selected'].textContent, /\(1\)/);
+  globalThis.toggleTemplateSelected('vk1', false);
+  assert.equal(els['btn-tpl-del-selected'].hidden, true);
+});
+
+test('deleteSelectedTemplates удаляет все выбранные за одно подтверждение', async () => {
+  reset();
+  globalThis.toggleTemplateSelected('vk1', true);
+  globalThis.toggleTemplateSelected('vk2', true);
+  let asked = 0;
+  const prevConfirm = globalThis.uiConfirm;
+  globalThis.uiConfirm = async () => { asked++; return true; };
+  await globalThis.deleteSelectedTemplates();
+  globalThis.uiConfirm = prevConfirm;
+  assert.equal(asked, 1, 'одно подтверждение на весь выбор');
+  assert.deepEqual(globalThis.messageTemplates.map(t => t.id), ['tg1']);
+  assert.equal(globalThis._tplSelectedIds.size, 0);
+  flushTimers();
+});
+
+test('deleteSelectedTemplates: отказ сохраняет шаблоны', async () => {
+  reset();
+  globalThis.toggleTemplateSelected('vk1', true);
+  const prevConfirm = globalThis.uiConfirm;
+  globalThis.uiConfirm = async () => false;
+  await globalThis.deleteSelectedTemplates();
+  globalThis.uiConfirm = prevConfirm;
+  assert.equal(globalThis.messageTemplates.length, 3);
+});
+
+test('toggleSelectAllTemplates выделяет видимые и снимает повторным кликом', () => {
+  reset();
+  globalThis.toggleSelectAllTemplates();
+  assert.equal(globalThis._tplSelectedIds.size, 3, 'все видимые выделены');
+  globalThis.toggleSelectAllTemplates();
+  assert.equal(globalThis._tplSelectedIds.size, 0, 'повторный клик снимает');
+  // Фильтр категории: выделяется только видимая категория.
+  globalThis._tplFilterCat = 'telegram';
+  globalThis.toggleSelectAllTemplates();
+  assert.equal(globalThis._tplSelectedIds.size, 1);
+  assert.ok(globalThis._tplSelectedIds.has('tg1'));
+});
+
+test('pruneTemplateSelection чистит выделение после удаления', () => {
+  reset();
+  globalThis.toggleTemplateSelected('vk1', true);
+  globalThis.messageTemplates = globalThis.messageTemplates.filter(t => t.id !== 'vk1');
+  globalThis.pruneTemplateSelection();
+  assert.equal(globalThis._tplSelectedIds.size, 0);
+});
+
+// ── Пользовательские переменные ──────────────────────────────
+test('isValidVarName: кириллица ок, встроенные и мусор — нет', () => {
+  reset();
+  assert.equal(globalThis.isValidVarName('подпись'), true);
+  assert.equal(globalThis.isValidVarName('my_var_2'), true);
+  assert.equal(globalThis.isValidVarName('name'), false);
+  assert.equal(globalThis.isValidVarName('название_бизнеса'), false);
+  assert.equal(globalThis.isValidVarName('bad name!'), false);
+  assert.equal(globalThis.isValidVarName(''), false);
+});
+
+test('saveVarFromModal создаёт статичную переменную', () => {
+  reset();
+  els['tpl-var-name'].value = 'подпись';
+  els['tpl-var-source'].value = 'text';
+  els['tpl-var-value'].value = 'С уважением, Иван';
+  els['tpl-var-desc'].value = 'подпись в конце';
+  assert.equal(globalThis.saveVarFromModal(), true);
+  assert.equal(globalThis.customVariables.length, 1);
+  assert.equal(globalThis.customVariables[0].value, 'С уважением, Иван');
+  assert.match(toasts.at(-1).msg, /сохранена/i);
+  flushTimers();
+});
+
+test('saveVarFromModal отклоняет встроенное имя и дубль', () => {
+  reset();
+  els['tpl-var-name'].value = 'name';
+  els['tpl-var-source'].value = 'text';
+  els['tpl-var-value'].value = 'x';
+  assert.equal(globalThis.saveVarFromModal(), false);
+  assert.match(els['tpl-var-modal-err'].textContent, /встроенн/i);
+  // Дубль.
+  globalThis.customVariables = [{ name: 'подпись', value: 'A', column: '', description: '' }];
+  els['tpl-var-name'].value = 'Подпись';
+  assert.equal(globalThis.saveVarFromModal(), false);
+  assert.match(els['tpl-var-modal-err'].textContent, /уже есть/i);
+});
+
+test('substituteTemplate подставляет свои переменные (статик и столбец)', () => {
+  reset();
+  globalThis.customVariables = [
+    { name: 'подпись', value: 'Иван', column: '', description: '' },
+    { name: 'город_к', column: 'city', value: '', description: '' },
+  ];
+  const out = globalThis.substituteTemplate('{name} — {город_к}, {подпись}', COMPANY);
+  assert.equal(out, 'Клининг-Про — Москва, Иван');
+  // Своя переменная приоритетнее встроенной.
+  globalThis.customVariables = [{ name: 'name', value: 'СВОЯ', column: '', description: '' }];
+  assert.equal(globalThis.substituteTemplate('{name}', COMPANY), 'СВОЯ');
+  // Пустая — «—».
+  globalThis.customVariables = [{ name: 'пустая', value: '', column: '', description: '' }];
+  assert.equal(globalThis.substituteTemplate('a {пустая} b', {}), 'a — b');
+});
+
+test('deleteCustomVar удаляет после подтверждения', async () => {
+  reset();
+  globalThis.customVariables = [{ name: 'подпись', value: 'A', column: '', description: '' }];
+  const prevConfirm = globalThis.uiConfirm;
+  globalThis.uiConfirm = async () => true;
+  await globalThis.deleteCustomVar('подпись');
+  globalThis.uiConfirm = prevConfirm;
+  assert.equal(globalThis.customVariables.length, 0);
+  flushTimers();
+});
+
+test('allTemplateVars объединяет встроенные и свои', () => {
+  reset();
+  globalThis.customVariables = [{ name: 'подпись', value: 'A', column: '', description: 'подпись' }];
+  const vars = globalThis.allTemplateVars();
+  assert.ok(vars.some(v => v.key === 'name' && !v.own));
+  assert.ok(vars.some(v => v.key === 'подпись' && v.own));
+});
+
+// ── Автодополнение ────────────────────────────────────────
+test('onTemplateTextInput открывает список при вводе { и фильтрует', () => {
+  reset();
+  const ta = els['tpl-text'];
+  ta.value = 'Привет, ';
+  ta.selectionStart = ta.selectionEnd = ta.value.length;
+  globalThis.onTemplateTextInput();   // без { — закрыто
+  assert.equal(els['tpl-autocomplete'].hidden, true);
+  ta.value = 'Привет, {';
+  ta.selectionStart = ta.selectionEnd = ta.value.length;
+  globalThis.onTemplateTextInput();
+  assert.equal(els['tpl-autocomplete'].hidden, false);
+  assert.match(els['tpl-autocomplete'].innerHTML, /\{name\}/);
+  // Фрагмент «na» оставляет name, убирает city.
+  ta.value = 'Привет, {na';
+  ta.selectionStart = ta.selectionEnd = ta.value.length;
+  globalThis.onTemplateTextInput();
+  assert.match(els['tpl-autocomplete'].innerHTML, /\{name\}/);
+  assert.ok(!/\{city\}/.test(els['tpl-autocomplete'].innerHTML));
+  // Закрытая {…} — список скрыт.
+  ta.value = 'Привет, {name}';
+  ta.selectionStart = ta.selectionEnd = ta.value.length;
+  globalThis.onTemplateTextInput();
+  assert.equal(els['tpl-autocomplete'].hidden, true);
+});
+
+test('applyTemplateAutocomplete вставляет {ключ} на место незакрытой {', () => {
+  reset();
+  const ta = els['tpl-text'];
+  ta.value = 'Привет, {na';
+  ta.selectionStart = ta.selectionEnd = ta.value.length;
+  globalThis.applyTemplateAutocomplete('name');
+  assert.equal(ta.value, 'Привет, {name}');
+  assert.equal(ta.selectionStart, ta.value.length);
+  assert.equal(els['tpl-autocomplete'].hidden, true);
+});
+
+test('onTemplateTextKeydown: Enter вставляет выбранный вариант, Esc закрывает', () => {
+  reset();
+  const ta = els['tpl-text'];
+  ta.value = '{';
+  ta.selectionStart = ta.selectionEnd = 1;
+  globalThis.onTemplateTextInput();
+  assert.equal(els['tpl-autocomplete'].hidden, false);
+  globalThis._tplAcIndex = 0;
+  const prevented = [];
+  globalThis.onTemplateTextKeydown({ key: 'Enter', preventDefault: () => prevented.push('Enter') });
+  assert.equal(ta.value, '{name}');
+  assert.deepEqual(prevented, ['Enter']);
+  // Esc закрывает.
+  ta.value = '{ci';
+  ta.selectionStart = ta.selectionEnd = ta.value.length;
+  globalThis.onTemplateTextInput();
+  globalThis.onTemplateTextKeydown({ key: 'Escape', preventDefault: () => {} });
+  assert.equal(els['tpl-autocomplete'].hidden, true);
 });

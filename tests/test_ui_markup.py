@@ -718,7 +718,9 @@ class TestMessageTemplates:
             assert needle in TEMPLATE, needle
         assert 'onclick="saveTemplateFromModal()"' in TEMPLATE
         assert 'onclick="closeTemplateModal()"' in TEMPLATE
-        assert 'oninput="updateTemplatePreview()"' in TEMPLATE
+        # Ввод живёт в onTemplateTextInput: он и превью обновляет,
+        # и автодополнение открывает.
+        assert 'oninput="onTemplateTextInput()"' in TEMPLATE
 
     def test_category_filter_covers_four_networks(self):
         sec = self._panel()
@@ -765,6 +767,55 @@ class TestMessageTemplates:
                    'def migrate_templates(', 'def load_templates(', 'def save_templates('):
             assert fn in mod, fn
         assert 'active_template_ids' in mod
+
+    def test_bulk_delete_controls_in_markup_and_js(self):
+        sec = self._panel()
+        assert 'id="btn-tpl-del-selected"' in sec
+        assert 'deleteSelectedTemplates()' in sec
+        assert 'toggleSelectAllTemplates()' in sec
+        for fn in ('deleteSelectedTemplates', 'toggleTemplateSelected',
+                   'toggleSelectAllTemplates', 'pruneTemplateSelection'):
+            assert f'function {fn}(' in APP_JS, fn
+        assert "data-tpl-check" in APP_JS
+
+    def test_autocomplete_in_markup_and_js(self):
+        sec = self._panel()
+        assert 'id="tpl-autocomplete"' in sec
+        assert 'oninput="onTemplateTextInput()"' in TEMPLATE
+        assert 'onkeydown="onTemplateTextKeydown(event)"' in TEMPLATE
+        for fn in ('onTemplateTextInput', 'onTemplateTextKeydown',
+                   'renderTemplateAutocomplete', 'applyTemplateAutocomplete',
+                   'closeTemplateAutocomplete', 'allTemplateVars'):
+            assert f'function {fn}(' in APP_JS, fn
+
+    def test_custom_vars_subtab_and_modal(self):
+        sec = self._panel()
+        # Переключатель подвкладок и панель переменных.
+        assert "showTplSubtab('vars')" in sec
+        assert 'id="tpl-pane-vars"' in sec
+        assert 'id="tpl-var-cards"' in sec
+        assert 'openVarModal()' in sec
+        # Модалка переменной: имя, источник (текст/столбец), описание.
+        for needle in ('id="tpl-var-modal"', 'id="tpl-var-name"', 'id="tpl-var-source"',
+                       'id="tpl-var-value"', 'id="tpl-var-column"', 'id="tpl-var-desc"'):
+            assert needle in TEMPLATE, needle
+        for fn in ('openVarModal', 'saveVarFromModal', 'closeVarModal',
+                   'deleteCustomVar', 'onVarSourceChange'):
+            assert f'function {fn}(' in APP_JS, fn
+
+    def test_custom_vars_styled(self):
+        for rule in ('.tpl-subtab{', '.tpl-var-card{', '.tpl-ac-box{',
+                     '.tpl-card-chk{', '.tpl-var-name-row{'):
+            assert rule in STYLE, rule
+        assert '.tpl-ac-box[hidden]' in STYLE
+        assert '[data-theme="dark"] .tpl-var-card' in STYLE
+
+    def test_server_round_trips_custom_variables(self):
+        api = (ROOT / "routes" / "api.py").read_text(encoding="utf-8")
+        assert 'custom_variables' in api
+        mod = (ROOT / "yandex_maps_parser" / "message_templates.py").read_text(encoding="utf-8")
+        assert 'def normalize_custom_variables(' in mod
+        assert 'custom_variables' in mod
 
 
 class TestBulkCrawlOrder:

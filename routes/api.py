@@ -1026,7 +1026,10 @@ def preview_blacklist():
 
 @bp.route("/templates", methods=["GET"])
 def get_templates():
-    """Шаблоны, активные по категориям, режимы выбора и флаг «показывать {var}»."""
+    """Шаблоны, активные по категориям, режимы выбора и флаг «показывать {var}».
+
+    Вместе с ними отдаются и пользовательские переменные (custom_variables).
+    """
     from yandex_maps_parser.message_templates import load_templates
     return jsonify({"ok": True, **load_templates()})
 
@@ -1036,7 +1039,8 @@ def set_templates():
     """Сохранить шаблоны (полный набор) и выбор активных.
 
     Body: {templates: [...], active_template_ids?, show_missing_as_var?,
-           template_modes?, random_template_ids?, avoid_repeats?}
+           template_modes?, random_template_ids?, avoid_repeats?,
+           custom_variables?}
     Пустой список допустим (заглушка «нет шаблонов»), но не-список — 400.
     """
     from yandex_maps_parser import message_templates as mt
@@ -1051,6 +1055,7 @@ def set_templates():
         "template_modes": data.get("template_modes"),
         "random_template_ids": data.get("random_template_ids"),
         "avoid_repeats": data.get("avoid_repeats"),
+        "custom_variables": data.get("custom_variables"),
     })
     return jsonify({"ok": True, **mt.save_templates(state)})
 
@@ -1113,10 +1118,14 @@ def bulk_urls():
 
     template = str(data.get("template") or "")
     show_missing = bool(data.get("show_missing_as_var", False))
+    # Свои переменные — общий с шаблонами хелпер: подставляются и в одиночный
+    # текст, и в случайный выбор, как и встроенные {name}, {city} и т.д.
+    from yandex_maps_parser.message_templates import load_templates as _load_tpls
+    custom_vars = _load_tpls().get("custom_variables") or []
     substitute = None
     if template:
         from yandex_maps_parser.message_templates import substitute as _subst
-        substitute = _subst
+        substitute = lambda *a, **k: _subst(*a, custom_variables=custom_vars, **k)
 
     # Случайный выбор: клиент передаёт id шаблонов своей соцсети, сервер
     # резолвит их по общему хранилищу и выбирает на КАЖДУЮ запись — так
@@ -1141,7 +1150,7 @@ def bulk_urls():
             text = pick_random_text(texts, last["text"], avoid)
             last["text"] = text
             idx = texts.index(text) if text in texts else 0
-            return _subst2(text, record, show_missing), names[idx]
+            return _subst2(text, record, show_missing, custom_variables=custom_vars), names[idx]
 
         return picker
 

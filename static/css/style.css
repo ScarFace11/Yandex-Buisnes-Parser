@@ -2656,6 +2656,70 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
   font-size:11.5px;line-height:1.6;color:var(--sub);background:var(--panel);
   border:1px solid var(--bdr);border-radius:8px;padding:8px 12px;margin-bottom:16px;
 }
+/* Подвкладки «Шаблоны» / «Переменные» внутри вкладки */
+.tpl-subtabs{display:flex;gap:6px;margin-bottom:14px;border-bottom:1px solid var(--bdr)}
+.tpl-subtab{
+  padding:8px 14px;border:none;border-bottom:2px solid transparent;background:transparent;
+  color:var(--sub);font:inherit;font-size:12.5px;font-weight:700;cursor:pointer;
+  transition:color .12s,border-color .12s;
+}
+.tpl-subtab:hover{color:var(--c)}
+.tpl-subtab.active{color:var(--c);border-bottom-color:var(--c)}
+/* Чекбокс выбора на карточке шаблона (массовое удаление) */
+.tpl-card-chk{display:inline-flex;align-items:center;margin-right:2px}
+.tpl-card-chk input{width:15px;height:15px;accent-color:var(--c);cursor:pointer}
+/* Кнопка массового удаления — красная, как остальные danger-действия */
+#btn-tpl-del-selected{color:var(--err-strong);border-color:var(--err-strong)}
+#btn-tpl-del-selected:hover{background:var(--err-bg)}
+#btn-tpl-del-selected:disabled{opacity:.5;cursor:not-allowed}
+/* Ссылка «управлять переменными» под списком встроенных */
+.tpl-vars-manage{
+  margin-top:10px;border:none;background:transparent;color:var(--c);
+  font:inherit;font-size:11.5px;font-weight:700;cursor:pointer;padding:0;
+}
+.tpl-vars-manage:hover{text-decoration:underline}
+/* Подвкладка «Переменные» */
+.tpl-vars-intro h3{margin:0 0 6px;font-size:16px}
+.tpl-var-count{font-size:11.5px;font-weight:700;color:var(--muted);margin-left:8px}
+.tpl-vars-intro p{margin:0 0 12px;color:var(--muted);font-size:12.5px;line-height:1.6;max-width:640px}
+.tpl-var-cards{display:flex;flex-direction:column;gap:10px;margin-top:12px}
+.tpl-var-empty{padding:20px;text-align:center;color:var(--muted);border:1px dashed var(--bdr);border-radius:8px;font-size:12.5px}
+.tpl-var-card{
+  background:var(--card);border:1px solid var(--bdr);border-radius:8px;padding:12px 14px;
+}
+.tpl-var-card code{color:var(--c);font-weight:700;font-size:12.5px}
+.tpl-var-card-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.tpl-var-kind{
+  font-size:10px;font-weight:700;color:var(--sub);background:var(--panel);
+  border:1px solid var(--bdr);border-radius:999px;padding:2px 8px;
+}
+.tpl-var-actions{margin-left:auto;display:flex;gap:4px;opacity:0;transition:opacity .15s}
+.tpl-var-card:hover .tpl-var-actions,.tpl-var-card:focus-within .tpl-var-actions{opacity:1}
+.tpl-var-desc{font-size:11.5px;color:var(--sub);margin-top:5px}
+.tpl-var-val{font-size:11.5px;color:var(--muted);margin-top:4px;word-break:break-word}
+/* Форма переменной: имя между фигурными скобками */
+.tpl-var-name-row{display:flex;align-items:center;gap:6px}
+.tpl-var-name-row input{flex:1;min-width:0}
+.tpl-var-brace{font-size:18px;font-weight:800;color:var(--muted);font-family:monospace}
+/* Автодополнение переменных под textarea */
+.tpl-text-wrap{position:relative}
+.tpl-ac-box{
+  position:absolute;top:calc(100% + 4px);left:0;right:0;z-index:30;
+  background:var(--card);border:1px solid var(--bdr);border-radius:8px;box-shadow:var(--sh);
+  max-height:240px;overflow:auto;padding:4px;
+}
+.tpl-ac-box[hidden]{display:none}
+.tpl-ac-item{
+  display:flex;align-items:center;gap:8px;width:100%;text-align:left;
+  padding:7px 9px;border:none;border-radius:6px;background:transparent;
+  color:var(--txt);font:inherit;font-size:12px;cursor:pointer;
+}
+.tpl-ac-item:hover,.tpl-ac-item.active{background:var(--c-soft)}
+.tpl-ac-item code{color:var(--c);font-weight:700;white-space:nowrap}
+.tpl-ac-label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--sub)}
+.tpl-ac-own{font-size:9.5px;font-weight:800;text-transform:uppercase;color:var(--c);background:var(--c-soft);border-radius:999px;padding:1px 7px}
+.tpl-ac-hint{padding:5px 9px 3px;font-size:10px;color:var(--muted);border-top:1px solid var(--bdr);margin-top:3px}
+
 /* Select категории — явный dropdown: стрелка справа, не «поле ввода» */
 .tpl-modal select{
   appearance:none;-webkit-appearance:none;
@@ -2940,3 +3004,9 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
   .tpl-pick-modal-list{max-height:34vh}
   .tpl-modal{width:100%;max-width:100%;padding:14px}
 }
+
+/* Тёмная тема: новые элементы вкладки шаблонов */
+[data-theme="dark"] .tpl-subtab.active{border-bottom-color:var(--c)}
+[data-theme="dark"] .tpl-var-card{background:var(--panel)}
+[data-theme="dark"] .tpl-ac-box{background:var(--panel)}
+[data-theme="dark"] .tpl-var-kind{background:var(--field)}

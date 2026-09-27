@@ -215,7 +215,8 @@ def run_send(
             idx = pick["texts"].index(text) if text in pick["texts"] else 0
             used_tpl_names.append(pick["names"][idx])
         else:
-            text = substitute(message_tpl, rec.get("record") or {"name": name})
+            text = substitute(message_tpl, rec.get("record") or {"name": name},
+                              custom_variables=load_templates().get("custom_variables"))
 
         try:
             adapter.send_message(peer_id, text)

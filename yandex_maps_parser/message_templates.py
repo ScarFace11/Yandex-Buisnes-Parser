@@ -15,8 +15,13 @@
         "template_modes": {"vk": "single", "telegram": "random", ...},
         "random_template_ids": {"vk": ["tpl_1", "tpl_2"], ...},
         "avoid_repeats": false,
+        "custom_variables": [{name, value, column, description, created_at}],
         "templates": [{id, category, name, text, is_default, created_at}],
     }
+
+Пользовательские переменные: `value` — статичный текст (одинаковый во всех
+сообщениях); вместо него можно задать `column` — тогда значение берётся из
+поля записи (столбца таблицы результатов) для каждой компании своё.
 """
 from __future__ import annotations
 
@@ -30,10 +35,17 @@ except Exception:  # pragma: no cover
     _paths = None
 
 TEMPLATES_KEY = "message_templates"
-CURRENT_TEMPLATE_VERSION = 1
+CURRENT_TEMPLATE_VERSION = 2
 MAX_TEXT = 4096
 MAX_NAME = 120
 MAX_TEMPLATES = 200
+
+# Пользовательские переменные («Переменные» во вкладке «📝 Шаблоны»).
+MAX_VAR_NAME = 60
+MAX_VAR_VALUE = 1000
+MAX_VAR_DESC = 200
+MAX_VAR_COLUMN = 60
+MAX_CUSTOM_VARS = 100
 
 CATEGORIES = ("vk", "telegram", "whatsapp", "instagram")
 CATEGORY_LABELS = {
@@ -70,6 +82,13 @@ VARIABLE_ALIASES = {
     "название_бизнеса": "name",
     "reviews_count": "reviews",
 }
+
+# Встроенные имена заняты: свою переменную так назвать нельзя.
+RESERVED_VAR_NAMES = frozenset(VARIABLE_ALIASES) | {key for key, _label, _f in VARIABLES}
+
+# Имя пользовательской переменной: буквы/цифры/подчёркивание, кириллица —
+# тот же алфавит, что у подстановки \{...\} в тексте шаблона.
+_VAR_NAME_RE = re.compile(r"^[A-Za-z0-9_а-яА-ЯёЁ]+$")
 
 _VAR_FIELD = {key: field for key, _label, field in VARIABLES}
 
@@ -120,8 +139,55 @@ DEFAULT_TEMPLATES = [
 
 _VAR_RE = re.compile(r"\{(\w+)\}")
 
-# Зарезервировано под будущие шаги: {1: функция_миграции_с_1_на_2}.
-_MIGRATIONS: dict = {}
+
+# ── Пользовательские переменные ───────────────────────────────
+
+def normalize_custom_variables(raw) -> list:
+    """Привести список своих переменных к безопасному виду.
+
+    Имя — непустое, по _VAR_NAME_RE, без коллизий со встроенными переменными
+    и алиасами и без дублей (регистр не важен). Задан столбец — значение
+    берётся из записи, статичный текст не нужен; без столбца нужен текст.
+    Не-список и мусор отбрасываются, кап — MAX_CUSTOM_VARS.
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list = []
+    seen: set = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if (not name or len(name) > MAX_VAR_NAME
+                or not _VAR_NAME_RE.match(name)
+                or name in RESERVED_VAR_NAMES
+                or name.lower() in seen):
+            continue
+        column = str(item.get("column") or "").strip()[:MAX_VAR_COLUMN]
+        value = "" if column else str(item.get("value") or "").strip()[:MAX_VAR_VALUE]
+        if not column and not value:
+            continue
+        seen.add(name.lower())
+        out.append({
+            "name": name,
+            "column": column,
+            "value": value,
+            "description": str(item.get("description") or "").strip()[:MAX_VAR_DESC],
+            "created_at": str(item.get("created_at") or "").strip() or _now(),
+        })
+        if len(out) >= MAX_CUSTOM_VARS:
+            break
+    return out
+
+
+def _migrate_1_to_2(raw: dict) -> dict:
+    """v1 → v2: появились свои переменные — у старых хранилищ их нет."""
+    if not isinstance(raw.get("custom_variables"), list):
+        raw["custom_variables"] = []
+    return raw
+
+
+_MIGRATIONS: dict = {1: _migrate_1_to_2}
 
 
 def _now() -> str:
@@ -261,6 +327,8 @@ def normalize_state(raw) -> tuple:
         "random_template_ids": normalize_random_ids(
             migrated.get("random_template_ids"), templates),
         "avoid_repeats": bool(migrated.get("avoid_repeats", False)),
+        "custom_variables": normalize_custom_variables(
+            migrated.get("custom_variables")),
         "templates": templates,
     }
     return state, warnings
@@ -276,6 +344,7 @@ def default_state() -> dict:
         "template_modes": {cat: "single" for cat in CATEGORIES},
         "random_template_ids": {cat: [] for cat in CATEGORIES},
         "avoid_repeats": False,
+        "custom_variables": [],
         "templates": normalize_templates(DEFAULT_TEMPLATES),
     }
 
@@ -310,17 +379,34 @@ def _socials_text(record: dict) -> str:
     return ", ".join(names)
 
 
-def substitute(text: str, record: dict, show_missing_as_var: bool = False) -> str:
+def substitute(text: str, record: dict, show_missing_as_var: bool = False,
+               custom_variables=None) -> str:
     """Подставить {переменные} значениями записи.
 
-    Известная, но пустая переменная → «—» (или остаётся {var} при
-    show_missing_as_var). Неизвестная переменная остаётся как есть — так её
-    видно и можно поправить шаблон.
+    Свои переменные (custom_variables) приоритетнее встроенных: задан
+    столбец — значение из записи, иначе статичный текст. Известная, но
+    пустая переменная → «—» (или остаётся {var} при show_missing_as_var).
+    Неизвестная переменная остаётся как есть — так её видно и можно
+    поправить шаблон.
     """
     record = record or {}
+    custom = {
+        str(v.get("name")): v
+        for v in (custom_variables or [])
+        if isinstance(v, dict) and v.get("name")
+    }
 
     def repl(match: re.Match) -> str:
         key = match.group(1)
+        cv = custom.get(key)
+        if cv is not None:
+            if cv.get("column"):
+                value = record.get(str(cv["column"]))
+            else:
+                value = cv.get("value")
+            if value is None or str(value).strip() == "":
+                return match.group(0) if show_missing_as_var else "—"
+            return str(value)
         canonical = VARIABLE_ALIASES.get(key, key)
         if canonical not in _VAR_FIELD:
             return match.group(0)

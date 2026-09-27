@@ -15,7 +15,91 @@
 Свежие разделы сверху. Нерелизнутое живёт под `[Unreleased]` и при выпуске
 переименовывается в номер версии.
 
-## [Unreleased]
+## [2.3.2]
+
+**Свои переменные шаблонов** (`yandex_maps_parser/message_templates.py`,
+`routes/api.py`, `vk_sender/runner.py`, `static/js/app.js`, `templates/index.html`,
+`static/css/style.css`, `tests/test_message_templates.py`, `tests/ui/templates.test.mjs`,
+`tests/test_ui_markup.py`)
+
+- Схема `message_templates` в settings.json: версия 1 → 2, новое поле
+  `custom_variables: [{name, value, column, description, created_at}]`.
+  Миграция `_MIGRATIONS[1]` добавляет пустой список старым хранилищам
+  (механизм был зарезервирован под будущие шаги — задействован).
+- `normalize_custom_variables()`: имя по `^[A-Za-z0-9_а-яА-ЯёЁ]+$` (тот же
+  алфавит, что у подстановки), без коллизий со встроенными и алиасами
+  (`RESERVED_VAR_NAMES = VARIABLES ∪ VARIABLE_ALIASES`), дедуп без учёта
+  регистра; `column` задан → `value` не нужен (значение берётся из записи),
+  иначе обязателен непустой `value`. Лимиты: MAX_VAR_NAME 60,
+  MAX_VAR_VALUE 1000, MAX_VAR_DESC 200, MAX_VAR_COLUMN 60, кап
+  MAX_CUSTOM_VARS 100.
+- `substitute(text, record, show_missing_as_var, custom_variables=None)`:
+  свои переменные проверяются первыми и перекрывают встроенные; `column` →
+  `record[column]`, иначе статичный `value`; пустые — по общим правилам
+  («—» / `{var}` при show_missing_as_var). `custom_variables=None` — старый
+  контракт не меняется.
+- Интеграции на сервере: `POST/GET /templates` прокидывают
+  `custom_variables` в составе состояния; `/bulk/urls` подставляет их и в
+  одиночный `template`, и в random-выбор (`_make_random_picker`);
+  `vk_sender/runner.py` — при обычной отправке
+  (`custom_variables=load_templates().get("custom_variables")`), random-ветка
+  получает их через общий `substitute`.
+- Клиент: состояние `customVariables` в `applyTemplatesState`/
+  `postTemplatesState` (полный round-trip с сервером); зеркало
+  `substituteTemplate` учитывает свои переменные с теми же приоритетами
+  (клик по соцсети, превью в модалке).
+- UI: подвкладки внутри `p-templates` — `showTplSubtab('templates'|'vars')`,
+  панели `#tpl-pane-templates` / `#tpl-pane-vars`, переключатель
+  `.tpl-subtab`. Подвкладка «Переменные»: карточки `renderVarCards()`
+  (встроенные — просмотр, свои — ✎/🗑 через `TEMPLATE_ICONS`), модалка
+  `#tpl-var-modal` (имя между визуальными скобками, источник
+  «статичный текст / столбец», селект столбцов из зеркала EXCEL_COLUMN_DEFS —
+  `varColumnOptions()` без служебных `reviewed`/`parsed_at`, описание).
+  CRUD: `saveVarFromModal` (валидация имени/дублей/капа клиентом, сервер
+  перепроверяет), `deleteCustomVar` с `uiConfirm`. Блок «📖 Доступные
+  переменные», селект «Вставить переменную» и автодополнение пополнены
+  своими (`allTemplateVars()`).
+- CSS: `.tpl-subtab(s)`, `.tpl-var-card/kind/actions/desc/val`,
+  `.tpl-var-name-row`, `.tpl-vars-manage`, `.tpl-var-count`; тёмная тема —
+  `[data-theme="dark"] .tpl-var-card`.
+
+**Массовое удаление шаблонов** (те же файлы)
+
+- Выделение — `_tplSelectedIds` (Set id), чекбоксы на карточках
+  (`data-tpl-check`, `toggleTemplateSelected`), «Выделить все» работает по
+  видимому списку (`_visibleTemplates()` = фильтр категории + поиск).
+- `deleteSelectedTemplates()`: одно `uiConfirm` на весь выбор (первые 3
+  названия + «и ещё N»), затем один проход — `pruneTemplatePicks()`, одна
+  перерисовка, один `saveTemplatesState()`. Кнопка
+  `#btn-tpl-del-selected` появляется при N ≥ 1 и показывает количество
+  (`updateTplSelectionUi`); `pruneTemplateSelection()` чистит выделение от
+  удалённых/отфильтрованных id; `deleteTemplate` (по одному) тоже снимает id
+  с выделения.
+
+**Автодополнение переменных в редакторе шаблона** (те же файлы)
+
+- `onTemplateTextInput()` (oninput `#tpl-text`): незакрытая `{` до каретки →
+  `renderTemplateAutocomplete(fragment)` — панель `#tpl-autocomplete` под
+  textarea, фильтр по началу имени, метка «своя» у своих переменных;
+  закрытая `{…}` или отсутствие `{` — панель скрыта.
+- Вставка: клик (`mousedown` + preventDefault, чтобы textarea не теряла
+  фокус), `Enter`/`Tab` (выбор стрелками, `_tplAcIndex`), Esc — закрыть;
+  `applyTemplateAutocomplete(key)` заменяет незакрытую `{…` до каретки на
+  полный токен и возвращает превью. `onblur` textarea закрывает панель с
+  задержкой 150 мс — клик по пункту успевает отработать.
+- Ограничение наивного слайсера функций в tests/ui (`grab()`): внутри новых
+  функций нет символов `{`/`}` вне кода — комментарии переформулированы.
+
+**Важно для обратной совместимости**: старый settings.json (version 1)
+мигрирует автоматически и без потерь; `substitute()` без
+`custom_variables` и все существующие контракты API не изменились.
+- Тесты: `tests/test_message_templates.py` (новые классы
+  `TestCustomVariables`, `TestSubstituteCustom`, round-trip API своих
+  переменных, миграция v1→v2), `tests/ui/templates.test.mjs` (выделение и
+  пакетное удаление, CRUD переменных, автодополнение, подстановка своих —
+  63 кейса), `TestMessageTemplates` в `tests/test_ui_markup.py`
+  (разметка подвкладок/модалки переменных/автодополнения, CSS-контракты,
+  серверный round-trip).
 
 **Случайный выбор шаблонов** (`yandex_maps_parser/message_templates.py`,
 `routes/api.py`, `vk_sender/runner.py`, `static/js/app.js`, `templates/index.html`,

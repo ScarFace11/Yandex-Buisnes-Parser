@@ -950,6 +950,13 @@
                кликните по значку соцсети у компании. Текст с подставленными данными скопируется в буфер — вставьте его в открытый чат (Ctrl+V).</p>
           </div>
 
+          <!-- Подвкладки: список шаблонов и управление переменными -->
+          <div class="tpl-subtabs" role="tablist" aria-label="Раздел вкладки">
+            <button type="button" class="tpl-subtab active" data-subtab="templates" onclick="showTplSubtab('templates')">📄 Шаблоны</button>
+            <button type="button" class="tpl-subtab" data-subtab="vars" onclick="showTplSubtab('vars')">🔤 Переменные</button>
+          </div>
+
+          <div id="tpl-pane-templates">
           <!-- Режим выбора: один шаблон или случайный из набора (per-категория). -->
           <div class="tpl-pick" id="tpl-pick-box">
             <div class="tpl-pick-head">
@@ -986,6 +993,8 @@
             <input type="file" id="tpl-import-file" accept="application/json,.json" hidden onchange="importTemplates(this)">
             <button type="button" class="btn-sm" id="btn-tpl-export" onclick="exportTemplates()">💾 Экспорт</button>
             <button type="button" class="btn-sm" id="btn-tpl-reset" onclick="resetTemplates()">🔄 Сброс к стандартным</button>
+            <button type="button" class="btn-sm" id="btn-tpl-select-all" onclick="toggleSelectAllTemplates()" hidden>Выделить все</button>
+            <button type="button" class="btn-sm danger" id="btn-tpl-del-selected" onclick="deleteSelectedTemplates()" hidden disabled>🗑 Удалить выбранные</button>
             <label class="chk tpl-missing-chk" title="Если данных для переменной нет — оставить {переменную} как есть вместо «—»">
               <input type="checkbox" id="tpl-show-missing" onchange="onShowMissingChange()">
               Показывать {переменную}, если данных нет
@@ -1015,6 +1024,20 @@
           <div class="tpl-vars">
             <div class="tpl-vars-title">📖 Доступные переменные:</div>
             <div class="tpl-var-list" id="tpl-var-list"></div>
+            <button type="button" class="tpl-vars-manage" onclick="showTplSubtab('vars')">⚙️ Управлять переменными</button>
+          </div>
+          </div><!-- /tpl-pane-templates -->
+
+          <!-- Подвкладка «Переменные»: встроенные и свои переменные шаблонов -->
+          <div id="tpl-pane-vars" hidden>
+            <div class="tpl-vars-intro">
+              <h3>🔤 Переменные шаблонов</h3>
+              <p>Переменные подставляются в текст шаблона вместо {фигурных скобок}. Встроенные берутся из данных компании,
+                 свои — это готовый текст (подпись, контакты) или значение из столбца таблицы результатов.</p>
+              <button type="button" class="btn-sm" onclick="openVarModal()">+ Добавить переменную</button>
+              <span class="tpl-var-count" id="tpl-var-count"></span>
+            </div>
+            <div class="tpl-var-cards" id="tpl-var-cards"></div>
           </div>
         </div><!-- /tpl-wrap -->
         </div><!-- /tpl-scroll -->
@@ -1051,7 +1074,13 @@
             <select id="tpl-category"></select>
             <div class="tpl-hint">Категория определяет, где шаблон предлагается: в таблице, массовом обходе и рассылке.</div>
             <label class="lbl" for="tpl-text">Текст</label>
-            <textarea id="tpl-text" rows="6" maxlength="4096" oninput="updateTemplatePreview()"></textarea>
+            <div class="tpl-text-wrap">
+              <textarea id="tpl-text" rows="6" maxlength="4096"
+                        oninput="onTemplateTextInput()" onkeydown="onTemplateTextKeydown(event)"
+                        onblur="setTimeout(closeTemplateAutocomplete, 150)"></textarea>
+              <!-- Автодополнение: открывается при вводе { — список переменных -->
+              <div class="tpl-ac-box" id="tpl-autocomplete" hidden></div>
+            </div>
             <div class="tpl-insert-row">
               <label class="lbl" for="tpl-var-insert">📖 Вставить переменную:</label>
               <select id="tpl-var-insert" onchange="insertTemplateVariable(this.value)"></select>
@@ -1065,6 +1094,37 @@
             <div class="ui-modal-btns">
               <button type="button" class="m-cancel" onclick="closeTemplateModal()">Отмена</button>
               <button type="button" class="m-ok" onclick="saveTemplateFromModal()">💾 Сохранить</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Модалка переменной (создание/редактирование) -->
+        <div class="tpl-modal-overlay" id="tpl-var-modal" hidden>
+          <div class="tpl-modal" role="dialog" aria-modal="true" aria-labelledby="tpl-var-modal-title">
+            <h3 id="tpl-var-modal-title">➕ Новая переменная</h3>
+            <label class="lbl" for="tpl-var-name">Имя переменной</label>
+            <div class="tpl-var-name-row"><span class="tpl-var-brace">{</span><input type="text" id="tpl-var-name" maxlength="60" autocomplete="off"><span class="tpl-var-brace">}</span></div>
+            <div class="tpl-hint">Буквы, цифры и подчёркивание. Имена встроенных переменных ({name}, {city}…) заняты.</div>
+            <label class="lbl" for="tpl-var-source">Источник значения</label>
+            <select id="tpl-var-source" onchange="onVarSourceChange()">
+              <option value="text">Статичный текст — одинаковый для всех сообщений</option>
+              <option value="column">Столбец таблицы — значение из строки компании</option>
+            </select>
+            <div id="tpl-var-text-wrap">
+              <label class="lbl" for="tpl-var-value">Текст, который будет подставляться</label>
+              <textarea id="tpl-var-value" rows="3" maxlength="1000" placeholder="Например: С уважением, команда Пример\nТел: +7 900 000-00-00"></textarea>
+            </div>
+            <div id="tpl-var-column-wrap" hidden>
+              <label class="lbl" for="tpl-var-column">Столбец таблицы</label>
+              <select id="tpl-var-column"></select>
+              <div class="tpl-hint">Для каждой компании подставится значение из этого столбца её строки.</div>
+            </div>
+            <label class="lbl" for="tpl-var-desc">Описание (необязательно)</label>
+            <input type="text" id="tpl-var-desc" maxlength="200" autocomplete="off" placeholder="Зачем эта переменная — подсказка в списке">
+            <div class="tpl-modal-err" id="tpl-var-modal-err" hidden></div>
+            <div class="ui-modal-btns">
+              <button type="button" class="m-cancel" onclick="closeVarModal()">Отмена</button>
+              <button type="button" class="m-ok" onclick="saveVarFromModal()">💾 Сохранить</button>
             </div>
           </div>
         </div>

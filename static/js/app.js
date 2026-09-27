@@ -6373,6 +6373,14 @@ const TEMPLATE_VAR_FIELD = {
   lead_score: 'lead_score', website: 'website',
 };
 const TEMPLATE_VAR_ALIASES = {'название_бизнеса': 'name', 'reviews_count': 'reviews'};
+// Встроенные имена заняты: свою переменную так назвать нельзя.
+const RESERVED_VAR_NAMES = new Set(Object.keys(TEMPLATE_VAR_FIELD)
+  .concat(Object.keys(TEMPLATE_VAR_ALIASES))
+  .concat(['socials']));
+const TEMPLATE_MAX_VAR_NAME = 60;
+const TEMPLATE_MAX_VAR_VALUE = 1000;
+const TEMPLATE_MAX_VAR_DESC = 200;
+const TEMPLATE_MAX_CUSTOM_VARS = 100;
 
 let messageTemplates = [];
 let activeTemplateIds = {vk: null, telegram: null, whatsapp: null, instagram: null};
@@ -6387,9 +6395,20 @@ let showMissingAsVar = false;
 let templatesLoaded = false;
 let templatesLoading = null;
 let _tplFilterCat = 'all';
+// Подвкладка внутри «📝 Шаблоны»: список шаблонов или управление переменными.
+let _tplSubtab = 'templates';
+// Выделенные шаблоны для массового удаления.
+let _tplSelectedIds = new Set();
+// Редактируемая переменная (id/null) в модалке переменных.
+let _tplEditVarName = null;
 let _tplEditId = null;
 let _tplSaveTimer = null;
 let _tplSearchQuery = '';
+// Свои переменные шаблонов: [{name, value, column, description, created_at}].
+let customVariables = [];
+// Автодополнение: активный вариант и индекс в отфильтрованном списке.
+let _tplAcItems = [];
+let _tplAcIndex = -1;
 // Примерные данные для превью, когда таблица пуста: пользователь видит,
 // как шаблон выглядит с реальными значениями, а не заглушку.
 const TEMPLATE_DEMO_COMPANY = {
@@ -6417,11 +6436,20 @@ function usedVariables(text) {
   return out;
 }
 
-// Зеркало message_templates.substitute: алиасы, «—» для пустого,
-// неизвестная переменная остаётся {как_есть}.
+// Зеркало message_templates.substitute: свои переменные приоритетнее
+// встроенных (столбец — значение из записи, иначе статичный текст), алиасы,
+// «—» для пустого, неизвестная переменная остаётся {как_есть}.
 function substituteTemplate(text, company) {
   company = company || {};
+  const custom = {};
+  (customVariables || []).forEach(v => { if (v && v.name) custom[v.name] = v; });
   return String(text == null ? '' : text).replace(/\{([\wА-Яа-яЁё]+)\}/g, (match, key) => {
+    const cv = custom[key];
+    if (cv) {
+      const v = cv.column ? company[cv.column] : cv.value;
+      return (v === undefined || v === null || String(v).trim() === '')
+        ? (showMissingAsVar ? match : '—') : String(v);
+    }
     const canonical = TEMPLATE_VAR_ALIASES[key] || key;
     if (canonical !== 'socials' && !(canonical in TEMPLATE_VAR_FIELD)) return match;
     let value;
@@ -6538,6 +6566,7 @@ function loadTemplates() {
 
 function applyTemplatesState(j) {
   messageTemplates = Array.isArray(j.templates) ? j.templates : [];
+  customVariables = Array.isArray(j.custom_variables) ? j.custom_variables : [];
   const ids = {vk: null, telegram: null, whatsapp: null, instagram: null};
   if (j.active_template_ids && typeof j.active_template_ids === 'object') {
     TEMPLATE_CATEGORIES.forEach(c => { ids[c] = j.active_template_ids[c] || null; });
@@ -6570,6 +6599,7 @@ async function postTemplatesState() {
       template_modes: templateModes,
       random_template_ids: randomTemplateIds,
       avoid_repeats: avoidRepeats,
+      custom_variables: customVariables,
     });
     if (j && j.ok) applyTemplatesState(j);
   } catch (e) {
@@ -6591,18 +6621,80 @@ const TEMPLATE_ICONS = {
   del: FILE_ACT_ICONS.delete,
 };
 
+// Чистим выделение от шаблонов, которых больше нет (после удаления/фильтра).
+function pruneTemplateSelection() {
+  const alive = new Set(messageTemplates.map(t => t.id));
+  _tplSelectedIds = new Set([..._tplSelectedIds].filter(id => alive.has(id)));
+}
+
+function toggleTemplateSelected(id, checked) {
+  if (checked) _tplSelectedIds.add(id);
+  else _tplSelectedIds.delete(id);
+  updateTplSelectionUi();
+}
+
+function updateTplSelectionUi() {
+  const btn = document.getElementById('btn-tpl-del-selected');
+  if (btn) {
+    const n = _tplSelectedIds.size;
+    btn.hidden = n === 0;
+    btn.disabled = n === 0;
+    btn.textContent = '🗑 Удалить выбранные (' + n + ')';
+  }
+}
+
+function toggleSelectAllTemplates() {
+  const visible = _visibleTemplates();
+  const allSelected = visible.length > 0
+    && visible.every(t => _tplSelectedIds.has(t.id));
+  visible.forEach(t => {
+    if (allSelected) _tplSelectedIds.delete(t.id);
+    else _tplSelectedIds.add(t.id);
+  });
+  renderTemplates();
+  updateTplSelectionUi();
+}
+
+// Видимый сейчас список (с учётом фильтра категории и поиска).
+function _visibleTemplates() {
+  let items = _tplFilterCat === 'all'
+    ? messageTemplates.slice()
+    : messageTemplates.filter(t => t.category === _tplFilterCat);
+  const q = _tplSearchQuery.trim().toLowerCase();
+  if (q) {
+    items = items.filter(t =>
+      t.name.toLowerCase().includes(q) || t.text.toLowerCase().includes(q));
+  }
+  return items;
+}
+
+// Пакетное удаление: одно подтверждение на весь выбор, затем один проход.
+async function deleteSelectedTemplates() {
+  const ids = [..._tplSelectedIds];
+  if (!ids.length) return;
+  const chosen = ids.map(id => messageTemplates.find(t => t.id === id)).filter(Boolean);
+  if (!chosen.length) { _tplSelectedIds.clear(); updateTplSelectionUi(); return; }
+  const names = chosen.map(t => '«' + t.name + '»');
+  const head = names.slice(0, 3).join(', ');
+  const tail = names.length > 3 ? ' и ещё ' + (names.length - 3) : '';
+  const ok = await uiConfirm('Удалить шаблоны: ' + head + tail + '?',
+    'Удалить шаблоны (' + chosen.length + ')', 'Удалить', true);
+  if (!ok) return;
+  const gone = new Set(ids);
+  messageTemplates = messageTemplates.filter(t => !gone.has(t.id));
+  _tplSelectedIds.clear();
+  pruneTemplatePicks();
+  renderTemplates();
+  renderTemplatePickers();
+  saveTemplatesState();
+}
+
 function renderTemplates() {
   const list = document.getElementById('tpl-list');
   if (list) {
-    let items = _tplFilterCat === 'all'
-      ? messageTemplates.slice()
-      : messageTemplates.filter(t => t.category === _tplFilterCat);
-    // Поиск по названию и тексту (регистр не важен).
+    const items = _visibleTemplates();
     const q = _tplSearchQuery.trim().toLowerCase();
-    if (q) {
-      items = items.filter(t =>
-        t.name.toLowerCase().includes(q) || t.text.toLowerCase().includes(q));
-    }
+    pruneTemplateSelection();
     const emptyBox = document.getElementById('tpl-empty-box');
     const addBtn = document.getElementById('btn-tpl-add');
     if (!items.length) {
@@ -6622,6 +6714,10 @@ function renderTemplates() {
         const upd = t.updated_at ? _fmtTemplateDate(t.updated_at) : null;
         return '<div class="template-card" data-id="' + escapeHtml(t.id) + '">'
           + '<div class="template-head">'
+          + '<label class="tpl-card-chk" title="Выбрать для удаления">'
+          + '<input type="checkbox" data-tpl-check="' + escapeHtml(t.id) + '"'
+          + (_tplSelectedIds.has(t.id) ? ' checked' : '')
+          + ' onchange="toggleTemplateSelected(\'' + escapeHtml(t.id) + '\', this.checked)"></label>'
           + '<span class="template-name">📝 ' + escapeHtml(t.name) + '</span>'
           + '<span class="template-cat">' + escapeHtml(TEMPLATE_CAT_LABELS[t.category] || t.category) + '</span>'
           + '<span class="template-actions">'
@@ -6662,13 +6758,19 @@ function renderTemplates() {
       });
     }
     updateTemplateSearchCount(items.length);
+    updateTplSelectionUi();
+    updateSelectAllBtn();
   }
   const varlist = document.getElementById('tpl-var-list');
   if (varlist) {
-    varlist.innerHTML = TEMPLATE_VARS
-      .map(([k, label]) => '<div><code>{' + k + '}</code> — ' + escapeHtml(label) + '</div>')
-      .join('');
+    const builtIn = TEMPLATE_VARS
+      .map(([k, label]) => '<div><code>{' + k + '}</code> — ' + escapeHtml(label) + '</div>');
+    const own = (customVariables || []).map(v =>
+      '<div><code>{' + escapeHtml(v.name) + '}</code> — '
+      + escapeHtml(v.description || (v.column ? 'из столбца «' + v.column + '»' : v.value || '—')) + '</div>');
+    varlist.innerHTML = builtIn.concat(own).join('');
   }
+  renderVarCards();
   document.querySelectorAll('.tpl-cat').forEach(b => b.classList.toggle('active', b.dataset.cat === _tplFilterCat));
 }
 
@@ -6699,6 +6801,27 @@ function updateTemplateSearchCount(n) {
 function filterTemplatesByCategory(cat) {
   _tplFilterCat = cat || 'all';
   renderTemplates();
+}
+
+// Кнопка «Выделить все»: подпись зависит от того, выбраны ли уже все видимые.
+function updateSelectAllBtn() {
+  const btn = document.getElementById('btn-tpl-select-all');
+  if (!btn) return;
+  const visible = _visibleTemplates();
+  const all = visible.length > 0 && visible.every(t => _tplSelectedIds.has(t.id));
+  btn.textContent = all ? 'Снять выделение' : 'Выделить все';
+}
+
+// ── Подвкладки «Шаблоны» / «Переменные» ─────────────────────
+function showTplSubtab(which) {
+  _tplSubtab = (which === 'vars') ? 'vars' : 'templates';
+  const tplPane = document.getElementById('tpl-pane-templates');
+  const varPane = document.getElementById('tpl-pane-vars');
+  if (tplPane) tplPane.hidden = _tplSubtab !== 'templates';
+  if (varPane) varPane.hidden = _tplSubtab !== 'vars';
+  document.querySelectorAll('.tpl-subtab').forEach(b =>
+    b.classList.toggle('active', b.dataset.subtab === _tplSubtab));
+  if (_tplSubtab === 'vars') renderVarCards();
 }
 
 // Селекты выбора шаблона: опция — только название (категория и так видна
@@ -6953,7 +7076,8 @@ function openTemplateModal(id) {
   const ins = document.getElementById('tpl-var-insert');
   if (ins) {
     ins.innerHTML = '<option value="">— переменная —</option>'
-      + TEMPLATE_VARS.map(([k]) => '<option value="' + k + '">' + escapeHtml('{' + k + '}') + '</option>').join('');
+      + allTemplateVars().map(v => '<option value="' + escapeHtml(v.key) + '">'
+        + escapeHtml('{' + v.key + '}' + (v.own ? ' · своя' : '')) + '</option>').join('');
     ins.selectedIndex = 0;
   }
   const err = document.getElementById('tpl-modal-err');
@@ -7067,6 +7191,7 @@ async function deleteTemplate(id) {
   if (!t) return;
   const ok = await uiConfirm('Удалить шаблон «' + t.name + '»?', 'Удалить шаблон', 'Удалить', true);
   if (!ok) return;
+  _tplSelectedIds.delete(id);
   messageTemplates = messageTemplates.filter(x => x.id !== id);
   pruneTemplatePicks();
   renderTemplates();
@@ -7217,6 +7342,247 @@ function onShowMissingChange() {
   showMissingAsVar = !!(chk && chk.checked);
   updateTemplatePreview();
   saveTemplatesState();
+}
+
+// ── Пользовательские переменные (подвкладка «Переменные») ────
+// Значение — статичный текст или столбец записи (company[column]); сервер
+// нормализует так же (message_templates.normalize_custom_variables).
+function isValidVarName(name) {
+  return /^[A-Za-z0-9_а-яА-ЯёЁ]+$/.test(name) && !RESERVED_VAR_NAMES.has(name);
+}
+
+// Столбцы таблицы результатов — зеркало EXCEL_COLUMN_DEFS (без служебных).
+function varColumnOptions() {
+  const defs = (typeof EXCEL_COLUMN_DEFS !== 'undefined' && EXCEL_COLUMN_DEFS) || [];
+  return defs
+    .filter(d => d.f && !['reviewed', 'parsed_at'].includes(d.f))
+    .map(d => ({ key: d.f, label: d.l }));
+}
+
+function renderVarCards() {
+  const box = document.getElementById('tpl-var-cards');
+  if (!box) return;
+  const own = customVariables || [];
+  if (!own.length) {
+    box.innerHTML = '<div class="tpl-var-empty">Своих переменных пока нет — '
+      + 'добавьте подпись, контакты или значение из столбца таблицы.</div>';
+  } else {
+    box.innerHTML = own.map(v =>
+      '<div class="tpl-var-card" data-var="' + escapeHtml(v.name) + '">'
+      + '<div class="tpl-var-card-head">'
+      + '<code>{' + escapeHtml(v.name) + '}</code>'
+      + '<span class="tpl-var-kind">'
+      + (v.column ? '📊 столбец: ' + escapeHtml(v.column) : '📝 статичный текст')
+      + '</span>'
+      + '<span class="tpl-var-actions">'
+      + '<button type="button" class="template-more" data-vact="edit" title="Редактировать" aria-label="Редактировать">' + TEMPLATE_ICONS.edit + '</button>'
+      + '<button type="button" class="template-more danger" data-vact="del" title="Удалить" aria-label="Удалить">' + TEMPLATE_ICONS.del + '</button>'
+      + '</span></div>'
+      + (v.description ? '<div class="tpl-var-desc">' + escapeHtml(v.description) + '</div>' : '')
+      + '<div class="tpl-var-val">'
+      + (v.column ? 'Значение — из столбца «' + escapeHtml(v.column) + '» строки компании.'
+                  : '«' + escapeHtml(String(v.value || '').slice(0, 120)) + ((v.value || '').length > 120 ? '…' : '') + '»')
+      + '</div></div>').join('');
+    box.querySelectorAll('[data-vact]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const name = btn.closest('.tpl-var-card').dataset.var;
+        if (btn.dataset.vact === 'edit') openVarModal(name);
+        else deleteCustomVar(name);
+      });
+    });
+  }
+  const cnt = document.getElementById('tpl-var-count');
+  if (cnt) cnt.textContent = own.length ? 'Своих переменных: ' + own.length : '';
+}
+
+function openVarModal(name) {
+  if (!templatesLoaded) { loadTemplates().then(() => openVarModal(name)); return; }
+  _tplEditVarName = name || null;
+  const v = name ? (customVariables || []).find(x => x.name === name) : null;
+  const title = document.getElementById('tpl-var-modal-title');
+  if (title) title.textContent = v ? '✏️ Редактировать переменную' : '➕ Новая переменная';
+  const nameEl = document.getElementById('tpl-var-name');
+  if (nameEl) { nameEl.value = v ? v.name : ''; nameEl.disabled = !!v; }
+  const src = document.getElementById('tpl-var-source');
+  if (src) src.value = v && v.column ? 'column' : 'text';
+  const valEl = document.getElementById('tpl-var-value');
+  if (valEl) valEl.value = v && !v.column ? (v.value || '') : '';
+  const colSel = document.getElementById('tpl-var-column');
+  if (colSel) {
+    const cols = varColumnOptions();
+    colSel.innerHTML = '<option value="">— выберите столбец —</option>'
+      + cols.map(c => '<option value="' + escapeHtml(c.key) + '">' + escapeHtml(c.label) + '</option>').join('');
+    colSel.value = v && v.column ? v.column : '';
+  }
+  const desc = document.getElementById('tpl-var-desc');
+  if (desc) desc.value = v ? (v.description || '') : '';
+  const err = document.getElementById('tpl-var-modal-err');
+  if (err) { err.hidden = true; err.textContent = ''; }
+  onVarSourceChange();
+  const overlay = document.getElementById('tpl-var-modal');
+  if (overlay) overlay.hidden = false;
+  if (nameEl && nameEl.focus && !v) nameEl.focus();
+}
+
+function closeVarModal() {
+  const overlay = document.getElementById('tpl-var-modal');
+  if (overlay) overlay.hidden = true;
+  _tplEditVarName = null;
+}
+
+function onVarSourceChange() {
+  const src = document.getElementById('tpl-var-source');
+  const isCol = !!(src && src.value === 'column');
+  const tw = document.getElementById('tpl-var-text-wrap');
+  const cw = document.getElementById('tpl-var-column-wrap');
+  if (tw) tw.hidden = isCol;
+  if (cw) cw.hidden = !isCol;
+}
+
+function saveVarFromModal() {
+  const err = document.getElementById('tpl-var-modal-err');
+  const fail = msg => { if (err) { err.textContent = msg; err.hidden = false; } return false; };
+  const nameEl = document.getElementById('tpl-var-name');
+  const name = (nameEl ? nameEl.value : '').trim();
+  const src = document.getElementById('tpl-var-source');
+  const isCol = !!(src && src.value === 'column');
+  const valEl = document.getElementById('tpl-var-value');
+  const colSel = document.getElementById('tpl-var-column');
+  const desc = (document.getElementById('tpl-var-desc') || {}).value || '';
+  if (!name) return fail('Введите имя переменной');
+  if (!_tplEditVarName && !isValidVarName(name)) {
+    return fail('Имя: буквы, цифры и подчёркивание; имена встроенных переменных заняты');
+  }
+  const column = isCol ? ((colSel && colSel.value) || '') : '';
+  if (isCol && !column) return fail('Выберите столбец таблицы');
+  const value = isCol ? '' : (valEl ? valEl.value : '').trim();
+  if (!isCol && !value) return fail('Введите текст, который будет подставляться');
+  const list = customVariables || [];
+  const existing = list.find(x => x.name.toLowerCase() === name.toLowerCase());
+  if (existing && existing.name !== _tplEditVarName) return fail('Переменная с таким именем уже есть');
+  if (existing) {
+    existing.column = column;
+    existing.value = value;
+    existing.description = desc.trim();
+  } else {
+    if (list.length >= TEMPLATE_MAX_CUSTOM_VARS) return fail('Переменных не может быть больше ' + TEMPLATE_MAX_CUSTOM_VARS);
+    list.push({
+      name, column, value,
+      description: desc.trim(),
+      created_at: new Date().toISOString(),
+    });
+  }
+  customVariables = list;
+  closeVarModal();
+  renderTemplates();
+  saveTemplatesState();
+  showToast('Переменная сохранена', 'success');
+  return true;
+}
+
+async function deleteCustomVar(name) {
+  const v = (customVariables || []).find(x => x.name === name);
+  if (!v) return;
+  const ok = await uiConfirm('Удалить переменную {' + name + '}? Она перестанет подставляться в шаблонах.',
+    'Удалить переменную', 'Удалить', true);
+  if (!ok) return;
+  customVariables = customVariables.filter(x => x.name !== name);
+  renderTemplates();
+  saveTemplatesState();
+  showToast('Переменная удалена', 'success');
+}
+
+// ── Автодополнение переменных в редакторе шаблона ────────────
+// При вводе «{» под textarea открывается список переменных; фильтруется по
+// тексту после «{», вставка кликом/Enter/Tab, Esc закрывает.
+function allTemplateVars() {
+  const own = (customVariables || []).map(v => ({
+    key: v.name,
+    label: v.description || (v.column ? 'из столбца «' + v.column + '»' : v.value || ''),
+    own: true,
+  }));
+  return TEMPLATE_VARS.map(([k, label]) => ({ key: k, label, own: false })).concat(own);
+}
+
+function closeTemplateAutocomplete() {
+  const box = document.getElementById('tpl-autocomplete');
+  if (box) box.hidden = true;
+  _tplAcItems = [];
+  _tplAcIndex = -1;
+}
+
+function applyTemplateAutocomplete(key) {
+  const ta = document.getElementById('tpl-text');
+  if (!ta || typeof ta.selectionStart !== 'number') return;
+  // Заменяем незакрытую фигурную скобку до каретки на полный токен переменной.
+  const pos = ta.selectionStart;
+  const before = ta.value.slice(0, pos);
+  const open = before.lastIndexOf('{');
+  if (open < 0 || before.slice(open).includes('}')) return;
+  const token = '{' + key + '}';
+  ta.value = ta.value.slice(0, open) + token + ta.value.slice(pos);
+  const next = open + token.length;
+  ta.selectionStart = ta.selectionEnd = next;
+  closeTemplateAutocomplete();
+  updateTemplatePreview();
+  if (ta.focus) ta.focus();
+}
+
+function renderTemplateAutocomplete(fragment) {
+  const box = document.getElementById('tpl-autocomplete');
+  const ta = document.getElementById('tpl-text');
+  if (!box || !ta) return;
+  const items = allTemplateVars().filter(v =>
+    !fragment || v.key.toLowerCase().startsWith(fragment.toLowerCase()));
+  _tplAcItems = items;
+  _tplAcIndex = -1;
+  if (!items.length) { box.hidden = true; return; }
+  box.innerHTML = items.map((v, i) =>
+    '<button type="button" class="tpl-ac-item" data-i="' + i + '">'
+    + '<code>{' + escapeHtml(v.key) + '}</code>'
+    + '<span class="tpl-ac-label">' + escapeHtml(v.label || '') + '</span>'
+    + (v.own ? '<span class="tpl-ac-own">своя</span>' : '')
+    + '</button>').join('')
+    + '<div class="tpl-ac-hint">↑↓ — выбор, Enter — вставить, Esc — закрыть</div>';
+  box.hidden = false;
+  box.querySelectorAll('.tpl-ac-item').forEach(btn => {
+    btn.addEventListener('mousedown', e => {
+      e.preventDefault();   // чтобы textarea не теряла фокус до вставки
+      const item = items[Number(btn.dataset.i)];
+      if (item) applyTemplateAutocomplete(item.key);
+    });
+  });
+}
+
+function onTemplateTextInput() {
+  updateTemplatePreview();
+  const ta = document.getElementById('tpl-text');
+  if (!ta || typeof ta.selectionStart !== 'number') return;
+  const before = ta.value.slice(0, ta.selectionStart);
+  const open = before.lastIndexOf('{');
+  if (open < 0 || before.slice(open).includes('}')) { closeTemplateAutocomplete(); return; }
+  renderTemplateAutocomplete(before.slice(open + 1));
+}
+
+function onTemplateTextKeydown(e) {
+  const box = document.getElementById('tpl-autocomplete');
+  if (!box || box.hidden || !_tplAcItems.length) return;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    _tplAcIndex = e.key === 'ArrowDown'
+      ? (_tplAcIndex + 1) % _tplAcItems.length
+      : (_tplAcIndex - 1 + _tplAcItems.length) % _tplAcItems.length;
+    box.querySelectorAll('.tpl-ac-item').forEach((btn, i) =>
+      btn.classList.toggle('active', i === _tplAcIndex));
+  } else if (e.key === 'Enter' || e.key === 'Tab') {
+    if (_tplAcIndex < 0 && e.key === 'Enter') return;   // Enter без выбора — перевод строки
+    e.preventDefault();
+    const item = _tplAcItems[Math.max(0, _tplAcIndex)];
+    if (item) applyTemplateAutocomplete(item.key);
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    closeTemplateAutocomplete();
+  }
 }
 
 // ── Интеграция с таблицей ──────────────────────────────────────

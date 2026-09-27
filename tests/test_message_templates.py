@@ -118,6 +118,67 @@ class TestNormalize:
         assert ids == {"vk": "a", "telegram": None, "whatsapp": None, "instagram": None}
 
 
+class TestCustomVariables:
+    """Свои переменные: нормализация, лимиты, коллизии со встроенными."""
+
+    def test_ok_variables_survive(self):
+        import yandex_maps_parser.message_templates as mt
+
+        out = mt.normalize_custom_variables([
+            {"name": "подпись", "value": "С уважением, Иван", "description": "подпись"},
+            {"name": "город_клиента", "column": "city", "description": "город"},
+        ])
+        assert [v["name"] for v in out] == ["подпись", "город_клиента"]
+        assert out[0]["value"] == "С уважением, Иван" and out[0]["column"] == ""
+        assert out[1]["column"] == "city" and out[1]["value"] == ""
+
+    def test_reserved_and_broken_names_dropped(self):
+        import yandex_maps_parser.message_templates as mt
+
+        out = mt.normalize_custom_variables([
+            {"name": "name", "value": "x"},          # встроенная
+            {"name": "название_бизнеса", "value": "x"},  # алиас
+            {"name": "со пробел", "value": "x"},       # пробел в имени
+            {"name": "", "value": "x"},               # пустое
+            {"name": "bad!"},                          # пустое значение без столбца
+            "мусор",
+        ])
+        assert out == []
+
+    def test_duplicates_case_insensitive(self):
+        import yandex_maps_parser.message_templates as mt
+
+        out = mt.normalize_custom_variables([
+            {"name": "Подпись", "value": "A"},
+            {"name": "подпись", "value": "B"},
+        ])
+        assert len(out) == 1 and out[0]["value"] == "A"
+
+    def test_limits_enforced(self):
+        import yandex_maps_parser.message_templates as mt
+
+        out = mt.normalize_custom_variables([
+            {"name": "n" * 100, "value": "x"},
+            {"name": "ok", "value": "v" * 5000, "description": "d" * 999},
+        ])
+        assert out == [] or out[0]["name"] != "n" * 100
+        long = next(v for v in out if v["name"] == "ok")
+        assert len(long["value"]) == mt.MAX_VAR_VALUE
+        assert len(long["description"]) == mt.MAX_VAR_DESC
+
+    def test_cap_on_total_count(self):
+        import yandex_maps_parser.message_templates as mt
+
+        raw = [{"name": f"var_{i}", "value": "x"} for i in range(mt.MAX_CUSTOM_VARS + 10)]
+        assert len(mt.normalize_custom_variables(raw)) == mt.MAX_CUSTOM_VARS
+
+    def test_non_list_is_empty(self):
+        import yandex_maps_parser.message_templates as mt
+
+        assert mt.normalize_custom_variables(None) == []
+        assert mt.normalize_custom_variables("мусор") == []
+
+
 # ── Версии и миграции ────────────────────────────────────────
 class TestMigrations:
     def test_missing_version_is_treated_as_current(self):
@@ -187,6 +248,46 @@ class TestSubstitute:
         assert mt.substitute("{name}", {"name": "C++ & [акция]"}) == "C++ & [акция]"
 
 
+class TestSubstituteCustom:
+    """Свои переменные в подстановке: статик, столбец, приоритет."""
+
+    CVARS = [
+        {"name": "подпись", "column": "", "value": "С уважением, Иван"},
+        {"name": "город_клиента", "column": "city", "value": ""},
+        {"name": "пустая", "column": "", "value": ""},
+    ]
+
+    def test_static_text_value(self):
+        import yandex_maps_parser.message_templates as mt
+
+        assert mt.substitute("Привет! {подпись}", {}, custom_variables=self.CVARS) \
+            == "Привет! С уважением, Иван"
+
+    def test_column_value_taken_from_record(self):
+        import yandex_maps_parser.message_templates as mt
+
+        assert mt.substitute("{город_клиента}", RECORD, custom_variables=self.CVARS) \
+            == "Москва"
+
+    def test_custom_overrides_builtin(self):
+        import yandex_maps_parser.message_templates as mt
+
+        cvars = [{"name": "name", "column": "", "value": "НЕ встроенная"}]
+        assert mt.substitute("{name}", RECORD, custom_variables=cvars) == "НЕ встроенная"
+
+    def test_empty_value_degrades_to_dash(self):
+        import yandex_maps_parser.message_templates as mt
+
+        assert mt.substitute("a {пустая} b", {}, custom_variables=self.CVARS) == "a — b"
+        # Пустой столбец в записи — то же правило.
+        assert mt.substitute("{город_клиента}", {}, custom_variables=self.CVARS) == "—"
+
+    def test_show_missing_keeps_placeholder(self):
+        import yandex_maps_parser.message_templates as mt
+
+        assert mt.substitute("{пустая}", {}, True, custom_variables=self.CVARS) == "{пустая}"
+
+
 # ── API ──────────────────────────────────────────────────────
 # ── Случайный выбор шаблонов ─────────────────────────────────
 class TestPickModes:
@@ -232,6 +333,13 @@ class TestPickModes:
         assert state["template_modes"] == {c: "single" for c in mt.CATEGORIES}
         assert state["random_template_ids"] == {c: [] for c in mt.CATEGORIES}
         assert state["avoid_repeats"] is False
+
+    def test_v1_store_gains_empty_custom_variables(self, tpl_env):
+        from yandex_maps_parser import message_templates as mt
+
+        old = {"version": 1, "templates": mt.DEFAULT_TEMPLATES}
+        state, _ = mt.normalize_state(old)
+        assert state["custom_variables"] == []
 
     def test_pick_random_text_contract(self):
         from yandex_maps_parser import message_templates as mt
@@ -334,6 +442,20 @@ class TestApi:
         again = client.get("/templates").get_json()
         assert again["random_template_ids"]["vk"] == ["a", "b"]
         assert again["avoid_repeats"] is True
+
+    def test_post_round_trips_custom_variables(self, client):
+        r = client.post("/templates", json={
+            "templates": [{"id": "a", "category": "vk", "name": "A", "text": "{подпись}"}],
+            "custom_variables": [
+                {"name": "подпись", "value": "Иван", "description": "подпись"},
+                {"name": "name", "value": "занято"},   # встроенная — вон
+            ],
+        })
+        body = r.get_json()
+        assert len(body["custom_variables"]) == 1
+        assert body["custom_variables"][0]["name"] == "подпись"
+        again = client.get("/templates").get_json()
+        assert again["custom_variables"][0]["value"] == "Иван"
 
     def test_post_invalid_ids_are_dropped(self, client):
         r = client.post("/templates", json={
