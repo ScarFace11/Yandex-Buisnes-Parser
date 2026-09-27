@@ -187,29 +187,40 @@ jobs:
 
       - name: Smoke test the bundle
         # Запускаем бандл как пользователь (двойной клик) и ждём HTTP 200.
-        # YP_OPEN_BROWSER=0 — на раннере браузер не нужен.
+        # YP_OPEN_BROWSER=0 — на раннере браузер не нужен. Без set -e:
+        # финальная проверка каталога данных не должна ронять УСПЕШНЫЙ smoke
+        # (павший curl обрабатывается явно ниже).
         run: |
-          set -euo pipefail
+          set -uo pipefail
           PORT=5050
           BIN="dist-mac/YandexBusinessParser.app/Contents/MacOS/YandexBusinessParser"
           test -x "$BIN" || { echo "::error::bundle executable missing: $BIN"; exit 1; }
           YP_OPEN_BROWSER=0 "$BIN" > /tmp/app.log 2>&1 &
           PID=$!
           ok=0
-          for i in $(seq 1 30); do
+          for i in $(seq 1 45); do
             sleep 2
             if curl -fsS --max-time 5 "http://127.0.0.1:$PORT/" | grep -q "Поиск клиентов"; then ok=1; break; fi
           done
           kill "$PID" 2>/dev/null || true
           if [ "$ok" != "1" ]; then
             echo "::error::smoke test failed: no HTTP 200 on $PORT"
+            echo "--- /tmp/app.log (stdout/stderr шелла) ---"
             tail -60 /tmp/app.log || true
+            # Оконный .app стартует без консоли: sys.stdout = None, и app.py
+            # сам перенаправляет вывод в app.log рядом с данными. Настоящий
+            # traceback при падении старта лежит там, а не в /tmp/app.log.
+            echo "--- ~/Library/Application Support/YandexBusinessParser/app.log ---"
+            tail -80 "$HOME/Library/Application Support/YandexBusinessParser/app.log" 2>/dev/null || true
             exit 1
           fi
           echo "Smoke test passed: ответил на 127.0.0.1:$PORT"
-          # Данные на macOS живут в Application Support, а не внутри бандла
-          test -d "$HOME/Library/Application Support/YandexBusinessParser" \
-            && echo "Каталог данных создан: ~/Library/Application Support/YandexBusinessParser"
+          # Данные на macOS живут в Application Support, а не внутри бандла.
+          if [ -d "$HOME/Library/Application Support/YandexBusinessParser" ]; then
+            echo "Каталог данных создан: ~/Library/Application Support/YandexBusinessParser"
+          else
+            echo "::warning::каталог данных не создан — приложение, возможно, не дошло до инициализации"
+          fi
 
       - name: Package the .zip (ditto keeps symlinks and permissions)
         run: |

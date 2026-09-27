@@ -477,9 +477,17 @@ test('saveTemplateFromModal запрещает дубликат имени в к
 
 test('карточка показывает дату обновления', () => {
   reset();
-  globalThis.messageTemplates[0].updated_at = new Date(Date.UTC(2026, 8, 26, 11, 30)).toISOString();
+  const stamp = new Date(Date.UTC(2026, 8, 26, 11, 30));
+  globalThis.messageTemplates[0].updated_at = stamp.toISOString();
   globalThis.renderTemplates();
-  assert.match(els['tpl-list'].innerHTML, /Обновлено: 26\.09 14:30/, 'локальная дата MSK = UTC+3');
+  // Ожидание строится в ЛОКАЛЬНОЙ таймзоне ранеера: форматтер рисует
+  // локальное время (на MSK это 14:30, на UTC-раннерах CI — 11:30).
+  const p = n => String(n).padStart(2, '0');
+  const expected = 'Обновлено: '
+    + p(stamp.getDate()) + '.' + p(stamp.getMonth() + 1) + ' '
+    + p(stamp.getHours()) + ':' + p(stamp.getMinutes());
+  assert.ok(els['tpl-list'].innerHTML.includes(expected),
+    'локальная дата карточки: ' + expected);
   // Шаблон без updated_at — без даты.
   globalThis.messageTemplates[1].updated_at = null;
   globalThis.renderTemplates();
