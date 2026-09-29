@@ -59,7 +59,10 @@ function grabConstValue(name) {
 for (const name of ['BLACKLIST_KEY', 'BLACKLIST_VERSION', 'BLACKLIST_MAX_WORDS',
                     'BLACKLIST_MAX_LEN', 'BLACKLIST_SAVE_MS', 'BLACKLIST_PREVIEW_MS',
                     'BLACKLIST_LISTS_KEY', 'BLACKLIST_MAX_LISTS', 'BLACKLIST_LIST_NAME_MAX',
-                    'BLACKLIST_LISTS_VERSION']) {
+                    'BLACKLIST_LISTS_VERSION',
+                    // «🎯 Тип компании»: открытие аккордеона считает и его тоже
+                    'COMPANY_TYPE_PREVIEW_MS', 'COMPANY_TYPE_DEFAULT_MONTHS',
+                    'COMPANY_TYPE_PERIODS']) {
   (0, eval)('globalThis.' + name + ' = ' + grabConstValue(name) + ';');
 }
 const TEMPLATES = (0, eval)('(' + grabConstValue('BLACKLIST_TEMPLATES') + ')');
@@ -173,6 +176,16 @@ globalThis._pluralRu = (n, one, few, many) => {
   grab('setBlacklistWords'),
   grab('scheduleBlacklistPreview'),
   grab('previewBlacklist'),
+  // «🎯 Тип компании» — второй ленивый счётчик того же аккордеона.
+  grab('onlySingleChecked'),
+  grab('newMonthsValue'),
+  grab('newMonthsPeriod'),
+  grab('companyTypeOn'),
+  grab('syncCompanyTypeUi'),
+  grab('updateCompanyTypeCount'),
+  grab('scheduleCompanyTypePreview'),
+  grab('previewCompanyType'),
+  grab('companyTypeCountHTML'),
   grab('fillBlacklistTemplateSelect'),
   grab('toggleBlacklistDropdown'),
   grab('closeBlacklistDropdown'),
@@ -189,6 +202,8 @@ function reset({ words = [], stored = null } = {}) {
   globalThis._blErrTimer = null;
   globalThis._blPreviewSeq = 0;
   globalThis._blAnimateWords = new Set();
+  globalThis._ctPreviewTimer = null;
+  globalThis._ctPreviewSeq = 0;
   timers.splice(0, timers.length);
   requests.splice(0, requests.length);
   toasts.splice(0, toasts.length);

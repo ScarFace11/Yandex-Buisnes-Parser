@@ -34,19 +34,31 @@ _MAX_PAGE = 5
 # "primary, extension" — never use it as the short name.
 # items.reviews carries the rating and the review count (both feed the lead
 # score). Unlike contact_groups it needs no extra permission on the key.
-_FIELDS_FULL = (
+#
+# items.org   → org.branch_count — сколько филиалов у сети («только одиночки»)
+# items.dates → когда карточка появилась/менялась в базе 2ГИС («только новые»)
+# Оба — service-поля 3.0, дополнительных прав ключа не требуют
+# (docs.2gis.com → Places API → 3.0/items).
+_FIELDS_BASIC = "items.point,items.address_name"
+_FIELDS_CONTACTS = (
     "items.point,items.address_name,items.contact_groups,items.url,"
     "items.name_ex,items.rubrics,items.reviews"
 )
-_FIELDS_MIN = "items.point,items.address_name"
+_FIELDS_FULL = _FIELDS_CONTACTS + ",items.org,items.dates"
+# Richest first. 2GIS rejects the WHOLE request when one field is unknown to
+# the key, so we walk down the ladder one step at a time: dropping straight to
+# coordinates+address (the old fallback) silently lost contacts, which only
+# came back through the much slower CDP firm-page fetch.
+_FIELD_SETS = (_FIELDS_FULL, _FIELDS_CONTACTS, _FIELDS_BASIC)
+_FIELDS_MIN = _FIELDS_BASIC      # last-resort alias: coordinates + address only
 
 # Module flags (reset at the start of each city/run):
-# _fields_min_only — the key rejected the full field set, stay minimal.
+# _field_level — index into _FIELD_SETS; advanced when a field set is rejected.
 # _contacts_available — None until the first successful page; True when the
 #   key returns contact_groups (then socials come straight from the API),
 #   False when the key strips the field (demo keys) — in that case every
 #   record needs a fallback fetch of its 2gis.ru firm page via CDP.
-_fields_min_only = False
+_field_level = 0
 _contacts_available: bool | None = None
 
 # ── Places API quota tracking ──────────────────────────────────
@@ -229,8 +241,8 @@ def _quota_count(n: int = 1) -> None:
 
 def reset_field_fallback() -> None:
     """Re-enable the full field set (called at the start of each city/run)."""
-    global _fields_min_only, _contacts_available
-    _fields_min_only = False
+    global _field_level, _contacts_available
+    _field_level = 0
     _contacts_available = None
 
 
@@ -267,7 +279,7 @@ def search_items(
     IMPORTANT: 2GIS returns errors inside an HTTP-200 body as
     meta.error — a 200 status does NOT mean the request succeeded.
     """
-    global _fields_min_only, _api_limit_stop_fired
+    global _field_level, _api_limit_stop_fired
 
     params: dict = {
         "q": f"{query} {city}".strip(),
@@ -282,8 +294,7 @@ def search_items(
         params["point"] = f"{lon},{lat}"
         params["radius"] = max(1000, int(state.GRID_STEP_KM * 1500))
 
-    fields = _FIELDS_MIN if _fields_min_only else _FIELDS_FULL
-    r = _get(_API_URL, params={**params, "fields": fields}, session=session)
+    r = _get(_API_URL, params={**params, "fields": _FIELD_SETS[_field_level]}, session=session)
 
     if not r:
         state.warn("Нет ответа от 2GIS API — проверьте сеть или ключ.")
@@ -305,14 +316,19 @@ def search_items(
         msg  = str(err.get("message") or err)[:160]
         etype = str(err.get("type") or "").lower()
         msg_low = msg.lower()
-        # Field/permission problem with the full field set → retry once with
-        # the minimal set instead of failing the whole run.
+        # Field/permission problem with the requested set → step one rung down
+        # the ladder instead of failing the whole run (contacts first, no
+        # organisation/dates block, and only then bare coordinates).
         if (
-            not _fields_min_only
+            _field_level < len(_FIELD_SETS) - 1
             and ("field" in msg_low or "permission" in msg_low or "forbidden" in etype)
         ):
-            state.syslog(f"twogis: field set rejected ({msg[:80]}), retrying with minimal fields")
-            _fields_min_only = True
+            rejected = _FIELD_SETS[_field_level]
+            _field_level += 1
+            state.syslog(
+                f"twogis: field set rejected ({msg[:80]}), retrying with "
+                f"{_FIELD_SETS[_field_level]!r} instead of {rejected!r}"
+            )
             return search_items(query, city, lat, lon, page, session=session)
         # Raw details go to the hidden tech channel + file log; the browser
         # sees a plain-language warning instead of "2GIS API ошибка (404)".
@@ -479,6 +495,61 @@ def _name_and_category(item: dict) -> tuple[str, str]:
     return name, category
 
 
+def _chain_size(item: dict):
+    """Сколько филиалов у сети: items.org.branch_count, или "" (неизвестно).
+
+    2GIS отдаёт филиал, а `items.org` — организацию, которой он принадлежит;
+    в схеме 3.0 у неё есть «branch_count» (например, 7). Поля нет у демо-
+    ключей и в старых ответах — тогда пустая строка, и фильтр «только
+    одиночки» такую запись НЕ отсеивает (позже филиалы досчитает
+    processing.annotate_branch_counts по самому сбору).
+
+    0 — валидное значение из API («нет филиалов») и трактуется фильтром
+    как одиночка, отрицательное — мусор.
+    """
+    org = item.get("org")
+    if not isinstance(org, dict):
+        return ""
+    try:
+        n = int(str(org.get("branch_count")).strip())
+    except (TypeError, ValueError):
+        return ""
+    return n if n >= 0 else ""
+
+
+def _added_date(item: dict) -> str:
+    """Когда карточка появилась в базе 2ГИС — «YYYY-MM-DD» или "".
+
+    Источник — service-поле `items.dates` («the time when the information on
+    the company was added to the database»). Точный набор ключей плавает
+    между версиями API и тарифами, поэтому принимаем несколько вариантов и
+    берём первый ISO-штамп (или unix-секунды). Даты нет — пусто, и фильтр
+    «только новые» такую запись пропускает: выдумывать дату нельзя.
+    """
+    dates = item.get("dates")
+    candidates: list = []
+    if isinstance(dates, dict):
+        candidates = [dates.get(k) for k in
+                      ("created_at", "added_at", "created", "updated_at")]
+    elif isinstance(dates, (str, int, float)):
+        candidates = [dates]
+    candidates += [item.get("created_at"), item.get("added_at")]
+
+    for raw in candidates:
+        s = str(raw or "").strip()
+        if not s:
+            continue
+        if (len(s) >= 10 and s[4] == "-" and s[7] == "-"
+                and s[:4].isdigit() and s[5:7].isdigit() and s[8:10].isdigit()):
+            return s[:10]
+        if s.isdigit() and len(s) >= 10:      # unix-секунды
+            try:
+                return time.strftime("%Y-%m-%d", time.localtime(int(s)))
+            except (OverflowError, OSError, ValueError):
+                continue
+    return ""
+
+
 def parse_item(item: dict, query: str) -> dict | None:
     """
     Convert a 2GIS item into a candidate record (same shape as
@@ -534,6 +605,11 @@ def parse_item(item: dict, query: str) -> dict | None:
         "phone":          phones,
         "rating":         rating if rating not in (None, "") else "",
         "reviews_count":  reviews_count if reviews_count not in (None, "") else "",
+        # «🎯 Тип компании» (stage «Фильтрация результата»): branch_count —
+        # филиалов у сети, added_at — дата появления карточки в базе 2ГИС.
+        # Оба пустые, когда ключ не отдал items.org/items.dates.
+        "branch_count":   _chain_size(item),
+        "added_at":       _added_date(item),
         "aggregator_url": aggregator,
         "website":        website,
         "lat":            point.get("lat", "") if isinstance(point, dict) else "",

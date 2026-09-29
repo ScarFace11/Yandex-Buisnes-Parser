@@ -12,11 +12,12 @@ re-processing with different filters, processed output is reproducible.
 import os
 import re
 import shutil
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from . import state
 from .constants import KNOWN_PLATFORMS
 from .exporters import (
+    _norm_name,
     _records_from_xlsx,
     collapse_chains,
     collapse_chains_chain_keys,
@@ -87,7 +88,10 @@ def export_raw_records(records: list[dict], query: str, city: str,
                 payload = dedupe_records(load_raw_records(path) + payload)
         except Exception:
             payload = list(records)
-    save_excel(payload, path, extra_fields=("website",))
+    # branch_count / added_at — внутренние поля этапа 2, как website: отчёт
+    # их не показывает, но без них фильтры «🎯 Тип компании» не выжили бы
+    # до «Применить фильтры заново» (фильтрация идёт по raw-файлам).
+    save_excel(payload, path, extra_fields=("website", "branch_count", "added_at"))
     return path
 
 
@@ -188,6 +192,127 @@ def blacklist_matcher(words):
     return _hit
 
 
+# ── «🎯 Тип компании»: одиночки и новые ──────────────────────
+# Одиночки — сеть из одного филиала: решение принимает владелец.
+# Новые — карточка недавно появилась в 2ГИС: бюджет на запуск уже есть.
+# Оба фильтра консервативны: нет данных — запись НЕ отсеивается. «Неизвестно»
+# не значит «не подходит», а выдуманная дата хуже отсутствия фильтра.
+
+COMPANY_TYPE_MONTHS = (1, 3, 6, 12, 24)   # варианты периода в интерфейсе
+NEW_COMPANY_DEFAULT_MONTHS = 6            # дефолт селекта «за последние … мес.»
+_DAYS_PER_MONTH = 30                      # «месяц» ≈ 30 дней: календарь не нужен
+
+
+def _int_or_none(value):
+    """Целое из чего угодно — или None. Пустое/мусор не становятся нулём."""
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        return None
+
+
+def normalize_only_new_months(value):
+    """Период «новых» в месяцах: 1/3/6/12/24, иначе 6; 0/None/мусор → выкл.
+
+    Значение приезжает из браузера, пресета и настроек, поэтому проверяем его
+    на сервере: произвольное число не должно превращаться в «за всё время».
+    """
+    if value in (None, "", False):
+        return None
+    n = _int_or_none(value)
+    if n is None:
+        return NEW_COMPANY_DEFAULT_MONTHS
+    if n <= 0:
+        return None
+    return n if n in COMPANY_TYPE_MONTHS else NEW_COMPANY_DEFAULT_MONTHS
+
+
+def annotate_branch_counts(records: list[dict]) -> None:
+    """Проставить branch_count всем записям — включая сборы без этого поля.
+
+    2ГИС отдаёт число филиалов сети в items.org.branch_count, но демо-ключи и
+    файлы, собранные до этой версии, поля не знают. Тогда филиалы считаем сами:
+    записи с одинаковым нормализованным названием в одном городе — ветки одной
+    сети (том же ключом работает «Объединять филиалы сетей»). Значение из API
+    важнее нашего: сбор ограничен точками поиска и может недосчитать сеть.
+
+    0 из API — валидное «филиалов нет»; у кого данных нет вообще, поле
+    остаётся пустым, и фильтр такую запись пропускает.
+    """
+    found: dict[tuple, int] = {}
+    api_max: dict[tuple, int] = {}
+    for r in records:
+        name = _norm_name(r.get("name"))
+        if not name:
+            continue
+        key = ((r.get("city") or "").strip().lower(), name)
+        found[key] = found.get(key, 0) + 1
+        api = _int_or_none(r.get("branch_count"))
+        if api is not None and api > api_max.get(key, -1):
+            api_max[key] = api
+
+    for r in records:
+        name = _norm_name(r.get("name"))
+        key = ((r.get("city") or "").strip().lower(), name) if name else None
+        ours = found.get(key, 0) if key else 0
+        # Число из API знает всю сеть только у одной из веток — отдаём его
+        # всей группе, иначе «Ваша кофейня» с 7 филиалами выглядела бы
+        # одиночкой только потому, что значение пришло на другой строке.
+        api = api_max.get(key) if key else None
+        if ours or api is not None:
+            r["branch_count"] = max(ours, api or 0)
+
+
+def is_single_branch(rec: dict) -> bool:
+    """Подходит ли запись под «только одиночки».
+
+    Пустое/нечисловое значение → True (пропускаем): компания без данных о
+    филиалах не должна выкидываться из отчёта. 0 и 1 — одиночка, 2+ — сеть.
+    """
+    n = _int_or_none(rec.get("branch_count"))
+    return n is None or n <= 1
+
+
+def is_new_company(rec: dict, months) -> bool:
+    """Подходит ли запись под «только новые» (карточка появилась недавно).
+
+    Дата — added_at из items.dates 2ГИС. Даты нет (источник Яндекс, старый
+    сбор, демо-ключ) или она битая — пропускаем: фильтр не выдумывает дату.
+    """
+    if not months:
+        return True
+    raw = str(rec.get("added_at") or "").strip()
+    if len(raw) < 10:
+        return True
+    try:
+        added = datetime.strptime(raw[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return True
+    return added >= (datetime.now().date() - timedelta(days=int(months) * _DAYS_PER_MONTH))
+
+
+def company_type_breakdown(records: list[dict], only_new_months=None) -> dict:
+    """Сколько компаний подойдёт под фильтры «типа компании» (для счётчика).
+
+    Логика общая с apply_filters — цифра в подсказке не может разойтись с
+    результатом «Применить фильтры заново». `both` — пересечение (фильтры
+    работают по И), `with_date` — у скольких вообще есть дата добавления:
+    без этого непонятно, почему «только новые» ничего не отсеял.
+    """
+    months = normalize_only_new_months(only_new_months)
+    single = new = both = with_date = 0
+    for r in records:
+        s, n = is_single_branch(r), is_new_company(r, months)
+        single += 1 if s else 0
+        new += 1 if n else 0
+        both += 1 if (s and n) else 0
+        with_date += 1 if str(r.get("added_at") or "").strip() else 0
+    return {"total": len(records), "single": single, "new": new, "both": both,
+            "with_date": with_date, "months": months}
+
+
 def _has_own_website(rec: dict) -> bool:
     # Aggregators (taplink/linktree) are link pages, not a website —
     # same rule as the live PARSE_MODE filter during collection.
@@ -217,6 +342,9 @@ def apply_filters(raw_files: list[str], filters: dict, log_fn=None) -> dict:
         min_lead_score   — drop leads below this score (0 = off)
         sort_by_score    — order by lead_score, hottest first
         blacklist_words  — слова-исключения (название/категория/описание)
+        only_single_branch — оставить компании с 1 филиалом (владелец решает сам)
+        only_new_months  — оставить карточки, появившиеся в 2ГИС за N месяцев
+                           (1/3/6/12/24; None/0 — выключено)
     Returns {"groups": {query: {city: [records]}}, "count": int}.
     Empty result → {"groups": {}, "count": 0, "empty": True}.
 
@@ -234,9 +362,16 @@ def apply_filters(raw_files: list[str], filters: dict, log_fn=None) -> dict:
             records.extend(load_raw_records(rf))
     if not records:
         return {"groups": {}, "count": 0, "empty": True,
-                "blacklist_words": [], "blacklist_excluded": 0}
+                "blacklist_words": [], "blacklist_excluded": 0,
+                "company_type_excluded": 0, "single_excluded": 0, "new_excluded": 0}
 
     log = log_fn or (lambda *_: None)
+
+    # «🎯 Тип компании»: число филиалов нужно и фильтру, и объединению сетей —
+    # считаем ДО merge, иначе ветки сети уже схлопнуты в одну строку и сеть
+    # выглядела бы одиночкой. Заодно досчитываем старые сборы без поля.
+    annotate_branch_counts(records)
+
     collapse = bool(filters.get("collapse_chains"))
 
     if collapse:
@@ -278,6 +413,11 @@ def apply_filters(raw_files: list[str], filters: dict, log_fn=None) -> dict:
     vk_max_days = _int_or_zero(filters.get("vk_max_post_days"))
     vk_min_followers = _int_or_zero(filters.get("vk_min_followers"))
     min_score = _int_or_zero(filters.get("min_lead_score"))
+    # «🎯 Тип компании»: одиночки и новые (AND с остальными фильтрами).
+    only_single = bool(filters.get("only_single_branch"))
+    only_new_months = normalize_only_new_months(filters.get("only_new_months"))
+    single_excluded = 0
+    new_excluded = 0
 
     def _vk_dropped(r: dict) -> bool:
         """False when the record passes the VK-activity block.
@@ -331,12 +471,24 @@ def apply_filters(raw_files: list[str], filters: dict, log_fn=None) -> dict:
             continue
         if min_score and _int_or_zero(r.get("lead_score")) < min_score:
             continue
+        if only_single and not is_single_branch(r):
+            single_excluded += 1
+            continue
+        if only_new_months and not is_new_company(r, only_new_months):
+            new_excluded += 1
+            continue
         if filters.get("vk_check") and _vk_dropped(r):
             continue
         out.append(r)
 
     if blacklist_words:
         log("info", f"  🚫 Blacklist: исключено {blacklist_excluded} компаний")
+
+    if only_single or only_new_months:
+        _ct_total = single_excluded + new_excluded
+        if _ct_total:
+            log("info", f"  🎯 Тип компании: исключено {_ct_total} "
+                        f"(одиночки {single_excluded}, новые {new_excluded})")
 
     out = dedupe_records(out)
     if filters.get("sort_by_score"):
@@ -349,7 +501,12 @@ def apply_filters(raw_files: list[str], filters: dict, log_fn=None) -> dict:
         groups.setdefault(q, {}).setdefault(c, []).append(r)
 
     blacklist_info = {"blacklist_words": blacklist_words,
-                      "blacklist_excluded": blacklist_excluded}
+                      "blacklist_excluded": blacklist_excluded,
+                      # Счётчики «типа компании»: у рефильтра нет потоковых
+                      # логов сервера, фронтенд пишет строку по этому числу.
+                      "company_type_excluded": single_excluded + new_excluded,
+                      "single_excluded": single_excluded,
+                      "new_excluded": new_excluded}
     if not out:
         return {"groups": {}, "count": 0, "empty": True, **blacklist_info}
     return {"groups": groups, "count": len(out), **blacklist_info}

@@ -132,6 +132,11 @@ HEADER_LABELS = {
     "parsed_at":     "Дата сбора",
     "city":          "Город",
     "website":       "Сайт",
+    # «Тип компании» (stage «Фильтрация результата»): внутренние поля raw-
+    # выгрузки, как website — в отчёт они не попадают, но их читает этап 2
+    # (обратная карта «русский заголовок → ключ» ищет подписи именно здесь).
+    "branch_count":  "Филиалов",
+    "added_at":      "Добавлено",
     # 2GIS URL column is appended to CSV_FIELDS by exporters; the label lives
     # here so older files with a «2ГИС» header still load back correctly.
     "twogis_url":    "2ГИС",
@@ -147,4 +152,5 @@ COL_WIDTHS = {
     "aggregator_url": 32,
     "yandex_maps_url": 36, "query": 14, "parsed_at": 18,
     "city": 18, "website": 26,
+    "branch_count": 10, "added_at": 12,
 }

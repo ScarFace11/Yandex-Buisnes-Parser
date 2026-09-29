@@ -260,6 +260,64 @@ def test_search_items_failed_meta_code_not_billed(monkeypatch):
     assert quota_used() == 0
 
 
+# ── field-set ladder: контакты не теряем на первом отказе ─────
+
+def test_field_set_steps_down_one_rung_at_a_time(monkeypatch):
+    """Неизвестное поле (items.org/items.dates на старом ключе) раньше
+    роняло запрос сразу до «координаты + адрес» и теряло контакты.
+    Теперь лестница: полный набор → набор с контактами → минимум."""
+    asked = []
+
+    def _get(url, params=None, session=None):
+        asked.append(params["fields"])
+        if "items.dates" in params["fields"]:      # ключ не знает новых полей
+            return _FakeResp(_api_payload(
+                400, error={"message": "Unknown field: items.dates", "type": "forbidden"}))
+        return _FakeResp(_api_payload(200, items=[{"id": "1"}]))
+
+    monkeypatch.setattr(twogis, "_get", _get)
+    monkeypatch.setattr(twogis.state, "tech", lambda m: None)
+    monkeypatch.setattr(twogis.state, "syslog", lambda m: None)
+    monkeypatch.setattr(twogis.state, "warn", lambda m: None)
+    monkeypatch.setattr(twogis.state, "request_stop", lambda: None)
+
+    items, _total = twogis.search_items("кафе", "Уфа", 54.7, 55.9, 0)
+
+    assert items == [{"id": "1"}], "со второй ступени запрос прошёл"
+    assert asked[0] == twogis._FIELD_SETS[0], "первый запрос — самый полный набор"
+    assert asked[1] == twogis._FIELD_SETS[1], "после отказа — набор с контактами"
+    assert "contact_groups" in asked[1], "второй шаг сохраняет контакты из API"
+    assert twogis._field_level == 1, "уровень запоминается на весь прогон"
+
+
+def test_field_set_ladder_stops_at_the_basic_set(monkeypatch):
+    asked = []
+
+    def _get(url, params=None, session=None):
+        asked.append(params["fields"])
+        return _FakeResp(_api_payload(
+            400, error={"message": "field not allowed", "type": "forbidden"}))
+
+    monkeypatch.setattr(twogis, "_get", _get)
+    monkeypatch.setattr(twogis.state, "tech", lambda m: None)
+    monkeypatch.setattr(twogis.state, "syslog", lambda m: None)
+    monkeypatch.setattr(twogis.state, "warn", lambda m: None)
+    monkeypatch.setattr(twogis.state, "request_stop", lambda: None)
+
+    twogis.search_items("кафе", "Уфа", 54.7, 55.9, 0)
+
+    assert asked == list(twogis._FIELD_SETS), "каждый отказ — на одну ступень вниз"
+    assert asked[-1] == twogis._FIELDS_BASIC
+    assert len(twogis._FIELD_SETS) == 3
+
+
+def test_full_field_set_asks_for_org_and_dates():
+    """«Одиночки» и «новые» опираются на items.org и items.dates."""
+    assert "items.org" in twogis._FIELD_SETS[0]
+    assert "items.dates" in twogis._FIELD_SETS[0]
+    assert "items.reviews" in twogis._FIELD_SETS[0]      # рейтинг остаётся
+
+
 def test_search_items_no_response_not_billed(monkeypatch):
     monkeypatch.setattr(twogis, "_get", lambda url, params=None, session=None: None)
     monkeypatch.setattr(twogis.state, "warn", lambda m: None)

@@ -1582,6 +1582,32 @@ html.theme-anim #log-output{
 }
 .flt-group-body{display:flex;flex-direction:column;gap:12px}
 
+/* «🎯 Тип компании»: два чекбокса, период для «новых» и счётчик под ними.
+   Строка периода гаснет, пока её чекбокс выключен — иначе селект читался бы
+   как самостоятельная настройка, которая ничего не делает. */
+.ct-new-row{
+  display:flex;flex-wrap:wrap;align-items:center;gap:6px;
+  margin:8px 0 0 26px;opacity:.4;pointer-events:none;transition:opacity .13s;
+}
+.ct-new-row.on{opacity:1;pointer-events:auto}
+.ct-new-row .lbl{margin:0}
+.ct-new-row select{width:auto;padding:5px 8px;font-size:12px;margin-top:0}
+
+/* Счётчик «Будет найдено»: отвечает до нажатия «Применить фильтры заново»,
+   а вторая строка объясняет охват данных (источник без дат и т.п.). */
+.ct-count{
+  padding:8px 10px;border:1px solid var(--bdr);border-radius:8px;
+  background:var(--row-alt);font-size:11px;line-height:1.5;color:var(--muted);
+}
+.ct-count.on{border-color:var(--c);color:var(--sub)}
+.ct-count b{color:var(--txt);font-weight:700}
+.ct-count .ct-note{display:block;margin-top:2px}
+
+@media(max-width:860px){
+  .ct-new-row{margin-left:0}
+  .ct-new-row select{flex:1 1 100%}
+}
+
 /* «⚙️ Дополнительно»: редкие настройки, свёрнуто по умолчанию. */
 .flt-extra{
   margin-top:20px;border:1.5px solid var(--bdr);border-radius:9px;

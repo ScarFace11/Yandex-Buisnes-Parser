@@ -269,6 +269,7 @@ def _merge_group(group: list[dict]) -> list[dict]:
     base = dict(base)
     base["phone"] = ", ".join(phones)
     base.update(socials)
+    _merge_chain_size(base, group)
     return [base]
 
 
@@ -327,8 +328,29 @@ def collapse_chains_name_city(records: list[dict]) -> list[dict]:
                     socials[p] = v
         base["phone"] = ", ".join(phones)
         base.update(socials)
+        _merge_chain_size(base, group)
         out.append(base)
     return out
+
+
+def _merge_chain_size(base: dict, group: list[dict]) -> None:
+    """Сколько филиалов у объединённой строки — максимум по группе.
+
+    «Объединять филиалы сетей» схлопывает ветки сети в одну строку, но
+    счётчик филиалов должен остаться прежним (сеть из 5 филиалов ≠ одиночка),
+    иначе фильтр «только одиночки» после объединения пропустил бы её.
+    Пустые значения не считаются нулём: неизвестное не гасит известное.
+    """
+    best = None
+    for r in group:
+        try:
+            n = int(float(str(r.get("branch_count")).strip()))
+        except (TypeError, ValueError):
+            continue
+        if best is None or n > best:
+            best = n
+    if best is not None:
+        base["branch_count"] = best
 
 
 def _dict_rows(f) -> list[dict]:

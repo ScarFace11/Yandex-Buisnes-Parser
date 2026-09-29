@@ -230,6 +230,49 @@ class TestParseItem:
         ]}]
         assert _socials_from_contacts(groups) == {}
 
+    # ── «🎯 Тип компании»: items.org.branch_count и items.dates ──
+
+    def test_branch_count_from_org(self):
+        rec = parse_item(_item(org={"id": "123456", "branch_count": 7}), "Бар")
+        assert rec["branch_count"] == 7
+
+    def test_branch_count_accepts_a_string(self):
+        assert parse_item(_item(org={"branch_count": "12"}), "Бар")["branch_count"] == 12
+
+    def test_branch_count_zero_is_kept(self):
+        """0 — валидное «филиалов нет»; фильтр считает такую запись одиночкой."""
+        assert parse_item(_item(org={"branch_count": 0}), "Бар")["branch_count"] == 0
+
+    def test_branch_count_without_org_stays_empty(self):
+        """Демо-ключ не отдаёт items.org — пустая строка, а не выдуманная 1."""
+        assert parse_item(_item(), "Бар")["branch_count"] == ""
+        assert parse_item(_item(org={}), "Бар")["branch_count"] == ""
+        assert parse_item(_item(org={"branch_count": "—"}), "Бар")["branch_count"] == ""
+        assert parse_item(_item(org={"branch_count": -1}), "Бар")["branch_count"] == ""
+
+    def test_added_at_from_dates(self):
+        rec = parse_item(_item(dates={"created_at": "2026-05-04T10:00:00+05:00"}), "Бар")
+        assert rec["added_at"] == "2026-05-04"     # только дата, без времени
+
+    def test_added_at_accepts_known_key_variants(self):
+        for key in ("created_at", "added_at", "created"):
+            rec = parse_item(_item(dates={key: "2026-01-02T00:00:00Z"}), "Бар")
+            assert rec["added_at"] == "2026-01-02", key
+        # Дата обновления — запасной вариант, когда даты добавления нет.
+        assert parse_item(_item(dates={"updated_at": "2026-03-04Z"}), "Бар")["added_at"] == "2026-03-04"
+
+    def test_added_at_accepts_a_bare_string_and_unix_seconds(self):
+        assert parse_item(_item(dates="2026-07-08"), "Бар")["added_at"] == "2026-07-08"
+        import time as _time
+        stamp = _time.mktime((2026, 7, 8, 12, 0, 0, 0, 0, -1))
+        assert parse_item(_item(dates=str(int(stamp))), "Бар")["added_at"] == "2026-07-08"
+
+    def test_added_at_without_dates_stays_empty(self):
+        """Нет даты — фильтр «только новые» пропускает запись, а не выдумывает её."""
+        assert parse_item(_item(), "Бар")["added_at"] == ""
+        assert parse_item(_item(dates={}), "Бар")["added_at"] == ""
+        assert parse_item(_item(dates={"created_at": "вчера"}), "Бар")["added_at"] == ""
+
     def test_website_contact_unwrapped(self):
         groups = [{"contacts": [
             {"type": "website",

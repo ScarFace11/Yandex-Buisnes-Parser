@@ -421,6 +421,43 @@
                 </div>
               </div>
 
+              <!-- ══ 🎯 ТИП КОМПАНИИ: у кого проще купить ══ -->
+              <!-- Два фильтра про самого клиента, а не про качество данных:
+                   одиночка = один владелец и одно решение, новая карточка =
+                   бюджет на запуск уже есть. Оба опираются на поля 2ГИС
+                   (items.org.branch_count / items.dates) и оба консервативны:
+                   нет данных — компания остаётся в отчёте. -->
+              <div class="flt-group">
+                <div class="flt-group-title">🎯 Тип компании</div>
+                <div class="flt-group-body">
+
+                  <div>
+                    <label class="chk"><input type="checkbox" id="f-only-single" onchange="onCompanyTypeChange()">
+                      Только одиночки</label>
+                    <div class="hint">Компании с 1 филиалом. Решение принимает владелец — проще договориться.</div>
+                  </div>
+
+                  <div>
+                    <label class="chk"><input type="checkbox" id="f-only-new" onchange="onCompanyTypeChange()">
+                      Только новые</label>
+                    <div class="ct-new-row" id="company-type-new-row">
+                      <label class="lbl" for="f-new-months">Добавлены в 2ГИС за последние</label>
+                      <select id="f-new-months" onchange="onCompanyTypeChange()">
+                        <option value="1">1 мес</option>
+                        <option value="3">3 мес</option>
+                        <option value="6" selected>6 мес</option>
+                        <option value="12">1 год</option>
+                        <option value="24">2 года</option>
+                      </select>
+                    </div>
+                    <div class="hint">Дата появления карточки в базе 2ГИС. Где даты нет — компания остаётся: фильтр не выдумывает дату.</div>
+                  </div>
+
+                  <div class="ct-count" id="company-type-count" role="status" aria-live="polite">Отметьте фильтры — посчитаю, сколько компаний подойдёт</div>
+
+                </div>
+              </div>
+
               <!-- ══ 📊 ОЦЕНКА ЛИДА: кому звонить первым ══ -->
               <div class="flt-group">
                 <div class="flt-group-title">📊 Оценка лида</div>

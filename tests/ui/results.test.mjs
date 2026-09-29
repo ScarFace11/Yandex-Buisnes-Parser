@@ -101,7 +101,10 @@ for (const id of [
   'f-vk-check', 'f-vk-max-days', 'f-vk-min-followers',
   // Lead-score controls read by filterTable / rendered by renderPage
   'f-sort-score', 'f-min-score',
+  // «🎯 Тип компании»: галочки и период, которые рефильтр тоже отправляет
+  'f-only-single', 'f-only-new', 'f-new-months',
 ]) els[id] = mkEl(id);
+els['f-new-months'].value = '6';
 els['f-sort-score'].checked = false;   // table order stays untouched by default in tests
 
 // Social <select> with real options
@@ -220,7 +223,9 @@ globalThis.clearTimeout = () => {};
 
 // Score tables and limits live at module scope — load them verbatim.
 (0, eval)(['SCORE_MAX', 'SCORE_AGGREGATORS', 'SCORE_EXPENSIVE', 'SCORE_RULES',
-  'REVIEWED_AUTOSAVE_MS', 'FILE_ACT_ICONS', 'REFILTER_LABEL'].map(grabConst).join('\n'));
+  'REVIEWED_AUTOSAVE_MS', 'FILE_ACT_ICONS', 'REFILTER_LABEL',
+  // «🎯 Тип компании» едет в рефильтр вместе с остальными фильтрами.
+  'COMPANY_TYPE_PERIODS', 'COMPANY_TYPE_DEFAULT_MONTHS'].map(grabConst).join('\n'));
 
 const fns = [
   'pluralNum', 'pluralRecords', 'pluralProfiles', 'pluralFiles', 'fmtBytes', 'basenameOf',
@@ -236,6 +241,8 @@ const fns = [
   'bulkDeleteSelected',
   // Рефильтр без повторного парсинга
   'refilterNow', '_refilterButtons',
+  // «🎯 Тип компании»: значения для payload рефильтра
+  'onlySingleChecked', 'newMonthsValue', 'newMonthsPeriod', 'companyTypeOn',
   'showBulkWarn', 'hideBulkWarn', 'postJSON', 'openBlankTabs', 'fillTab', 'closeTab',
   'markReviewedBatch', 'bulkOpenBatch',
   // Автосохранение отметок «Просмотрено»
@@ -1178,6 +1185,9 @@ test('refilterNow sends every stage-2 filter and reports progress', async () => 
   els['f-vk-min-followers'].value = '250';
   els['f-min-score'].value = '50';
   els['f-sort-score'].checked = true;
+  els['f-only-single'].checked = true;
+  els['f-only-new'].checked = true;
+  els['f-new-months'].value = '12';
 
   const realFetch = globalThis.fetch;
   let body = null;
@@ -1212,6 +1222,10 @@ test('refilterNow sends every stage-2 filter and reports progress', async () => 
   assert.equal(body.vk_min_followers, '250');
   assert.equal(body.min_lead_score, '50');
   assert.equal(body.sort_by_score, true);
+  // «🎯 Тип компании» — тоже часть payload'а, иначе рефильтр вернул бы
+  // другую выборку, чем тот же запуск с этими же галочками.
+  assert.equal(body.only_single_branch, true);
+  assert.equal(body.only_new_months, 12);
 
   assert.match(busyLabel, /Обрабатываю 3 файла/, 'виден объём работы: ' + busyLabel);
   assert.equal(els['btn-refilter'].textContent, '🔄 Применить фильтры заново', 'кнопка вернулась в норму');
@@ -1219,6 +1233,38 @@ test('refilterNow sends every stage-2 filter and reports progress', async () => 
   // Полный путь в журнале: папка результатов может быть пользовательской.
   assert.ok(logLines.some(l => /🎯 Processed: 9 организаций.*\/data\/MyResults\/processed\//.test(l.msg)),
     'журнал показывает полный путь: ' + JSON.stringify(logLines.map(l => l.msg)));
+});
+
+test('рефильтр рассказывает в журнале, сколько снял «🎯 Тип компании»', async () => {
+  resetState();
+  logLines.length = 0;
+  globalThis.filesData = {raw: [{}], processed: [], archive: []};
+  els['f-only-single'].checked = true;
+  els['f-only-new'].checked = false;
+
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (url === '/process-filters') {
+      return {ok: true, json: async () => ({ok: true, count: 4, empty: false, files: [],
+                                            out_dir: '/out',
+                                            company_type_excluded: 3, single_excluded: 2,
+                                            new_excluded: 1})};
+    }
+    return {ok: true, json: async () => ({})};
+  };
+  try {
+    globalThis.refilterNow();
+    await new Promise(r => setImmediate(r));
+  } finally {
+    globalThis.fetch = realFetch;
+    els['f-only-single'].checked = false;
+  }
+
+  const line = logLines.find(l => /🎯 Тип компании/.test(l.msg));
+  assert.ok(line, 'у рефильтра нет потоковых логов — цифра из ответа: '
+    + JSON.stringify(logLines.map(l => l.msg)));
+  assert.match(line.msg, /исключено 3/);
+  assert.match(line.msg, /одиночки 2, новые 1/);
 });
 
 test('both refilter buttons share the progress state', async () => {

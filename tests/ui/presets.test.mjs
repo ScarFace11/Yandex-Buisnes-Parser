@@ -79,14 +79,18 @@ for (const id of ['f-queries', 'f-city-input', 'city-tags-row', 'city-dropdown',
   // VK activity + lead score controls (accordion «Фильтрация результата»)
   'f-vk-check', 'f-vk-max-days', 'f-vk-min-followers', 'f-sort-score',
   'f-min-score', 'vk-filter-block', 'score-value', 'score-hint', 'vk-check-hint',
-  'score-presets']) {
+  'score-presets',
+  // «🎯 Тип компании»: одиночки + период «новых» и их счётчик
+  'f-only-single', 'f-only-new', 'f-new-months', 'company-type-new-row',
+  'company-type-count']) {
   els[id] = mkEl(id);
 }
 // checkbox-ish elements expose .checked via the closest('.chk') toggle
 for (const id of ['f-excel', 'f-json', 'f-csv', 'f-map',
-  'f-collapse-chains', 'f-continue']) {
+  'f-collapse-chains', 'f-continue', 'f-only-single', 'f-only-new']) {
   els[id].closest = () => mkEl('chk-' + id);
 }
+els['f-new-months'].value = '6';
 els['grid-mode-row'].querySelectorAll = () => [];
 
 // requiredSocials tiles: two fake tiles, vk + tg
@@ -180,6 +184,7 @@ for (const name of ['BLACKLIST_MAX_WORDS', 'BLACKLIST_MAX_LEN']) {
 
 (0, eval)([
   grabConst('FORM_DEFAULTS'),
+  grabConst('COMPANY_TYPE_PERIODS'),
   grab('normalizeBlacklist'),
   grab('setBlacklistWords'),
   grab('getCurrentSettings'),
@@ -191,6 +196,12 @@ for (const name of ['BLACKLIST_MAX_WORDS', 'BLACKLIST_MAX_LEN']) {
   grab('setVkMode'),
   grab('onVkCheckChange'),
   grab('onMinScoreInput'),
+  // «🎯 Тип компании»: галочки, период и производные значения пресета.
+  grab('onlySingleChecked'),
+  grab('newMonthsValue'),
+  grab('newMonthsPeriod'),
+  grab('companyTypeOn'),
+  grab('syncCompanyTypeUi'),
 ].join('\n'));
 
 // ── 1. getCurrentSettings captures the full form ─────────────
@@ -269,6 +280,39 @@ test('onMinScoreInput prints the threshold and how many rows still pass', () => 
   globalThis.onMinScoreInput();
   assert.match(els['score-hint'].textContent, /подходят 3 из 3/);
   globalThis.allResults = [];
+});
+
+// ── 1d. «🎯 Тип компании» круг пресета ─────────────────────
+test('одиночки, новые и период переживают пресет (round-trip)', () => {
+  globalThis.resetToDefaults();
+  assert.equal(els['f-only-single'].checked, false, 'по умолчанию фильтры выключены');
+  assert.equal(els['f-new-months'].value, '6', 'период по умолчанию — 6 мес');
+  assert.equal(globalThis.newMonthsValue(), null, 'выключенный фильтр не едет в поиск');
+
+  els['f-only-single'].checked = true;
+  els['f-only-new'].checked = true;
+  els['f-new-months'].value = '12';
+
+  const saved = globalThis.getCurrentSettings();
+  assert.equal(saved.onlySingle, true);
+  assert.equal(saved.onlyNew, true);
+  assert.equal(saved.onlyNewPeriod, '12');
+
+  globalThis.resetToDefaults();
+  assert.equal(els['f-only-single'].checked, false);
+  assert.equal(els['f-only-new'].checked, false);
+  assert.equal(els['f-new-months'].value, '6');
+
+  globalThis.applySettings(saved);
+  assert.equal(els['f-only-single'].checked, true, 'одиночки восстановлены');
+  assert.equal(els['f-only-new'].checked, true, 'новые восстановлены');
+  assert.equal(els['f-new-months'].value, '12', 'период восстановлен');
+  assert.equal(globalThis.newMonthsValue(), 12);
+
+  // Выключенный фильтр помнит период: пресет возвращает настройку целиком.
+  els['f-only-new'].checked = false;
+  assert.equal(globalThis.newMonthsPeriod(), '12');
+  assert.equal(globalThis.newMonthsValue(), null);
 });
 
 // ── 2. Full round-trip: save → reset → apply restores everything ──

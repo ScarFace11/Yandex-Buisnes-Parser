@@ -442,12 +442,15 @@ class TestFilterAccordionGroups:
 
     def test_groups_with_subtitles(self):
         sec = self._section()
-        for title in ("🎯 Качество", "📊 Оценка лида", "🔍 Активность", "🔧 Обработка",
-                      "🚫 Исключить по словам"):
+        for title in ("🎯 Качество", "🎯 Тип компании", "📊 Оценка лида", "🔍 Активность",
+                      "🔧 Обработка", "🚫 Исключить по словам"):
             assert f'<div class="flt-group-title">{title}</div>' in sec, title
-        assert sec.count('class="flt-group"') == 5
+        assert sec.count('class="flt-group"') == 6
         # Порядок — от частого к редкому: оценка лида идёт ПЕРЕД активностью ВК.
         assert sec.index("📊 Оценка лида") < sec.index("🔍 Активность")
+        # «Тип компании» — про самого клиента, а не про качество данных:
+        # стоит сразу после соцсетей и до оценки лида.
+        assert sec.index("🎯 Тип компании") < sec.index("📊 Оценка лида")
 
     def test_every_control_survived_the_regrouping(self):
         sec = self._section()
@@ -481,6 +484,59 @@ class TestFilterAccordionGroups:
         assert 'class="tiles-reveal"' in sec[tiles:next_group]
         assert '<div class="tiles-grid" id="social-net-chk-grid"></div>' in sec[tiles:next_group]
         assert "netFilter.classList.toggle('open', mode === 'with_socials')" in APP_JS
+
+    def test_company_type_group(self):
+        """«🎯 Тип компании»: одиночки, новые с периодом и счётчик «подойдёт»."""
+        sec = self._section()
+        group = sec[sec.index("🎯 Тип компании"): sec.index("📊 Оценка лида")]
+        for needle in ('id="f-only-single"', 'id="f-only-new"', 'id="f-new-months"',
+                       'id="company-type-new-row"', 'id="company-type-count"'):
+            assert needle in group, needle
+        assert 'onchange="onCompanyTypeChange()"' in group
+        # Чекбоксы стилизованы как везде в аккордеоне (класс .chk).
+        assert group.count('<label class="chk">') == 2
+        # Периоды — только из серверного реестра COMPANY_TYPE_MONTHS, дефолт 6.
+        import re as _re
+        values = _re.findall(r'<option value="(\d+)"', group)
+        assert values == ["1", "3", "6", "12", "24"], values
+        assert '<option value="6" selected>' in group
+        assert 'role="status"' in group, "счётчик озвучивается скринридером"
+        # Тексты объясняют, что именно фильтруется и что данные могут быть
+        # неполными (даты добавления у Яндекса нет вовсе).
+        assert "Компании с 1 филиалом" in group
+        assert "базе 2ГИС" in group and "даты нет" in group
+
+    def test_company_type_group_styles(self):
+        """Период гаснет без своего чекбокса, счётчик читается в обеих темах."""
+        row = self._rule(".ct-new-row{")
+        assert "opacity:.4" in row and "pointer-events:none" in row
+        assert "opacity:1" in self._rule(".ct-new-row.on{")
+        count = self._rule(".ct-count{")
+        assert "var(--bdr)" in count and "var(--row-alt)" in count
+        assert ".ct-count.on{" in STYLE
+        # Мобильная версия ≤860px: строка периода не сдвигается вправо и
+        # растягивается на всю ширину сайдбора.
+        assert ".ct-new-row{margin-left:0}" in STYLE
+        assert ".ct-new-row select{flex:1 1 100%}" in STYLE
+
+    def test_company_type_counter_is_wired(self):
+        """Счётчик ленивый, а оба фильтра уезжают и в запуск, и в рефильтр."""
+        for fn in ("onlySingleChecked", "newMonthsValue", "newMonthsPeriod",
+                   "companyTypeOn", "syncCompanyTypeUi", "onCompanyTypeChange",
+                   "scheduleCompanyTypePreview", "previewCompanyType",
+                   "companyTypeCountHTML"):
+            assert f"function {fn}(" in APP_JS, fn
+        assert "'/preview-company-type'" in APP_JS
+        # Два пути: обычный запуск (getParams) и «Применить фильтры заново».
+        assert APP_JS.count("only_single_branch: onlySingleChecked()") == 2
+        assert APP_JS.count("only_new_months:    newMonthsValue()") == 2
+        # Как и чёрный список — только при открытии раздела.
+        assert "scheduleCompanyTypePreview();" in APP_JS
+        # Реестр периодов в браузере совпадает с серверным COMPANY_TYPE_MONTHS.
+        import re as _re
+        decl = _re.search(r"const COMPANY_TYPE_PERIODS = \{(.*?)\};\n", APP_JS, _re.S)
+        assert decl, "нет реестра периодов в app.js"
+        assert [int(n) for n in _re.findall(r"(\d+):", decl.group(1))] == [1, 3, 6, 12, 24]
 
     def test_group_title_looks_like_the_sidebar_group_title(self):
         rule = self._rule(".flt-group-title{")
@@ -816,6 +872,27 @@ class TestMessageTemplates:
         mod = (ROOT / "yandex_maps_parser" / "message_templates.py").read_text(encoding="utf-8")
         assert 'def normalize_custom_variables(' in mod
         assert 'custom_variables' in mod
+
+    def test_special_variables_in_both_mirrors(self):
+        # Служебные переменные живут в Python и JS-зеркале синхронно.
+        mod = (ROOT / "yandex_maps_parser" / "message_templates.py").read_text(encoding="utf-8")
+        for needle in ('SPECIAL_VARIABLES = ("дата", "время", "приветствие")',
+                       'def _special_value(', '_GREETING_PARTS'):
+            assert needle in mod, needle
+        for needle in ('const TEMPLATE_SPECIAL_VARS',
+                       'function specialTemplateValue(',
+                       'const TEMPLATE_GREETING_PARTS'):
+            assert needle in APP_JS, needle
+
+    def test_export_import_carry_custom_variables(self):
+        assert 'custom_variables: customVariables' in APP_JS, "экспорт без переменных"
+        assert 'function importCustomVariables(' in APP_JS
+        assert 'function normalizeCustomVariablesClient(' in APP_JS
+        assert 'parsed.custom_variables' in APP_JS
+
+    def test_save_warns_about_unknown_variables(self):
+        assert 'Неизвестные переменные' in APP_JS
+        assert 'saveVarFromModal._varsWarned' in APP_JS
 
 
 class TestBulkCrawlOrder:

@@ -960,6 +960,9 @@ def process_filters():
         "sort_by_score":    bool(data.get("sort_by_score", True)),
         # Чёрный список («🚫 Исключить по словам») — нормализует apply_filters.
         "blacklist_words":  data.get("blacklist_words") or [],
+        # «🎯 Тип компании»: одиночки и новые (период нормализует apply_filters).
+        "only_single_branch": bool(data.get("only_single_branch", False)),
+        "only_new_months":   data.get("only_new_months"),
     }
     cleanup_mode = data.get("raw_mode", "keep")
     try:
@@ -979,6 +982,10 @@ def process_filters():
             # Сколько записей снял blacklist — клиент пишет это в свой журнал
             # (у рефильтра нет потоковых логов, но счётчик должен быть виден).
             "blacklist_excluded": int(res.get("blacklist_excluded") or 0),
+            # То же для «🎯 Тип компании»: сколько сняли одиночки и новые.
+            "company_type_excluded": int(res.get("company_type_excluded") or 0),
+            "single_excluded": int(res.get("single_excluded") or 0),
+            "new_excluded": int(res.get("new_excluded") or 0),
         })
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
@@ -1023,6 +1030,36 @@ def preview_blacklist():
 #  yandex_maps_parser.message_templates и переиспользуется рассылкой VK
 #  и /bulk/urls, чтобы текст не расходился.
 # ═══════════════════════════════════════════════════════════════
+
+@bp.route("/preview-company-type", methods=["POST"])
+def preview_company_type():
+    """Сколько компаний подойдёт под «🎯 Тип компании» — без запуска этапа 2.
+
+    Body: {only_single_branch: bool, only_new_months: 1|3|6|12|24|null}
+    Reply: {ok, total, single, new, both, with_date, months}
+
+    Считаем по СЫРЫМ данным текущего поиска той же функцией
+    (processing.company_type_breakdown), что и сам фильтр, — иначе цифра в
+    подсказке разошлась бы с результатом «Применить фильтры заново».
+    `with_date` — у скольких записей есть дата добавления: без неё видно,
+    что «только новые» не отсеивает не потому, что все компании новые.
+    """
+    from yandex_maps_parser.processing import (
+        annotate_branch_counts,
+        company_type_breakdown,
+    )
+
+    data = request.get_json(silent=True) or {}
+    try:
+        recs = _collect_records("raw", None, "current")
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    # Старые сборы не знают branch_count — досчитываем филиалы по названию
+    # и городу, как это делает apply_filters (цифры обязаны совпадать).
+    annotate_branch_counts(recs)
+    info = company_type_breakdown(recs, data.get("only_new_months"))
+    return jsonify({"ok": True, **info})
+
 
 @bp.route("/templates", methods=["GET"])
 def get_templates():

@@ -436,7 +436,11 @@ def run() -> None:
         state._RAW_FILES_RUN = []
     if state.PIPELINE == "raw" and jsonl_records:
         try:
-            from .processing import export_raw_records
+            from .processing import annotate_branch_counts, export_raw_records
+            # «🎯 Тип компании»: branch_count считается по всему городу ДО
+            # разбивки на файлы (филиалы сети часто попадают в разные запросы),
+            # так что число попадает в raw и живёт до «Применить фильтры заново».
+            annotate_branch_counts(jsonl_records)
             _by_qc: dict[tuple, list[dict]] = {}
             for _r in jsonl_records:
                 _by_qc.setdefault((_r.get("query") or state.CITY, _r.get("city") or state.CITY), []).append(_r)
@@ -1037,6 +1041,9 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None, pause_event=
                     # Чёрный список («🚫 Исключить по словам»): слова приезжают
                     # из формы и снимают записи ДО остальных фильтров.
                     "blacklist_words":  params.get("blacklist_words") or [],
+                    # «🎯 Тип компании»: только одиночки и/или только новые.
+                    "only_single_branch": bool(params.get("only_single_branch", False)),
+                    "only_new_months":   params.get("only_new_months"),
                 }
                 _formats = []
                 if params.get("output_excel"): _formats.append("excel")

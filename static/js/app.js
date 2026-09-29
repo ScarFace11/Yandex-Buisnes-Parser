@@ -121,9 +121,12 @@ function toggleAccordion(hdr) {
   hdr.setAttribute('aria-expanded', open ? 'true' : 'false');
   // Summary under «Основные параметры» reflects edits made while open/closed
   if (sec.id === 'acc-basic') updateBasicSummary();
-  // Ленивый счётчик чёрного списка: считаем исключения, только когда раздел
+  // Ленивые счётчики: считаем исключения и «тип компании», только когда раздел
   // реально открыли, а не на каждой загрузке страницы.
-  if (open && sec.id === 'acc-filters') scheduleBlacklistPreview();
+  if (open && sec.id === 'acc-filters') {
+    scheduleBlacklistPreview();
+    scheduleCompanyTypePreview();
+  }
 }
 
 // ═══════════════════════════════════════════
@@ -1572,6 +1575,136 @@ function previewBlacklist() {
 }
 
 // ═══════════════════════════════════════════
+//  🎯 Тип компании: только одиночки / только новые
+// ═══════════════════════════════════════════
+// Оба фильтра применяет сервер (этап 2), но счётчик «сколько подойдёт» живёт
+// здесь и читает сырые данные текущего поиска — той же функцией, что и фильтр.
+// Периоды и дефолт совпадают с processing.COMPANY_TYPE_MONTHS.
+const COMPANY_TYPE_PREVIEW_MS = 500;   // пересчёт счётчика (debounce)
+const COMPANY_TYPE_PERIODS = {1: '1 мес', 3: '3 мес', 6: '6 мес', 12: '1 год', 24: '2 года'};
+const COMPANY_TYPE_DEFAULT_MONTHS = 6;
+
+let _ctPreviewTimer = null;
+let _ctPreviewSeq = 0;                 // ответы приходят не по порядку — берём последний
+
+function onlySingleChecked() {
+  return !!(document.getElementById('f-only-single') || {}).checked;
+}
+
+// Период «новых»: null — фильтр выключен (сервер трактует так же).
+function newMonthsValue() {
+  const cb = document.getElementById('f-only-new');
+  if (!cb || !cb.checked) return null;
+  const n = parseInt((document.getElementById('f-new-months') || {}).value, 10);
+  return Object.prototype.hasOwnProperty.call(COMPANY_TYPE_PERIODS, n)
+    ? n : COMPANY_TYPE_DEFAULT_MONTHS;
+}
+
+// Период из селекта — даже когда чекбокс выключен (пресет помнит выбор).
+function newMonthsPeriod() {
+  const n = parseInt((document.getElementById('f-new-months') || {}).value, 10);
+  return Object.prototype.hasOwnProperty.call(COMPANY_TYPE_PERIODS, n) ? String(n) : '6';
+}
+
+function companyTypeOn() {
+  return onlySingleChecked() || !!newMonthsValue();
+}
+
+// Строка периода гаснет вместе с чекбоксом: селект без своего фильтра читался
+// бы как самостоятельная настройка, которая ничего не делает.
+function syncCompanyTypeUi() {
+  const cb = document.getElementById('f-only-new');
+  const on = !!(cb && cb.checked);
+  const row = document.getElementById('company-type-new-row');
+  if (row && row.classList) row.classList.toggle('on', on);
+  const sel = document.getElementById('f-new-months');
+  if (sel) sel.disabled = !on;
+  ['f-only-single', 'f-only-new'].forEach(id => {
+    const box = document.getElementById(id);
+    const lbl = box && box.closest ? box.closest('.chk') : null;
+    if (lbl && lbl.classList) lbl.classList.toggle('on', !!box.checked);
+  });
+  const cnt = document.getElementById('company-type-count');
+  if (cnt && cnt.classList) cnt.classList.toggle('on', companyTypeOn());
+}
+
+function onCompanyTypeChange() {
+  syncCompanyTypeUi();
+  scheduleCompanyTypePreview();
+}
+
+function updateCompanyTypeCount(html) {
+  const el = document.getElementById('company-type-count');
+  if (el) el.innerHTML = html;
+}
+
+function scheduleCompanyTypePreview() {
+  if (_ctPreviewTimer) clearTimeout(_ctPreviewTimer);
+  // Любое изменение фильтров отменяет ответы в пути: иначе «подойдёт N» от
+  // старой настройки воскресало бы поверх новой.
+  _ctPreviewSeq++;
+  if (!companyTypeOn()) {
+    updateCompanyTypeCount('Отметьте фильтры — посчитаю, сколько компаний подойдёт');
+    return;
+  }
+  updateCompanyTypeCount('Считаю, сколько компаний подойдёт…');
+  _ctPreviewTimer = setTimeout(
+    () => { _ctPreviewTimer = null; previewCompanyType(); },
+    COMPANY_TYPE_PREVIEW_MS,
+  );
+}
+
+// POST /preview-company-type: сервер считает по сырым данным текущего поиска
+// теми же функциями, что и сам фильтр, — цифра не может разойтись с результатом.
+function previewCompanyType() {
+  if (!companyTypeOn()) return Promise.resolve();
+  const single = onlySingleChecked();
+  const months = newMonthsValue();
+  const seq = ++_ctPreviewSeq;
+  return fetch('/preview-company-type', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({only_single_branch: single, only_new_months: months}),
+  })
+    .then(r => r.json())
+    .then(j => {
+      if (seq !== _ctPreviewSeq) return;      // настройка уже изменилась — ответ устарел
+      if (!j || !j.ok) { updateCompanyTypeCount('Не удалось посчитать компании'); return; }
+      if (!j.total) { updateCompanyTypeCount('Нет сырых данных текущего поиска — сначала запустите сбор'); return; }
+      updateCompanyTypeCount(companyTypeCountHTML(j));
+    })
+    .catch(() => { if (seq === _ctPreviewSeq) updateCompanyTypeCount('Не удалось посчитать компании'); });
+}
+
+// «Подойдёт 138 из 500: одиночек 213 + новых 147, обоим условиям — 22».
+// Фильтры работают по И, поэтому при обоих включённых в отчёте останутся `both`.
+// Большая выгрузка показывается приблизительно («~5000»), чтобы не обещать
+// точность, которой нет: цифра — ориентир перед обработкой.
+function companyTypeCountHTML(j) {
+  const single = onlySingleChecked();
+  const months = newMonthsValue();
+  const pass = (single && months) ? j.both : (single ? j.single : j.new);
+  const total = j.total > 5000 ? '~' + Math.floor(j.total / 1000) * 1000 : String(j.total);
+  const plural = _pluralRu(j.total, 'компании', 'компаний', 'компаний');
+  const parts = [];
+  if (single) parts.push(`одиночек <b>${j.single}</b>`);
+  if (months) {
+    parts.push(`новых за ${COMPANY_TYPE_PERIODS[j.months || months] || ''} — <b>${j.new}</b>`);
+  }
+  let html = `🎯 Подойдёт <b>${pass}</b> из ${total} ${plural}: ${parts.join(' + ')}`;
+  if (single && months && j.both) html += `, обоим условиям — <b>${j.both}</b>`;
+  const notes = [];
+  const noDate = Math.max(0, j.total - (j.with_date || 0));
+  if (months && !j.with_date) {
+    notes.push('у этой выгрузки нет дат добавления — фильтр «новые» ничего не отсеивает');
+  } else if (months && noDate) {
+    notes.push(`у ${noDate} ${_pluralRu(noDate, 'компании', 'компаний', 'компаний')} даты нет — они остаются в отчёте`);
+  }
+  if (notes.length) html += `<span class="ct-note">${notes.join('. ')}.</span>`;
+  return html;
+}
+
+// ═══════════════════════════════════════════
 //  Tabs
 // ═══════════════════════════════════════════
 // ═══════════════════════════════════════════
@@ -2207,6 +2340,9 @@ function getParams() {
     sort_by_score:    (document.getElementById('f-sort-score')||{}).checked !== false,
     // «🚫 Исключить по словам»: слова снимают записи до остальных фильтров.
     blacklist_words:  [...blacklistWords],
+    // «🎯 Тип компании»: одиночки и/или новые (null — фильтр выключен).
+    only_single_branch: onlySingleChecked(),
+    only_new_months:    newMonthsValue(),
   };
 }
 
@@ -2960,6 +3096,9 @@ function refilterNow() {
     min_lead_score:   (document.getElementById('f-min-score') || {}).value || 0,
     sort_by_score:    (document.getElementById('f-sort-score') || {}).checked !== false,
     blacklist_words:  [...blacklistWords],
+    // «🎯 Тип компании» — тот же payload, что и у обычного запуска.
+    only_single_branch: onlySingleChecked(),
+    only_new_months:    newMonthsValue(),
   };
   fetch('/process-filters', {
     method: 'POST',
@@ -2984,6 +3123,11 @@ function refilterNow() {
       // пишем по счётчику из ответа — иначе слово-исключение «работает молча».
       if (blacklistWords.length) {
         appendLog('info', `  🚫 Blacklist: исключено ${data.blacklist_excluded || 0} компаний`);
+      }
+      // То же для «типа компании»: у рефильтра нет потоковых логов сервера.
+      if (data.company_type_excluded) {
+        appendLog('info', `  🎯 Тип компании: исключено ${data.company_type_excluded}`
+          + ` (одиночки ${data.single_excluded || 0}, новые ${data.new_excluded || 0})`);
       }
       showToast(`Готово: ${data.count} организаций → ${data.files.length} файлов`, 'success');
       appendLog('ok', `  🎯 Processed: ${data.count} организаций → ${data.files.length} файлов в ${outDir}/processed/`);
@@ -4657,6 +4801,11 @@ function getCurrentSettings() {
     // Пресет забирает и чёрный список слов — иначе он «терял» половину
     // настроек этапа 2.
     blacklist: [...blacklistWords],
+    // «🎯 Тип компании»: и галочка, и выбранный период (галочка выключена —
+    // период всё равно помним, чтобы пресет возвращал настройку целиком).
+    onlySingle: onlySingleChecked(),
+    onlyNew: !!newMonthsValue(),
+    onlyNewPeriod: newMonthsPeriod(),
     parseMode: parseMode,
     continueMode: (document.getElementById('f-continue')||{}).checked || false,
     continueLimit: parseInt((document.getElementById('f-continue-limit')||{}).value, 10) || 5,
@@ -4721,6 +4870,19 @@ function applySettings(s) {
     updateSocialFilterHint();
   }
   if (s.parseMode) setParseMode(s.parseMode);
+  if (s.onlyNewPeriod != null) {
+    const m = document.getElementById('f-new-months');
+    if (m && String(s.onlyNewPeriod) in COMPANY_TYPE_PERIODS) m.value = String(s.onlyNewPeriod);
+  }
+  if (s.onlySingle != null) {
+    const cb = document.getElementById('f-only-single');
+    if (cb) cb.checked = !!s.onlySingle;
+  }
+  if (s.onlyNew != null) {
+    const cb = document.getElementById('f-only-new');
+    if (cb) cb.checked = !!s.onlyNew;
+  }
+  if (s.onlySingle != null || s.onlyNew != null || s.onlyNewPeriod != null) syncCompanyTypeUi();
   if (s.continueMode != null) {
     const cb = document.getElementById('f-continue');
     if (cb) cb.checked = !!s.continueMode;
@@ -4950,6 +5112,8 @@ const FORM_DEFAULTS = {
   continueMode: false, continueLimit: 5,
   // Сброс к значениям по умолчанию чистит и чёрный список слов.
   blacklist: [],
+  // «🎯 Тип компании»: по умолчанию оба фильтра выключены, период — 6 мес.
+  onlySingle: false, onlyNew: false, onlyNewPeriod: '6',
 };
 
 function resetToDefaults() {
@@ -6373,10 +6537,20 @@ const TEMPLATE_VAR_FIELD = {
   lead_score: 'lead_score', website: 'website',
 };
 const TEMPLATE_VAR_ALIASES = {'название_бизнеса': 'name', 'reviews_count': 'reviews'};
+// Служебные переменные: значение вычисляется в момент подстановки.
+// Зеркало SPECIAL_VARIABLES/_GREETING_PARTS из message_templates.py.
+const TEMPLATE_SPECIAL_VARS = ['дата', 'время', 'приветствие'];
+const TEMPLATE_GREETING_PARTS = [[5, 'Доброй ночи'], [12, 'Доброе утро'], [18, 'Добрый день'], [22, 'Добрый вечер'], [24, 'Доброй ночи']];
+const TEMPLATE_SPECIAL_LABELS = {
+  'дата': 'текущая дата (ДД.ММ.ГГГГ)',
+  'время': 'текущее время (ЧЧ:ММ)',
+  'приветствие': 'Доброе утро/день/вечер/ночи — по времени отправки',
+};
 // Встроенные имена заняты: свою переменную так назвать нельзя.
 const RESERVED_VAR_NAMES = new Set(Object.keys(TEMPLATE_VAR_FIELD)
   .concat(Object.keys(TEMPLATE_VAR_ALIASES))
-  .concat(['socials']));
+  .concat(['socials'])
+  .concat(TEMPLATE_SPECIAL_VARS));
 const TEMPLATE_MAX_VAR_NAME = 60;
 const TEMPLATE_MAX_VAR_VALUE = 1000;
 const TEMPLATE_MAX_VAR_DESC = 200;
@@ -6436,9 +6610,25 @@ function usedVariables(text) {
   return out;
 }
 
+function specialTemplateValue(key) {
+  const now = new Date();
+  const p = n => String(n).padStart(2, '0');
+  if (key === 'дата') return p(now.getDate()) + '.' + p(now.getMonth() + 1) + '.' + now.getFullYear();
+  if (key === 'время') return p(now.getHours()) + ':' + p(now.getMinutes());
+  if (key === 'приветствие') {
+    const hour = now.getHours();
+    for (const [bound, form] of TEMPLATE_GREETING_PARTS) {
+      if (hour < bound) return form;
+    }
+    return 'Добрый день';
+  }
+  return '';
+}
+
 // Зеркало message_templates.substitute: свои переменные приоритетнее
-// встроенных (столбец — значение из записи, иначе статичный текст), алиасы,
-// «—» для пустого, неизвестная переменная остаётся {как_есть}.
+// встроенных (столбец — значение из записи, иначе статичный текст),
+// служебные вычисляются в момент подстановки, алиасы, «—» для пустого,
+// неизвестная переменная остаётся {как_есть}.
 function substituteTemplate(text, company) {
   company = company || {};
   const custom = {};
@@ -6450,6 +6640,7 @@ function substituteTemplate(text, company) {
       return (v === undefined || v === null || String(v).trim() === '')
         ? (showMissingAsVar ? match : '—') : String(v);
     }
+    if (TEMPLATE_SPECIAL_VARS.includes(key)) return specialTemplateValue(key);
     const canonical = TEMPLATE_VAR_ALIASES[key] || key;
     if (canonical !== 'socials' && !(canonical in TEMPLATE_VAR_FIELD)) return match;
     let value;
@@ -6773,10 +6964,12 @@ function renderTemplates() {
   if (varlist) {
     const builtIn = TEMPLATE_VARS
       .map(([k, label]) => '<div><code>{' + k + '}</code> — ' + escapeHtml(label) + '</div>');
+    const special = TEMPLATE_SPECIAL_VARS
+      .map(k => '<div><code>{' + k + '}</code> — ' + escapeHtml(TEMPLATE_SPECIAL_LABELS[k] || '') + '</div>');
     const own = (customVariables || []).map(v =>
       '<div><code>{' + escapeHtml(v.name) + '}</code> — '
       + escapeHtml(v.description || (v.column ? 'из столбца «' + v.column + '»' : v.value || '—')) + '</div>');
-    varlist.innerHTML = builtIn.concat(own).join('');
+    varlist.innerHTML = builtIn.concat(special).concat(own).join('');
   }
   renderVarCards();
   document.querySelectorAll('.tpl-cat').forEach(b => b.classList.toggle('active', b.dataset.cat === _tplFilterCat));
@@ -7144,7 +7337,7 @@ function updateTemplatePreview() {
   }
 }
 
-function saveTemplateFromModal() {
+async function saveTemplateFromModal() {
   const nameEl = document.getElementById('tpl-name');
   const textEl = document.getElementById('tpl-text');
   const catEl = document.getElementById('tpl-category');
@@ -7159,6 +7352,24 @@ function saveTemplateFromModal() {
   if (!name) return fail('Введите название шаблона');
   if (!text) return fail('Введите текст шаблона');
   if (text.length > TEMPLATE_MAX_TEXT) return fail('Текст длиннее ' + TEMPLATE_MAX_TEXT + ' символов');
+  // Опечатка в имени переменной не падает при сохранении, но в сообщении
+  // уедет «как есть» — предупреждаем до отправки. Сохранить можно и с
+  // предупреждением (кнопка остаётся активной), повторный клик проходит.
+  const known = new Set(allTemplateVars().map(v => v.key)
+    .concat(Object.keys(TEMPLATE_VAR_ALIASES)));
+  const unknown = usedVariables(text).filter(k => !known.has(k));
+  if (unknown.length && !saveVarFromModal._varsWarned) {
+    saveVarFromModal._varsWarned = true;
+    const okSave = await uiChoose(
+      'Неизвестные переменные: ' + unknown.map(u => '{' + u + '}').join(', ')
+      + '. В сообщении они останутся как есть — проверьте имя или создайте свою переменную.',
+      'Проверьте переменные',
+      [{value: 'save', label: '💾 Сохранить как есть'},
+       {value: 'fix', label: '✏️ Вернуться к правке'}]);
+    if (!okSave || okSave.value !== 'save') return false;
+  } else {
+    saveVarFromModal._varsWarned = false;
+  }
   const dup = messageTemplates.find(t =>
     t.id !== _tplEditId && t.category === category && t.name.toLowerCase() === name.toLowerCase());
   if (dup) return fail('Шаблон с таким названием уже есть в этой категории');
@@ -7270,6 +7481,7 @@ function exportTemplates() {
     exported_at: new Date().toISOString(),
     active_template_ids: activeTemplateIds,
     templates: messageTemplates,
+    custom_variables: customVariables,
   };
   const blob = new Blob([JSON.stringify(payload, null, 2)], {type: 'application/json'});
   const a = document.createElement('a');
@@ -7279,7 +7491,64 @@ function exportTemplates() {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-  showToast('Шаблоны экспортированы', 'success');
+  showToast('Шаблоны экспортированы'
+    + ((customVariables || []).length ? ' (со своими переменными: ' + customVariables.length + ')' : ''),
+    'success');
+}
+
+// Нормализация своих переменных из чужого файла — зеркало серверной
+// normalize_custom_variables (лимиты, резерв имён, дедуп).
+function normalizeCustomVariablesClient(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const name = String(item.name || '').trim();
+    if (!name || name.length > TEMPLATE_MAX_VAR_NAME || !isValidVarName(name)
+        || seen.has(name.toLowerCase())) continue;
+    const column = String(item.column || '').trim();
+    const value = column ? '' : String(item.value || '').trim();
+    if (!column && !value) continue;
+    seen.add(name.toLowerCase());
+    out.push({
+      name, column, value,
+      description: String(item.description || '').trim(),
+      created_at: String(item.created_at || '').trim() || new Date().toISOString(),
+    });
+    if (out.length >= TEMPLATE_MAX_CUSTOM_VARS) break;
+  }
+  return out;
+}
+
+// Импорт своих переменных: существующие (по имени, без регистра) —
+// заменить/пропустить, новых — добавить. Возвращает {added, replaced, skipped}.
+async function importCustomVariables(incoming) {
+  const list = normalizeCustomVariablesClient(incoming);
+  if (!list.length) return {added: 0, replaced: 0, skipped: 0};
+  let added = 0, replaced = 0, skipped = 0;
+  let applyAll = null;
+  for (const v of list) {
+    const existing = (customVariables || [])
+      .find(x => x.name.toLowerCase() === v.name.toLowerCase());
+    if (!existing) { customVariables.push(v); added++; continue; }
+    let action = applyAll;
+    if (!action) {
+      const choice = await uiChoose('Переменная {' + existing.name + '} уже есть.',
+        'Конфликт переменных',
+        [{value: 'replace', label: 'Заменить'},
+         {value: 'skip', label: 'Пропустить'}],
+        {checkboxLabel: 'Применить ко всем'});
+      if (!choice || !choice.value) { skipped++; continue; }
+      action = choice.value;
+      if (choice.applyAll) applyAll = action;
+    }
+    if (action === 'replace') {
+      existing.column = v.column; existing.value = v.value;
+      existing.description = v.description; replaced++;
+    } else skipped++;
+  }
+  return {added, replaced, skipped};
 }
 
 function importTemplatesClick() {
@@ -7302,6 +7571,20 @@ async function importTemplates(input) {
   const incoming = Array.isArray(parsed) ? parsed : (parsed && Array.isArray(parsed.templates) ? parsed.templates : []);
   const normalized = normalizeTemplatesClient(incoming);
   if (!normalized.length) { showToast('В файле нет шаблонов', 'warning'); return; }
+
+  // Свои переменные едут в том же файле (поле custom_variables): без них
+  // шаблоны со своими переменными импортировались бы «с дырками».
+  let varsMsg = '';
+  if (parsed && !Array.isArray(parsed) && Array.isArray(parsed.custom_variables)) {
+    const r = await importCustomVariables(parsed.custom_variables);
+    if (r.added || r.replaced) {
+      renderTemplates();
+      saveTemplatesState();
+    }
+    if (r.added || r.replaced || r.skipped) {
+      varsMsg = '; переменных: +' + r.added + '/~' + r.replaced + '/—' + r.skipped;
+    }
+  }
 
   let applyAll = null;   // null | 'replace' | 'duplicate' | 'skip'
   let added = 0, replaced = 0, duplicated = 0, skipped = 0;
@@ -7329,7 +7612,7 @@ async function importTemplates(input) {
   renderTemplatePickers();
   saveTemplatesState();
   showToast('Импорт: добавлено ' + added + ', заменено ' + replaced
-    + ', дублей ' + duplicated + ', пропущено ' + skipped, 'success');
+    + ', дублей ' + duplicated + ', пропущено ' + skipped + varsMsg, 'success');
 }
 
 async function resetTemplates() {
@@ -7509,7 +7792,10 @@ function allTemplateVars() {
     label: v.description || (v.column ? 'из столбца «' + v.column + '»' : v.value || ''),
     own: true,
   }));
-  return TEMPLATE_VARS.map(([k, label]) => ({ key: k, label, own: false })).concat(own);
+  const special = TEMPLATE_SPECIAL_VARS.map(k => ({ key: k, label: TEMPLATE_SPECIAL_LABELS[k] || '', own: false }));
+  return TEMPLATE_VARS.map(([k, label]) => ({ key: k, label, own: false }))
+    .concat(special)
+    .concat(own);
 }
 
 function closeTemplateAutocomplete() {
@@ -7717,6 +8003,8 @@ function fillSenderFromTemplate() {
   initSocialNetCheckboxes();
   setSocialMode(socialMode);
   setParseMode(parseMode);
+  // «🎯 Тип компании»: селект периода выключен, пока не отмечен его чекбокс.
+  syncCompanyTypeUi();
   // Initial state of sidebar counters / «Очистить всё» / accordion summary
   updateQueriesCounter();
   updateClearAllBtn();

@@ -53,6 +53,9 @@ def test_every_stage_two_filter_reaches_processing(app_client):
         "sort_by_score": True,
         # Чёрный список слов («🚫 Исключить по словам"),
         "blacklist_words": ["Франшиза", "vip"],
+        # «🎯 Тип компании» — одиночки и новые,
+        "only_single_branch": True,
+        "only_new_months": 12,
     })
     data = resp.get_json()
 
@@ -65,6 +68,9 @@ def test_every_stage_two_filter_reaches_processing(app_client):
     assert f["min_lead_score"] == 50
     assert f["sort_by_score"] is True
     assert f["blacklist_words"] == ["Франшиза", "vip"]
+    # «🎯 Тип компании»: период нормализует обработка, а не роут.
+    assert f["only_single_branch"] is True
+    assert f["only_new_months"] == 12
     assert f["parse_mode"] == "without_website"
     assert f["required_socials"] == ["vk", "telegram"]
     assert captured["cleanup_mode"] == "archive"
@@ -83,6 +89,8 @@ def test_defaults_are_safe_when_the_body_is_thin(app_client):
     assert f["vk_mode"] == "all"
     assert f["min_lead_score"] == 0
     assert f["blacklist_words"] == []
+    assert f["only_single_branch"] is False
+    assert f["only_new_months"] is None
     assert f["parse_mode"] == "all"
     assert captured["cleanup_mode"] == "keep"
 
@@ -95,6 +103,17 @@ def test_answer_carries_the_full_output_path(app_client):
 
     assert d["out_dir"], "ответ обязан нести папку результатов"
     assert not d["out_dir"].endswith(("/", "\\"))
+
+
+def test_runner_stage_two_gets_the_same_filters():
+    """Обычный запуск собирает свой словарь фильтров — он тоже должен нести
+    «тип компании», иначе галочки работали бы только по кнопке."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, "yandex_maps_parser", "runner.py"), encoding="utf-8") as f:
+        src = f.read()
+    for key in ("only_single_branch", "only_new_months", "blacklist_words",
+                "min_lead_score", "sort_by_score", "vk_check"):
+        assert f'"{key}"' in src, f"{key} не доезжает до этапа 2 при обычном запуске"
 
 
 def test_no_raw_files_is_a_readable_error(app_client, monkeypatch):
