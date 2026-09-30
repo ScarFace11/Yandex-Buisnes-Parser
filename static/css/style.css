@@ -1,36 +1,70 @@
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 
+/* ── Шрифт ────────────────────────────────────────────────────────────────
+   Manrope лежит рядом с приложением и не скачивается из интернета. Раньше
+   шрифт брался у Google Fonts, поэтому в сети с закрытым доступом интерфейс
+   молча уезжал на системный запасной шрифт — и вид приложения зависел от
+   машины. Подключены только нужные наборы: кириллица и латиница.
+   Лицензия SIL Open Font License 1.1 — static/fonts/OFL.txt. */
+@font-face{
+  font-family:"Manrope";font-style:normal;font-weight:400 800;font-display:swap;
+  src:url("../fonts/manrope-cyrillic.woff2") format("woff2");
+  unicode-range:U+0301,U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116;
+}
+@font-face{
+  font-family:"Manrope";font-style:normal;font-weight:400 800;font-display:swap;
+  src:url("../fonts/manrope-latin.woff2") format("woff2");
+  unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,
+    U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,
+    U+FEFF,U+FFFD;
+}
+
 /* ── Tokens ──────────────────────────────────────────────────────────────
    Светлая и тёмная темы описываются ОДНИМ набором токенов: меняются только
    значения в :root и в [data-theme="dark"], а правила их читают через
    var(--…). Токен, добавленный здесь, обязан существовать и там — это
    проверяет tests/test_ui_markup.py. Значения подобраны под WCAG AA
    (текст ≥ 4.5:1 к своему фону). */:root{
-  /* Brand teal (#007E8C family) used for accents, CTAs and active states */
-  --c:#00707d;  --cl:#e0f3f6;  --cd:#005f6b;
-  --brand:#00707d;--brand-dark:#005f6b;   /* плотный фон под белый текст */
-  --cta-from:#009db1;--cta-to:#006271;
-  --cta:linear-gradient(135deg,var(--cta-from) 0%,var(--cta-to) 100%);
-  --cta-shadow:0 6px 18px rgba(0,126,140,.30),0 2px 5px rgba(0,126,140,.22);
+  /* Типографика и шкала размеров. Одно место, где видно всю систему:
+     заголовки — весовые и плотные, служебные подписи — тихие 11–12px. */
+  --font-ui:"Manrope",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  --font-mono:ui-monospace,"Cascadia Mono",Consolas,"JetBrains Mono",monospace;
+  --fs-11:11px;--fs-12:12px;--fs-13:13px;--fs-14:14px;--fs-16:16px;--fs-20:20px;--fs-26:26px;
+  /* Скругления и тени: одна лестница вместо литералов по правилам. */
+  --r-sm:8px;--r-md:12px;--r-lg:16px;--pill:999px;
+  /* ── Палитра ─────────────────────────────────────────────────────────────
+     Нейтральная серая основа: карточки и поля отделяются от фона не цветом,
+     а тоном и тонкой границей. Акцент — графитово-сланцевый, то есть тот же
+     тон, что шапка, на шаг светлее: бирюза была единственным посторонним
+     цветом в серой системе и читалась как вклеенная. Один акцент на всю
+     систему, семантика (красный/жёлтый/зелёный) живёт отдельно от него. */
+  --c:#33404f;  --cl:#e9edf3;  --cd:#243040;
+  --brand:#33404f;--brand-dark:#243040;   /* плотный фон под белый текст */
+  --cta-from:#33404f;--cta-to:#243040;
+  --cta:#33404f;               /* сплошной акцент: градиент выглядел накладочно */
+  --cta-shadow:0 1px 2px rgba(51,64,79,.16),0 6px 16px rgba(51,64,79,.20);
   --red:#c0392b;--red-btn:#c44040;--red-btn-2:#a83232;
   --yel:#b07525;--grn:#1f7a52;--blu:#3568a0;
-  --bg:#e8eef1;  --card:#ffffff; --bdr:#c6d6db;
-  --txt:#1a2a30; --sub:#43585f; --muted:#52686f; --term:#f6fafb;
+  --bg:#f4f5f7;  --card:#ffffff; --bdr:#e4e6eb;
+  --txt:#15171c; --sub:#4b5361; --muted:#666d7b; --term:#fbfcfd;
   --on-accent:#ffffff;    /* текст на плотном акценте (шапка, CTA, бейджи) */
   /* Роли поверхностей — те же имена, что в тёмной теме */
-  --panel:#f4f8fa;        /* блоки внутри карточек, кнопки */
+  --panel:#f7f8fa;        /* блоки внутри карточек, кнопки */
   --field:#ffffff;        /* поля ввода */
-  --row-alt:#f8fbfc;      /* чётные строки таблицы */
-  --row-hover:#eaf4f7;    /* строка/панель под курсором */
-  --track:#e2ebee;        /* дорожки полосок */
+  /* Лестница поверхностей таблицы: карточка → зебра → наведение. Раньше
+     зебра совпадала с --panel, и липкая шапка сливалась с чётными строками. */
+  --row-alt:#f0f2f6;      /* чётные строки таблицы: зебра должна быть видна */
+  --row-hover:#e4e8ee;    /* строка/панель под курсором: заметно плотнее зебры */
+  --track:#e9ebef;        /* дорожки полосок */
   --tgl-off:#D1D5DB;      /* тумблер «выкл» — серый, как в iOS */
-  --tgl-on:#10B981;       /* тумблер «вкл» — зелёный (макет) */
+  --tgl-on:#2E8B62;       /* тумблер «вкл» — приглушённый зелёный: яркий iOS-зелёный
+                             был самым насыщенным пятном на нейтральном экране */
   --knob:#ffffff;         /* ползунок тумблера */
-  --hdr:var(--c);         /* шапка */
-  --bdr-h:#8fa9b1;        /* границы под курсором */
+  --hdr:#12151b;         /* шапка */
+  --bdr-h:#c9ced7;        /* границы под курсором */
   --bdr-hover:var(--bdr-h);
-  --bdr-soft:#e3ecef;     /* тонкие разделители внутри таблицы */
-  --acc-soft:#e6f4f8;     /* бирюзовая подсветка-подложка */
+  --bdr-soft:#edeff2;     /* тонкие разделители внутри таблицы */
+  --acc-soft:#eef1f6;     /* акцентная подсветка-подложка */
   --chip-bg:#F3F4F6;      /* чип слова-исключения («🚫 Исключить по словам») */
   --chip-txt:#374151;
   --ok-bg:#e4f5ed;--ok-bdr:#87c4a4;--ok-txt:#1b5e36;--ok-strong:#0b6b45;--ok-on:#ffffff;
@@ -39,30 +73,57 @@
   /* ⏸ Пауза — оранжевая в обеих темах (красный остаётся за ⏹ «Остановить») */
   --pause-from:#f6a623;--pause-to:#e08900;--pause-txt:#3a2400;
   /* Тёмные всплывающие подсказки/дропдауны — тёмные в ОБЕИХ темах */
-  --tip-bg:#12212a;--tip-txt:#eef5f7;--tip-field:#1c2c3c;--tip-ok:#8fd6a6;--tip-bdr:#2b4350;
+  --tip-bg:#14171d;--tip-txt:#eef5f7;--tip-field:#1c2c3c;--tip-ok:#8fd6a6;--tip-bdr:#2b4350;
+  /* Затемнение под модалкой. Раньше у каждой модалки был свой rgba —
+     четыре разных «полупрозрачных чёрных» на одном экране. */
+  --scrim:rgba(17,22,29,.45);
   /* Брендовые цвета соцсетей (одни и те же в обеих темах) */
   --vk:#4c75a3;--ig:#a8306c;--tg:#1d6da3;--wa:#2e7d4f;
-  --c-soft:rgba(0,126,140,.08);
+  --c-soft:rgba(51,64,79,.08);
   /* Кольцо фокуса. Отдельный токен, потому что подложки (--c-soft, 8%)
      для рамки фокуса мало: на тёмном поле её просто не видно.
      В СВЕТЛОЙ теме плотность прежняя (как до появления токена): рамку тут
-     видно за счёт бирюзовой обводки поля, а плотное свечение выглядело как
+     видно за счёт акцентной обводки поля, а плотное свечение выглядело как
      лишнее выделение. Усиливать кольцо нужно только на тёмной подложке. */
-  --focus-ring:rgba(0,126,140,.12);
-  --glow:rgba(0,126,140,.28);
+  --focus-ring:rgba(51,64,79,.12);
+  --glow:rgba(51,64,79,.28);
   --glow-warn:rgba(224,137,0,.30);
   --glow-red:rgba(196,64,64,.28);
-  --r:12px;
-  --sh:0 1px 2px rgba(0,0,0,.06),0 4px 14px rgba(0,0,0,.07);
-  --sh-lg:0 2px 4px rgba(0,0,0,.07),0 12px 32px rgba(0,0,0,.09);
+  --r:var(--r-md);
+  --sh:0 1px 2px rgba(16,24,40,.04),0 1px 3px rgba(16,24,40,.06);
+  --sh-lg:0 4px 12px rgba(16,24,40,.07),0 16px 40px rgba(16,24,40,.12);
   /* aliases for JS-generated HTML that still uses --g/--gl/--g2 */
   --g:var(--c);--gl:var(--cl);--g2:var(--cd);
 }
 /*/TOK*/
 
+/* ── Иконки интерфейса ────────────────────────────────────────────────────
+   Один класс на все кнопки: инлайновый SVG 15px, рисуется currentColor и
+   наследует цвет элемента. Эмодзи для кнопок не подходят — на Windows они
+   цветные и разной ширины, на macOS монохромные, так что ряд кнопок
+   разъезжался, а часть значков исчезала совсем. */
+.ico{
+  width:15px;height:15px;flex:0 0 auto;
+  fill:none;stroke:currentColor;stroke-width:1.8;
+  stroke-linecap:round;stroke-linejoin:round;
+  vertical-align:-2px;
+  /* Зазор до подписи живёт в правиле, а не в пробеле разметки: у кнопок,
+     которые собирает JS (innerHTML после «⏳ …»), пробел из шаблона терялся,
+     и значок слипался с текстом. До этого зазора не было нигде — иконка
+     касалась буквы.
+     Глифы лежат в спрайте #icon-sprite (templates/index.html). */
+  margin-right:6px;
+}
+.hdr-right .ico{width:14px;height:14px}
+/* Кнопки-иконки без подписи: здесь зазор только сдвигал бы значок влево от
+   центра. Файловые действия, закрытие баннера, сброс обхода, колонка
+   «Просмотрено» — значок в них единственный. */
+.file-btn .ico,.ub-close .ico,.bulk-reset .ico,#results-table th .ico,
+#status-badge .ico{margin-right:0}
+
 html,body{min-height:100vh}
 body{
-  font-family:"Manrope",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  font-family:var(--font-ui);
   background:var(--bg);color:var(--txt);
   display:flex;flex-direction:column;font-size:14px;line-height:1.5;
 }
@@ -70,21 +131,30 @@ body{
 /* ════════════════════════════════
    HEADER
    ════════════════════════════════ */
+/* Шапка — плоский графит и одна тонкая линия снизу: ни градиента, ни
+   цветного свечения. Цвет ушёл из фона в акцент (единственное действие). */
 header{
   background:var(--hdr);color:var(--on-accent);
-  height:58px;padding:0 24px;flex:0 0 auto;
+  height:56px;padding:0 20px;flex:0 0 auto;
   display:flex;align-items:center;justify-content:space-between;
   position:sticky;top:0;z-index:200;
-  box-shadow:0 1px 0 rgba(0,0,0,.12),0 4px 16px rgba(26,122,138,.28);
+  border-bottom:1px solid rgba(255,255,255,.07);
 }
-header h1{font-size:15px;font-weight:700;letter-spacing:-.01em}
+header h1{font-size:14px;font-weight:700;letter-spacing:-.015em}
 .hdr-right{display:flex;align-items:center;gap:7px;flex-shrink:0}
 /* Status badge: every state is a token pair (bg + text), so the same rule
    works in both themes — the variants no longer need per-theme overrides. */
 #status-badge{
-  font-size:11.5px;font-weight:700;padding:4px 11px;border-radius:5px;
-  background:rgba(255,255,255,.16);color:var(--on-accent);letter-spacing:.01em;
+  font-size:11px;font-weight:700;padding:4px 10px;border-radius:var(--pill);
+  background:rgba(255,255,255,.10);color:var(--on-accent);letter-spacing:.02em;
+  /* Пиктограмма + подпись: зазор между ними — flex-gap, а не пробел в тексте,
+     потому что HTML-пробел в строчном элементе сжимается до нуля. */
+  display:inline-flex;align-items:center;gap:5px;
 }
+/* Значок бейджа мельче остальных в шапке: 15px-глиф рядом с 11px-подписью
+   читался как отдельный элемент, а не как часть пилюли. Штрих утолщён,
+   чтобы на 11px линия осталась ≈1px после масштабирования из viewBox 24. */
+#status-badge .ico{width:11px;height:11px;stroke-width:2.2}
 #status-badge.running{background:var(--pause-to);color:var(--pause-txt)}
 #status-badge.done{background:var(--ok-bg);color:var(--ok-strong);border:1px solid var(--ok-bdr)}
 #status-badge.stopped{background:var(--bdr);color:var(--txt);border:1px solid var(--bdr-h)}
@@ -94,15 +164,17 @@ header h1{font-size:15px;font-weight:700;letter-spacing:-.01em}
    попап уведомлений живёт внутри .hdr-right, и раньше это правило с большей
    специфичностью перебивало его содержимое — тумблеры теряли фон, «Сохранить»
    становился белым на белом, «▶» — белой стрелкой на белой карточке. */
+/* Кнопки шапки — «призрачные»: рамка не рисует лишний шум, состояние
+   показывает подложка. Так шапка читается как панель, а не как набор кнопок. */
 .hdr-right > button,
 .hdr-right .notify-wrap > button{
-  padding:6px 12px;border:none;border-radius:6px;
-  background:transparent;border:1px solid rgba(255,255,255,.3);color:var(--on-accent);
-  font-size:13px;font-weight:500;cursor:pointer;font-family:inherit;
-  display:inline-flex;align-items:center;gap:6px;transition:all .15s;
+  padding:6px 11px;border:none;border-radius:var(--r-sm);
+  background:rgba(255,255,255,.06);color:var(--on-accent);
+  font-size:12.5px;font-weight:600;cursor:pointer;font-family:inherit;
+  display:inline-flex;align-items:center;gap:6px;transition:background .15s,color .15s;
 }
 .hdr-right > button:hover,
-.hdr-right .notify-wrap > button:hover{opacity:.9}
+.hdr-right .notify-wrap > button:hover{background:rgba(255,255,255,.14)}
 /* ⏸ Пауза — оранжевая в ОБЕИХ темах (красный остался за ⏹ «Остановить»):
    два действия не путаются, а тёмный текст держит контраст выше 4.5:1.
    Градиент берётся из --pause-from/--pause-to, поэтому отдельного правила
@@ -144,8 +216,8 @@ header h1{font-size:15px;font-weight:700;letter-spacing:-.01em}
 }
 [data-theme="dark"] .pages-cap-note{color:var(--yel);background:rgba(245,158,11,.1);border-color:rgba(245,158,11,.3)}
 /* Skip city confirmation modal */
-.skip-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center}
-.skip-modal{background:var(--card);border:1px solid var(--bdr);border-radius:12px;padding:24px 28px;max-width:400px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,.3)}
+.skip-modal-overlay{position:fixed;inset:0;background:var(--scrim);z-index:9999;display:flex;align-items:center;justify-content:center}
+.skip-modal{background:var(--card);border:1px solid var(--bdr);border-radius:var(--r-lg);padding:24px 28px;max-width:400px;width:90%;box-shadow:var(--sh-lg)}
 .skip-modal h3{margin:0 0 12px;font-size:16px;color:var(--txt)}
 .skip-modal p{margin:0 0 20px;font-size:13px;color:var(--muted);line-height:1.5}
 .skip-modal-btns{display:flex;gap:10px;justify-content:flex-end}
@@ -158,8 +230,8 @@ header h1{font-size:15px;font-weight:700;letter-spacing:-.01em}
   /* ghost: transparent + white hairline (base style) */
 }
 /* Logs modal */
-.logs-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center}
-.logs-modal{background:var(--card);border:1px solid var(--bdr);border-radius:12px;padding:24px 28px;max-width:700px;width:90%;max-height:80vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,.3)}
+.logs-modal-overlay{position:fixed;inset:0;background:var(--scrim);z-index:9999;display:flex;align-items:center;justify-content:center}
+.logs-modal{background:var(--card);border:1px solid var(--bdr);border-radius:var(--r-lg);padding:24px 28px;max-width:700px;width:90%;max-height:80vh;overflow-y:auto;box-shadow:var(--sh-lg)}
 .logs-modal h3{margin:0 0 16px;font-size:16px;color:var(--txt)}
 .logs-list{list-style:none;padding:0;margin:0}
 .logs-list li{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-bottom:1px solid var(--bdr);font-size:13px}
@@ -184,12 +256,11 @@ header h1{font-size:15px;font-weight:700;letter-spacing:-.01em}
 .notify-wrap{position:relative}
 .notify-pop{
   position:absolute;top:calc(100% + 8px);right:0;width:320px;
-  background:var(--card);border:1.5px solid var(--bdr);border-radius:8px;
-  box-shadow:0 10px 30px rgba(0,0,0,.18);padding:16px;z-index:500;
+  background:var(--card);border:1px solid var(--bdr);border-radius:var(--r-md);
+  box-shadow:var(--sh-lg);padding:16px;z-index:500;
   text-align:left;color:var(--txt);
 }
 .notify-pop[hidden]{display:none}
-[data-theme="dark"] .notify-pop{box-shadow:0 14px 36px rgba(0,0,0,.5)}
 .notify-pop-title{font-size:13.5px;font-weight:800;margin-bottom:10px}
 .notify-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 0}
 .notify-row-lbl{font-size:12.5px;font-weight:600;color:var(--sub)}
@@ -225,14 +296,14 @@ header h1{font-size:15px;font-weight:700;letter-spacing:-.01em}
    кнопка не сжимается; на узком экране попап развернётся на всю ширину. */
 .notify-snd{display:flex;align-items:center;gap:6px;flex:0 1 auto;min-width:0}
 .notify-snd select{
-  max-width:158px;padding:5px 6px;border:1.5px solid var(--bdr);border-radius:6px;
+  max-width:158px;padding:5px 6px;border:1px solid var(--bdr);border-radius:6px;
   background:var(--card);color:var(--txt);font-size:12px;font-family:inherit;
   cursor:pointer;transition:border-color .15s;
 }
 .notify-snd select:hover{border-color:var(--focus-ring)}
 .notify-snd select:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px}
 .notify-play{
-  width:28px;height:27px;flex:0 0 auto;padding:0;border:1.5px solid var(--bdr);
+  width:28px;height:27px;flex:0 0 auto;padding:0;border:1px solid var(--bdr);
   border-radius:6px;background:var(--card);color:var(--txt);font-size:11px;
   font-family:inherit;line-height:1;cursor:pointer;transition:background .15s,border-color .15s;
 }
@@ -298,14 +369,14 @@ aside::-webkit-scrollbar-thumb{background:var(--bdr);border-radius:3px}
    ════════════════════════════════ */
 .card{
   background:var(--card);border:1px solid var(--bdr);
-  border-radius:var(--r);overflow:visible;box-shadow:var(--sh);
+  border-radius:var(--r-lg);overflow:visible;box-shadow:var(--sh);
 }
 .card-hdr{
   padding:14px 18px 13px;
-  font-size:13px;font-weight:800;color:var(--c);letter-spacing:-.01em;
-  border-bottom:1px solid var(--bdr);
-  background:linear-gradient(160deg,var(--cl) 0%,var(--card) 100%);
-  border-radius:var(--r) var(--r) 0 0;
+  font-size:13px;font-weight:700;color:var(--txt);letter-spacing:-.01em;
+  border-bottom:1px solid var(--bdr-soft);
+  background:var(--card);
+  border-radius:var(--r-lg) var(--r-lg) 0 0;
 }
 
 /* ════════════════════════════════
@@ -318,7 +389,7 @@ label.lbl{
   display:block;margin-bottom:5px;
 }
 input[type=text],input[type=number],input[type=password],textarea,select{
-  border:1.5px solid var(--bdr);border-radius:8px;padding:9px 11px;
+  border:1px solid var(--bdr);border-radius:8px;padding:9px 11px;
   font-size:13px;width:100%;font-family:inherit;
   background:var(--card);color:var(--txt);
   transition:border-color .14s,box-shadow .14s;
@@ -347,7 +418,7 @@ textarea{resize:vertical;min-height:76px;line-height:1.5}
 .chk-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
 .chk{
   display:flex;align-items:center;gap:8px;padding:8px 10px;
-  border:1.5px solid var(--bdr);border-radius:8px;
+  border:1px solid var(--bdr);border-radius:8px;
   cursor:pointer;font-size:13px;font-weight:500;
   color:var(--sub);user-select:none;
   transition:border-color .13s,background .13s,color .13s;
@@ -358,7 +429,7 @@ textarea{resize:vertical;min-height:76px;line-height:1.5}
 
 /* ── Advanced accordion ── */
 details.advanced-settings{
-  border:1.5px solid var(--bdr);border-radius:9px;overflow:hidden;
+  border:1px solid var(--bdr);border-radius:9px;overflow:hidden;
 }
 details.advanced-settings>summary{
   cursor:pointer;list-style:none;user-select:none;
@@ -396,7 +467,7 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
 .preset-chip:hover{background:var(--cl)}
 .preset-chip .del{color:var(--red);font-size:11px;line-height:1;margin-left:2px;font-weight:700}
 .btn-sm{
-  font-size:11px;padding:5px 10px;border:1.5px solid var(--bdr);border-radius:6px;
+  font-size:11px;padding:5px 10px;border:1px solid var(--bdr);border-radius:6px;
   background:var(--card);cursor:pointer;color:var(--sub);font-weight:600;
   transition:border-color .12s,color .12s;font-family:inherit;
 }
@@ -404,12 +475,12 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
 
 /* ── Run button ── */
 #btn-run{
-  width:100%;padding:14px 18px;border:none;border-radius:9px;
-  background:linear-gradient(135deg,var(--brand) 0%,var(--cd) 100%);
-  color:var(--on-accent);font-size:15px;font-weight:800;letter-spacing:-.01em;
+  width:100%;padding:14px 18px;border:none;border-radius:var(--r-md);
+  background:var(--cta);
+  color:var(--on-accent);font-size:15px;font-weight:700;letter-spacing:-.01em;
   cursor:pointer;font-family:inherit;
   display:flex;align-items:center;justify-content:center;gap:8px;
-  box-shadow:0 3px 8px rgba(26,122,138,.28),0 1px 2px rgba(26,122,138,.18);
+  box-shadow:var(--cta-shadow);
   transition:transform .14s,box-shadow .14s,filter .14s;
 }
 /* The [hidden] attribute must beat the display:flex above — without this
@@ -417,25 +488,31 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
 #btn-run[hidden]{display:none}
 #btn-stop[hidden]{display:none}
 #btn-stop{
-  flex:0 0 auto;width:46px;border:none;border-radius:9px;
-  background:linear-gradient(135deg,var(--red-btn) 0%,var(--red-btn-2) 100%);
+  flex:0 0 auto;width:46px;border:none;border-radius:var(--r-md);
+  background:var(--red-btn);
   color:var(--on-accent);font-size:16px;cursor:pointer;font-family:inherit;
-  box-shadow:0 3px 8px rgba(196,64,64,.28);
+  box-shadow:0 1px 2px var(--glow-red);
   transition:filter .14s,transform .14s;
 }
 #btn-stop:hover{filter:brightness(1.08);transform:translateY(-1px)}
 #btn-stop:disabled{filter:grayscale(.6);cursor:not-allowed;transform:none}
 [data-theme="dark"] #btn-stop{background:var(--red);box-shadow:0 4px 14px var(--glow-red)}
 #btn-run:hover:not(:disabled){
-  transform:translateY(-2px);
-  box-shadow:0 7px 18px rgba(26,122,138,.34),0 2px 4px rgba(26,122,138,.18);
-  filter:brightness(1.06);
+  transform:translateY(-1px);
+  box-shadow:var(--cta-shadow);
+  filter:brightness(1.07);
 }
 #btn-run:active:not(:disabled){transform:translateY(0)}
-#btn-run:disabled{background:linear-gradient(135deg,var(--bdr),var(--bdr-h));cursor:not-allowed;box-shadow:none}
+/* Выключенная кнопка раньше оставалась с белой подписью на светло-серой
+   плашке (≈1.2:1 — текста не видно). Выключенное состояние — это серый тон
+   плюс читаемый текст, а не только снятая тень. */
+#btn-run:disabled{background:var(--track);color:var(--sub);cursor:not-allowed;box-shadow:none}
 .spin{
   display:inline-block;width:15px;height:15px;flex-shrink:0;
-  border:2px solid rgba(255,255,255,.28);border-top-color:var(--on-accent);
+  /* Кольцо — текущим цветом текста: белое пропадало на светлых подложках
+     (выключенная «Найти», инлайн-статус в карточке живого прогресса).
+     Прозрачный сегмент и даёт вращение. */
+  border:2px solid currentColor;border-top-color:transparent;
   border-radius:50%;animation:spin .7s linear infinite;
 }
 @keyframes spin{to{transform:rotate(360deg)}}
@@ -455,6 +532,10 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
    before launching a search. The «Как это работает» onboarding card lives
    inside the log tab and is removed when the first log line arrives. */
 #onboarding-screen{display:block}
+/* Первый экран живёт внутри #log-output, а тот — моноширинный (это лог).
+   Без этой строки H2 «Как это работает» и все подписи приветствия рисовались
+   терминальным шрифтом — то есть выглядели как чужая страница. */
+#onboarding-screen,.onboarding,.flow-step{font-family:var(--font-ui)}
 #p-log #onboarding-screen{margin:0;padding:34px 26px}
 #p-log .onboarding-mark{width:52px;height:52px;font-size:20px;margin-bottom:16px}
 #p-log .onboarding-lead{margin-bottom:24px}
@@ -476,32 +557,27 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
 }
 .onboarding-inner{max-width:660px;width:100%;text-align:center;margin:0 auto}
 .onboarding-mark{
-  width:62px;height:62px;margin:0 auto 22px;
-  border-radius:16px;
-  background:linear-gradient(135deg,var(--c),var(--cd));
-  color:var(--on-accent);display:grid;place-items:center;
+  width:56px;height:56px;margin:0 auto 20px;
+  border-radius:var(--r-lg);
+  background:var(--acc-soft);
+  color:var(--c);display:grid;place-items:center;
   font-size:24px;font-weight:800;
-  box-shadow:0 6px 16px rgba(26,122,138,.26);
 }
 .onboarding h2{
-  font-size:26px;font-weight:800;color:var(--txt);
-  margin-bottom:10px;letter-spacing:-.04em;line-height:1.2;
+  font-size:22px;font-weight:700;color:var(--txt);
+  margin-bottom:8px;letter-spacing:-.02em;line-height:1.25;
 }
-.onboarding-lead{color:var(--sub);font-size:14px;margin-bottom:34px;line-height:1.6}
+.onboarding-lead{color:var(--sub);font-size:13.5px;margin-bottom:30px;line-height:1.6}
 .flow-steps{
   display:grid;grid-template-columns:repeat(3,1fr);gap:14px;text-align:left;
 }
 .flow-step{
-  padding:18px 16px;border-radius:10px;
-  border:1.5px solid var(--bdr);background:var(--row-alt);
-  display:flex;flex-direction:column;gap:7px;
-  transition:border-color .14s,box-shadow .14s,transform .14s;
+  padding:16px;border-radius:var(--r-md);
+  border:1px solid var(--bdr);background:var(--card);
+  display:flex;flex-direction:column;gap:6px;
+  transition:border-color .14s,box-shadow .14s;
 }
-.flow-step:hover{
-  border-color:var(--c);
-  box-shadow:0 4px 14px rgba(26,122,138,.12);
-  transform:translateY(-2px);
-}
+.flow-step:hover{border-color:var(--bdr-h);box-shadow:var(--sh)}
 .flow-step b{
   font-size:10.5px;font-weight:800;color:var(--c);
   letter-spacing:.07em;text-transform:uppercase;
@@ -521,8 +597,10 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
   border:none;border-radius:7px;background:transparent;color:var(--muted);
   transition:color .12s,background .12s,box-shadow .12s;white-space:nowrap;font-family:inherit;
 }
-.tab-btn:hover{background:var(--track);color:var(--c)}
-.tab-btn.active{background:var(--brand);color:var(--on-accent);font-weight:800;box-shadow:0 2px 8px rgba(0,126,140,.35)}
+.tab-btn:hover{background:var(--track);color:var(--txt)}
+/* Активная вкладка — мягкая акцентная подложка вместо плотной плашки:
+   восемь плашек подряд читались как ряд крупных кнопок. */
+.tab-btn.active{background:var(--acc-soft);color:var(--c);font-weight:700}
 
 /* ── Tab panels ── */
 .tab-panels{
@@ -548,7 +626,7 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
 .term-lbl{font-size:11px;font-weight:600;color:var(--muted);margin-left:auto;letter-spacing:.02em}
 .term-clear{
   font-size:11px;font-weight:700;padding:4px 10px;border-radius:6px;
-  border:1.5px solid var(--bdr);background:var(--card);color:var(--sub);
+  border:1px solid var(--bdr);background:var(--card);color:var(--sub);
   cursor:pointer;font-family:inherit;white-space:nowrap;
   transition:border-color .12s,color .12s,background .12s;
 }
@@ -581,7 +659,7 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
 /* successful operations — green */
 .ll.ok{color:var(--grn);background:rgba(44,133,96,.07);border-left-color:var(--grn)}
 /* informational — brand teal, subtle */
-.ll.info{color:var(--c);background:rgba(0,126,140,.05);border-left-color:rgba(0,126,140,.45)}
+.ll.info{color:var(--c);background:var(--c-soft);border-left-color:var(--glow)}
 .ll.warn{color:var(--yel);background:rgba(176,117,40,.08);border-left-color:var(--yel)}
 .ll.error{color:var(--red);background:rgba(196,64,64,.08);border-left-color:var(--red)}
 /* quota warnings — visually louder than ordinary warns (2GIS Places / лимиты) */
@@ -616,26 +694,76 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
 }
 .tbl-toolbar input{flex:1;min-width:160px;max-width:250px}
 .tbl-count{font-size:12px;color:var(--muted);font-weight:600;margin-left:auto}
-.tbl-wrap{flex:1;overflow:auto}
+/* Таблица результатов. Плотность подобрана так, чтобы строка читалась
+   одной строкой текста (высота ~36px): адрес и название переносятся, а не
+   уезжают вбок, а числа выровнены по разрядам. */
+.tbl-wrap{flex:1;overflow:auto;scrollbar-width:thin;scrollbar-color:var(--bdr) transparent}
+.tbl-wrap::-webkit-scrollbar{width:10px;height:10px}
+.tbl-wrap::-webkit-scrollbar-thumb{background:var(--bdr);border-radius:5px}
+.tbl-wrap::-webkit-scrollbar-thumb:hover{background:var(--bdr-h)}
 #results-table{width:100%;border-collapse:collapse;font-size:13px}
 #results-table th{
-  position:sticky;top:0;background:var(--hdr);color:var(--on-accent);
-  padding:9px 11px;text-align:left;cursor:pointer;
+  position:sticky;top:0;z-index:2;background:var(--card);color:var(--muted);
+  padding:9px 12px;text-align:left;cursor:pointer;
   user-select:none;white-space:nowrap;
-  font-size:11.5px;font-weight:700;letter-spacing:.01em;
+  font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;
+  /* Тень отделяет липкую шапку от строк, которые под неё уезжают: при
+     border-collapse рамка едет вместе с содержимым. */
+  box-shadow:inset 0 -1px 0 var(--bdr);
 }
-#results-table th:hover{background:var(--cd)}
+#results-table th,#results-table td{font-variant-numeric:tabular-nums}
+/* Шапка — подписи на цвете карточки, а не чёрная плита и не серая плашка:
+   так она не спорит с зеброй и одинаково выглядит в обеих темах. Цвет
+   обязан быть непрозрачным (--card), иначе уезжающие строки просвечивают
+   сквозь липкую шапку. z-index держит её над бейджами и чипами, а
+   тень-линия снизу (вместо рамки, которая при border-collapse уезжает
+   вместе с содержимым) отделяет строки. */
+/* «#» и «Оценка» — числовые колонки: центр и одинаковая ширина разрядов. */
+#results-table th:nth-child(2),#results-table td:nth-child(2),
+#results-table th:nth-child(7),#results-table td:nth-child(7){text-align:center}
+#results-table th:hover{background:var(--row-hover);color:var(--txt)}
 #results-table th.asc::after{content:" ↑"}
 #results-table th.desc::after{content:" ↓"}
 /* «#» — порядковый номер строки, а не данные: не сортируется и не реагирует
    на курсор (см. NOSORT_COLS в app.js). */
 #results-table th.nosort{cursor:default}
-#results-table th.nosort:hover{background:var(--c)}
+#results-table th.nosort:hover{background:var(--card);color:var(--muted)}
 #results-table th.nosort::after{content:""}
-#results-table td{padding:9px 11px;border-bottom:1px solid var(--bdr-soft);vertical-align:top}
-#results-table tr:hover td{background:var(--row-hover)}
+/* Плотность строки — около 36px: текстовая часть выровнена по верху (адрес
+   переносится), а служебные колонки — по центру, иначе бейдж оценки «висит»
+   в верхней кромке высокой строки. Телефон не переносится: разрыв по
+   «+7 (495)» ломает ритм колонки. */
+#results-table td{padding:8px 12px;line-height:1.45;border-bottom:1px solid var(--bdr-soft);vertical-align:top}
+#results-table td:nth-child(1),#results-table td:nth-child(2),
+#results-table td:nth-child(7),#results-table td:nth-child(8){vertical-align:middle}
+#results-table td:nth-child(6){white-space:nowrap}
+/* Телефоны: у организаций бывает десяток номеров, и comma-joined строка
+   растягивала таблицу за горизонт — остальные колонки уезжали за экран.
+   Один номер на строку, колонка ограничена, излишек — под прокрутку
+   внутри ячейки (в Excel/CSV попадают все номера без изменений). */
+#results-table td:nth-child(6){max-width:230px}
+.tbl-phone{
+  max-height:3.2em;overflow-y:auto;font-variant-numeric:tabular-nums;
+  scrollbar-width:thin;
+}
+.tbl-phone span{display:block;white-space:nowrap}
+/* Соцсети наоборот: бейджи собираются в колонку, и места им всегда
+   не хватало — колонке задаём минимум, а не максимум. */
+#results-table th:nth-child(8),#results-table td:nth-child(8){min-width:120px;width:120px}
+/* Зебра тоном тише, чем наведение: подсветка курсора должна читаться поверх
+   полос. Порядок и вес правил это обеспечивают — `even:hover` выше по
+   специфичности, чем `even`, и потому выигрывает. */
 #results-table tr:nth-child(even) td{background:var(--row-alt)}
 #results-table tr:nth-child(even):hover td{background:var(--row-hover)}
+#results-table tr:hover td{background:var(--row-hover)}
+/* Ссылка и служебный текст строки — классами, а не инлайном: палитра
+   должна жить в одном месте. */
+.tbl-link{color:var(--c);font-weight:600;text-decoration:none}
+.tbl-link:hover{text-decoration:underline}
+/* В строке текст обязан читаться и на зебре, и под курсором: это не самая
+   тихая подпись на белой карточке (там хватало --muted), а текст на
+   тонированной поверхности — 4.2:1 там ниже нормы. */
+.tbl-cat{color:var(--sub)}
 .social-badge{
   display:inline-block;padding:2px 7px;border-radius:4px;
   font-size:10px;font-weight:800;color:var(--on-accent);
@@ -650,17 +778,17 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
 .score-badge.hot{background:var(--ok-bg);color:var(--ok-strong)}
 .score-badge.warm{background:var(--warn-bg);color:var(--warn-strong)}
 .score-badge.cold{background:var(--track);color:var(--sub)}
-.score-na{color:var(--muted)}
+.score-na{color:var(--sub)}
 [data-theme="dark"] .score-badge{background:var(--warn-on);color:var(--sub)}
-[data-theme="dark"] .score-badge.hot{background:rgba(16,185,129,.18);color:var(--ok-txt)}
-[data-theme="dark"] .score-badge.warm{background:rgba(245,158,11,.18);color:var(--warn-txt)}
+[data-theme="dark"] .score-badge.hot{background:var(--ok-bg);color:var(--ok-txt)}
+[data-theme="dark"] .score-badge.warm{background:var(--warn-bg);color:var(--warn-txt)}
 .no-data{text-align:center;color:var(--muted);padding:60px 20px;font-size:13px}
 .pager{
   display:flex;align-items:center;gap:8px;padding:11px 16px;
   border-top:1px solid var(--bdr);justify-content:center;background:var(--panel);
 }
 .pager button{
-  padding:5px 14px;border:1.5px solid var(--bdr);border-radius:6px;
+  padding:5px 14px;border:1px solid var(--bdr);border-radius:6px;
   background:var(--card);cursor:pointer;font-size:12px;font-weight:600;
   color:var(--sub);transition:border-color .12s,color .12s;font-family:inherit;
 }
@@ -682,8 +810,12 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
 
 /* ── Reviewed ── */
 .rev-cb{width:15px;height:15px;accent-color:var(--c);cursor:pointer;flex-shrink:0}
-#results-table tr.is-reviewed td{opacity:.42}
-#results-table tr.is-reviewed td:first-child{opacity:1}
+/* Просмотренная строка гаснет цветом, а не opacity: прозрачность гасит и
+   собственный фон ячейки — строка выбивала дыру в зебре и в наведении. */
+#results-table tr.is-reviewed td{color:var(--sub)}
+#results-table tr.is-reviewed .tbl-link{color:var(--sub)}
+#results-table tr.is-reviewed .score-badge,
+#results-table tr.is-reviewed .social-badge{opacity:.5}
 
 /* ── Social filter row ── */
 .tbl-social-row{
@@ -699,7 +831,7 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
 .sf-tag:hover{opacity:.52}
 .sf-tag.active{opacity:1;box-shadow:0 0 0 2px var(--on-accent),0 0 0 3.5px currentColor;transform:scale(1.06)}
 .sf-clear{
-  font-size:11px;padding:2px 9px;border:1.5px solid var(--bdr);border-radius:20px;
+  font-size:11px;padding:2px 9px;border:1px solid var(--bdr);border-radius:20px;
   background:none;cursor:pointer;color:var(--muted);margin-left:4px;
   font-weight:600;display:none;transition:border-color .12s,color .12s;
 }
@@ -709,7 +841,7 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
 /* ── Column toggle ── */
 .col-toggle-wrap{position:relative}
 #btn-cols{
-  padding:5px 11px;border:1.5px solid var(--bdr);border-radius:6px;
+  padding:5px 11px;border:1px solid var(--bdr);border-radius:6px;
   background:var(--card);color:var(--sub);font-size:12px;font-weight:700;
   cursor:pointer;white-space:nowrap;
   display:flex;align-items:center;gap:5px;
@@ -718,17 +850,17 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
 #btn-cols:hover,#btn-cols.active{border-color:var(--c);color:var(--c);background:var(--cl)}
 #col-dropdown{
   position:absolute;top:calc(100% + 5px);right:0;
-  background:var(--card);border:1.5px solid var(--bdr);border-radius:10px;
-  box-shadow:0 8px 28px rgba(0,0,0,.13);padding:6px 4px;z-index:400;
+  background:var(--card);border:1px solid var(--bdr);border-radius:var(--r-md);
+  box-shadow:var(--sh-lg);padding:6px 4px;z-index:400;
   min-width:168px;display:none;
 }
 #col-dropdown.open{display:block}
 .col-item{
   display:flex;align-items:center;gap:8px;padding:7px 12px;
-  cursor:pointer;border-radius:6px;font-size:13px;color:var(--txt);
+  cursor:pointer;border-radius:var(--r-sm);font-size:13px;color:var(--txt);
   transition:background .1s;user-select:none;
 }
-.col-item:hover{background:var(--cl)}
+.col-item:hover{background:var(--row-hover)}
 .col-item input{width:14px;height:14px;accent-color:var(--c);cursor:pointer;flex-shrink:0}
 .col-sep{height:1px;background:var(--bdr);margin:4px 10px}
 .col-all-btn{
@@ -758,7 +890,7 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
 
 /* ── API key ── */
 /* ── Social mode toggle ── */
-.social-mode-bar{display:flex;gap:0;border:1.5px solid var(--bdr);border-radius:8px;overflow:hidden}
+.social-mode-bar{display:flex;gap:0;border:1px solid var(--bdr);border-radius:8px;overflow:hidden}
 .social-mode-opt{position:relative;flex:1;padding:8px 6px;text-align:center;font-size:12px;font-weight:700;cursor:pointer;color:var(--sub);background:var(--card);transition:all .13s;border-right:1px solid var(--bdr);margin:0}
 /* Hidden radios stay inside their labels (see .grid-mode-opt input note):
    display:none inputs are fine here, but inline-styled visible-position
@@ -795,7 +927,7 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
 /* ── Data source toggle: Яндекс.Карты / 2GIS ──
    Segmented control with brand-colored active states so the chosen
    source is obvious at a glance (red = Yandex, green = 2GIS). */
-.source-mode-bar{display:flex;gap:0;border:1.5px solid var(--bdr);border-radius:8px;overflow:hidden}
+.source-mode-bar{display:flex;gap:0;border:1px solid var(--bdr);border-radius:8px;overflow:hidden}
 .source-mode-opt{position:relative;flex:1;padding:8px 6px;text-align:center;font-size:12px;font-weight:700;cursor:pointer;color:var(--sub);background:var(--card);transition:all .13s;border-right:1px solid var(--bdr);margin:0;display:flex;align-items:center;justify-content:center;gap:5px}
 .source-mode-opt input[type="radio"]{position:absolute;width:1px;height:1px;margin:0;opacity:0;pointer-events:none;clip-path:inset(50%)}
 .source-mode-opt:last-child{border-right:none}
@@ -816,7 +948,7 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
    Replaces the old checkbox+steppers block: «Весь город» keeps everything
    hidden; «Настроить вручную» reveals two range sliders with live values,
    a plain-language ratio hint and a 2GIS token estimate. */
-.grid-mode-row{display:flex;gap:0;border:1.5px solid var(--bdr);border-radius:8px;overflow:hidden;margin-bottom:8px}
+.grid-mode-row{display:flex;gap:0;border:1px solid var(--bdr);border-radius:8px;overflow:hidden;margin-bottom:8px}
 .grid-mode-opt{position:relative;flex:1;padding:8px 8px;display:flex;flex-direction:column;align-items:center;gap:2px;cursor:pointer;background:var(--card);transition:all .13s;border-right:1px solid var(--bdr)}
 .grid-mode-opt:last-child{border-right:none}
 .grid-mode-opt:hover{background:var(--cl)}
@@ -870,7 +1002,7 @@ input[type="range"]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;b
 [data-theme="dark"] .grid-hint.sparse .hint-state{color:var(--warn-txt)}
 [data-theme="dark"] .grid-hint.dense2 .hint-state{color:var(--warn-txt)}
 /* pulse when the wand finds values already optimal */
-@keyframes grid-hint-pulse{0%,100%{box-shadow:0 0 0 0 rgba(0,126,140,0)}35%{box-shadow:0 0 0 5px rgba(0,126,140,.18)}}
+@keyframes grid-hint-pulse{0%,100%{box-shadow:0 0 0 0 var(--glow)}35%{box-shadow:0 0 0 5px var(--glow)}}
 .grid-hint.wand-ok{animation:grid-hint-pulse .7s ease}
 /* «Волшебная палочка» next to the «Покрытие города» title */
 .grid-title-row{display:flex;align-items:center;justify-content:space-between;gap:6px}
@@ -879,7 +1011,7 @@ input[type="range"]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;b
   padding:2px 4px;border-radius:6px;transition:transform .15s, background .15s, box-shadow .15s;
   filter:grayscale(.35);opacity:.85;
 }
-.grid-wand:hover{transform:scale(1.25) rotate(-8deg);filter:none;opacity:1;background:var(--cl);box-shadow:0 0 8px rgba(0,126,140,.25)}
+.grid-wand:hover{transform:scale(1.15);filter:none;opacity:1;background:var(--cl);box-shadow:0 0 0 3px var(--glow)}
 .grid-wand:active{transform:scale(1.1)}
 
 /* Stats tab: 2GIS Places quota card */
@@ -922,31 +1054,259 @@ input[type="range"]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;b
   pointer-events:auto;
 }
 .toast.show{transform:translateX(0);opacity:1}
-.toast.success{background:linear-gradient(135deg,var(--ok-strong),var(--ok-strong))}
-.toast.error{background:linear-gradient(135deg,var(--red-btn),var(--red-btn-2))}
+.toast.success{background:var(--ok-strong)}
+.toast.error{background:var(--red-btn)}
 .toast .t-ico{
   width:20px;height:20px;border-radius:50%;flex-shrink:0;
   display:grid;place-items:center;font-size:11px;font-weight:800;
   background:rgba(255,255,255,.22);
 }
-[data-theme="dark"] .toast.error{background:linear-gradient(135deg,var(--err-bdr),var(--err-strong))}
+[data-theme="dark"] .toast.error{background:var(--err-bdr)}
 
 /* ════════════════════════════════
    MAP & STATS
    ════════════════════════════════ */
 #map-container{flex:1;min-height:420px}
+
+/* ── Попап метки на карте (Leaflet) ───────────────────────────────────────
+   Leaflet рисует свою оболочку попапа из собственного CSS — её цвета правим
+   токенами, а содержимое собирается классами .map-pop*. Раньше содержимое
+   было инлайновым с прежней палитрой и не переключалось вместе с темой. */
+.map-pop{min-width:190px;max-width:250px;font-family:var(--font-ui);font-size:12px;color:var(--txt)}
+.map-pop-name{font-size:13px;font-weight:700;line-height:1.3}
+.map-pop-cat{color:var(--muted);font-size:11px;margin-top:1px}
+.map-pop-row{font-size:11.5px;color:var(--sub);margin-top:3px;line-height:1.35;font-variant-numeric:tabular-nums}
+.map-pop-soc{margin-top:6px}
+.map-soc{
+  display:inline-block;padding:2px 7px;margin:1px 3px 1px 0;border-radius:var(--r-sm);
+  background:var(--tile,var(--c));color:var(--on-accent);
+  font-size:10px;font-weight:700;text-decoration:none;transition:filter .12s;
+}
+.map-soc:hover{filter:brightness(1.1)}
+.map-pop-links{display:flex;flex-direction:column;gap:3px;margin-top:8px}
+.map-pop-links a{font-size:11.5px;color:var(--c);font-weight:600;text-decoration:none}
+.map-pop-links a:hover{text-decoration:underline}
+.leaflet-container{font-family:var(--font-ui);background:var(--panel)}
+.leaflet-popup-content-wrapper{border:1px solid var(--bdr);border-radius:var(--r-md);box-shadow:var(--sh-lg)}
+.leaflet-popup-content-wrapper,.leaflet-popup-tip{background:var(--card);color:var(--txt)}
+.leaflet-popup-content{margin:10px 12px;line-height:1.4}
+.leaflet-container a.leaflet-popup-close-button{color:var(--muted)}
+.leaflet-container a.leaflet-popup-close-button:hover{color:var(--txt)}
 .stats-body{flex:1;overflow-y:auto;padding:20px}
 .stat-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(128px,1fr));gap:12px;margin-bottom:26px}
 .stat-card{
-  background:var(--card);border:1.5px solid var(--bdr);border-radius:11px;
+  background:var(--card);border:1px solid var(--bdr);border-radius:var(--r-md);
   padding:16px 14px;text-align:center;
   transition:border-color .13s,box-shadow .13s;
 }
-.stat-card:hover{border-color:var(--c);box-shadow:0 4px 14px rgba(26,122,138,.12)}
+.stat-card:hover{border-color:var(--bdr-h);box-shadow:var(--sh)}
 .stat-card .num{font-size:30px;font-weight:800;color:var(--c);letter-spacing:-.03em;line-height:1.15}
 .stat-card .lbl{font-size:11px;color:var(--muted);margin-top:6px;font-weight:600}
 .stat-section{margin-bottom:26px}
 .stat-section h3{font-size:13px;font-weight:800;color:var(--sub);text-transform:uppercase;letter-spacing:.05em;margin-bottom:13px}
+
+/* ── «Динамика по дням» ────────────────────────────────────────────────
+   Панель статистики прокручивается ЦЕЛИКОМ: блок динамики стоит над
+   KPI-карточками и должен уезжать вместе с ними. Раньше прокручивался
+   только #stats-body — блок над ним остался бы висеть полосой.
+   display переопределяется только у .active, иначе перебился бы
+   `.tab-panel{display:none}` и скрытая вкладка была бы видна. */
+/* Панель получает общий внутренний отступ: раньше у блока динамики его не
+   было вовсе (padding был только у #stats-body ниже) — заголовок и график
+   прижимались к краям вкладки, а карточки под ними стояли свободнее. */
+#p-stats.active{display:block;overflow-y:auto;padding:20px}
+#p-stats .stats-body{flex:none;overflow:visible;padding:0}
+
+.dyn-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:13px}
+.dyn-head h3{margin-bottom:0}
+/* Три способа задать период в одной строке: сегменты 7/14/30, календарный
+   месяц и разворот «с … по …». */
+.dyn-controls{display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+/* Нативные date/month — единственные поля, которым браузер сам рисует пикер:
+   appearance не отключаем, иначе в Chrome исчезает иконка календаря.
+   color-scheme переключается вместе с темой: без него пикер и его иконка
+   остаются светлыми на тёмном фоне. */
+.dyn-month,.dyn-date{
+  width:auto;padding:3px 8px;font-size:11.5px;font-weight:600;
+  font-family:inherit;border:1px solid var(--bdr);border-radius:var(--pill);
+  background:var(--panel);color:var(--txt);color-scheme:light;
+  transition:border-color .12s,color .12s;
+}
+.dyn-month{color:var(--sub)}
+.dyn-month:hover,.dyn-date:hover{border-color:var(--bdr-h)}
+.dyn-month:focus,.dyn-date:focus{outline:none;border-color:var(--c);box-shadow:0 0 0 3px var(--focus-ring)}
+/* Нативный календарь рисует браузер, и без color-scheme он остаётся светлым
+   пятном на тёмной теме (вместе с иконкой). */
+[data-theme="dark"] .dyn-month,[data-theme="dark"] .dyn-date{color-scheme:dark}
+.dyn-range.dyn-more{white-space:nowrap}
+/* Поля диапазона — отдельной строкой под шапкой: в одну строку с сегментами
+   они сжимали те до нечитаемого на телефоне. */
+.dyn-custom{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:-5px 0 13px}
+.dyn-custom[hidden]{display:none}
+.dyn-custom-lbl{font-size:11.5px;color:var(--muted);font-weight:600}
+.dyn-apply{
+  border:1px solid var(--brand);background:var(--brand);color:var(--on-accent);
+  border-radius:var(--pill);padding:3px 12px;font-size:11.5px;font-weight:700;
+  font-family:inherit;cursor:pointer;transition:opacity .12s;
+}
+.dyn-apply:hover{opacity:.88}
+/* Переключатель периода — сегменты внутри общей пилюли, как у вкладок:
+   три отдельные кнопки читались как три разных действия. */
+.dyn-ranges{display:inline-flex;gap:2px;padding:2px;border-radius:var(--pill);background:var(--panel);border:1px solid var(--bdr)}
+.dyn-range{
+  border:none;background:transparent;color:var(--sub);font-family:inherit;
+  font-size:11.5px;font-weight:600;padding:3px 10px;border-radius:var(--pill);cursor:pointer;
+  transition:background .12s,color .12s;
+}
+.dyn-range:hover{background:var(--row-hover);color:var(--txt)}
+/* Плотная плашка — --brand, а не --c: в тёмной теме --c светлый, и белый
+   текст на нём не читался (>2:1). --brand под белый текст в обеих темах. */
+.dyn-range.is-on{background:var(--brand);color:var(--on-accent)}
+
+/* Геометрия графика — три полосы по вертикали: 16px под подписи чисел над
+   столбцами, 112px сама шкала, 30px подписи дней. Ось и сетка лежат в общем
+   поле с колонками (top:16px; bottom:30px), поэтому линии точно совпадают с
+   высотой столбцов, а не живут в своей системе координат. */
+.dyn-chart{
+  position:relative;background:var(--panel);border:1px solid var(--bdr);
+  border-radius:var(--r-md);padding:12px 12px 8px;
+}
+/* Гуттер оси — слева; подписи прижаты к столбцам, а не к краю карточки. */
+.dyn-plot{position:relative;padding-left:38px}
+.dyn-yaxis{position:absolute;left:0;top:18px;bottom:30px;width:34px}
+.dyn-tick{
+  position:absolute;right:0;transform:translateY(50%);
+  font-size:9.5px;font-weight:600;color:var(--muted);
+  font-variant-numeric:tabular-nums;white-space:nowrap;
+}
+.dyn-area{position:relative}
+.dyn-grid{position:absolute;left:0;right:0;top:18px;bottom:30px;pointer-events:none}
+.dyn-grid i{position:absolute;left:0;right:0;height:0;border-top:1px dashed var(--bdr)}
+
+/* Прокрутка по горизонтали — для 30 дней на телефоне: колонки уже 26px
+   сливаются в кашу, а переносить их на вторую строку нельзя: ось дней
+   обязана быть непрерывной. */
+.dyn-cols{display:flex;align-items:flex-start;gap:3px;overflow-x:auto;height:160px}
+/* Колонки растягиваются на всю ширину графика (flex:1 без max-width): 7 дней
+   на десктопе — это широкие столбцы, а не узкая лента слева и пустота справа.
+   Прокрутка остаётся для месяца и длинных диапазонов, где min-width важнее:
+   flex не сжимает колонку ниже содержимого, поэтому ряд честно уезжает
+   за край, а не сплющивается. */
+.dyn-col{
+  flex:1 1 0;min-width:26px;height:160px;position:relative;
+  display:flex;flex-direction:column;align-items:center;
+  border-radius:var(--r-sm) var(--r-sm) 0 0;transition:background .12s;
+}
+.dyn-col:hover,.dyn-col.is-today:hover{background:var(--row-hover)}
+/* Сегодняшний столбец — мягкая подложка: без неё «последний день» на
+   графике не отличить от просто правого края. */
+.dyn-col.is-today{background:var(--acc-soft)}
+
+/* margin-top — тот самый запас 18px под подпись числа у самого высокого
+   столбца; нулевая линия — граница снизу. Меньше 18px не хватало: подпись
+   над столбцом в 100% вылезала на пиксель за верх колонки, а у .dyn-cols
+   overflow-x:auto — он же обрезал бы ее сверху. */
+.dyn-stack{
+  position:relative;margin-top:18px;width:100%;height:112px;
+  display:flex;align-items:flex-end;justify-content:center;gap:2px;
+  border-bottom:1px solid var(--bdr);
+}
+.dyn-series{position:relative;height:100%;width:100%;max-width:20px;display:flex;align-items:flex-end;justify-content:center}
+/* Растянутые колонки: парные ряды «найдено/просмотрено» по краям широкой
+   колонки разъезжались бы на десятки пикселей — штанги прижимаются к
+   центру с фиксированным зазором, как на узких колонках. */
+.dyn-col .dyn-stack{gap:4px}
+.dyn-col .dyn-series{max-width:16px}
+.dyn-bar{width:100%;background:var(--c);border-radius:3px 3px 0 0;transition:height .3s ease}
+.dyn-bar.dyn-review{background:var(--grn)}
+/* Ноль — не «нет данных»: столбец остаётся видимой насечкой, иначе пустой
+   день неотличим от пропуска (файлы есть, но записей не нашлось). */
+.dyn-bar.is-zero{height:2px;background:var(--bdr-h)}
+/* Цифра над своим столбцом. bottom приходит инлайном как calc(<высота>% + 3px),
+   поэтому подпись едет вместе со столбцом и не отрывается от него. */
+.dyn-vlab{
+  position:absolute;left:50%;transform:translateX(-50%);white-space:nowrap;
+  font-size:9.5px;line-height:12px;font-weight:700;color:var(--sub);
+  font-variant-numeric:tabular-nums;pointer-events:none;
+}
+.dyn-series.dyn-found .dyn-vlab{color:var(--c)}
+.dyn-series.dyn-review .dyn-vlab{color:var(--grn)}
+/* Ноль приглушён: он не «данные», а их отсутствие — иначе ряд нулей читался
+   бы как полноценный ряд. Селектор с .dyn-series — иначе цвет серии
+   (0,3,0) перебил бы этот (0,2,0) и ноль стал бы акцентным. */
+.dyn-series .dyn-vlab.is-zero{color:var(--muted);font-weight:600}
+/* Подписи прячутся, когда на них нет места (JS считает это по ширине блока:
+   на телефоне и на десктопе порог разный). Цифры остаются в подсказке,
+   на оси и в итогах. */
+.dyn-chart.is-dense .dyn-vlab{display:none}
+
+.dyn-day{height:30px;padding-top:5px;display:flex;flex-direction:column;align-items:center;line-height:1.25}
+.dyn-wd{font-size:10px;font-weight:700;color:var(--muted)}
+.dyn-dm{font-size:10.5px;color:var(--sub);font-variant-numeric:tabular-nums}
+
+/* ── Подсказка при наведении ────────────────────────────────────────────
+   position:fixed и живёт в <body>, а не внутри графика: подсказку резали и
+   прокручиваемая панель статистики (overflow-y:auto), и .dyn-cols
+   (overflow-x:auto). left/top считает JS из getBoundingClientRect() — это те же
+   CSS-пиксели, что и у fixed-элемента, поэтому при масштабировании страницы
+   подсказка остаётся приклеенной к столбцу, а не уезжает от курсора.
+   transform не используется: сдвиг через translate пришлось бы складывать с
+   ограничением по краям экрана, и точность зависела бы от порядка операций. */
+.dyn-tip{
+  position:fixed;left:0;top:0;z-index:240;opacity:0;pointer-events:none;
+  transition:opacity .12s;
+  max-width:min(240px,calc(100vw - 16px));
+  min-width:132px;padding:8px 10px;border-radius:var(--r-sm);
+  background:var(--card);border:1px solid var(--bdr-h);box-shadow:var(--sh-lg);
+  font-size:11.5px;color:var(--sub);
+}
+.dyn-tip.is-on{opacity:1}
+.dyn-tip-day{font-weight:800;color:var(--txt);font-size:12px;margin-bottom:5px}
+.dyn-tip-row{display:flex;align-items:center;gap:6px;margin-top:3px}
+.dyn-tip-row b{margin-left:auto;color:var(--txt);font-variant-numeric:tabular-nums}
+.dyn-tip-note{margin-top:6px;color:var(--muted);font-size:10.5px}
+
+.dyn-legend{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-top:12px;font-size:12px;color:var(--sub)}
+/* Даты показанного периода — справа от легенды: у месяца и произвольного
+   диапазона сегменты не подсвечены, и без них непонятно, что на графике. */
+.dyn-span{margin-left:auto;color:var(--muted);font-variant-numeric:tabular-nums}
+.dyn-key{display:inline-flex;align-items:center;gap:6px}
+.dyn-key b{color:var(--txt);font-size:13px}
+.dyn-sw{display:inline-block;width:10px;height:10px;border-radius:3px;background:var(--c);flex:0 0 auto}
+.dyn-sw.dyn-review{background:var(--grn)}
+/* Итоги периода — отдельной строкой под легендой: «сколько в среднем»,
+   «какой день лучший» и «сколько найденного уже разобрано». */
+.dyn-facts{display:flex;gap:8px;flex-wrap:wrap;margin-top:9px}
+.dyn-fact{
+  font-size:11px;color:var(--sub);background:var(--card);
+  border:1px solid var(--bdr);border-radius:var(--pill);padding:3px 10px;
+}
+.dyn-fact b{color:var(--txt)}
+/* О чём график умалчивает: отметки без даты и обрезанный период. */
+.dyn-note{margin-top:8px;font-size:11.5px;color:var(--muted);line-height:1.5}
+.dyn-empty{color:var(--muted);font-size:12.5px;padding:4px 2px}
+
+/* «Сегодня» по часам и одинокий дневной столбец: узкий столбец посреди
+   пустой страницы выглядел как сломанный график — один столбец растягивает
+   весь ряд, но его штанга остаётся узкой (.dyn-series{max-width:20px}), так
+   что колонка «21» с двумя десятками записей не превращается в простыню. */
+.dyn-cols.is-single .dyn-col{max-width:120px}
+.dyn-cols.is-single{justify-content:flex-start}
+
+@media(max-width:620px){
+  /* На телефоне шкала ниже, но пропорции полос те же: 18 / 88 / 28. */
+  .dyn-stack{height:88px}
+  .dyn-cols,.dyn-col{height:134px}
+  .dyn-grid,.dyn-yaxis{bottom:28px}
+  .dyn-day{height:28px}
+  .dyn-cols{gap:2px}
+  .dyn-col{min-width:24px}
+  .dyn-plot{padding-left:34px}
+  .dyn-yaxis{width:30px}
+  /* Поля периода на телефоне делят строку поровну, а не вылезают за край. */
+  .dyn-controls{justify-content:flex-start}
+  .dyn-date{flex:1 1 118px;min-width:0}
+}
 .file-cb{flex:0 0 auto;width:15px;height:15px;cursor:pointer;accent-color:var(--err-bdr);margin-right:2px}
 .files-bulk-btn{border-color:var(--err-bdr);color:var(--err-strong);font-weight:700}
 .files-bulk-btn:hover{background:var(--err-bg);border-color:var(--red);color:var(--err-strong)}
@@ -985,16 +1345,16 @@ input[type="range"]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;b
 .sender-layout{display:flex;flex-direction:column;height:100%;overflow-y:auto}
 .sender-intro{
   padding:18px 20px 14px;border-bottom:1px solid var(--bdr);
-  background:linear-gradient(135deg,var(--cl) 0%,var(--acc-soft) 100%);
+  background:var(--cl);
 }
-.sender-intro h2{font-size:19px;font-weight:800;color:var(--txt);letter-spacing:-.03em;margin-bottom:4px}
+.sender-intro h2{font-size:19px;font-weight:700;color:var(--txt);letter-spacing:-.02em;margin-bottom:4px}
 .sender-intro p{font-size:13px;color:var(--sub)}
 .sender-config{padding:15px 18px;display:flex;flex-direction:column;gap:11px}
 .sender-config-hdr{display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none}
 .sender-config-hdr h3{font-size:13px;font-weight:700;color:var(--c);margin:0}
 .sender-config-toggle{
   font-size:11px;color:var(--muted);padding:3px 9px;
-  border:1.5px solid var(--bdr);border-radius:5px;
+  border:1px solid var(--bdr);border-radius:5px;
   background:none;cursor:pointer;font-weight:600;font-family:inherit;
   transition:border-color .12s,color .12s;
 }
@@ -1004,7 +1364,7 @@ input[type="range"]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;b
 .sender-row2{display:grid;grid-template-columns:1fr 1fr;gap:9px}
 .sender-actions{display:flex;gap:8px;align-items:center;margin-top:4px}
 .sender-part{
-  border:1.5px solid var(--bdr);border-radius:9px;
+  border:1px solid var(--bdr);border-radius:9px;
   padding:13px 15px;background:var(--row-alt);
   display:flex;flex-direction:column;gap:10px;
 }
@@ -1020,15 +1380,15 @@ input[type="range"]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;b
 .sender-advanced summary::before{content:"▶  ";font-size:10px}
 details[open].sender-advanced summary::before{content:"▼  "}
 #btn-send-run{
-  flex:1;padding:11px 15px;border:none;border-radius:8px;
-  background:linear-gradient(135deg,var(--brand),var(--cd));
-  color:var(--on-accent);font-size:13px;font-weight:800;cursor:pointer;font-family:inherit;
+  flex:1;padding:11px 15px;border:none;border-radius:var(--r-sm);
+  background:var(--cta);
+  color:var(--on-accent);font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;
   display:flex;align-items:center;justify-content:center;gap:7px;
-  box-shadow:0 3px 10px rgba(26,122,138,.24);
+  box-shadow:var(--cta-shadow);
   transition:transform .14s,box-shadow .14s;
 }
-#btn-send-run:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 6px 16px rgba(26,122,138,.3)}
-#btn-send-run:disabled{background:linear-gradient(135deg,var(--bdr),var(--bdr-h));cursor:not-allowed;box-shadow:none}
+#btn-send-run:hover:not(:disabled){transform:translateY(-1px);box-shadow:var(--sh-lg)}
+#btn-send-run:disabled{background:var(--track);cursor:not-allowed;box-shadow:none}
 #btn-send-stop{
   padding:11px 15px;border:none;border-radius:8px;
   background:var(--red);color:var(--on-accent);font-size:13px;font-weight:700;
@@ -1092,12 +1452,13 @@ details[open].sender-advanced summary::before{content:"▼  "}
   display:inline !important;
 }
 #city-select-box .city-tag .city-tag-x:hover{opacity:1;color:var(--err-strong)}
+#city-select-box .city-tag .city-tag-x .ico{width:10px;height:10px;margin-right:0;vertical-align:-1px}
 
 /* Input row — always full width, below tags */
 .city-input-wrap{position:relative;width:100%}
 .city-input-wrap input{
   width:100%;padding:9px 32px 9px 11px;font-size:13px;
-  border:1.5px solid var(--bdr);border-radius:8px;
+  border:1px solid var(--bdr);border-radius:8px;
   background:var(--card);color:var(--txt);font-family:inherit;
   transition:border-color .14s,box-shadow .14s;
 }
@@ -1118,17 +1479,17 @@ details[open].sender-advanced summary::before{content:"▼  "}
 .city-dropdown{
   /* detached to <body> and pinned via JS (position:fixed) so nothing clips it */
   position:fixed;z-index:9999;
-  background:var(--card);border:1.5px solid var(--c);
-  border-radius:10px;max-height:400px;overflow-y:auto;
-  box-shadow:0 10px 32px rgba(0,0,0,.18);display:none;
+  background:var(--card);border:1px solid var(--bdr);
+  border-radius:var(--r-md);max-height:400px;overflow-y:auto;
+  box-shadow:var(--sh-lg);display:none;
 }
 .city-dropdown.open{display:block}
 .city-option{
   padding:8px 12px;cursor:pointer;display:flex;flex-direction:column;gap:5px;
-  transition:background .1s;border-bottom:1px solid rgba(0,0,0,.04);
+  transition:background .1s;border-bottom:1px solid var(--bdr-soft);
 }
 .city-option:last-child{border-bottom:none}
-.city-option:hover{background:var(--cl)}
+.city-option:hover{background:var(--row-hover)}
 .city-option.selected{background:var(--cl);color:var(--c);font-weight:700}
 .city-option-top{display:flex;align-items:center;justify-content:space-between;width:100%}
 .city-option-name{font-size:13px;font-weight:500;color:var(--txt)}
@@ -1146,7 +1507,7 @@ details[open].sender-advanced summary::before{content:"▼  "}
 [data-theme="dark"] .city-input-wrap input:focus{background:var(--tip-field)}
 [data-theme="dark"] .city-dropdown{background:var(--tip-bg);border-color:var(--bdr);box-shadow:0 8px 28px rgba(0,0,0,.5)}
 [data-theme="dark"] .city-option:hover{background:var(--track)}
-[data-theme="dark"] .city-option.selected{background:var(--tip-bg)}
+[data-theme="dark"] .city-option.selected{background:var(--row-hover)}
 [data-theme="dark"] #city-select-box .city-tag{background:var(--tip-bg) !important;border-color:var(--c) !important;color:var(--c) !important}
 [data-theme="dark"] .city-option-bar{background:var(--track)}
 
@@ -1159,7 +1520,26 @@ details[open].sender-advanced summary::before{content:"▼  "}
    STATS PER-CITY BREAKDOWN
    ════════════════════════════════ */
 .stat-city-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-bottom:20px}
-.stat-city-card{background:var(--card);border:1.5px solid var(--bdr);border-radius:11px;padding:15px 17px}
+.stat-city-card{background:var(--card);border:1px solid var(--bdr);border-radius:var(--r-md);padding:15px 17px}
+/* Разбивки рядом: слева карточки/полосы, справа — кольцо соцсетей. На
+   узком экране кольцо переезжает вниз, под список. */
+.stat-split{display:flex;gap:26px;align-items:flex-start;flex-wrap:wrap}
+.stat-split>.stat-split-main{flex:1 1 340px;min-width:0}
+.stat-split>.stat-split-side{flex:0 1 300px}
+/* Кольцо «По соцсетям»: доли соцсетей читаются формой, точные значения —
+   в подписи легенды рядом (внутри центрируется итог и подпись). */
+.donut-wrap{display:flex;flex-direction:column;align-items:center;gap:10px}
+.donut{position:relative;width:168px;height:168px}
+.donut svg{display:block;transform:rotate(-90deg)}
+.donut circle{fill:none;stroke-width:16}
+.donut .donut-track{stroke:var(--track)}
+.donut-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;pointer-events:none}
+.donut-center b{font-size:22px;line-height:1.1;color:var(--txt);font-variant-numeric:tabular-nums}
+.donut-center span{font-size:10.5px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em}
+.donut-legend{display:flex;flex-direction:column;gap:5px;width:100%}
+.donut-legend-row{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--sub)}
+.donut-legend-row b{margin-left:auto;color:var(--txt);font-variant-numeric:tabular-nums}
+.donut-swatch{display:inline-block;width:9px;height:9px;border-radius:3px;flex:0 0 auto}
 .stat-city-card h4{font-size:13px;font-weight:700;color:var(--c);margin:0 0 9px}
 .stat-city-card .stat-mini-row{display:flex;justify-content:space-between;align-items:baseline;font-size:12px;color:var(--muted);padding:4px 0}
 .stat-city-card .stat-mini-row span:last-child{font-weight:800;font-size:14.5px;color:var(--txt)}
@@ -1170,7 +1550,7 @@ details[open].sender-advanced summary::before{content:"▼  "}
 #update-banner{
   display:flex;align-items:center;gap:12px;flex-wrap:wrap;
   padding:10px 24px;
-  background:linear-gradient(135deg,var(--ok-strong),var(--grn));
+  background:var(--ok-strong);
   color:var(--on-accent);font-size:13px;font-weight:600;
   /* Прижат ПОД шапку и не зависит от прокрутки: раньше это был
      position:sticky внутри потока — баннер уезжал вместе со страницей и
@@ -1243,7 +1623,7 @@ body.has-update-banner{padding-top:48px}
 .changelog-modal h3{display:flex;align-items:center;gap:7px}
 .cl-list{max-height:52vh;overflow-y:auto;display:flex;flex-direction:column;gap:10px;padding-right:4px}
 .cl-entry{
-  border:1.5px solid var(--bdr);border-radius:9px;padding:11px 13px;
+  border:1px solid var(--bdr);border-radius:9px;padding:11px 13px;
   background:var(--row-alt);display:flex;flex-direction:column;gap:5px;
 }
 .cl-entry.cl-latest{border-color:var(--c);background:var(--cl)}
@@ -1305,7 +1685,7 @@ input:focus-visible,textarea:focus-visible,select:focus-visible{
 }
 
 /* Text selection tint */
-::selection{background:rgba(26,122,138,.22);color:inherit}
+::selection{background:var(--glow);color:inherit}
 
 /* Respect users who disable motion */
 @media (prefers-reduced-motion:reduce){
@@ -1320,43 +1700,49 @@ input:focus-visible,textarea:focus-visible,select:focus-visible{
 /* ════════════════════════════════
    DARK THEME
    ════════════════════════════════ */
-/* Мягкая палитра (2026-09): тёмно-синий графит + приглушённая бирюза.
+/* Мягкая палитра (2026-09): тёмно-синий графит + сланцевый акцент.
    Все значения — в токенах ниже; правила темы ссылаются только на var(--…). */[data-theme="dark"]{
-  /* ── Мягкая тёмная тема (как в Linear / Notion / Vercel) ──────────────
-     Фон — тёмно-синий графит, а не почти чёрный; текст — мягкий
-     светло-серый, а не чисто белый; акцент — приглушённая бирюза. */
-  --bg:#191C22;          /* фон страницы */
-  --card:#20242B;        /* карточки и панели */
-  --panel:#242832;       /* блоки внутри карточек, кнопки */
-  --field:#262B34;       /* поля ввода */
-  --term:#15181D;        /* терминал и лог */
-  --row-alt:#1D2128;     /* чётные строки таблицы */
-  --row-hover:#252B36;   /* строка под курсором */
-  --track:#272C35;       /* дорожки полосок */
+  /* ── Мягкая тёмная тема ──────────────────────────────────────────────
+     Фон — графит, а не почти чёрный; текст — мягкий светло-серый, а не
+     чисто белый; акцент — сланцевый, тот же тон графита. Шрифт, кегли и скругления
+     тема не меняет, но объявляет их и здесь: набор токенов один, и это
+     проверяет tests/test_theme_contrast.py. */
+  --font-ui:"Manrope",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  --font-mono:ui-monospace,"Cascadia Mono",Consolas,"JetBrains Mono",monospace;
+  --fs-11:11px;--fs-12:12px;--fs-13:13px;--fs-14:14px;--fs-16:16px;--fs-20:20px;--fs-26:26px;
+  --r-sm:8px;--r-md:12px;--r-lg:16px;--pill:999px;
+  --bg:#101216;          /* фон страницы */
+  --card:#171A20;        /* карточки и панели */
+  --panel:#1C1F26;       /* блоки внутри карточек, кнопки */
+  --field:#1C1F26;       /* поля ввода */
+  --term:#121418;        /* терминал и лог */
+  --row-alt:#13151A;     /* чётные строки таблицы */
+  --row-hover:#232830;   /* строка под курсором */
+  --track:#242832;       /* дорожки полосок */
   --tgl-off:#3A4150;     /* в тёмной теме «выкл» — тёмно-серый, а не белый */
-  --tgl-on:#22C08D;      /* чуть ярче: #10B981 на тёмном фоне глубже */
+  --tgl-on:#43A877;      /* тот же приглушённый зелёный, чуть светлее для тёмного фона */
   --knob:#F2F6F8;        /* ползунок: не чистый белый, чтобы не слепил */
-  --bdr:#333844;         /* границы */
-  --bdr-h:#414757;       /* границы под курсором */
+  --bdr:#262A33;         /* границы */
+  --bdr-h:#39404C;       /* границы под курсором */
   --bdr-hover:var(--bdr-h);
-  --bdr-soft:#2B303A;    /* тонкие разделители внутри таблицы */
-  --txt:#E3E7EE;         /* основной текст */
-  --sub:#B3BBC7;         /* подписи (≥6:1 на карточке) */
-  --muted:#99A2AF;       /* самый тихий текст (≥5:1 на фоне) */
+  --bdr-soft:#1F232B;    /* тонкие разделители внутри таблицы */
+  --txt:#E6E9EF;         /* основной текст */
+  --sub:#AAB3C0;         /* подписи (≥6:1 на карточке) */
+  --muted:#8B93A1;       /* самый тихий текст (≥5:1 на фоне) */
   --on-accent:#ffffff;   /* текст на плотном акценте — белый в обеих темах */
-  --hdr:#223D44;         /* шапка */
-  --c:#5FBFAE;--cl:#1E2A2B;--cd:#4A9E90;
-  --brand:#2F7C74;--brand-dark:#276159;   /* плотный фон под белый текст */
-  --cta-from:#2F7C74;--cta-to:#276159;
-  --cta:linear-gradient(135deg,var(--cta-from) 0%,var(--cta-to) 100%);
+  --hdr:#14171D;         /* шапка: тот же графит, отделена только границей */
+  --c:#9BAEC4;--cl:#1B2028;--cd:#8296AC;
+  --brand:#3A4759;--brand-dark:#2E394A;   /* плотный фон под белый текст */
+  --cta-from:#3A4759;--cta-to:#2E394A;
+  --cta:#3A4759;         /* сплошной акцент, как в светлой теме */
   --cta-shadow:0 6px 18px rgba(0,0,0,.45);
   --red:#D9736F;--red-btn:#A8453F;--red-btn-2:#8E3630;
   --yel:#D3A24C;--grn:#5FB88C;--blu:#7FA8CE;
-  --acc-soft:rgba(95,191,174,.12);
+  --acc-soft:rgba(155,174,196,.12);
   /* Чип: нейтральная серая плашка, но в тон графита (как остальные
      поверхности), а не чистый Gray-700 из макета. */
   --chip-bg:#333A47;
-  --chip-txt:#E3E7EE;
+  --chip-txt:var(--txt);
   --ok-bg:rgba(95,184,140,.16);--ok-bdr:rgba(95,184,140,.45);
   --ok-txt:#8FD3B0;--ok-strong:#7FD1A6;--ok-on:#12261C;
   --warn-bg:rgba(211,162,76,.16);--warn-bdr:rgba(211,162,76,.45);
@@ -1364,17 +1750,18 @@ input:focus-visible,textarea:focus-visible,select:focus-visible{
   --err-bg:rgba(217,115,111,.16);--err-bdr:rgba(217,115,111,.45);
   --err-txt:#E9A6A2;--err-strong:#EBA6A2;--err-on:#2A1616;
   --pause-from:#E8A03A;--pause-to:#C9821B;--pause-txt:#2A1B00;
-  --tip-bg:#0F1720;--tip-txt:#E8EFF3;--tip-field:#1B2733;--tip-ok:#8FD6A6;--tip-bdr:#2C3D4A;
+  --tip-bg:#14171D;--tip-txt:#E8EFF3;--tip-field:#1B2733;--tip-ok:#8FD6A6;--tip-bdr:#2C3D4A;
+  --scrim:rgba(4,6,9,.62);
   --vk:#4c75a3;--ig:#a8306c;--tg:#1d6da3;--wa:#2e7d4f;
-  --c-soft:rgba(95,191,174,.10);
+  --c-soft:rgba(155,174,196,.10);
   /* В тёмной теме кольцо плотнее: те же 8% на тёмном поле неразличимы. */
-  --focus-ring:rgba(95,191,174,.48);
-  --glow:rgba(95,191,174,.22);
+  --focus-ring:rgba(155,174,196,.48);
+  --glow:rgba(155,174,196,.22);
   --glow-warn:rgba(211,162,76,.24);
   --glow-red:rgba(217,115,111,.24);
-  --sh:0 1px 3px rgba(0,0,0,.35),0 6px 18px rgba(0,0,0,.28);
-  --sh-lg:0 2px 8px rgba(0,0,0,.45),0 16px 40px rgba(0,0,0,.4);
-  --r:12px;
+  --sh:0 1px 2px rgba(0,0,0,.36),0 1px 3px rgba(0,0,0,.30);
+  --sh-lg:0 4px 12px rgba(0,0,0,.42),0 18px 44px rgba(0,0,0,.38);
+  --r:var(--r-md);
   --g:var(--c);--gl:var(--cl);--g2:var(--cd);
 }
 /*/TOK*/
@@ -1400,18 +1787,16 @@ html.theme-anim #log-output{
   transition:background-color .22s ease,color .22s ease,border-color .22s ease,
              box-shadow .22s ease;
 }
-[data-theme="dark"] .api-status-block{border-color:var(--bdr);background:linear-gradient(160deg,var(--panel) 0%,var(--card) 60%)}
+[data-theme="dark"] .api-status-block{border-color:var(--bdr);background:var(--card)}
 [data-theme="dark"] .group-title{color:var(--sub);border-left-color:var(--c)}
 [data-theme="dark"] .clear-all-btn{border-color:var(--bdr-h);color:var(--sub);background:transparent}
 [data-theme="dark"] .clear-all-btn:hover{border-color:var(--c);color:var(--c);background:var(--c-soft)}
 [data-theme="dark"] .btn-save-preset{border-color:var(--bdr-h);color:var(--sub)}
 [data-theme="dark"] .btn-save-preset:hover{border-color:var(--c);color:var(--c);background:var(--c-soft)}
 [data-theme="dark"] body{background:var(--bg)}
-/* Шапка таблицы: на приглушённом акценте белый текст почти не читается,
-   поэтому в тёмной теме она тёмная, а не бирюзовая. */
-[data-theme="dark"] #results-table th{background:var(--panel);color:var(--txt)}
-[data-theme="dark"] #results-table th:hover{background:var(--row-hover)}
-[data-theme="dark"] #results-table th.nosort:hover{background:var(--panel)}
+/* Шапка таблицы и зебра больше не нуждаются в отдельных правилах для
+   тёмной темы: базовые правила читают роли (--panel, --muted, --row-alt,
+   --row-hover), а они в обеих темах описаны одним набором. */
 [data-theme="dark"] header{box-shadow:0 1px 0 rgba(0,0,0,.5),0 4px 16px rgba(0,0,0,.45)}
 /* Тёмная шапка: раньше она была окрашена в тот же акцент, что и бейдж
    «Готово», и состояния сливались с ней. Отдельный токен --hdr держит
@@ -1438,8 +1823,6 @@ html.theme-anim #log-output{
 [data-theme="dark"] #live-stats{background:var(--cl);border-color:var(--bdr)}
 [data-theme="dark"] .live-pill{background:rgba(255,255,255,.06);border-color:var(--bdr)}
 [data-theme="dark"] .term-top{background:var(--panel);border-color:var(--bdr)}
-[data-theme="dark"] #results-table tr:nth-child(even) td{background:var(--panel)}
-[data-theme="dark"] #results-table tr:hover td,[data-theme="dark"] #results-table tr:nth-child(even):hover td{background:var(--row-hover)}
 
 [data-theme="dark"] h1,[data-theme="dark"] h2,[data-theme="dark"] h3,
 [data-theme="dark"] .acc-title,[data-theme="dark"] .api-title{color:var(--txt);font-weight:600}
@@ -1452,7 +1835,7 @@ html.theme-anim #log-output{
 [data-theme="dark"] .onboarding{background:var(--card);border-color:var(--bdr)}
 [data-theme="dark"] .tab-bar{background:var(--card);border-color:var(--bdr)}
 [data-theme="dark"] .tab-panels{border-color:var(--bdr)}
-[data-theme="dark"] .sender-intro{background:linear-gradient(135deg,var(--cl),var(--panel))}
+[data-theme="dark"] .sender-intro{background:var(--cl)}
 [data-theme="dark"] .sender-part,[data-theme="dark"] .sender-config{background:var(--panel)}
 [data-theme="dark"] details.advanced-settings>summary{background:var(--panel)}
 [data-theme="dark"] details.advanced-settings>.dbody{background:var(--panel)}
@@ -1463,7 +1846,7 @@ html.theme-anim #log-output{
 [data-theme="dark"] #apikey-status.err{background:var(--err-bg);border-color:var(--err-bdr);color:var(--err-txt)}
 [data-theme="dark"] .stat-card{background:var(--card);border-color:var(--bdr)}
 [data-theme="dark"] .col-all-btn:hover,[data-theme="dark"] .col-item:hover{background:var(--cl)}
-[data-theme="dark"] #col-dropdown{background:var(--card);border-color:var(--bdr);box-shadow:0 8px 28px rgba(0,0,0,.5)}
+[data-theme="dark"] #col-dropdown{background:var(--card);border-color:var(--bdr)}
 
 /* ════════════════════════════════
    RESPONSIVE
@@ -1477,6 +1860,10 @@ html.theme-anim #log-output{
   .onboarding{padding:28px 18px;min-height:400px}
   .onboarding h2{font-size:21px}
   .hdr-right{gap:5px}
+  /* Шапка не влезала на телефоне и растягивала страницу вбок (горизонтальная
+     прокрутка появлялась на всём приложении). До 620px у второстепенных кнопок
+     остаются только значки — их дублируют aria-label и title. */
+  header h1{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   /* Кнопка нужна и на узком экране (в попапе — настройки звука и окон),
      но место в шапке экономим: остаётся только иконка. */
   #notify-txt{display:none}
@@ -1504,23 +1891,21 @@ html.theme-anim #log-output{
 #btn-run{
   background:var(--cta);
   box-shadow:var(--cta-shadow);
-  padding:15px 18px;border-radius:10px;font-size:15.5px;
+  padding:15px 18px;border-radius:var(--r-md);font-size:15.5px;
 }
-#btn-run:hover:not(:disabled){
-  box-shadow:0 10px 26px rgba(0,126,140,.38),0 3px 8px rgba(0,126,140,.24);
-}
-#btn-run:disabled{background:linear-gradient(135deg,var(--bdr),var(--bdr-h));box-shadow:none}
+#btn-run:hover:not(:disabled){box-shadow:var(--sh-lg)}
+#btn-run:disabled{background:var(--track);color:var(--sub);box-shadow:none}
 
 /* ══════════════════════════════════════════════════════════
    1. ACCORDION SECTIONS (sidebar)
    ══════════════════════════════════════════════════════════ */
 .acc{
-  border:1.5px solid var(--bdr);border-radius:10px;
+  border:1px solid var(--bdr);border-radius:var(--r-md);
   background:var(--card);overflow:hidden;
   transition:border-color .15s,box-shadow .15s;
 }
-.acc:hover{border-color:var(--bdr)}
-.acc.open{border-color:var(--c);box-shadow:0 2px 10px rgba(0,126,140,.08)}
+.acc:hover{border-color:var(--bdr-h)}
+.acc.open{border-color:var(--c);box-shadow:var(--sh)}
 .acc-hdr{
   width:100%;display:flex;align-items:center;gap:10px;
   padding:11px 13px;border:none;background:transparent;
@@ -1610,7 +1995,7 @@ html.theme-anim #log-output{
 
 /* «⚙️ Дополнительно»: редкие настройки, свёрнуто по умолчанию. */
 .flt-extra{
-  margin-top:20px;border:1.5px solid var(--bdr);border-radius:9px;
+  margin-top:20px;border:1px solid var(--bdr);border-radius:9px;
   background:var(--row-alt);overflow:hidden;
 }
 .flt-extra>summary{
@@ -1668,12 +2053,13 @@ html.theme-anim #log-output{
   color:var(--muted);transition:color .12s;
 }
 .bl-chip .bl-chip-x:hover{color:var(--err-strong)}
+.bl-chip .bl-chip-x .ico{width:11px;height:11px;margin-right:0;vertical-align:-1px}
 .bl-chip.bl-out{opacity:0;transform:translateX(-6px)}
 @keyframes bl-chip-in{from{opacity:0;transform:scale(.9)}to{opacity:1;transform:scale(1)}}
 .bl-input-wrap{display:flex;gap:6px;align-items:stretch;margin-top:8px}
 .bl-input-wrap input{
   flex:1;min-width:0;padding:9px 11px;font-size:13px;
-  border:1.5px solid var(--bdr);border-radius:8px;
+  border:1px solid var(--bdr);border-radius:8px;
   background:var(--card);color:var(--txt);font-family:inherit;
   transition:border-color .14s,box-shadow .14s;
 }
@@ -1692,7 +2078,7 @@ html.theme-anim #log-output{
 .bl-dd{position:relative;margin-top:10px}
 .bl-dd-btn{
   width:100%;display:flex;align-items:center;gap:8px;padding:9px 11px;
-  font-size:13px;font-weight:600;border:1.5px solid var(--bdr);border-radius:8px;
+  font-size:13px;font-weight:600;border:1px solid var(--bdr);border-radius:8px;
   background:var(--card);color:var(--txt);font-family:inherit;cursor:pointer;
   transition:border-color .14s,box-shadow .14s;
 }
@@ -1747,7 +2133,7 @@ html.theme-anim #log-output{
 .tech-box-note{font-size:11px;color:var(--muted);line-height:1.5;margin:0}
 
 /* ── Stepper (− / input / +) ── */
-.stepper{display:flex;align-items:stretch;border:1.5px solid var(--bdr);border-radius:8px;overflow:hidden;background:var(--card)}
+.stepper{display:flex;align-items:stretch;border:1px solid var(--bdr);border-radius:8px;overflow:hidden;background:var(--card)}
 .stepper input{
   border:none;border-radius:0;width:100%;min-width:0;text-align:center;
   font-weight:700;padding:8px 4px;font-size:13px;
@@ -1785,7 +2171,7 @@ html.theme-anim #log-output{
 .tiles-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(86px,1fr));gap:7px}
 .soc-tile{
   display:flex;flex-direction:column;align-items:center;gap:5px;
-  padding:10px 6px;border:1.5px solid var(--bdr);border-radius:10px;
+  padding:10px 6px;border:1px solid var(--bdr);border-radius:10px;
   background:var(--card);cursor:pointer;user-select:none;
   font-size:11.5px;font-weight:700;color:var(--sub);text-align:center;
   transition:border-color .13s,background .13s,color .13s,transform .13s,box-shadow .13s;
@@ -1800,7 +2186,7 @@ html.theme-anim #log-output{
   font-size:11px;font-weight:800;letter-spacing:.01em;
 }
 .soc-mark{
-  width:15px;height:15px;border-radius:5px;border:1.5px solid var(--bdr);
+  width:15px;height:15px;border-radius:5px;border:1px solid var(--bdr);
   display:grid;place-items:center;font-size:9px;line-height:1;
   color:transparent;transition:all .13s;
 }
@@ -1878,13 +2264,14 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 
 /* ── History cards: hover highlight + roomier header actions ── */
 .hist-card{
-  background:var(--card);border:1.5px solid var(--bdr);border-radius:11px;
+  background:var(--card);border:1px solid var(--bdr);border-radius:var(--r-md);
   margin-bottom:10px;overflow:hidden;
-  transition:border-color .14s,box-shadow .14s,background .14s;
+  transition:border-color .14s,box-shadow .14s;
 }
-.hist-card:hover{background:var(--panel);border-color:var(--bdr);box-shadow:0 3px 12px rgba(0,0,0,.07)}
-[data-theme="dark"] .hist-card:hover{background:var(--row-hover)}
-.hist-card.open{border-color:var(--c);box-shadow:0 4px 14px rgba(0,126,140,.1)}
+/* Наведение меняет рамку и тень, а не фон: карточка не «мигает», а
+   раскрытая (.open) отличается от наведённой — акцент и тень крупнее. */
+.hist-card:hover{border-color:var(--bdr-h);box-shadow:var(--sh)}
+.hist-card.open{border-color:var(--c);box-shadow:var(--sh-lg)}
 .hist-hdr{
   width:100%;display:flex;align-items:center;gap:11px;
   padding:12px 15px;background:transparent;border:none;
@@ -1924,7 +2311,7 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 .hist-dl-all[aria-disabled="true"]{opacity:.55;cursor:default;filter:none}
 .hist-dl{
   display:inline-flex;align-items:center;gap:5px;padding:5px 11px;
-  border-radius:7px;border:1.5px solid var(--bdr);background:var(--card);
+  border-radius:7px;border:1px solid var(--bdr);background:var(--card);
   color:var(--sub);font-size:11.5px;font-weight:700;cursor:pointer;text-decoration:none;
   transition:border-color .13s,color .13s;font-family:inherit;
 }
@@ -1943,19 +2330,69 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 
 /* ── Modern confirm dialog (replaces window.confirm) ── */
 .ui-modal-overlay{
-  position:fixed;inset:0;background:rgba(9,30,36,.55);z-index:9999;
+  position:fixed;inset:0;background:var(--scrim);z-index:9999;
   display:flex;align-items:center;justify-content:center;
   animation:modal-in .18s ease;
 }
 @keyframes modal-in{from{opacity:0}to{opacity:1}}
 .ui-modal{
-  background:var(--card);border:1px solid var(--bdr);border-radius:14px;
+  background:var(--card);border:1px solid var(--bdr);border-radius:var(--r-lg);
   padding:22px 24px;max-width:420px;width:90%;
-  box-shadow:0 16px 48px rgba(0,0,0,.28);
+  box-shadow:var(--sh-lg);
   animation:modal-pop .2s cubic-bezier(.34,1.4,.64,1);
 }
 @keyframes modal-pop{from{opacity:0;transform:scale(.94)}to{opacity:1;transform:scale(1)}}
 .ui-modal h3{margin:0 0 10px;font-size:16px;font-weight:800;color:var(--txt)}
+
+/* ── 🩺 Диагностика: самопроверка приложения ──
+   Оболочка — общая (.ui-modal-overlay/.ui-modal), здесь только содержимое:
+   пояснение, кнопки запуска, итоговая строка и строки проверок. Цвета —
+   только через токены, поэтому тёмная тема работает без отдельных правил. */
+.diag-modal{max-width:620px;width:min(620px,94vw);max-height:86vh;overflow:auto}
+.diag-lead{font-size:12.5px;line-height:1.55;color:var(--sub);margin:0 0 8px}
+.diag-note{
+  font-size:11.5px;line-height:1.5;color:var(--muted);
+  background:var(--row-alt);border:1px solid var(--bdr);border-radius:8px;
+  padding:8px 10px;margin:0 0 12px;
+}
+.diag-actions{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
+.diag-actions .diag-run{font-weight:600}
+.diag-summary{
+  font-size:12.5px;line-height:1.55;color:var(--sub);
+  border-left:3px solid var(--bdr);padding:2px 0 2px 10px;margin-bottom:12px;
+}
+.diag-summary b{color:var(--txt)}
+.diag-summary-ok{border-left-color:var(--grn)}
+.diag-summary-warn{border-left-color:var(--yel)}
+.diag-summary-error{border-left-color:var(--red)}
+.diag-group{margin-bottom:14px}
+.diag-group-title{
+  font-size:11px;font-weight:800;color:var(--muted);
+  text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;
+}
+.diag-row{
+  border:1px solid var(--bdr);border-radius:9px;padding:9px 11px;
+  margin-bottom:7px;background:var(--card);
+}
+.diag-row[data-status="ok"]{border-left:4px solid var(--grn)}
+.diag-row[data-status="warn"]{border-left:4px solid var(--yel)}
+.diag-row[data-status="error"]{border-left:4px solid var(--red)}
+.diag-row-head{display:flex;align-items:baseline;gap:7px}
+.diag-ico{flex:0 0 auto;font-size:13px;line-height:1.3}
+.diag-title{font-size:13px;font-weight:700;color:var(--txt);line-height:1.35}
+/* Статус словами — для скринридера: цвет и цвет полосы ему не видны. */
+.diag-sr{
+  margin-left:auto;flex:0 0 auto;font-size:10.5px;font-weight:700;
+  text-transform:uppercase;letter-spacing:.04em;color:var(--muted);
+}
+.diag-detail{font-size:12px;line-height:1.5;color:var(--sub);margin-top:4px;word-break:break-word}
+.diag-hint{font-size:11.5px;line-height:1.5;color:var(--muted);margin-top:4px}
+.diag-empty{font-size:12.5px;color:var(--muted);padding:12px 0}
+@media(max-width:860px){
+  .diag-modal{max-height:92vh;padding:18px 16px}
+  .diag-actions .diag-run{flex:1 1 100%}
+  .diag-sr{display:none}
+}
 .ui-modal p{margin:0 0 18px;font-size:13px;color:var(--sub);line-height:1.6}
 .ui-modal-btns{display:flex;gap:9px;justify-content:flex-end}
 .ui-modal-btns button{
@@ -1980,7 +2417,7 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 .bl-tpl-del:hover{border-color:var(--err-strong);color:var(--err-strong);background:var(--err-bg)}
 /* ── «Сохранить пресет» in-app modal ─────────────────────── */
 .preset-modal input[type=text]{
-  width:100%;padding:10px 12px;border:1.5px solid var(--bdr);border-radius:8px;
+  width:100%;padding:10px 12px;border:1px solid var(--bdr);border-radius:8px;
   font-size:14px;font-family:inherit;color:var(--txt);background:var(--card);
   margin-bottom:8px;box-sizing:border-box;
 }
@@ -1994,7 +2431,7 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
    presets are discoverable before any accordion is opened.
    ══════════════════════════════════════════════════════════ */
 .preset-block{
-  border:1.5px solid var(--bdr);border-radius:10px;
+  border:1px solid var(--bdr);border-radius:var(--r-md);
   background:var(--card);padding:10px 12px;margin-top:10px;
 }
 .preset-block-head{
@@ -2018,7 +2455,7 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 .preset-dd-wrap{position:relative}
 .preset-dd-btn{
   width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;
-  border:1.5px solid var(--bdr);border-radius:8px;background:var(--card);
+  border:1px solid var(--bdr);border-radius:8px;background:var(--card);
   padding:9px 12px;font-size:13px;font-family:inherit;color:var(--txt);
   cursor:pointer;transition:border-color .13s,box-shadow .13s;text-align:left;
 }
@@ -2052,7 +2489,7 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
   background:transparent;color:var(--muted);cursor:pointer;font-size:12px;
   line-height:1;transition:all .12s;font-family:inherit;
 }
-.preset-dd-edit:hover{background:rgba(0,126,140,.12);color:var(--c)}
+.preset-dd-edit:hover{background:var(--c-soft);color:var(--c)}
 .preset-dd-del{
   flex-shrink:0;width:22px;height:22px;border:none;border-radius:6px;
   background:transparent;color:var(--muted);cursor:pointer;font-size:12px;
@@ -2157,7 +2594,7 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 }
 .btn-save-preset{
   flex:0 0 auto;padding:12px 14px;
-  background:transparent;border:1.5px solid var(--bdr);border-radius:9px;
+  background:transparent;border:1px solid var(--bdr);border-radius:9px;
   font-size:16px;line-height:1;cursor:pointer;font-family:inherit;
   transition:border-color .15s,background .15s,transform .15s;
 }
@@ -2168,7 +2605,7 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
   position:sticky;bottom:0;z-index:60;
   margin-top:auto;                 /* keep the button at the bottom when the sidebar is short */
   padding:10px 0 2px;
-  background:linear-gradient(180deg,rgba(232,238,241,0) 0%,var(--bg) 12px);
+  background:linear-gradient(180deg,transparent 0%,var(--bg) 12px);
   box-shadow:0 -4px 12px rgba(0,0,0,.05);   /* separates the button from scrolled content */
 }
 @media(max-width:860px){#run-dock{position:static}}
@@ -2179,7 +2616,7 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
    • running: red «⏸ Остановить поиск» (button is disabled while the run is
      live — the class repaints it so it reads as an active control) */
 #btn-run.run-ready{
-  background:linear-gradient(135deg,var(--cta-from) 0%,var(--cd) 100%);
+  background:var(--cta);
   cursor:pointer;
 }
 
@@ -2230,7 +2667,7 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
    TWO-STAGE PIPELINE: results view toggle + accordion 05
    ══════════════════════════════════════════════════════════ */
 .results-toggle{
-  display:inline-flex;border:1.5px solid var(--bdr);border-radius:8px;
+  display:inline-flex;border:1px solid var(--bdr);border-radius:8px;
   overflow:hidden;background:var(--card);flex-shrink:0;
 }
 .rt-btn{
@@ -2258,22 +2695,20 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 
 /* ── Group titles (📥 Сбор данных / 📤 Вывод и фильтрация) ── */
 .group-title{
-  font-size:11px;
-  font-weight:600;
+  font-size:10.5px;
+  font-weight:700;
   text-transform:uppercase;
   color:var(--muted);
-  letter-spacing:0.5px;
-  padding:16px 0 8px;
-  border-left:3px solid var(--c);
-  padding-left:12px;
+  letter-spacing:0.09em;
+  padding:18px 0 8px;
   margin-bottom:2px;
 }
 [data-theme="dark"] .group-title{color:var(--muted)}
 
 /* ── API-keys block (static section above the accordions) ── */
 .api-status-block{
-  border:1.5px solid var(--bdr);border-radius:10px;
-  background:linear-gradient(160deg,var(--cl) 0%,var(--card) 60%);
+  border:1px solid var(--bdr);border-radius:var(--r-md);
+  background:var(--card);
   overflow:hidden;
 }
 .api-status-header{
@@ -2281,7 +2716,7 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
   padding:11px 13px;border:none;background:transparent;cursor:pointer;
   font-family:inherit;text-align:left;user-select:none;
 }
-.api-status-header:hover{background:rgba(0,126,140,.05)}
+.api-status-header:hover{background:var(--c-soft)}
 .api-icon{font-size:14px;line-height:1}
 .api-title{flex:0 1 auto;font-size:13px;font-weight:800;color:var(--txt);letter-spacing:-.01em}
 .api-badge{
@@ -2290,7 +2725,7 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 }
 .score-presets{display:flex;gap:6px;margin:4px 0 6px}
 .score-preset{
-  flex:1;padding:7px 4px;border:1.5px solid var(--bdr);border-radius:8px;
+  flex:1;padding:7px 4px;border:1px solid var(--bdr);border-radius:8px;
   background:var(--card);color:var(--sub);font-size:12px;font-weight:700;
   cursor:pointer;font-family:inherit;transition:border-color .12s,background .12s,color .12s;
 }
@@ -2333,7 +2768,7 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 .api-status-body[hidden]{display:none !important}
 .api-status-body .lbl{margin-bottom:5px}
 .btn-save-api{
-  margin-top:10px;padding:9px 12px;border:1.5px solid var(--bdr);border-radius:8px;
+  margin-top:10px;padding:9px 12px;border:1px solid var(--bdr);border-radius:8px;
   background:var(--card);color:var(--sub);font-size:12.5px;font-weight:700;
   cursor:pointer;font-family:inherit;transition:border-color .15s,color .15s,background .15s;
 }
@@ -2423,7 +2858,7 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 
 /* ── Bulk social outreach ── */
 .bulk-panel{
-  margin:10px 15px 0;border:1.5px solid var(--bdr);border-radius:10px;
+  margin:10px 15px 0;border:1px solid var(--bdr);border-radius:var(--r-md);
   background:var(--card);overflow:hidden;flex:0 0 auto;
 }
 .bulk-header{
@@ -2445,19 +2880,19 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 .bulk-row{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--sub);flex-wrap:wrap}
 .bulk-lbl{font-weight:700;color:var(--sub);white-space:nowrap}
 #bulk-social{
-  padding:5px 8px;border:1.5px solid var(--bdr);border-radius:6px;
+  padding:5px 8px;border:1px solid var(--bdr);border-radius:6px;
   font-family:inherit;font-size:12.5px;background:var(--card);color:var(--txt);min-width:200px;
 }
 .bulk-count-group{display:flex;gap:4px;align-items:center}
 .bulk-preset{
-  padding:4px 10px;border:1.5px solid var(--bdr);border-radius:5px;background:var(--card);
+  padding:4px 10px;border:1px solid var(--bdr);border-radius:5px;background:var(--card);
   color:var(--sub);font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;
   transition:background .12s,border-color .12s,color .12s;
 }
 .bulk-preset:hover{border-color:var(--c);color:var(--c)}
 .bulk-preset.active{background:var(--brand);border-color:var(--c);color:var(--on-accent)}
 #bulk-count{
-  width:76px;padding:4px 8px;border:1.5px solid var(--bdr);border-radius:5px;
+  width:76px;padding:4px 8px;border:1px solid var(--bdr);border-radius:5px;
   font-family:inherit;font-size:12.5px;background:var(--card);color:var(--txt);
 }
 .bulk-checks{gap:16px;flex-wrap:wrap}
@@ -2471,7 +2906,7 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 .bulk-open-btn:hover:not(:disabled){filter:brightness(1.06)}
 .bulk-open-btn:disabled{background:var(--bdr);box-shadow:none;cursor:not-allowed;color:var(--tip-txt)}
 .bulk-copy-btn,.bulk-persist-btn{
-  padding:8px 12px;border:1.5px solid var(--bdr);border-radius:7px;background:transparent;
+  padding:8px 12px;border:1px solid var(--bdr);border-radius:7px;background:transparent;
   color:var(--sub);font-size:12.5px;font-weight:600;cursor:pointer;font-family:inherit;
   transition:border-color .12s,color .12s,background .12s;
 }
@@ -2520,7 +2955,7 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 
 /* ── «Только непросмотренные» ── */
 .tbl-filter-btn{
-  padding:5px 11px;border:1.5px solid var(--bdr);border-radius:6px;background:var(--card);
+  padding:5px 11px;border:1px solid var(--bdr);border-radius:6px;background:var(--card);
   color:var(--sub);font-size:11.5px;font-weight:700;cursor:pointer;font-family:inherit;
   transition:background .12s,border-color .12s,color .12s;white-space:nowrap;
 }
@@ -2530,7 +2965,7 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 /* ── File browser (RAW / PROCESSED / ARCHIVE) ── */
 .files-toolbar{display:flex;align-items:center;gap:9px;margin-bottom:15px;flex-wrap:wrap}
 .files-toolbar input{
-  flex:1;min-width:180px;max-width:340px;padding:8px 12px;border:1.5px solid var(--bdr);
+  flex:1;min-width:180px;max-width:340px;padding:8px 12px;border:1px solid var(--bdr);
   border-radius:8px;font-family:inherit;font-size:13px;background:var(--card);color:var(--txt);
   transition:border-color .12s,box-shadow .12s;
 }
@@ -2557,12 +2992,15 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 .history-list{display:grid;gap:10px;min-width:0}
 .file-card{
   display:flex;align-items:center;justify-content:space-between;gap:12px;
-  padding:11px 14px;background:var(--card);border:1.5px solid var(--bdr);border-radius:9px;
+  padding:11px 14px;background:var(--card);border:1px solid var(--bdr);border-radius:var(--r-sm);
   transition:border-color .15s,box-shadow .15s;min-width:0;
 }
-.file-card:hover{border-color:var(--c);box-shadow:0 2px 10px rgba(0,126,140,.12)}
+.file-card:hover{border-color:var(--bdr-h);box-shadow:var(--sh)}
 .file-info{display:flex;align-items:center;gap:11px;min-width:0;flex:1 1 0}
-.file-icon{font-size:22px;flex:0 0 auto}
+/* Значок типа файла — SVG из спрайта: он один на сто с лишним строк списка,
+   и цвет берёт из темы. Эмодзи тут были цветными и разной ширины. */
+.file-icon{flex:0 0 auto;display:inline-flex;color:var(--muted)}
+.file-icon .ico{width:17px;height:17px;margin-right:0}
 .file-text{min-width:0;flex:1 1 0}
 .file-name{
   font-size:12.5px;font-weight:700;color:var(--txt);
@@ -2574,7 +3012,7 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
    The glyphs are inline SVGs with stroke="currentColor", so one `color`
    rule colours them in both themes (emoji ignored the colour entirely). */
 .file-btn{
-  width:34px;height:34px;border:1.5px solid var(--bdr);background:var(--cl);
+  width:34px;height:34px;border:1px solid var(--bdr);background:var(--cl);
   border-radius:8px;cursor:pointer;font-size:16px;line-height:1;
   display:inline-flex;align-items:center;justify-content:center;
   color:var(--sub);
@@ -2585,7 +3023,7 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 .file-btn.danger:hover{background:var(--err-bg);border-color:var(--red);color:var(--red)}
 .links-modal textarea{
   width:100%;min-height:170px;font-family:ui-monospace,Menlo,Consolas,monospace;
-  font-size:12px;line-height:1.6;padding:9px 11px;border:1.5px solid var(--bdr);border-radius:7px;
+  font-size:12px;line-height:1.6;padding:9px 11px;border:1px solid var(--bdr);border-radius:7px;
   background:var(--term);color:var(--txt);resize:vertical;margin-bottom:16px;
 }
 .links-modal .ui-modal-btns{flex-wrap:wrap}
@@ -2612,10 +3050,10 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 .tpl-missing-chk{margin-left:auto;font-size:11.5px;color:var(--sub)}
 .tpl-list{display:flex;flex-direction:column;gap:12px}
 .template-card{
-  background:var(--card);border:1px solid var(--bdr);border-radius:8px;
+  background:var(--card);border:1px solid var(--bdr);border-radius:var(--r-md);
   padding:16px;transition:border-color .15s,box-shadow .15s;
 }
-.template-card:hover{border-color:var(--c);box-shadow:0 2px 8px rgba(0,126,140,.1)}
+.template-card:hover{border-color:var(--bdr-h);box-shadow:var(--sh)}
 .template-head{display:flex;align-items:center;gap:8px;margin-bottom:8px}
 .template-name{font-weight:800;font-size:13.5px;color:var(--txt)}
 .template-cat{
@@ -2646,7 +3084,7 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 .tpl-search{display:flex;align-items:center;gap:10px;margin-bottom:14px}
 .tpl-search input{
   flex:1;min-width:0;padding:8px 12px;font-size:12.5px;font-family:inherit;
-  border:1.5px solid var(--bdr);border-radius:8px;background:var(--field);color:var(--txt);
+  border:1px solid var(--bdr);border-radius:8px;background:var(--field);color:var(--txt);
 }
 .tpl-search input:focus{outline:none;border-color:var(--c);box-shadow:0 0 0 3px var(--focus-ring)}
 .tpl-search-count{font-size:11.5px;font-weight:700;color:var(--muted);white-space:nowrap}
@@ -2666,7 +3104,7 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 .tpl-more-wrap{position:relative;display:inline-flex}
 .tpl-menu{
   position:absolute;top:calc(100% + 4px);right:0;z-index:20;min-width:140px;
-  background:var(--card);border:1px solid var(--bdr);border-radius:8px;box-shadow:var(--sh);
+  background:var(--card);border:1px solid var(--bdr);border-radius:var(--r-sm);box-shadow:var(--sh-lg);
   padding:4px;display:flex;flex-direction:column;
 }
 .tpl-menu[hidden]{display:none}
@@ -2731,16 +3169,16 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 .tpl-text-wrap{position:relative}
 .tpl-ac-box{
   position:absolute;top:calc(100% + 4px);left:0;right:0;z-index:30;
-  background:var(--card);border:1px solid var(--bdr);border-radius:8px;box-shadow:var(--sh);
+  background:var(--card);border:1px solid var(--bdr);border-radius:var(--r-md);box-shadow:var(--sh-lg);
   max-height:240px;overflow:auto;padding:4px;
 }
 .tpl-ac-box[hidden]{display:none}
 .tpl-ac-item{
   display:flex;align-items:center;gap:8px;width:100%;text-align:left;
-  padding:7px 9px;border:none;border-radius:6px;background:transparent;
+  padding:7px 9px;border:none;border-radius:var(--r-sm);background:transparent;
   color:var(--txt);font:inherit;font-size:12px;cursor:pointer;
 }
-.tpl-ac-item:hover,.tpl-ac-item.active{background:var(--c-soft)}
+.tpl-ac-item:hover,.tpl-ac-item.active{background:var(--row-hover)}
 .tpl-ac-item code{color:var(--c);font-weight:700;white-space:nowrap}
 .tpl-ac-label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--sub)}
 .tpl-ac-own{font-size:9.5px;font-weight:800;text-transform:uppercase;color:var(--c);background:var(--c-soft);border-radius:999px;padding:1px 7px}
@@ -2759,16 +3197,16 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 /* Модалка редактирования */
 .tpl-modal-overlay{
   position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;
-  background:rgba(15,23,42,.45);padding:16px;
+  background:var(--scrim);padding:16px;
 }
 .tpl-modal-overlay[hidden]{display:none}
 .tpl-modal{
   width:min(560px,100%);max-height:90vh;overflow:auto;background:var(--card);
-  border:1px solid var(--bdr);border-radius:12px;box-shadow:var(--sh);padding:20px;
+  border:1px solid var(--bdr);border-radius:var(--r-lg);box-shadow:var(--sh-lg);padding:20px;
 }
 .tpl-modal h3{margin:0 0 14px;font-size:15px}
 .tpl-modal input[type=text],.tpl-modal select,.tpl-modal textarea{
-  width:100%;padding:9px 11px;font-size:13px;border:1.5px solid var(--bdr);border-radius:8px;
+  width:100%;padding:9px 11px;font-size:13px;border:1px solid var(--bdr);border-radius:8px;
   background:var(--card);color:var(--txt);font-family:inherit;margin-top:4px;
 }
 .tpl-modal textarea{resize:vertical;min-height:110px;line-height:1.6}
@@ -2873,16 +3311,21 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 [data-theme="dark"] .city-tab{color:var(--sub)}
 [data-theme="dark"] .history-title{color:var(--sub);border-left-color:var(--c)}
 [data-theme="dark"] .file-card{background:var(--card);border-color:var(--bdr)}
-[data-theme="dark"] .file-card:hover{border-color:var(--c);box-shadow:0 2px 12px rgba(20,184,166,.18)}
+/* Тень наведения — общий --glow (сланцевый). Здесь оставался rgba(20,184,166)
+   от бирюзовой темы: единственное место, где hover-тень ушла в зелёно-синий,
+   пока рамка и текст уже были сланцевыми. */
+[data-theme="dark"] .file-card:hover{border-color:var(--c);box-shadow:0 2px 12px var(--glow)}
 [data-theme="dark"] .file-name{color:var(--txt)}
-[data-theme="dark"] .file-btn:hover{background:rgba(20,184,166,.12);border-color:var(--c);color:var(--c)}
+[data-theme="dark"] .file-btn:hover{background:var(--c-soft);border-color:var(--c);color:var(--c)}
 [data-theme="dark"] .file-btn.danger{color:var(--err-txt)}
 [data-theme="dark"] .file-btn.danger:hover{background:rgba(239,68,68,.15);border-color:var(--red);color:var(--red)}
 [data-theme="dark"] .files-toolbar input{background:var(--field);border-color:var(--bdr);color:var(--txt)}
 [data-theme="dark"] .files-toolbar input:focus{border-color:var(--c);box-shadow:0 0 0 3px var(--focus-ring)}
 [data-theme="dark"] .files-badge.raw{background:var(--field);color:var(--sub);border-color:var(--bdr)}
-[data-theme="dark"] .files-badge.processed{background:rgba(16,185,129,.14);color:var(--grn);border-color:rgba(16,185,129,.3)}
-[data-theme="dark"] .files-badge.archive{background:rgba(245,158,11,.14);color:var(--yel);border-color:rgba(245,158,11,.3)}
+/* .files-badge.processed/.archive в тёмной теме больше не переопределяются:
+   светлые правила уже собраны из токенов (--ok-*/--warn-*), а литеральные
+   rgba(16,185,129) и rgba(245,158,11) тянули за собой эмеральд и «янтарь»
+   из старой палитры. */
 [data-theme="dark"] .file-btn{background:var(--panel);border-color:var(--bdr);color:var(--sub)}
 [data-theme="dark"] .file-btn:hover{background:var(--field);border-color:var(--c)}
 [data-theme="dark"] .links-modal textarea{background:var(--term);border-color:var(--bdr);color:var(--txt)}
@@ -2958,7 +3401,7 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 .log-filter{
   display:inline-flex;align-items:center;gap:5px;
   font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;
-  border:1.5px solid var(--bdr);background:var(--card);color:var(--sub);
+  border:1px solid var(--bdr);background:var(--card);color:var(--sub);
   cursor:pointer;font-family:inherit;white-space:nowrap;
   transition:border-color .12s,color .12s,background .12s;
 }
@@ -3036,3 +3479,13 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 [data-theme="dark"] .tpl-var-card{background:var(--panel)}
 [data-theme="dark"] .tpl-ac-box{background:var(--panel)}
 [data-theme="dark"] .tpl-var-kind{background:var(--field)}
+@media(max-width:620px){
+  header{padding:0 12px}
+  header h1{font-size:12.5px}
+  .hdr-right{gap:4px}
+  .hdr-right > button{padding:6px 9px}
+  .hdr-right > button .hdr-lbl{display:none}
+  .hdr-right .ico{width:15px;height:15px}
+  /* Подпись скрыта — кнопка снова только со значком: центрируем без зазора. */
+  .hdr-right .ico{margin-right:0}
+}

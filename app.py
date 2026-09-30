@@ -61,6 +61,7 @@ from routes.sender import bp as sender_bp
 from routes.api   import bp as api_bp
 from routes.public_api import bp as public_api_bp
 from routes.update  import bp as update_bp
+from routes.diagnostics import bp as diagnostics_bp
 
 
 def create_app() -> Flask:
@@ -85,6 +86,8 @@ def create_app() -> Flask:
     app.register_blueprint(api_bp)
     app.register_blueprint(public_api_bp)
     app.register_blueprint(update_bp)
+    # «🩺 Диагностика» — самопроверка по кнопке (только localhost-интерфейс).
+    app.register_blueprint(diagnostics_bp)
     return app
 
 

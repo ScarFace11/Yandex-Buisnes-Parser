@@ -3,9 +3,12 @@ import os
 import io
 import csv
 import json
+import re
 import shutil
 import subprocess
 import sys
+import time
+from datetime import date, datetime, timedelta
 
 from flask import Blueprint, request, Response, send_from_directory, jsonify
 
@@ -58,6 +61,53 @@ def _save_reviewed(data: dict):
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     with open(REVIEWED_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def _mark(key: str, ts: float | None = None) -> dict:
+    """Значение отметки «просмотрено» — с моментом отметки.
+
+    Раньше значением было `true`, и дата отметки нигде не сохранялась: по
+    ней нельзя было построить динамику («сколько просмотрено за день»).
+    Формат — `{"reviewed_at": <unix>}`; старые `true` читаются как раньше
+    (любой непустой объект истинен), просто без даты.
+    """
+    return {"reviewed_at": float(ts if ts is not None else time.time())}
+
+
+def _reviewed_ts(value) -> float:
+    """Момент отметки из значения `_reviewed.json`; 0.0 — даты нет.
+
+    Порядок ключей — от нового формата к переносам из других сборок:
+    `reviewed_at` → `updated_at` (так поле называется в выгрузках) → `at`/`ts`.
+    Легаси-значение `true` даты не несёт, и выдумывать её нельзя: такая
+    отметка в график не попадает.
+    """
+    if isinstance(value, dict):
+        for k in ("reviewed_at", "updated_at", "at", "ts"):
+            try:
+                t = float(value.get(k) or 0)
+            except (TypeError, ValueError):
+                continue
+            if t > 0:
+                return t
+        return 0.0
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value) if value > 0 else 0.0
+    return 0.0
+
+
+def _set_mark(rev: dict, key: str, marked: bool) -> bool:
+    """Пометить/снять отметку. Возвращает True, если состояние изменилось.
+
+    Повторная отметка дату НЕ сдвигает: двойной клик по чекбоксу не должен
+    «переносить» запись из дня первого просмотра в сегодняшний.
+    """
+    if marked:
+        if rev.get(key):
+            return False
+        rev[key] = _mark(key)
+        return True
+    return rev.pop(key, None) is not None
 
 
 GITHUB_REPO = "ScarFace11/Yandex-Buisnes-Parser"
@@ -117,10 +167,7 @@ def set_reviewed():
     if not url:
         return jsonify({"error": "url required"}), 400
     reviewed = _load_reviewed()
-    if state_val:
-        reviewed[url] = True
-    else:
-        reviewed.pop(url, None)
+    _set_mark(reviewed, url, state_val)
     _save_reviewed(reviewed)
     return jsonify({"ok": True})
 
@@ -802,6 +849,298 @@ def _view_files(view: str, scope: str = "current") -> list[str]:
     return [f for f in out if _file_mtime(f) >= since]
 
 
+# ═══════════════════════════════════════════════════════════════
+#  «Динамика по дням» — дашборд вкладки «Статистика»
+# ═══════════════════════════════════════════════════════════════
+
+# Дата в имени raw-файла: raw_2026-09-26_14-30_кафе_москва.xlsx
+_DATE_IN_NAME = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
+# Дата и время в имени raw-файла (имя пишет RunManager в момент старта
+# поиска): час из него — источник почасового графика «Сегодня».
+_DATETIME_IN_NAME = re.compile(r"(\d{4})-(\d{2})-(\d{2})[ _T](\d{2})-(\d{2})")
+
+DAILY_DEFAULT_DAYS = 7
+DAILY_MAX_DAYS = 90        # предел для days=N (сегменты 7/14/30)
+DAILY_MAX_SPAN = 366       # предел для явного периода (с … по …, месяц)
+
+
+def _file_parse_date(path: str) -> str | None:
+    """День, к которому относится файл результатов, в виде YYYY-MM-DD.
+
+    У raw-файлов дата есть прямо в имени. У processed её нет
+    (`кафе_казань_filtered.xlsx`) — такие (и любые скопированные руками)
+    файлы датируются временем изменения: иначе день, за который они собраны,
+    из графика просто выпал бы.
+    """
+    m = _DATE_IN_NAME.search(os.path.basename(path))
+    if m:
+        try:
+            return date(int(m.group(1)), int(m.group(2)), int(m.group(3))).isoformat()
+        except ValueError:
+            pass
+    try:
+        return date.fromtimestamp(os.path.getmtime(path)).isoformat()
+    except (OSError, OverflowError, ValueError):
+        return None
+
+
+def _all_result_files() -> list[str]:
+    """Файлы результатов для графика: raw/, processed/ и архив.
+
+    Архив тоже: файлы прошлых дней переезжают в `_archive/<дата>`, и без них
+    график «забывал» бы вчерашний день сразу после архивации.
+    """
+    out = list(_view_files("all", scope="all"))
+    arch = _archive_root()
+    if os.path.isdir(arch):
+        for dirpath, _dirs, files in os.walk(arch):
+            out.extend(os.path.join(dirpath, f) for f in files if _is_result_file(f))
+    return out
+
+
+def _is_raw_file(path: str) -> bool:
+    """Файл из raw/, а не из processed/ (в архиве путь тоже сохраняется)."""
+    rel = os.path.relpath(path, _results_dir()).replace(os.sep, "/")
+    return "raw" in rel.split("/") or os.path.basename(path).lower().startswith("raw_")
+
+
+def _file_parse_hour(path: str) -> int | None:
+    """Час запуска поиска (0–23) из имени raw-файла; None, если часа нет.
+
+    У processed-файлов времени в имени нет, а mtime — время фильтрации, а не
+    поиска, поэтому почасовой ряд честно строится только по raw: дата и
+    время поиска всегда есть в их имени. 14:01 и 14:50 — оба в колонку «14».
+    """
+    if not _is_raw_file(path):
+        return None
+    m = _DATETIME_IN_NAME.search(os.path.basename(path))
+    if not m:
+        return None
+    try:
+        datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)),
+                 int(m.group(4)), int(m.group(5)))
+    except ValueError:
+        return None
+    return int(m.group(4))
+
+
+def _daily_found_in_window(window: set[str]) -> dict[str, dict]:
+    """Сколько организаций найдено в каждый день окна: {день: {found, files}}.
+
+    raw и processed содержат ОДНИ И ТЕ ЖЕ организации — processed это уже
+    отфильтрованные raw, — поэтому их нельзя складывать: число удвоилось бы.
+    За день отвечают raw-файлы; processed берётся только тогда, когда raw за
+    этот день уже нет (архив, ручная чистка папки). Внутри processed/json и
+    processed/excel лежат два экспорта одних и тех же записей, так что из
+    подпапок берётся большая, а не их сумма.
+    """
+    raw: dict[str, dict] = {}
+    proc: dict[str, dict[str, dict]] = {}
+    for path in _all_result_files():
+        day = _file_parse_date(path)
+        if day is None or day not in window:
+            continue                      # вне окна — файл даже не открываем
+        n = _count_records(path)
+        if not n:
+            continue
+        if _is_raw_file(path):
+            slot = raw.setdefault(day, {"found": 0, "files": 0})
+            slot["found"] += n
+            slot["files"] += 1
+        else:
+            sub = os.path.basename(os.path.dirname(path)) or "processed"
+            slot = proc.setdefault(day, {}).setdefault(sub, {"found": 0, "files": 0})
+            slot["found"] += n
+            slot["files"] += 1
+    out = {d: dict(v) for d, v in raw.items()}
+    for day, subs in proc.items():
+        if day not in out:
+            out[day] = dict(max(subs.values(), key=lambda s: s["found"]))
+    return out
+
+
+def _daily_hours_for_day(day: str) -> list[dict] | None:
+    """Почасовой ряд за один день: 24 корзины {hour, found, files}.
+
+    Считается по raw-файлам этого дня: час берётся из имени
+    (`raw_2026-09-30_14-01_…` → колонка «14»), строки — _count_records.
+    processed-файлы не участвуют: времени поиска у них в имени нет. Дни без
+    единого файла с часом возвращают None — интерфейс рисует обычный
+    дневной столбец, а не пустые сутки.
+    """
+    found: dict[int, dict] = {}
+    seen = 0
+    for path in _all_result_files():
+        if _file_parse_date(path) != day:
+            continue
+        hour = _file_parse_hour(path)
+        if hour is None:
+            continue
+        seen += 1
+        n = _count_records(path)
+        if not n:
+            continue
+        slot = found.setdefault(hour, {"found": 0, "files": 0})
+        slot["found"] += n
+        slot["files"] += 1
+    if not seen:
+        return None
+    return [{"hour": h,
+             "found": found.get(h, {}).get("found", 0),
+             "files": found.get(h, {}).get("files", 0)}
+            for h in range(24)]
+
+
+def _daily_reviewed_in_window(window: set[str]) -> tuple[dict[str, int], int]:
+    """Сколько отметок «просмотрено» сделано в каждый день окна.
+
+    Считаются только отметки с датой (новый формат `_reviewed.json`).
+    Легаси-значения `true` даты не несут — выдумывать её нельзя, поэтому
+    они в графике не участвуют; их число возвращается вторым значением,
+    чтобы интерфейс мог объяснить «просмотрено 0» при сотне отмеченных строк.
+    """
+    out = {d: 0 for d in window}
+    undated = 0
+    for value in _load_reviewed().values():
+        ts = _reviewed_ts(value)
+        if not ts:
+            undated += 1
+            continue
+        try:
+            day = date.fromtimestamp(ts).isoformat()
+        except (OSError, OverflowError, ValueError):
+            continue
+        if day in out:
+            out[day] += 1
+    return out, undated
+
+
+def _iso_day(value) -> date | None:
+    """Дата из строки YYYY-MM-DD; None, если строка пустая или мусорная."""
+    try:
+        return date.fromisoformat(str(value).strip()[:10])
+    except (TypeError, ValueError):
+        return None
+
+
+def _month_start(value) -> date | None:
+    """Первый день месяца из строки YYYY-MM (как её отдаёт <input type=month>)."""
+    m = re.fullmatch(r"(\d{4})-(\d{1,2})", str(value or "").strip())
+    if not m:
+        return None
+    try:
+        return date(int(m.group(1)), int(m.group(2)), 1)
+    except ValueError:
+        return None
+
+
+def _daily_window(days=None, month=None, start=None, end=None) -> tuple[list[str], bool, str]:
+    """Окно графика: список дат, признак обрезки и режим периода.
+
+    Три способа задать период, в порядке приоритета:
+
+    * `start`/`end` — явный диапазон «с … по …» любые даты;
+    * `month` = YYYY-MM — календарный месяц целиком;
+    * `days` = N — последние N дней (переключатель 7/14/30).
+
+    Будущее срезается по сегодняшний день: файлов «за завтра» не бывает, а
+    хвост из нулей растянул бы шкалу на пустые месяцы. Слишком длинный
+    диапазон обрезается сверху (DAILY_MAX_SPAN) и об этом сообщает флаг
+    `truncated`: молча показать не тот период хуже, чем признаться.
+    """
+    today = date.today()
+
+    if start or end:
+        first = _iso_day(start) or today
+        last = _iso_day(end) or today
+        if first > last:                    # перепутанные поля — не ошибка
+            first, last = last, first
+        last = min(last, today)
+        first = min(first, last)
+        truncated = (last - first).days + 1 > DAILY_MAX_SPAN
+        if truncated:
+            first = last - timedelta(days=DAILY_MAX_SPAN - 1)
+        window = [(first + timedelta(days=i)).isoformat()
+                  for i in range((last - first).days + 1)]
+        return window, truncated, "range"
+
+    first = _month_start(month) if month else None
+    if first is not None:
+        # Последний день месяца: 28 + 4 дня гарантированно переезжают в следующий.
+        last = (first.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+        last = max(min(last, today), first)   # месяц ещё не начался — один день
+        window = [(first + timedelta(days=i)).isoformat()
+                  for i in range((last - first).days + 1)]
+        return window, False, "month"
+
+    try:
+        days = int(days)
+    except (TypeError, ValueError):
+        days = DAILY_DEFAULT_DAYS
+    # Мусорный период (0, отрицательный, не число) — это «не задано»:
+    # показать один день или упасть было бы хуже, чем дефолт.
+    if days <= 0:
+        days = DAILY_DEFAULT_DAYS
+    days = min(days, DAILY_MAX_DAYS)
+    window = [(today - timedelta(days=days - 1 - i)).isoformat() for i in range(days)]
+    return window, False, "days"
+
+
+def _daily_series(days=None, month=None, start=None, end=None,
+                  hours=False) -> dict:
+    """Ряд «найдено / просмотрено» по окну периода (с нулями за пустые дни).
+
+    При hours=True и окне в один день (`days=1`) ряд разворачивается в
+    почасовой за сегодня: 24 корзины, где 14:01 и 14:50 попадают в колонку
+    «14». `hours` в ответе — список корзин; если файлы за день не несут
+    часа (только processed, архив с очищенными именами), он None — клиент
+    рисует дневной столбец, а не пустые сутки.
+    """
+    window, truncated, mode = _daily_window(days, month, start, end)
+
+    found = _daily_found_in_window(set(window))
+    reviewed, undated = _daily_reviewed_in_window(set(window))
+    out = {
+        "mode": mode,
+        "days": len(window),
+        "start": window[0],
+        "end": window[-1],
+        "truncated": truncated,
+        "series": [{
+            "date": d,
+            "found": found.get(d, {}).get("found", 0),
+            "files": found.get(d, {}).get("files", 0),
+            "reviewed": reviewed.get(d, 0),
+        } for d in window],
+        "totals": {
+            "found": sum(v.get("found", 0) for v in found.values()),
+            "reviewed": sum(reviewed.values()),
+            "undated": undated,
+        },
+    }
+    if hours and len(window) == 1:
+        out["hours"] = _daily_hours_for_day(window[0])
+    return out
+
+
+@bp.route("/stats/daily")
+def stats_daily():
+    """Дашборд «Динамика по дням» — сколько найдено и просмотрено за день.
+
+    Период задаётся одним из трёх способов: `?days=7`, `?month=2026-09`
+    или `?from=2026-09-01&to=2026-09-30`. `&hours=1` при окне в один день
+    разворачивает его в почасовой ряд за сегодня.
+    """
+    a = request.args
+    return jsonify(_daily_series(
+        days=a.get("days", type=int),
+        month=a.get("month"),
+        start=a.get("from"),
+        end=a.get("to"),
+        hours=a.get("hours", type=int) == 1,
+    ))
+
+
 def _fill_lead_scores(recs: list) -> list:
     """Give every record a lead score, even when its file carries none.
 
@@ -1241,13 +1580,8 @@ def reviewed_batch():
         k = str(k or "").strip()
         if not k:
             continue
-        if state_val:
-            if not reviewed.get(k):
-                changed += 1
-            reviewed[k] = True
-        else:
-            if reviewed.pop(k, None):
-                changed += 1
+        if _set_mark(reviewed, k, state_val):
+            changed += 1
     if changed:
         _save_reviewed(reviewed)
     return jsonify({"ok": True, "changed": changed})

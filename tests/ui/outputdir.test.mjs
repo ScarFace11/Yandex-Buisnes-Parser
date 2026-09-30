@@ -74,10 +74,11 @@ globalThis.postJSON = async (url, body) => {
 globalThis.__calls = [];
 globalThis.__reply = async () => ({});
 
-const fns = ['_setText', 'onOutputAdvancedToggle', 'updateOutputDirHint', 'showOutputDirError',
+const fns = ['escapeHtml', '_setText', 'onOutputAdvancedToggle', 'updateOutputDirHint', 'showOutputDirError',
   'applyOutputDirState', 'loadOutputDir', 'pickOutputDir', 'saveOutputDir', 'resetOutputDir'];
 (0, eval)(fns.map(grab).join('\n'));
 (0, eval)(grabConst('OUT_ADV_KEY'));
+(0, eval)(grabConst('UI_ICONS'));
 
 // Цепочки .then() внутри обработчиков разворачиваются после текущего
 // микротаска — ждём макрозадачу, а не один tick.
@@ -217,7 +218,7 @@ test('a rejected path surfaces an inline error and keeps the old state', async (
   await settle(saveOutputDir);
 
   assert.equal(els['output-dir-err'].hidden, false);
-  assert.match(els['output-dir-err'].textContent, /нет прав/);
+  assert.match(els['output-dir-err'].innerHTML, /нет прав/);
   assert.equal(els['f-output-dir']._classes.has('field-invalid'), true, 'поле подсвечено');
   assert.ok(!toasts.some(t => /обновлена/.test(t.msg)), 'об успехе не сообщаем');
 });
@@ -228,8 +229,8 @@ test('the save button is usable again after failure', async () => {
   await settle(saveOutputDir);
 
   assert.equal(els['btn-output-save'].disabled, false);
-  assert.equal(els['btn-output-save'].textContent, '💾 Сохранить');
-  assert.match(els['output-dir-err'].textContent, /Не удалось сохранить/);
+  assert.match(els['btn-output-save'].innerHTML, /#i-save/);
+  assert.match(els['output-dir-err'].innerHTML, /Не удалось сохранить/);
 });
 
 // ── 4. Обзор и сброс ──────────────────────────────────────────
@@ -242,7 +243,8 @@ test('«📁 Обзор…» asks the server for a folder and fills the field', 
 
   assert.equal(els['f-output-dir'].value, 'C:\\Users\\user\\MyData');
   assert.equal(els['btn-output-browse'].disabled, false);
-  assert.equal(els['btn-output-browse'].textContent, '📁 Обзор…');
+  assert.match(els['btn-output-browse'].innerHTML, /#i-folder/);
+  assert.match(els['btn-output-browse'].innerHTML, /Обзор…/);
   assert.ok(toasts.some(t => /нажмите «Сохранить»/.test(t.msg)), 'выбор ещё не сохранён');
 });
 
@@ -261,7 +263,7 @@ test('a broken dialog explains itself instead of failing silently', async () => 
   await settle(pickOutputDir);
 
   assert.equal(els['output-dir-err'].hidden, false);
-  assert.match(els['output-dir-err'].textContent, /нет дисплея/);
+  assert.match(els['output-dir-err'].innerHTML, /нет дисплея/);
 });
 
 test('«↺ По умолчанию» resets the folder to output/', async () => {

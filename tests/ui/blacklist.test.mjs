@@ -153,6 +153,8 @@ globalThis._pluralRu = (n, one, few, many) => {
   return many;
 };
 
+(0, eval)('globalThis.UI_ICONS = ' + grabConstValue('UI_ICONS') + ';');
+
 (0, eval)([
   grab('escapeHtml'),
   grab('normalizeBlacklist'),
@@ -304,7 +306,7 @@ test('removeBlacklistWord убирает только свой чип', () => {
   assert.deepEqual(globalThis.blacklistWords, ['франшиза', 'сеть']);
   assert.ok(!/vip/.test(els['blacklist-chips'].innerHTML));
   assert.match(els['blacklist-chips'].innerHTML,
-               /removeBlacklistWord\(1\)" onkeydown="onBlacklistChipKey\(event, 1\)">✕<\/span><\/span>$/, 'индексы пересчитаны');
+               /removeBlacklistWord\(1\)" onkeydown="onBlacklistChipKey\(event, 1\)">.*#i-x.*<\/span><\/span>$/, 'индексы пересчитаны');
   globalThis.removeBlacklistWord(9);            // вне диапазона — молча игнорируем
   assert.deepEqual(globalThis.blacklistWords, ['франшиза', 'сеть']);
 });

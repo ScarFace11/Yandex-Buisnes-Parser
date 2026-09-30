@@ -17,22 +17,92 @@
     } catch (e) { /* приватный режим — останемся на светлой */ }
   })();
 </script>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<!-- Шрифт лежит рядом (static/fonts) и подключается из style.css: приложение
+     не должно зависеть от доступности Google Fonts — иначе у части
+     пользователей интерфейс тихо уезжал на системный запасной шрифт. -->
+<!-- Карты: Leaflet лежит рядом (static/vendor/leaflet) и подключается только
+     при открытии вкладки «На карте». Раньше он тянулся с unpkg при каждой
+     загрузке страницы: без интернета вкладка не открывалась вовсе, а 148 КБ
+     библиотеки грузились всем, кто смотрит таблицу. Пути отдаёт Flask —
+     префикс /static не захардкожен в app.js. -->
+<script>
+  window.LEAFLET_ASSETS = {
+    css: "{{ url_for('static', filename='vendor/leaflet/leaflet.css') }}",
+    js: "{{ url_for('static', filename='vendor/leaflet/leaflet.js') }}"
+  };
+</script>
 <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 <body>
+
+<!-- ── Спрайт иконок ────────────────────────────────────────────────
+     Один набор глифов на всю страницу: разметка и app.js берут значки
+     отсюда (`<use href="#i-…">`), поэтому один и тот же значок не может
+     разойтись по толщине и форме между кнопкой в шаблоне и кнопкой,
+     которую собирает JS. Эмодзи для этого не годились: на Windows они
+     цветные и разной ширины, на macOS монохромные, а часть значков
+     (⏸ ⏹ 🔤) на некоторых системах заменялась на другой глиф или
+     пропадала. Контейнер не display:none — так <use> в части браузеров
+     не отрисовывается; прячем размером и overflow. -->
+<svg id="icon-sprite" aria-hidden="true" focusable="false"
+     style="position:absolute;width:0;height:0;overflow:hidden">
+  <symbol id="i-search" viewBox="0 0 24 24"><path d="M11 4.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13z"/><path d="M15.8 15.8 21 21"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20.5 12a8.5 8.5 0 1 1-2.6-6"/><path d="M20.5 4.5V10h-5.5"/></symbol>
+  <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 20V9.5"/><path d="M7.5 14 12 9.5l4.5 4.5"/><path d="M4.5 4h15"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><path d="M9.5 5.5v13"/><path d="M14.5 5.5v13"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M7.5 4.8 19 12 7.5 19.2z"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="1.5"/></symbol>
+  <symbol id="i-code" viewBox="0 0 24 24"><path d="M8.5 8.5 4.5 12l4 3.5"/><path d="M15.5 8.5l4 3.5-4 3.5"/><path d="M13.5 6l-3 12"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24"><path d="M4 12s3-5 8-5 8 5 8 5-3 5-8 5-8-5-8-5z"/><circle cx="12" cy="12" r="2.3"/></symbol>
+  <symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M4 12s3-5 8-5 8 5 8 5-3 5-8 5-8-5-8-5z"/><circle cx="12" cy="12" r="2.3"/><path d="M3.5 3.5l17 17"/></symbol>
+  <symbol id="i-bell" viewBox="0 0 24 24"><path d="M9.5 18a2.5 2.5 0 0 0 5 0"/><path d="M6.5 18h11l-1.3-2.2V11a4.2 4.2 0 0 0-8.4 0v4.8z"/></symbol>
+  <symbol id="i-bell-off" viewBox="0 0 24 24"><path d="M9.5 18a2.5 2.5 0 0 0 5 0"/><path d="M6.5 18h11l-1.3-2.2V11a4.2 4.2 0 0 0-8.4 0v4.8z"/><path d="M3.5 3.5l17 17"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.5 1.5M16.9 16.9l1.5 1.5M18.4 5.6l-1.5 1.5M7.1 16.9l-1.5 1.5"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5z"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5 10 17.5 19 7"/></symbol>
+  <symbol id="i-square" viewBox="0 0 24 24"><rect x="4.5" y="4.5" width="15" height="15" rx="2.5"/></symbol>
+  <symbol id="i-check-square" viewBox="0 0 24 24"><rect x="4.5" y="4.5" width="15" height="15" rx="2.5"/><path d="M8 12.2l2.8 2.8L16.3 9.5"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4.5 7h15"/><path d="M9.5 7V4.8h5V7"/><path d="M6.5 7l1 12.2h9L17.5 7"/><path d="M10.5 10.5v5.5M13.5 10.5v5.5"/></symbol>
+  <symbol id="i-save" viewBox="0 0 24 24"><path d="M6 3.5h8.5L18 7v13.5H6z"/><path d="M14.5 3.5V7H18"/><path d="M9.5 13l1.8 1.8L15 11"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.5 7.5A1.5 1.5 0 0 1 5 6h3.8l1.7 2H19a1.5 1.5 0 0 1 1.5 1.5v7A1.5 1.5 0 0 1 19 18H5a1.5 1.5 0 0 1-1.5-1.5z"/></symbol>
+  <symbol id="i-folder-open" viewBox="0 0 24 24"><path d="M3.5 7.5A1.5 1.5 0 0 1 5 6h3.8l1.7 2H19a1.5 1.5 0 0 1 1.5 1.5V11"/><path d="M3.5 10.5h16l-1.7 7.2a1.5 1.5 0 0 1-1.5 1.1H5.6a1.5 1.5 0 0 1-1.5-1.1z"/></symbol>
+  <symbol id="i-spreadsheet" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M4 10h16M10 10v9"/></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24"><path d="M4 6h16"/><path d="M4 11h16"/><path d="M4 16h10"/></symbol>
+  <symbol id="i-grid" viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M9.3 4v16M14.7 4v16M4 9.3h16M4 14.7h16"/></symbol>
+  <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h9"/><path d="M17 7h3"/><path d="M4 17h3"/><path d="M11 17h9"/><path d="M15 4.5v5"/><path d="M9 14.5v5"/></symbol>
+  <symbol id="i-skip" viewBox="0 0 24 24"><path d="M6 5l7 7-7 7"/><path d="M17 5v14"/></symbol>
+  <symbol id="i-arrow-down" viewBox="0 0 24 24"><path d="M12 5v14"/><path d="M6 13l6 6 6-6"/></symbol>
+  <symbol id="i-map" viewBox="0 0 24 24"><path d="M9 4.5 3.5 6.8v12.7L9 17.2l6 2.3 5.5-2.3V4.5L15 6.8z"/><path d="M9 4.5v12.7"/><path d="M15 6.8v12.7"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M7 3.5h7l4 4v13H7z"/><path d="M14 3.5V8h4"/><path d="M9.8 12.5h4.4M9.8 15.8h4.4"/></symbol>
+  <symbol id="i-text" viewBox="0 0 24 24"><path d="M6 7.5V5.5h12v2"/><path d="M12 5.5v13"/><path d="M9 18.5h6"/></symbol>
+  <symbol id="i-book" viewBox="0 0 24 24"><path d="M4.5 5.5h6a2 2 0 0 1 2 2v11a1.6 1.6 0 0 0-1.6-1.6H4.5z"/><path d="M19.5 5.5h-6a2 2 0 0 0-2 2v11a1.6 1.6 0 0 1 1.6-1.6h6.4z"/></symbol>
+  <symbol id="i-dice" viewBox="0 0 24 24"><rect x="4.5" y="4.5" width="15" height="15" rx="3"/><circle cx="9" cy="9" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="15" cy="15" r="1"/></symbol>
+  <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M5 19h3.2l9.3-9.3-3.2-3.2L5 15.8z"/><path d="M14.6 4.3 16.4 2.5a1.6 1.6 0 0 1 2.3 0l.8.8a1.6 1.6 0 0 1 0 2.3l-1.8 1.8z"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5.5v13M5.5 12h13"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3.5v10"/><path d="M7.5 9 12 13.5 16.5 9"/><path d="M4.5 20h15"/></symbol>
+  <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13.5 3 6 13.5h5L10.5 21 18 10.5h-5z"/></symbol>
+  <symbol id="i-bulb" viewBox="0 0 24 24"><path d="M9.5 17.5h5"/><path d="M10 20.5h4"/><path d="M12 3.5a5.5 5.5 0 0 1 3.2 9.9c-.4.3-.7.8-.7 1.3v.3h-5v-.3c0-.5-.3-1-.7-1.3A5.5 5.5 0 0 1 12 3.5z"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path d="M20.5 3.5 3.5 10.5l6.4 2.6 2.6 6.4z"/><path d="M20.5 3.5 9.9 13.1"/></symbol>
+  <symbol id="i-box" viewBox="0 0 24 24"><path d="M12 3.2 20 7.5v9L12 20.8 4 16.5v-9z"/><path d="M4 7.5 12 11.8l8-4.3"/><path d="M12 11.8v9"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 4.2 21 19.8H3z"/><path d="M12 9.5v4.5"/><path d="M12 17h.01"/></symbol>
+  <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 4h6v6"/><path d="M20 4l-8.5 8.5"/><path d="M18 14.5V19a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h4.5"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></symbol>
+  <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15.5" r="3.4"/><path d="M10.6 13 19.5 4"/><path d="M16.5 6.5 19 9"/><path d="M14.5 8.5 17 11"/></symbol>
+  <symbol id="i-pulse" viewBox="0 0 24 24"><path d="M3 12h3.6l2-5.2 3 11.4 2.4-7.6 1.6 3.4H21"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5"/><path d="M12 8h.01"/></symbol>
+  <symbol id="i-chart" viewBox="0 0 24 24"><path d="M4 20h16"/><path d="M7.5 20v-5.5"/><path d="M12 20V7.5"/><path d="M16.5 20v-9"/></symbol>
+  <symbol id="i-hourglass" viewBox="0 0 24 24"><path d="M7 3.5h10"/><path d="M7 20.5h10"/><path d="M8.2 3.5v3.4L12 11l3.8-4.1V3.5"/><path d="M8.2 20.5v-3.4L12 13l3.8 4.1v3.4"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M19.1 14.6a1.6 1.6 0 0 0 .3 1.8l.1.1a1.9 1.9 0 1 1-2.7 2.7l-.1-.1a1.6 1.6 0 0 0-2.7 1.1v.2a1.9 1.9 0 1 1-3.8 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a1.9 1.9 0 1 1-2.7-2.7l.1-.1a1.6 1.6 0 0 0-1.1-2.7h-.2a1.9 1.9 0 1 1 0-3.8h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a1.9 1.9 0 1 1 2.7-2.7l.1.1a1.6 1.6 0 0 0 2.7-1.1v-.2a1.9 1.9 0 1 1 3.8 0v.1a1.6 1.6 0 0 0 2.7 1.1l.1-.1a1.9 1.9 0 1 1 2.7 2.7l-.1.1a1.6 1.6 0 0 0 1.1 2.7h.2a1.9 1.9 0 1 1 0 3.8h-.1a1.6 1.6 0 0 0-1.5 1z"/></symbol>
+</svg>
 
 <!-- ── Header ── -->
 <header>
   <h1>Поиск клиентов <span class="hdr-sep">·</span> <span class="hdr-src">Яндекс.Карты + 2ГИС</span></h1>
   <div class="hdr-right">
-    {% if DEV_BUILD %}<span id="app-dev" title="Сборка разработчика: авто-обновление отключено, порт 5010">⚙ DEV</span>{% endif %}
+    {% if DEV_BUILD %}<span id="app-dev" title="Сборка разработчика: авто-обновление отключено, порт 5010"><svg class="ico" aria-hidden="true"><use href="#i-gear"/></svg>DEV</span>{% endif %}
     <span id="app-version">v{{ APP_VERSION }}</span>
-    <span id="status-badge">Готово</span>
+    <span id="status-badge" role="status"><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg>Готово</span>
     <div class="notify-wrap">
       <button id="btn-notify" onclick="toggleNotifyPopover(event)" title="Настройки уведомлений"
               aria-haspopup="dialog" aria-expanded="false">
@@ -40,7 +110,7 @@
         <span id="notify-txt">Уведомления</span>
       </button>
       <div class="notify-pop" id="notify-pop" role="dialog" aria-label="Настройки уведомлений" hidden>
-        <div class="notify-pop-title">🔔 Уведомления</div>
+        <div class="notify-pop-title"><svg class="ico" aria-hidden="true"><use href="#i-bell"/></svg>Уведомления</div>
         <div class="notify-row">
           <span class="notify-row-lbl">Уведомления вкл.</span>
           <button type="button" class="tgl on" id="notify-master" role="switch"
@@ -98,10 +168,11 @@
         <div class="notify-hint">Изменения применятся после «Сохранить». Esc или клик вне — отменить.</div>
       </div>
     </div>
-    <button id="btn-theme" onclick="toggleTheme()" title="Сменить тему">Тема</button>
-    <button id="btn-skip" onclick="showSkipConfirm()" style="display:none" title="Пропустить текущий город и перейти к следующему">⏭ Город</button>
-    <button id="btn-logs" onclick="showLogsModal()" title="Подробные логи всех запусков">📜 Логи</button>
-    <button id="btn-updates" onclick="manualUpdateCheck(this)" title="Проверить наличие новой версии на GitHub">🔄 Обновления</button>
+    <button id="btn-theme" onclick="toggleTheme()" title="Сменить тему" aria-label="Сменить тему"><svg class="ico" aria-hidden="true"><use href="#i-moon"/></svg></button>
+    <button id="btn-skip" onclick="showSkipConfirm()" style="display:none" title="Пропустить текущий город и перейти к следующему" aria-label="Пропустить город"><svg class="ico" aria-hidden="true"><use href="#i-skip"/></svg><span class="hdr-lbl">Город</span></button>
+    <button id="btn-logs" onclick="showLogsModal()" title="Подробные логи всех запусков" aria-label="Логи"><svg class="ico" aria-hidden="true"><use href="#i-list"/></svg><span class="hdr-lbl">Логи</span></button>
+    <button id="btn-diag" onclick="showDiagnostics()" title="Проверить ключи, папки и окружение — без чтения логов" aria-label="Диагностика"><svg class="ico" aria-hidden="true"><use href="#i-pulse"/></svg><span class="hdr-lbl">Диагностика</span></button>
+    <button id="btn-updates" onclick="manualUpdateCheck(this)" title="Проверить наличие новой версии на GitHub" aria-label="Обновления"><svg class="ico" aria-hidden="true"><use href="#i-refresh"/></svg><span class="hdr-lbl">Обновления</span></button>
   </div>
 </header>
 
@@ -139,7 +210,7 @@
         <!-- ══ API-ключи (статичный блок, не аккордеон) ══ -->
         <div class="api-status-block" id="api-keys-block">
           <button type="button" class="api-status-header" id="api-keys-toggle" onclick="toggleApiKeys()" aria-expanded="false">
-            <span class="api-icon">⚙️</span>
+            <span class="api-icon"><svg class="ico" aria-hidden="true"><use href="#i-key"/></svg></span>
             <span class="api-title">API-ключи</span>
             <span class="api-badge ok" id="api-status-badge">…</span>
             <span class="api-chev" aria-hidden="true"></span>
@@ -155,7 +226,7 @@
             <input type="password" id="f-vk-token" placeholder="access_token с правами wall, groups, offline" autocomplete="new-password">
             <a class="key-where" href="https://dev.vk.com/" target="_blank" rel="noopener">Получить ключ VK →</a>
             <div class="hint">Ключи подтягиваются из .env автоматически — пустое поле означает «использовать сохранённый»</div>
-            <button class="btn-save-api" id="btn-save-key" onclick="saveApiKeys()" title="Записать ключи в .env — они сохранятся между запусками">💾 Сохранить ключи</button>
+            <button class="btn-save-api" id="btn-save-key" onclick="saveApiKeys()" title="Записать ключи в .env — они сохранятся между запусками"><svg class="ico" aria-hidden="true"><use href="#i-download"/></svg>Сохранить ключи</button>
             <div id="apikey-status"></div>
           </div>
         </div>
@@ -163,9 +234,9 @@
         <!-- ══ Пресеты (статичный блок над настройками) ══ -->
         <div class="preset-block" id="preset-block">
           <div class="preset-block-head">
-            <span class="preset-block-title">💾 Мои пресеты</span>
+            <span class="preset-block-title">Мои пресеты</span>
             <span class="preset-head-actions">
-              <button type="button" class="preset-act-btn" id="preset-reset-btn" onclick="resetToDefaults()" title="Сбросить все настройки формы к значениям по умолчанию">↺ Сброс</button>
+              <button type="button" class="preset-act-btn" id="preset-reset-btn" onclick="resetToDefaults()" title="Сбросить все настройки формы к значениям по умолчанию"><svg class="ico" aria-hidden="true"><use href="#i-refresh"/></svg>Сброс</button>
               <button type="button" class="preset-new-btn" id="preset-new-btn" onclick="openPresetModal()" title="Сохранить текущие настройки как новый пресет">+ Новый</button>
             </span>
           </div>
@@ -180,7 +251,7 @@
         </div>
 
         <!-- ══ Группа: Сбор данных ══ -->
-        <div class="group-title">📥 Сбор данных</div>
+        <div class="group-title">Сбор данных</div>
 
         <!-- ══ 01 · Основные параметры ══ -->
         <section class="acc open" id="acc-basic">
@@ -204,7 +275,7 @@
               <div id="fw-city">
                 <div class="lbl-row">
                   <label class="lbl">Где ищем? <span class="lbl-count" id="city-count" hidden></span></label>
-                  <button type="button" class="clear-all-btn" id="clear-all-btn" onclick="clearAllInputs()" hidden title="Удалить все выбранные города — запросы останутся">🗑 Очистить города</button>
+                  <button type="button" class="clear-all-btn" id="clear-all-btn" onclick="clearAllInputs()" hidden title="Удалить все выбранные города — запросы останутся"><svg class="ico" aria-hidden="true"><use href="#i-trash"/></svg>Очистить города</button>
                 </div>
                 <div id="city-select-box"></div>
                 <div class="hint">Выберите города из списка или введите вручную. Поиск пройдёт по каждому городу последовательно</div>
@@ -287,7 +358,7 @@
               <div class="tech-box">
                 <div class="tech-box-title grid-title-row">
                   <span>Покрытие города</span>
-                  <button type="button" class="grid-wand" id="grid-wand-btn" title="Подобрать оптимальное покрытие: Радиус 20 км, Шаг 5 км">🪄</button>
+                  <button type="button" class="grid-wand" id="grid-wand-btn" title="Подобрать оптимальное покрытие: Радиус 20 км, Шаг 5 км"><svg class="ico" aria-hidden="true"><use href="#i-grid"/></svg></button>
                 </div>
                 <div class="grid-mode-row" id="grid-mode-row">
                   <label class="grid-mode-opt active" data-mode="whole">
@@ -325,7 +396,7 @@
               </div>
 
               <div>
-                <div class="sec">♾ Непрерывный режим</div>
+                <div class="sec">Непрерывный режим</div>
                 <label class="chk"><input type="checkbox" id="f-continue" onchange="onContinueToggle()">
                   Продолжать после последнего города</label>
                 <div class="hint">Когда выбранные города закончатся, поиск автоматически перейдёт к следующим городам из каталога (по населению) — можно отойти, парсер не остановится</div>
@@ -344,7 +415,7 @@
         </section>
 
         <!-- ══ Группа: Вывод и фильтрация ══ -->
-        <div class="group-title">📤 Вывод и фильтрация</div>
+        <div class="group-title">Вывод и фильтрация</div>
 
         <!-- ══ 03 · Фильтрация результата ══ -->
         <section class="acc" id="acc-filters">
@@ -360,12 +431,12 @@
                    непонятно, что к чему относится и где искать действие.
                    Теперь это логические группы с подзаголовками, порядок —
                    от частого к редкому: качество → оценка лида → активность →
-                   обработка. Редкие настройки — в свёрнутом «⚙️ Дополнительно»,
+                   обработка. Редкие настройки — в свёрнутом «Дополнительно»,
                    а «Применить фильтры заново» — в sticky-футере внизу. -->
 
               <!-- ══ 🎯 КАЧЕСТВО: какие организации попадут в отчёт ══ -->
               <div class="flt-group">
-                <div class="flt-group-title">🎯 Качество</div>
+                <div class="flt-group-title">Качество</div>
                 <div class="flt-group-body">
 
                   <div>
@@ -373,11 +444,11 @@
                     <div class="social-mode-bar">
                       <label class="parse-mode-opt active" onclick="setParseMode('without_website')">
                         <input type="radio" name="parse_mode" value="without_website" checked style="display:none">
-                        <span>🚫 Только без сайтов</span>
+                        <span>Только без сайтов</span>
                       </label>
                       <label class="parse-mode-opt" onclick="setParseMode('all')">
                         <input type="radio" name="parse_mode" value="all" style="display:none">
-                        <span>🌐 Все организации</span>
+                        <span>Все организации</span>
                       </label>
                     </div>
                     <div class="hint" id="parse-mode-hint">Фильтр этапа 2: сбор всегда сохраняет все организации, этот фильтр применяется при обработке</div>
@@ -428,7 +499,7 @@
                    (items.org.branch_count / items.dates) и оба консервативны:
                    нет данных — компания остаётся в отчёте. -->
               <div class="flt-group">
-                <div class="flt-group-title">🎯 Тип компании</div>
+                <div class="flt-group-title">Тип компании</div>
                 <div class="flt-group-body">
 
                   <div>
@@ -460,7 +531,7 @@
 
               <!-- ══ 📊 ОЦЕНКА ЛИДА: кому звонить первым ══ -->
               <div class="flt-group">
-                <div class="flt-group-title">📊 Оценка лида</div>
+                <div class="flt-group-title">Оценка лида</div>
                 <!-- Lead score: computed on the raw records before the filters. -->
                 <div class="flt-group-body" id="lead-score-block">
                   <label class="chk"><input type="checkbox" id="f-sort-score" checked>
@@ -470,12 +541,12 @@
                     <button type="button" class="score-preset active" data-score="0" onclick="setMinScore(0)">Все</button>
                     <button type="button" class="score-preset" data-score="35" onclick="setMinScore(35)">≥35</button>
                     <button type="button" class="score-preset" data-score="50" onclick="setMinScore(50)">≥50</button>
-                    <button type="button" class="score-preset" data-score="65" onclick="setMinScore(65)">≥65 🔥</button>
+                    <button type="button" class="score-preset" data-score="65" onclick="setMinScore(65)">≥65</button>
                   </div>
                   <input type="hidden" id="f-min-score" value="0">
                   <div class="hint" id="score-hint">Порог 0: показывать все записи</div>
                   <details class="score-formula">
-                    <summary>ℹ️ Как считается оценка</summary>
+                    <summary>Как считается оценка</summary>
                     <div class="score-formula-body">
                       <div class="sf-row"><span>Нет своего сайта</span><b>+30</b></div>
                       <div class="sf-row"><span>Активный ВКонтакте</span><b>+20</b></div>
@@ -492,7 +563,7 @@
 
               <!-- ══ 🔍 АКТИВНОСТЬ: живой ли ВК-паблик ══ -->
               <div class="flt-group">
-                <div class="flt-group-title">🔍 Активность</div>
+                <div class="flt-group-title">Активность</div>
                 <div class="flt-group-body">
 
                   <!-- VK activity: needs the VK token from the «API-ключи» block.
@@ -536,7 +607,7 @@
 
               <!-- ══ 🔧 ОБРАБОТКА: что делать с найденным ══ -->
               <div class="flt-group">
-                <div class="flt-group-title">🔧 Обработка</div>
+                <div class="flt-group-title">Обработка</div>
                 <div class="flt-group-body">
 
                   <div>
@@ -550,7 +621,7 @@
 
               <!-- ══ 🚫 ИСКЛЮЧИТЬ ПО СЛОВАМ: чёрный список для отчёта ══ -->
               <div class="flt-group">
-                <div class="flt-group-title">🚫 Исключить по словам</div>
+                <div class="flt-group-title">Исключить по словам</div>
                 <div class="flt-group-body">
 
                   <div class="bl-block">
@@ -573,15 +644,15 @@
                       <button type="button" class="bl-dd-btn" id="blacklist-template"
                               onclick="toggleBlacklistDropdown(event)"
                               aria-haspopup="listbox" aria-expanded="false"
-                              aria-label="Загрузить шаблон слов-исключений">📂 Загрузить шаблон</button>
+                              aria-label="Загрузить шаблон слов-исключений"><svg class="ico" aria-hidden="true"><use href="#i-folder"/></svg>Загрузить шаблон</button>
                       <div class="bl-dd-panel" id="blacklist-dd-panel" hidden></div>
                     </div>
                     <div class="hint" id="blacklist-tpl-hint" hidden></div>
                     <div class="bl-actions">
                       <button type="button" class="btn-sm" id="btn-blacklist-save" onclick="openBlacklistSaveModal()"
-                              title="Сохранить текущий список как шаблон — появится в «Загрузить шаблон»">💾 Сохранить список</button>
+                              title="Сохранить текущий список как шаблон — появится в «Загрузить шаблон»"><svg class="ico" aria-hidden="true"><use href="#i-download"/></svg>Сохранить список</button>
                       <button type="button" class="btn-sm danger" id="btn-blacklist-clear" onclick="clearBlacklist()"
-                              title="Убрать все слова-исключения">🗑 Очистить список</button>
+                              title="Убрать все слова-исключения"><svg class="ico" aria-hidden="true"><use href="#i-trash"/></svg>Очистить список</button>
                     </div>
                     <div class="hint" id="blacklist-count">Список пуст — исключений нет</div>
                     <div class="hint">Таблица и файлы обновятся после «Применить фильтры заново».</div>
@@ -592,7 +663,7 @@
 
               <!-- ══ ⚙️ ДОПОЛНИТЕЛЬНО: редкие настройки, свёрнуто по умолчанию ══ -->
               <details class="flt-extra" id="filters-extra">
-                <summary>⚙️ Дополнительно</summary>
+                <summary><svg class="ico" aria-hidden="true"><use href="#i-sliders"/></svg>Дополнительно</summary>
                 <div class="flt-extra-body">
                   <div>
                     <label class="lbl" for="f-chain-key">Правило объединения</label>
@@ -617,7 +688,7 @@
               <!-- Действие живёт в sticky-футере: из-за одиннадцати блоков выше
                    кнопка уезжала за нижнюю кромку и её приходилось искать. -->
               <div class="flt-footer">
-                <button type="button" class="btn-sm" id="btn-refilter" onclick="refilterNow()" title="Применить текущие фильтры к собранным сырым данным — без повторного парсинга">🔄 Применить фильтры заново</button>
+                <button type="button" class="btn-sm" id="btn-refilter" onclick="refilterNow()" title="Применить текущие фильтры к собранным сырым данным — без повторного парсинга"><svg class="ico" aria-hidden="true"><use href="#i-refresh"/></svg>Применить фильтры заново</button>
                 <div class="hint">Без повторного парсинга — по сырым данным</div>
               </div>
 
@@ -649,9 +720,9 @@
                 <label class="lbl" for="f-output-dir">Папка для сохранения результатов</label>
                 <div class="out-dir-row">
                   <input type="text" id="f-output-dir" placeholder="например: D:\\Клиенты" spellcheck="false" autocomplete="off">
-                  <button type="button" class="btn-sm" id="btn-output-browse" onclick="pickOutputDir()" title="Открыть системный диалог выбора папки">📁 Обзор…</button>
-                  <button type="button" class="btn-sm" id="btn-output-save" onclick="saveOutputDir()" title="Проверить путь и сохранить">💾 Сохранить</button>
-                  <button type="button" class="btn-sm" id="btn-output-default" onclick="resetOutputDir()" title="Вернуть папку по умолчанию">↺ По умолчанию</button>
+                  <button type="button" class="btn-sm" id="btn-output-browse" onclick="pickOutputDir()" title="Открыть системный диалог выбора папки"><svg class="ico" aria-hidden="true"><use href="#i-folder"/></svg>Обзор…</button>
+                  <button type="button" class="btn-sm" id="btn-output-save" onclick="saveOutputDir()" title="Проверить путь и сохранить"><svg class="ico" aria-hidden="true"><use href="#i-download"/></svg>Сохранить</button>
+                  <button type="button" class="btn-sm" id="btn-output-default" onclick="resetOutputDir()" title="Вернуть папку по умолчанию"><svg class="ico" aria-hidden="true"><use href="#i-refresh"/></svg>По умолчанию</button>
                 </div>
                 <label class="chk" id="output-adv-chk"><input type="checkbox" id="f-output-advanced" onchange="onOutputAdvancedToggle()">
                   Разные папки для разных этапов</label>
@@ -679,10 +750,10 @@
           <!-- ONE control button: 🚀 Найти → ⏸ Пауза → ▶ Продолжить. The
                separate ⏹ Остановить sits next to it and asks first. -->
           <button id="btn-run" onclick="startRun()">
-              <span id="btn-icon">🚀</span>
+              <span id="btn-icon"><svg class="ico" aria-hidden="true"><use href="#i-search"/></svg></span>
               <span id="btn-txt">Найти компании</span>
           </button>
-          <button id="btn-stop" hidden title="Остановить поиск полностью — спросим подтверждение" aria-label="Остановить поиск">⏹</button>
+          <button id="btn-stop" hidden title="Остановить поиск полностью — спросим подтверждение" aria-label="Остановить поиск"><svg class="ico" aria-hidden="true"><use href="#i-square"/></svg></button>
         </div>
 
       </div>
@@ -693,10 +764,10 @@
   <div class="right-col">
     <!-- Playwright install notice -->
     <div id="playwright-notice" class="playwright-notice" style="display:none">
-      ⚡ <b>Браузер не найден</b> — detail-страницы загружаются медленнее.
+      <svg class="ico" aria-hidden="true"><use href="#i-bolt"/></svg><b>Браузер не найден</b> — detail-страницы загружаются медленнее.
       Установите <code>Google Chrome</code> или запустите:
       <code>pip install playwright && playwright install chromium</code>
-      <button onclick="this.parentElement.style.display='none'">✕</button>
+      <button onclick="this.parentElement.style.display='none'" aria-label="Закрыть"><svg class="ico" aria-hidden="true"><use href="#i-x"/></svg></button>
     </div>
     <div class="tab-bar">
       <button class="tab-btn active" onclick="showTab('log')"    id="t-log"><span class="tab-dot" id="tab-log-dot" hidden></span>Ход поиска</button>
@@ -704,7 +775,7 @@
       <button class="tab-btn"        onclick="showTab('map')"    id="t-map">На карте</button>
       <button class="tab-btn"        onclick="showTab('stats')"  id="t-stats">Статистика</button>
       <button class="tab-btn"        onclick="showTab('history')" id="t-history">История</button>
-      <button class="tab-btn"        onclick="showTab('templates')" id="t-templates">📝 Шаблоны</button>
+      <button class="tab-btn"        onclick="showTab('templates')" id="t-templates"><svg class="ico" aria-hidden="true"><use href="#i-file"/></svg>Шаблоны</button>
       <button class="tab-btn"        onclick="showTab('excel')"  id="t-excel">Форматы вывода</button>
       <button class="tab-btn"        onclick="showTab('sender')" id="t-sender">Отправить в VK</button>
     </div>
@@ -723,10 +794,10 @@
             <button type="button" class="log-filter" data-lfilter="errors" onclick="setLogFilter('errors')" title="Только ошибки и предупреждения">Ошибки<span class="log-filter-count" id="log-err-count" hidden>0</span></button>
             <button type="button" class="log-filter" data-lfilter="tech" onclick="setLogFilter('tech')" title="API-запросы, координаты, время — технические детали">Технические</button>
           </div>
-          <button class="term-clear" id="btn-tech-details" onclick="toggleTechDetails()" title="Показать сырые ошибки API и служебную информацию">🔧 Детали</button>
-          <button class="term-clear" id="btn-log-save" onclick="saveLogFile()" title="Скачать журнал как .log-файл">💾 Сохранить лог</button>
-          <button class="term-clear" id="btn-log-copy" onclick="copyLogText()" title="Скопировать весь журнал в буфер обмена">📋 Копировать</button>
-          <button class="term-clear danger" id="btn-clear-log" onclick="clearLog()" title="Очистить окно лога">🧹 Очистить</button>
+          <button class="term-clear" id="btn-tech-details" onclick="toggleTechDetails()" title="Показать сырые ошибки API и служебную информацию"><svg class="ico" aria-hidden="true"><use href="#i-code"/></svg>Детали</button>
+          <button class="term-clear" id="btn-log-save" onclick="saveLogFile()" title="Скачать журнал как .log-файл"><svg class="ico" aria-hidden="true"><use href="#i-download"/></svg>Сохранить лог</button>
+          <button class="term-clear" id="btn-log-copy" onclick="copyLogText()" title="Скопировать весь журнал в буфер обмена"><svg class="ico" aria-hidden="true"><use href="#i-copy"/></svg>Копировать</button>
+          <button class="term-clear danger" id="btn-clear-log" onclick="clearLog()" title="Очистить окно лога"><svg class="ico" aria-hidden="true"><use href="#i-trash"/></svg>Очистить</button>
         </div>
         <!-- Filter verdict («✅ Ошибок нет») sits where the filter was pressed -->
         <div class="log-empty" id="log-filter-empty" hidden></div>
@@ -769,7 +840,7 @@
         </div>
         <!-- Autoscroll is on until the user scrolls up; this floating button
              brings the tail back and says how many new lines are waiting. -->
-        <button type="button" class="log-jump" id="log-jump" onclick="logJumpToBottom()" hidden>⬇️ К последней строке <span id="log-jump-n">0</span></button>
+        <button type="button" class="log-jump" id="log-jump" onclick="logJumpToBottom()" hidden><svg class="ico" aria-hidden="true"><use href="#i-arrow-down"/></svg>К последней строке <span id="log-jump-n">0</span></button>
       </div>
 
       <!-- TABLE -->
@@ -777,10 +848,10 @@
 
         <!-- Sub-tabs: current results / file history -->
         <div class="results-subtabs" id="results-subtabs">
-          <button class="subt-tab active" data-sub="current" onclick="setResultsSubTab('current')">📊 Текущий результат</button>
-          <button class="subt-tab"        data-sub="history" onclick="setResultsSubTab('history')">📁 История файлов</button>
+          <button class="subt-tab active" data-sub="current" onclick="setResultsSubTab('current')"><svg class="ico" aria-hidden="true"><use href="#i-spreadsheet"/></svg>Текущий результат</button>
+          <button class="subt-tab"        data-sub="history" onclick="setResultsSubTab('history')"><svg class="ico" aria-hidden="true"><use href="#i-folder"/></svg>История файлов</button>
           <span class="subt-spacer"></span>
-          <button class="subt-link" onclick="showTab('sender')" title="Отправлять сообщения автоматически по собранной базе (вкладка «Отправить в VK»)">📨 Автоматическая рассылка</button>
+          <button class="subt-link" onclick="showTab('sender')" title="Отправлять сообщения автоматически по собранной базе (вкладка «Отправить в VK»)"><svg class="ico" aria-hidden="true"><use href="#i-send"/></svg>Автоматическая рассылка</button>
         </div>
 
         <!-- ══ Sub-tab 1: current results ══ -->
@@ -789,7 +860,7 @@
           <!-- Bulk social outreach -->
           <div class="bulk-panel" id="bulk-panel">
             <div class="bulk-header" onclick="toggleBulkPanel()">
-              <span class="bulk-icon">🚀</span>
+              <span class="bulk-icon"><svg class="ico" aria-hidden="true"><use href="#i-code"/></svg></span>
               <span class="bulk-title">Массовый обход</span>
               <span class="bulk-sub" id="bulk-sub">вкладки открываются одной пачкой — отметки «Просмотрено» ставятся сами</span>
               <button class="bulk-collapse" id="bulk-collapse" aria-label="Свернуть">▾</button>
@@ -823,9 +894,9 @@
                 <label class="bulk-chk"><input type="checkbox" id="bulk-mark-viewed" checked> Помечать как просмотренные</label>
               </div>
               <div class="bulk-row bulk-actions">
-                <button class="bulk-open-btn" id="bulk-open-btn" onclick="bulkOpenBatch()" title="Открывает ровно столько вкладок, сколько написано на кнопке. Если браузер заблокировал всплывающие окна — появится подсказка и кнопка «Скопировать ссылки».">🚀 Открыть профили</button>
-                <button class="bulk-copy-btn" id="bulk-copy-btn" onclick="bulkCopyLinks()" title="Браузер блокирует окна? Скопируйте ссылки и откройте их сами">📋 Скопировать ссылки</button>
-                <button class="bulk-persist-btn" id="bulk-persist-btn" onclick="persistReviewedMarks()" title="Отметки записываются в xlsx автоматически — эта кнопка нужна, только чтобы записать их прямо сейчас (не дожидаясь автосохранения)">💾 Сохранить сейчас</button>
+                <button class="bulk-open-btn" id="bulk-open-btn" onclick="bulkOpenBatch()" title="Открывает ровно столько вкладок, сколько написано на кнопке. Если браузер заблокировал всплывающие окна — появится подсказка и кнопка «Скопировать ссылки»."><svg class="ico" aria-hidden="true"><use href="#i-external"/></svg>Открыть профили</button>
+                <button class="bulk-copy-btn" id="bulk-copy-btn" onclick="bulkCopyLinks()" title="Браузер блокирует окна? Скопируйте ссылки и откройте их сами"><svg class="ico" aria-hidden="true"><use href="#i-copy"/></svg>Скопировать ссылки</button>
+                <button class="bulk-persist-btn" id="bulk-persist-btn" onclick="persistReviewedMarks()" title="Отметки записываются в xlsx автоматически — эта кнопка нужна, только чтобы записать их прямо сейчас (не дожидаясь автосохранения)"><svg class="ico" aria-hidden="true"><use href="#i-download"/></svg>Сохранить сейчас</button>
               </div>
               <div class="bulk-stats">Осталось непросмотренных: <b id="unviewed-count">0</b><span id="bulk-stats-note"></span></div>
               <div class="bulk-order" id="bulk-order-note">Порядок: сначала горячие (по оценке)</div>
@@ -834,7 +905,7 @@
               <div class="bulk-progress" id="bulk-progress" hidden>
                 <div class="bulk-progress-bar"><div class="bulk-progress-fill" id="bulk-progress-fill"></div></div>
                 <span class="bulk-progress-txt" id="bulk-progress-txt"></span>
-                <button class="bulk-reset" onclick="resetBulkProgress()" title="Начать обход заново">↺</button>
+                <button class="bulk-reset" onclick="resetBulkProgress()" title="Начать обход заново" aria-label="Начать обход заново"><svg class="ico" aria-hidden="true"><use href="#i-refresh"/></svg></button>
               </div>
               <div class="bulk-warn" id="bulk-warn" hidden></div>
             </div>
@@ -848,15 +919,15 @@
               <button class="rt-btn"        data-view="processed" onclick="setResultsView('processed')">Обработанные</button>
               <button class="rt-btn"        data-view="all"       onclick="setResultsView('all')">Все</button>
             </div>
-            <button id="btn-scope-all" class="tbl-filter-btn" onclick="toggleScopeAll()" title="Показаны только результаты текущего поиска. Нажмите, чтобы увидеть все файлы в папке (прошлые поиски).">☐ Все поиски</button>
-            <input type="text" id="tbl-search" placeholder="🔍  Поиск по таблице…" oninput="filterTable()">
+            <button id="btn-scope-all" class="tbl-filter-btn" onclick="toggleScopeAll()" title="Показаны только результаты текущего поиска. Нажмите, чтобы увидеть все файлы в папке (прошлые поиски)."><svg class="ico" aria-hidden="true"><use href="#i-square"/></svg>Все поиски</button>
+            <input type="text" id="tbl-search" placeholder="Поиск по таблице…" oninput="filterTable()">
             <span class="tbl-count" id="tbl-count"></span>
             <label class="tbl-tpl-wrap" for="tbl-template" title="Шаблон, который подставится при клике по соцсети в таблице">Шаблон:
               <select id="tbl-template" onchange="onTableTemplateChange()"></select>
             </label>
-            <button id="btn-unviewed" class="tbl-filter-btn" onclick="toggleUnviewedOnly()" title="Показать только компании без отметки «Просмотрено»">☐ Непросмотренные</button>
+            <button id="btn-unviewed" class="tbl-filter-btn" onclick="toggleUnviewedOnly()" title="Показать только компании без отметки «Просмотрено»"><svg class="ico" aria-hidden="true"><use href="#i-square"/></svg>Непросмотренные</button>
             <div class="col-toggle-wrap">
-              <button id="btn-cols" onclick="toggleColDropdown(event)">⚙ Столбцы</button>
+              <button id="btn-cols" onclick="toggleColDropdown(event)"><svg class="ico" aria-hidden="true"><use href="#i-sliders"/></svg>Столбцы</button>
               <div id="col-dropdown">
                 <button class="col-all-btn" onclick="setAllCols(true)">Показать все</button>
                 <button class="col-all-btn" onclick="setAllCols(false)">Скрыть все</button>
@@ -866,8 +937,8 @@
             </div>
             <div id="export-sel-wrap">
               <span style="font-size:11px;color:var(--muted);font-weight:700">Выборка:</span>
-              <button class="export-sel-btn" onclick="exportFiltered('xlsx')">📊 Excel</button>
-              <button class="export-sel-btn" onclick="exportFiltered('csv')">📄 CSV</button>
+              <button class="export-sel-btn" onclick="exportFiltered('xlsx')"><svg class="ico" aria-hidden="true"><use href="#i-spreadsheet"/></svg>Excel</button>
+              <button class="export-sel-btn" onclick="exportFiltered('csv')"><svg class="ico" aria-hidden="true"><use href="#i-file"/></svg>CSV</button>
             </div>
           </div>
           <div class="tbl-social-row" id="social-filter-row" style="display:none">
@@ -876,13 +947,13 @@
             <button class="sf-tag" style="background:#C13584" data-key="instagram" onclick="toggleSocialFilter('instagram')">IG</button>
             <button class="sf-tag" style="background:#2CA5E0" data-key="telegram"  onclick="toggleSocialFilter('telegram')">TG</button>
             <button class="sf-tag" style="background:#25D366" data-key="whatsapp"  onclick="toggleSocialFilter('whatsapp')">WA</button>
-            <button class="sf-clear" id="sf-clear-btn" onclick="clearSocialFilters()">✕ сбросить</button>
+            <button class="sf-clear" id="sf-clear-btn" onclick="clearSocialFilters()"><svg class="ico" aria-hidden="true"><use href="#i-x"/></svg>сбросить</button>
           </div>
           <div class="tbl-wrap">
             <table id="results-table">
               <thead>
                 <tr>
-                  <th style="width:32px;text-align:center" title="Просмотрено">✓</th>
+                  <th style="width:32px;text-align:center" title="Просмотрено"><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg></th>
                   <th class="nosort" title="Порядковый номер строки — сортировать нечего">#</th>
                   <th onclick="sortTable(2)">Название</th>
                   <th onclick="sortTable(3)">Категория</th>
@@ -893,7 +964,7 @@
                 </tr>
               </thead>
               <tbody id="tbl-body">
-                <tr><td colspan="7" class="no-data">Запустите парсер для получения результатов</td></tr>
+                <tr><td colspan="8" class="no-data">Запустите парсер для получения результатов</td></tr>
               </tbody>
             </table>
           </div>
@@ -905,7 +976,7 @@
           <!-- Downloads inside table tab -->
           <div id="dl-section">
             <div class="dl-row">
-              <span class="dl-label">📁 Скачать:</span>
+              <span class="dl-label"><svg class="ico" aria-hidden="true"><use href="#i-download"/></svg>Скачать:</span>
               <span id="dl-btns"></span>
             </div>
           </div>
@@ -914,31 +985,31 @@
         <!-- ══ Sub-tab 2: file history ══ -->
         <div id="rs-history" hidden>
           <div class="files-toolbar">
-            <input type="text" id="files-search" placeholder="🔍  Поиск по имени файла…" oninput="onFilesSearchInput()">
+            <input type="text" id="files-search" placeholder="Поиск по имени файла…" oninput="onFilesSearchInput()">
             <span class="files-found" id="files-found"></span>
             <span class="files-count" id="files-count"></span>
-            <button class="btn-sm danger files-bulk-btn" id="btn-files-bulk-delete" hidden onclick="bulkDeleteSelected()">🗑 Удалить выбранные (<span id="files-bulk-n">0</span>)</button>
-            <button class="btn-sm warn files-bulk-arch" id="btn-files-bulk-archive" hidden onclick="bulkArchiveSelected()" title="Убрать выбранные файлы в _archive/ГГГГ-ММ-ДД/ — их можно вернуть">📦 В архив (<span id="files-bulk-arch-n">0</span>)</button>
-            <button class="btn-sm" id="btn-files-bulk-cancel" hidden onclick="clearFileSelection()" title="Снять все галочки">✕ Отменить выбор</button>
-            <button class="btn-sm" onclick="loadFilesPanel(true)">🔄 Обновить</button>
+            <button class="btn-sm danger files-bulk-btn" id="btn-files-bulk-delete" hidden onclick="bulkDeleteSelected()"><svg class="ico" aria-hidden="true"><use href="#i-trash"/></svg>Удалить выбранные (<span id="files-bulk-n">0</span>)</button>
+            <button class="btn-sm warn files-bulk-arch" id="btn-files-bulk-archive" hidden onclick="bulkArchiveSelected()" title="Убрать выбранные файлы в _archive/ГГГГ-ММ-ДД/ — их можно вернуть"><svg class="ico" aria-hidden="true"><use href="#i-box"/></svg>В архив (<span id="files-bulk-arch-n">0</span>)</button>
+            <button class="btn-sm" id="btn-files-bulk-cancel" hidden onclick="clearFileSelection()" title="Снять все галочки"><svg class="ico" aria-hidden="true"><use href="#i-x"/></svg>Отменить выбор</button>
+            <button class="btn-sm" onclick="loadFilesPanel(true)"><svg class="ico" aria-hidden="true"><use href="#i-refresh"/></svg>Обновить</button>
           </div>
           <div class="history-panel">              <div class="history-section">
                 <div class="history-head">
-                  <h3 class="history-title">📁 RAW · сырые данные</h3>
+                  <h3 class="history-title"><svg class="ico" aria-hidden="true"><use href="#i-folder"/></svg>RAW · сырые данные</h3>
                   <!-- Рефильтр живёт и здесь: это раздел сырых файлов, и
                        искать кнопку в аккордеоне настроек не обязательно. -->
-                  <button class="btn-sm" id="btn-refilter-files" onclick="refilterNow()" title="Применить текущие фильтры к собранным сырым файлам — без повторного парсинга">🔄 Применить фильтры заново</button>
+                  <button class="btn-sm" id="btn-refilter-files" onclick="refilterNow()" title="Применить текущие фильтры к собранным сырым файлам — без повторного парсинга"><svg class="ico" aria-hidden="true"><use href="#i-refresh"/></svg>Применить фильтры заново</button>
                 </div>
                 <div class="history-hint">Всё, что собрал парсер, без фильтров. Отсюда работает «Фильтрация результата».</div>
               <div class="history-list" id="history-raw"><div class="no-data">Загрузка…</div></div>
             </div>
             <div class="history-section">
-              <h3 class="history-title">📁 PROCESSED · обработанные</h3>
+              <h3 class="history-title"><svg class="ico" aria-hidden="true"><use href="#i-folder"/></svg>PROCESSED · обработанные</h3>
               <div class="history-hint">Результат применения фильтров — output/processed/{excel,json,csv,html}/.</div>
               <div class="history-list" id="history-processed"><div class="no-data">Загрузка…</div></div>
             </div>
             <div class="history-section">
-              <h3 class="history-title">📁 ARCHIVE · архив</h3>
+              <h3 class="history-title"><svg class="ico" aria-hidden="true"><use href="#i-folder"/></svg>ARCHIVE · архив</h3>
               <div class="history-hint">Сюда попадают файлы, отложенные кнопкой «В архив»: их можно открыть, скачать, вернуть на место (↩) или удалить навсегда.</div>
               <div class="history-list" id="history-archive"><div class="no-data">Загрузка…</div></div>
             </div>
@@ -953,6 +1024,12 @@
 
       <!-- STATS -->
       <div class="tab-panel" id="p-stats">
+        <!-- «Динамика по дням»: собственный контейнер, а не часть #stats-body —
+             блок считается по файлам на диске и должен быть на месте даже до
+             первого поиска, когда #stats-body показывает заглушку.
+             Прокручивается вся панель целиком (см. #p-stats в style.css),
+             чтобы блок уезжал вместе с KPI-карточками. -->
+        <div id="stats-daily"></div>
         <div class="stats-body" id="stats-body">
             <div class="no-data">Запустите поиск, чтобы увидеть понятный обзор результатов.</div>
         </div>
@@ -964,9 +1041,9 @@
           <div class="history-toolbar">
             <h3>История поисков</h3>
             <div class="history-actions">
-              <button class="btn-sm" onclick="loadHistory()">🔄 Обновить</button>
-              <button class="btn-sm danger" onclick="clearAllHistory()" title="Удалить все записи истории поисков">🗑 Очистить историю</button>
-              <button class="btn-sm warn" onclick="clearSeenStore()" title="Сбросить кэш бизнесов — повторно обработать все города">🗑 Очистить кэш</button>
+              <button class="btn-sm" onclick="loadHistory()"><svg class="ico" aria-hidden="true"><use href="#i-refresh"/></svg>Обновить</button>
+              <button class="btn-sm danger" onclick="clearAllHistory()" title="Удалить все записи истории поисков"><svg class="ico" aria-hidden="true"><use href="#i-trash"/></svg>Очистить историю</button>
+              <button class="btn-sm warn" onclick="clearSeenStore()" title="Сбросить кэш бизнесов — повторно обработать все города"><svg class="ico" aria-hidden="true"><use href="#i-trash"/></svg>Очистить кэш</button>
             </div>
           </div>
           <div id="seen-status" class="seen-status" style="display:none"></div>
@@ -981,23 +1058,23 @@
         <div class="tpl-scroll">
         <div class="tpl-wrap">
           <div class="tpl-intro">
-            <h2>📝 Шаблоны сообщений</h2>
+            <h2><svg class="ico" aria-hidden="true"><use href="#i-file"/></svg>Шаблоны сообщений</h2>
             <p>Создавайте шаблоны с переменными. При клике на соцсеть в таблице — текст подставится автоматически. Шаблоны общие для команды и хранятся на сервере.</p>
-            <p class="tpl-intro-hint">💡 Порядок работы: создайте шаблон для нужной соцсети → выберите его в списке «Шаблон» над таблицей →
+            <p class="tpl-intro-hint"><svg class="ico" aria-hidden="true"><use href="#i-bulb"/></svg>Порядок работы: создайте шаблон для нужной соцсети → выберите его в списке «Шаблон» над таблицей →
                кликните по значку соцсети у компании. Текст с подставленными данными скопируется в буфер — вставьте его в открытый чат (Ctrl+V).</p>
           </div>
 
           <!-- Подвкладки: список шаблонов и управление переменными -->
           <div class="tpl-subtabs" role="tablist" aria-label="Раздел вкладки">
-            <button type="button" class="tpl-subtab active" data-subtab="templates" onclick="showTplSubtab('templates')">📄 Шаблоны</button>
-            <button type="button" class="tpl-subtab" data-subtab="vars" onclick="showTplSubtab('vars')">🔤 Переменные</button>
+            <button type="button" class="tpl-subtab active" data-subtab="templates" onclick="showTplSubtab('templates')"><svg class="ico" aria-hidden="true"><use href="#i-file"/></svg>Шаблоны</button>
+            <button type="button" class="tpl-subtab" data-subtab="vars" onclick="showTplSubtab('vars')"><svg class="ico" aria-hidden="true"><use href="#i-text"/></svg>Переменные</button>
           </div>
 
           <div id="tpl-pane-templates">
           <!-- Режим выбора: один шаблон или случайный из набора (per-категория). -->
           <div class="tpl-pick" id="tpl-pick-box">
             <div class="tpl-pick-head">
-              <span class="tpl-pick-title">🎲 Выбор шаблона</span>
+              <span class="tpl-pick-title"><svg class="ico" aria-hidden="true"><use href="#i-dice"/></svg>Выбор шаблона</span>
               <select id="tpl-pick-cat" onchange="onPickCatChange()" aria-label="Категория для режима выбора"></select>
             </div>
             <div class="tpl-pick-modes" role="radiogroup" aria-label="Режим выбора шаблона">
@@ -1013,7 +1090,7 @@
             <div class="tpl-pick-body" id="tpl-pick-body"></div>
             <div class="tpl-pick-count" id="tpl-pick-count"></div>
             <div class="tpl-pick-foot">
-              <button type="button" class="btn-sm ghost" id="btn-tpl-pick-setup" onclick="openPickModal()">⚙️ Настроить выбор</button>
+              <button type="button" class="btn-sm ghost" id="btn-tpl-pick-setup" onclick="openPickModal()"><svg class="ico" aria-hidden="true"><use href="#i-gear"/></svg>Настроить выбор</button>
             </div>
           </div>
 
@@ -1026,12 +1103,12 @@
           </div>
 
           <div class="tpl-toolbar">
-            <button type="button" class="btn-sm" id="btn-tpl-import" onclick="importTemplatesClick()">📂 Импорт</button>
+            <button type="button" class="btn-sm" id="btn-tpl-import" onclick="importTemplatesClick()"><svg class="ico" aria-hidden="true"><use href="#i-folder-open"/></svg>Импорт</button>
             <input type="file" id="tpl-import-file" accept="application/json,.json" hidden onchange="importTemplates(this)">
-            <button type="button" class="btn-sm" id="btn-tpl-export" onclick="exportTemplates()">💾 Экспорт</button>
-            <button type="button" class="btn-sm" id="btn-tpl-reset" onclick="resetTemplates()">🔄 Сброс к стандартным</button>
+            <button type="button" class="btn-sm" id="btn-tpl-export" onclick="exportTemplates()"><svg class="ico" aria-hidden="true"><use href="#i-download"/></svg>Экспорт</button>
+            <button type="button" class="btn-sm" id="btn-tpl-reset" onclick="resetTemplates()"><svg class="ico" aria-hidden="true"><use href="#i-refresh"/></svg>Сброс к стандартным</button>
             <button type="button" class="btn-sm" id="btn-tpl-select-all" onclick="toggleSelectAllTemplates()" hidden>Выделить все</button>
-            <button type="button" class="btn-sm danger" id="btn-tpl-del-selected" onclick="deleteSelectedTemplates()" hidden disabled>🗑 Удалить выбранные</button>
+            <button type="button" class="btn-sm danger" id="btn-tpl-del-selected" onclick="deleteSelectedTemplates()" hidden disabled><svg class="ico" aria-hidden="true"><use href="#i-trash"/></svg>Удалить выбранные</button>
             <label class="chk tpl-missing-chk" title="Если данных для переменной нет — оставить {переменную} как есть вместо «—»">
               <input type="checkbox" id="tpl-show-missing" onchange="onShowMissingChange()">
               Показывать {переменную}, если данных нет
@@ -1039,7 +1116,7 @@
           </div>
 
           <div class="tpl-search">
-            <input type="search" id="tpl-search" placeholder="🔍 Поиск по названию и тексту…" autocomplete="off"
+            <input type="search" id="tpl-search" placeholder="Поиск по названию и тексту…" autocomplete="off"
                    oninput="onTemplateSearch(this.value)">
             <span class="tpl-search-count" id="tpl-search-count" hidden></span>
           </div>
@@ -1052,23 +1129,23 @@
                содержат переменные {name}, {city}, {category}.</p>
             <div class="tpl-empty-btns">
               <button type="button" class="btn-sm" onclick="openTemplateModal()">+ Добавить шаблон</button>
-              <button type="button" class="btn-sm" onclick="resetTemplates()">🔄 Сброс к стандартным</button>
+              <button type="button" class="btn-sm" onclick="resetTemplates()"><svg class="ico" aria-hidden="true"><use href="#i-refresh"/></svg>Сброс к стандартным</button>
             </div>
           </div>
 
           <button type="button" class="tpl-add" id="btn-tpl-add" onclick="openTemplateModal()">+ Добавить шаблон</button>
 
           <div class="tpl-vars">
-            <div class="tpl-vars-title">📖 Доступные переменные:</div>
+            <div class="tpl-vars-title"><svg class="ico" aria-hidden="true"><use href="#i-book"/></svg>Доступные переменные:</div>
             <div class="tpl-var-list" id="tpl-var-list"></div>
-            <button type="button" class="tpl-vars-manage" onclick="showTplSubtab('vars')">⚙️ Управлять переменными</button>
+            <button type="button" class="tpl-vars-manage" onclick="showTplSubtab('vars')"><svg class="ico" aria-hidden="true"><use href="#i-gear"/></svg>Управлять переменными</button>
           </div>
           </div><!-- /tpl-pane-templates -->
 
           <!-- Подвкладка «Переменные»: встроенные и свои переменные шаблонов -->
           <div id="tpl-pane-vars" hidden>
             <div class="tpl-vars-intro">
-              <h3>🔤 Переменные шаблонов</h3>
+              <h3><svg class="ico" aria-hidden="true"><use href="#i-text"/></svg>Переменные шаблонов</h3>
               <p>Переменные подставляются в текст шаблона вместо {фигурных скобок}. Встроенные берутся из данных компании,
                  свои — это готовый текст (подпись, контакты) или значение из столбца таблицы результатов.</p>
               <button type="button" class="btn-sm" onclick="openVarModal()">+ Добавить переменную</button>
@@ -1082,7 +1159,7 @@
         <!-- Модалка настройки случайного выбора -->
         <div class="tpl-modal-overlay" id="tpl-pick-modal" hidden>
           <div class="tpl-modal" role="dialog" aria-modal="true" aria-labelledby="tpl-pick-modal-title">
-            <h3 id="tpl-pick-modal-title">🎲 Случайный выбор шаблонов</h3>
+            <h3 id="tpl-pick-modal-title"><svg class="ico" aria-hidden="true"><use href="#i-dice"/></svg>Случайный выбор шаблонов</h3>
             <label class="lbl" for="tpl-pick-modal-cat">Категория</label>
             <select id="tpl-pick-modal-cat" onchange="onPickModalCatChange()"></select>
             <div class="tpl-hint">Из выбранных шаблонов при каждом клике будет случайно браться один.</div>
@@ -1096,7 +1173,7 @@
             <div class="tpl-pick-modal-hint" id="tpl-pick-modal-hint" hidden></div>
             <div class="ui-modal-btns">
               <button type="button" class="m-cancel" onclick="closePickModal()">Отмена</button>
-              <button type="button" class="m-ok" id="tpl-pick-modal-save" onclick="savePickModal()">💾 Сохранить</button>
+              <button type="button" class="m-ok" id="tpl-pick-modal-save" onclick="savePickModal()"><svg class="ico" aria-hidden="true"><use href="#i-save"/></svg>Сохранить</button>
             </div>
           </div>
         </div>
@@ -1104,7 +1181,7 @@
         <!-- Модалка редактирования -->
         <div class="tpl-modal-overlay" id="tpl-modal" hidden>
           <div class="tpl-modal" role="dialog" aria-modal="true" aria-labelledby="tpl-modal-title">
-            <h3 id="tpl-modal-title">✏️ Редактировать шаблон</h3>
+            <h3 id="tpl-modal-title"><svg class="ico" aria-hidden="true"><use href="#i-pencil"/></svg>Редактировать шаблон</h3>
             <label class="lbl" for="tpl-name">Название</label>
             <input type="text" id="tpl-name" maxlength="120" autocomplete="off">
             <label class="lbl" for="tpl-category">Категория — для какой соцсети шаблон</label>
@@ -1119,18 +1196,18 @@
               <div class="tpl-ac-box" id="tpl-autocomplete" hidden></div>
             </div>
             <div class="tpl-insert-row">
-              <label class="lbl" for="tpl-var-insert">📖 Вставить переменную:</label>
+              <label class="lbl" for="tpl-var-insert"><svg class="ico" aria-hidden="true"><use href="#i-book"/></svg>Вставить переменную:</label>
               <select id="tpl-var-insert" onchange="insertTemplateVariable(this.value)"></select>
             </div>
             <div class="tpl-preview">
-              <div class="tpl-preview-title" id="tpl-preview-title">👁 Превью с данными из первой компании:</div>
+              <div class="tpl-preview-title" id="tpl-preview-title"><svg class="ico" aria-hidden="true"><use href="#i-eye"/></svg>Превью с данными из первой компании:</div>
               <div class="tpl-preview-body" id="tpl-preview-body"></div>
               <div class="tpl-hint" id="tpl-preview-note" hidden></div>
             </div>
             <div class="tpl-modal-err" id="tpl-modal-err" hidden></div>
             <div class="ui-modal-btns">
               <button type="button" class="m-cancel" onclick="closeTemplateModal()">Отмена</button>
-              <button type="button" class="m-ok" onclick="saveTemplateFromModal()">💾 Сохранить</button>
+              <button type="button" class="m-ok" onclick="saveTemplateFromModal()"><svg class="ico" aria-hidden="true"><use href="#i-save"/></svg>Сохранить</button>
             </div>
           </div>
         </div>
@@ -1138,7 +1215,7 @@
         <!-- Модалка переменной (создание/редактирование) -->
         <div class="tpl-modal-overlay" id="tpl-var-modal" hidden>
           <div class="tpl-modal" role="dialog" aria-modal="true" aria-labelledby="tpl-var-modal-title">
-            <h3 id="tpl-var-modal-title">➕ Новая переменная</h3>
+            <h3 id="tpl-var-modal-title"><svg class="ico" aria-hidden="true"><use href="#i-plus"/></svg>Новая переменная</h3>
             <label class="lbl" for="tpl-var-name">Имя переменной</label>
             <div class="tpl-var-name-row"><span class="tpl-var-brace">{</span><input type="text" id="tpl-var-name" maxlength="60" autocomplete="off"><span class="tpl-var-brace">}</span></div>
             <div class="tpl-hint">Буквы, цифры и подчёркивание. Имена встроенных переменных ({name}, {city}…) заняты.</div>
@@ -1161,7 +1238,7 @@
             <div class="tpl-modal-err" id="tpl-var-modal-err" hidden></div>
             <div class="ui-modal-btns">
               <button type="button" class="m-cancel" onclick="closeVarModal()">Отмена</button>
-              <button type="button" class="m-ok" onclick="saveVarFromModal()">💾 Сохранить</button>
+              <button type="button" class="m-ok" onclick="saveVarFromModal()"><svg class="ico" aria-hidden="true"><use href="#i-save"/></svg>Сохранить</button>
             </div>
           </div>
         </div>
@@ -1174,8 +1251,8 @@
           <p class="panel-desc">Отметьте столбцы, которые попадут в итоговый Excel-файл. Скрытые столбцы не записываются в файл. Выбор сохраняется автоматически между запусками.</p>
           <p class="panel-note">Столбец «Сайт» больше не выгружается — в него попадали служебные ссылки со страниц 2ГИС. Ссылка на карточку подставляется по источнику: для 2ГИС это «2ГИС», для Яндекса — «Яндекс.Карты» (пустого столбца-двойника в файле нет).</p>
           <div class="history-actions" style="margin-bottom:12px">
-            <button class="btn-sm" onclick="setAllExcelCols(true)">☑ Выбрать все</button>
-            <button class="btn-sm" onclick="setAllExcelCols(false)">☐ Снять все</button>
+            <button class="btn-sm" onclick="setAllExcelCols(true)"><svg class="ico" aria-hidden="true"><use href="#i-check-square"/></svg>Выбрать все</button>
+            <button class="btn-sm" onclick="setAllExcelCols(false)"><svg class="ico" aria-hidden="true"><use href="#i-square"/></svg>Снять все</button>
             <span id="excel-cols-count" class="panel-note"></span>
           </div>
           <div class="chk-grid" id="excel-cols-grid"></div>
@@ -1221,7 +1298,7 @@
                   </div>
                   <label class="chk sender-random-chk" title="Для каждого сообщения выбирается случайный шаблон из набора, настроенного во вкладке «Шаблоны»">
                     <input type="checkbox" id="s-random-tpl" onchange="onSenderRandomChange()">
-                    🎲 Случайный из выбранных шаблонов
+                    <svg class="ico" aria-hidden="true"><use href="#i-dice"/></svg>Случайный из выбранных шаблонов
                   </label>
                 </div>
                 <div id="fw-send-msg">
@@ -1257,10 +1334,10 @@
 
               <div class="sender-actions">
                   <button id="btn-send-run"  onclick="startSend()">
-                  <span id="send-btn-icon">📨</span>
+                  <span id="send-btn-icon"><svg class="ico" aria-hidden="true"><use href="#i-send"/></svg></span>
                   <span id="send-btn-txt">Отправить сообщения</span>
                 </button>
-                <button id="btn-send-stop" onclick="stopSend()">⏹ Стоп</button>
+                <button id="btn-send-stop" onclick="stopSend()"><svg class="ico" aria-hidden="true"><use href="#i-stop"/></svg>Стоп</button>
               </div>
             </div><!-- sender-cfg-body -->
           </div><!-- sender-config -->

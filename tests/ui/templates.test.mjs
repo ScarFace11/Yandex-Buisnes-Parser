@@ -52,7 +52,11 @@ globalThis.FILE_ACT_ICONS = { delete: '<svg data-icon="trash"></svg>' };
 for (const name of ['TEMPLATE_CATEGORIES', 'TEMPLATE_CAT_LABELS', 'TEMPLATE_MAX_TEXT',
                     'TEMPLATE_MAX_NAME', 'TEMPLATE_VARS', 'TEMPLATE_VAR_FIELD',
                     'TEMPLATE_VAR_ALIASES', 'TEMPLATE_ICONS', 'TEMPLATE_DEMO_COMPANY',
-                    'RESERVED_VAR_NAMES', 'TEMPLATE_MAX_CUSTOM_VARS']) {
+                    'TEMPLATE_SPECIAL_VARS', 'TEMPLATE_GREETING_PARTS',
+                    'TEMPLATE_SPECIAL_LABELS',
+                    'RESERVED_VAR_NAMES', 'TEMPLATE_MAX_CUSTOM_VARS',
+                    'TEMPLATE_MAX_VAR_NAME', 'TEMPLATE_MAX_VAR_VALUE',
+                    'TEMPLATE_MAX_VAR_DESC']) {
   (0, eval)('globalThis.' + name + ' = ' + grabConstValue(name) + ';');
 }
 
@@ -157,6 +161,8 @@ for (const name of Object.keys(INIT_VALUES)) {
   globalThis[name] = typeof v === 'function' ? v() : JSON.parse(JSON.stringify(v));
 }
 
+(0, eval)('globalThis.UI_ICONS = ' + grabConstValue('UI_ICONS') + ';');
+
 (0, eval)([
   grab('escapeHtml'),
   grab('usedVariables'),
@@ -220,6 +226,9 @@ for (const name of Object.keys(INIT_VALUES)) {
   grab('_fmtTemplateDate'),
   grab('onTemplateSearch'),
   grab('updateTemplateSearchCount'),
+  grab('specialTemplateValue'),
+  grab('normalizeCustomVariablesClient'),
+  grab('importCustomVariables'),
   grab('_visibleTemplates'),
   grab('pruneTemplateSelection'),
   grab('toggleTemplateSelected'),
@@ -448,30 +457,30 @@ test('insertTemplateVariable вставляет в позицию курсора
   assert.equal(els['tpl-text'].value, 'Привет, {name}!');
 });
 
-test('saveTemplateFromModal валидирует пустое имя, текст и лимит', () => {
+test('saveTemplateFromModal валидирует пустое имя, текст и лимит', async () => {
   reset();
   globalThis.openTemplateModal();
   els['tpl-text'].value = 'x';
-  assert.equal(globalThis.saveTemplateFromModal(), false);
+  assert.equal(await globalThis.saveTemplateFromModal(), false);
   assert.match(els['tpl-modal-err'].textContent, /название/);
 
   els['tpl-name'].value = 'Новый';
   els['tpl-text'].value = '';
-  assert.equal(globalThis.saveTemplateFromModal(), false);
+  assert.equal(await globalThis.saveTemplateFromModal(), false);
   assert.match(els['tpl-modal-err'].textContent, /текст/);
 
   els['tpl-text'].value = 't'.repeat(globalThis.TEMPLATE_MAX_TEXT + 1);
-  assert.equal(globalThis.saveTemplateFromModal(), false);
+  assert.equal(await globalThis.saveTemplateFromModal(), false);
   assert.match(els['tpl-modal-err'].textContent, /4096/);
 });
 
-test('saveTemplateFromModal запрещает дубликат имени в категории', () => {
+test('saveTemplateFromModal запрещает дубликат имени в категории', async () => {
   reset();
   globalThis.openTemplateModal();
   els['tpl-name'].value = 'VK intro';
   els['tpl-text'].value = 'x';
   els['tpl-category'].value = 'vk';
-  assert.equal(globalThis.saveTemplateFromModal(), false);
+  assert.equal(await globalThis.saveTemplateFromModal(), false);
   assert.match(els['tpl-modal-err'].textContent, /уже есть/);
 });
 
@@ -495,30 +504,30 @@ test('карточка показывает дату обновления', () =
   assert.ok(!/VK benefit[\s\S]{0,400}Обновлено:/.test(html), 'без даты подписи нет');
 });
 
-test('saveTemplateFromModal проставляет updated_at', () => {
+test('saveTemplateFromModal проставляет updated_at', async () => {
   reset();
   globalThis.openTemplateModal('vk1');
   els['tpl-name'].value = 'Обновлённый';
   els['tpl-text'].value = 'Новый текст';
-  assert.equal(globalThis.saveTemplateFromModal(), true);
+  assert.equal(await globalThis.saveTemplateFromModal(), true);
   assert.ok(globalThis.messageTemplates.find(t => t.id === 'vk1').updated_at, 'дата обновления проставлена');
   assert.match(toasts.at(-1).msg, /сохранён/i);
 });
 
-test('saveTemplateFromModal добавляет и редактирует шаблон', () => {
+test('saveTemplateFromModal добавляет и редактирует шаблон', async () => {
   reset();
   globalThis.openTemplateModal();
   els['tpl-name'].value = 'Новый';
   els['tpl-text'].value = 'Привет, {name}';
   els['tpl-category'].value = 'telegram';
-  assert.equal(globalThis.saveTemplateFromModal(), true);
+  assert.equal(await globalThis.saveTemplateFromModal(), true);
   const added = globalThis.messageTemplates.find(t => t.name === 'Новый');
   assert.ok(added && added.category === 'telegram');
 
   globalThis.openTemplateModal('vk1');
   els['tpl-name'].value = 'VK intro 2';
   els['tpl-text'].value = 'Изменённый {name}';
-  assert.equal(globalThis.saveTemplateFromModal(), true);
+  assert.equal(await globalThis.saveTemplateFromModal(), true);
   const edited = globalThis.messageTemplates.find(t => t.id === 'vk1');
   assert.equal(edited.name, 'VK intro 2');
   assert.equal(edited.text, 'Изменённый {name}');
@@ -556,11 +565,12 @@ test('без данных таблицы превью показывает пр�
   globalThis.filteredRows = [];
   els['tpl-text'].value = 'Здравствуйте! Увидел, что у вас {category} в {city}.';
   globalThis.updateTemplatePreview();
-  assert.match(els['tpl-preview-title'].textContent, /пример/i);
+  assert.match(els['tpl-preview-title'].innerHTML, /пример/i);
   assert.match(els['tpl-preview-body'].textContent, /Стоматология в Москва/);
   assert.ok(!/Нет данных таблицы/.test(els['tpl-preview-body'].textContent), 'без категоричной заглушки');
   assert.equal(els['tpl-preview-note'].hidden, false);
-  assert.match(els['tpl-preview-note'].textContent, /пример/i);
+  assert.match(els['tpl-preview-note'].innerHTML, /пример/i);
+  assert.match(els['tpl-preview-note'].innerHTML, /#i-info/, 'пометка «это пример» со значком');
   // Пустой текст — превью тоже пустое, но подсказка остаётся честной.
   els['tpl-text'].value = '';
   globalThis.updateTemplatePreview();
@@ -816,10 +826,10 @@ test('чекбоксы в модалке обновляют счётчик и в
   globalThis.openPickModal();
   assert.equal(els['tpl-pick-modal'].hidden, false);
   assert.equal(els['tpl-pick-modal-save'].disabled, true, '0 выбранных — Save off');
-  assert.match(els['tpl-pick-modal-count'].textContent, /Выбрано: 0 из 2/);
+  assert.match(els['tpl-pick-modal-count'].innerHTML, /Выбрано: 0 из 2/);
   globalThis.onPickModalToggle('vk1');
   globalThis.onPickModalToggle('vk2');
-  assert.match(els['tpl-pick-modal-count'].textContent, /Выбрано: 2 из 2/);
+  assert.match(els['tpl-pick-modal-count'].innerHTML, /Выбрано: 2 из 2/);
   assert.equal(els['tpl-pick-modal-save'].disabled, false);
   assert.equal(els['tpl-pick-modal-hint'].hidden, true);
   // Один шаблон — предупреждение, но Save доступен.
@@ -891,7 +901,7 @@ test('выделение шаблонов обновляет кнопку мас
   assert.equal(els['btn-tpl-del-selected'].hidden, true);
   globalThis.toggleTemplateSelected('vk1', true);
   assert.equal(els['btn-tpl-del-selected'].hidden, false);
-  assert.match(els['btn-tpl-del-selected'].textContent, /\(1\)/);
+  assert.match(els['btn-tpl-del-selected'].innerHTML, /\(1\)/);
   globalThis.toggleTemplateSelected('vk1', false);
   assert.equal(els['btn-tpl-del-selected'].hidden, true);
 });
@@ -1070,4 +1080,85 @@ test('onTemplateTextKeydown: Enter вставляет выбранный вар�
   globalThis.onTemplateTextInput();
   globalThis.onTemplateTextKeydown({ key: 'Escape', preventDefault: () => {} });
   assert.equal(els['tpl-autocomplete'].hidden, true);
+});
+
+// ── Служебные переменные ──────────────────────────────────
+test('specialTemplateValue: дата/время/приветствие вычисляются в момент подстановки', () => {
+  reset();
+  const p = n => String(n).padStart(2, '0');
+  const now = new Date();
+  assert.equal(globalThis.specialTemplateValue('дата'),
+    p(now.getDate()) + '.' + p(now.getMonth() + 1) + '.' + now.getFullYear());
+  assert.equal(globalThis.specialTemplateValue('время'),
+    p(now.getHours()) + ':' + p(now.getMinutes()));
+  // Приветствие по часу — одна из четырёх форм.
+  assert.ok(['Доброй ночи', 'Доброе утро', 'Добрый день', 'Добрый вечер']
+    .includes(globalThis.specialTemplateValue('приветствие')));
+  assert.equal(globalThis.specialTemplateValue('нет-такой'), '');
+});
+
+test('substituteTemplate подставляет служебные переменные', () => {
+  reset();
+  const out = globalThis.substituteTemplate('{приветствие}! Сегодня {дата}, {время}.', {});
+  const p = n => String(n).padStart(2, '0');
+  const now = new Date();
+  assert.ok(out.endsWith(p(now.getDate()) + '.' + p(now.getMonth() + 1) + '.' + now.getFullYear()
+    + ', ' + p(now.getHours()) + ':' + p(now.getMinutes()) + '.'));
+  assert.match(out, /^(Доброй ночи|Доброе утро|Добрый день|Добрый вечер)!/);
+});
+
+test('allTemplateVars содержит служебные и они заняты для своих', () => {
+  reset();
+  const keys = globalThis.allTemplateVars().map(v => v.key);
+  for (const k of globalThis.TEMPLATE_SPECIAL_VARS) assert.ok(keys.includes(k), k);
+  assert.equal(globalThis.isValidVarName('дата'), false);
+});
+
+// ── Экспорт/импорт своих переменных ────────────────────────
+test('normalizeCustomVariablesClient: лимиты, резерв, дедуп, мусор', () => {
+  reset();
+  const out = globalThis.normalizeCustomVariablesClient([
+    { name: 'подпись', value: 'Иван', column: '', description: 'ok' },
+    { name: 'name', value: 'встроенная — вон' },
+    { name: 'дата', value: 'служебная — вон' },
+    { name: 'ПОДПИСЬ', value: 'дубль без регистра' },
+    { name: 'плохое имя', value: 'пробел' },
+    { name: 'пустая', value: '', column: '' },
+    'мусор',
+    { name: 'город', column: 'city' },
+  ]);
+  assert.deepEqual(out.map(v => v.name), ['подпись', 'город']);
+  assert.equal(out[1].value, '');
+});
+
+test('importCustomVariables: новые добавляются, конфликты — через uiChoose', async () => {
+  reset();
+  globalThis.customVariables = [{ name: 'подпись', value: 'СТАРАЯ', column: '', description: '' }];
+  let asked = 0;
+  const prevChoose = globalThis.uiChoose;
+  globalThis.uiChoose = async () => { asked++; return { value: 'replace', applyAll: true }; };
+  const r = await globalThis.importCustomVariables([
+    { name: 'подпись', value: 'НОВАЯ', column: '', description: '' },
+    { name: 'телефон', value: '+7 900', column: '', description: '' },
+  ]);
+  globalThis.uiChoose = prevChoose;
+  assert.equal(asked, 1, 'один вопрос на конфликт');
+  assert.equal(r.added, 1);
+  assert.equal(r.replaced, 1);
+  const upd = globalThis.customVariables.find(v => v.name === 'подпись');
+  assert.equal(upd.value, 'НОВАЯ');
+  assert.ok(globalThis.customVariables.some(v => v.name === 'телефон'));
+});
+
+test('importCustomVariables: пропуск не меняет существующую', async () => {
+  reset();
+  globalThis.customVariables = [{ name: 'подпись', value: 'СТАРАЯ', column: '', description: '' }];
+  const prevChoose = globalThis.uiChoose;
+  globalThis.uiChoose = async () => ({ value: 'skip', applyAll: false });
+  const r = await globalThis.importCustomVariables([
+    { name: 'подпись', value: 'НОВАЯ', column: '', description: '' },
+  ]);
+  globalThis.uiChoose = prevChoose;
+  assert.equal(r.skipped, 1);
+  assert.equal(globalThis.customVariables.find(v => v.name === 'подпись').value, 'СТАРАЯ');
 });

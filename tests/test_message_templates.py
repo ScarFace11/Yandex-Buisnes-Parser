@@ -288,6 +288,45 @@ class TestSubstituteCustom:
         assert mt.substitute("{пустая}", {}, True, custom_variables=self.CVARS) == "{пустая}"
 
 
+class TestSubstituteSpecial:
+    """Служебные переменные: вычисляются в момент подстановки."""
+
+    def test_date_and_time_formats(self):
+        import yandex_maps_parser.message_templates as mt
+        from datetime import datetime
+
+        out = mt.substitute("{дата}|{время}", {})
+        now = datetime.now()
+        assert out == now.strftime("%d.%m.%Y") + "|" + now.strftime("%H:%M")
+
+    def test_greeting_by_hour(self):
+        import yandex_maps_parser.message_templates as mt
+        from datetime import datetime
+
+        hour = datetime.now().hour
+        expected = ("Доброй ночи" if hour < 5
+                    else "Доброе утро" if hour < 12
+                    else "Добрый день" if hour < 18
+                    else "Добрый вечер" if hour < 22
+                    else "Доброй ночи")
+        assert mt.substitute("{приветствие}!", {}) == expected + "!"
+
+    def test_specials_are_reserved(self):
+        import yandex_maps_parser.message_templates as mt
+
+        out = mt.normalize_custom_variables([
+            {"name": "дата", "value": "x"},
+            {"name": "приветствие", "value": "x"},
+        ])
+        assert out == []
+
+    def test_custom_overrides_special(self):
+        import yandex_maps_parser.message_templates as mt
+
+        cvars = [{"name": "дата", "column": "", "value": "своё"}]
+        assert mt.substitute("{дата}", {}, custom_variables=cvars) == "своё"
+
+
 # ── API ──────────────────────────────────────────────────────
 # ── Случайный выбор шаблонов ─────────────────────────────────
 class TestPickModes:

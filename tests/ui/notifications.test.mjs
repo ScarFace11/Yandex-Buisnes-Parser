@@ -64,9 +64,11 @@ function mkEl(id) {
     setAttribute: (k, v) => { attrs[k] = String(v); },
     getAttribute: k => (k in attrs ? attrs[k] : null),
     // Как в DOM: <select>.innerHTML = '' действительно убирает опции —
-    // именно на это рассчитывает _fillSoundSelect().
+    // именно на это рассчитывает _fillSoundSelect(). Геттер поэтому всегда
+    // пустой, а последнюю запись видно в _lastHTML (значки кнопок — SVG).
     get innerHTML() { return ''; },
-    set innerHTML(v) { if (v === '') el.children.length = 0; },
+    set innerHTML(v) { el._lastHTML = String(v); if (v === '') el.children.length = 0; },
+    _lastHTML: '',
     _focused: false,
     focus() { el._focused = true; },
     contains: () => false,
@@ -162,6 +164,7 @@ globalThis.window.Notification = globalThis.Notification;
 
 // ── Slice the code under test ────────────────────────────────
 const fns = [
+  'escapeHtml',
   '_notifyFlag', 'loadNotifySettings', 'saveNotifySettings', '_syncNotifyGlobals',
   'notifyAllowed', 'notifyState', 'notifyStateLabel', 'notifyStateTitle',
   'updateNotifyBtn', '_renderNotifyPermHint', 'sendNotification', 'fmtDuration',
@@ -180,7 +183,8 @@ const fns = [
 // объявлены через const и в node-тесте по имени не видны.
 (0, eval)(fns.map(grab).join('\n') + '\n'
   + ['NOTIFY_KEY', 'NOTIFY_DEFAULTS', 'VOLUME_DEFAULT', 'SOUND_DEFAULTS',
-     'SOUND_PRESETS'].map(grabConst).join('\n')
+     // Значок колокольчика рисует UI_ICONS (SVG), поэтому он тоже нужен.
+     'SOUND_PRESETS', 'UI_ICONS'].map(grabConst).join('\n')
   + '\nglobalThis.__consts = { SOUND_PRESETS, SOUND_DEFAULTS, VOLUME_DEFAULT };\n');
 const PRESETS = globalThis.__consts.SOUND_PRESETS;
 const SOUND_DEFAULTS = globalThis.__consts.SOUND_DEFAULTS;
@@ -355,15 +359,16 @@ test('иконка и подпись кнопки обновляются, «за
   reset('denied');
   notifySettings = { enabled: true, city_complete: true, search_complete: false };
   updateNotifyBtn();
-  assert.equal(els['notify-icon'].textContent, '🔔');
-  assert.match(els['notify-txt'].textContent, /Уведомления: города/);
-  assert.match(els['notify-txt'].textContent, /⚠/);
+  assert.match(els['notify-icon']._lastHTML, /<svg class="ico"/);
+  assert.doesNotMatch(els['notify-icon']._lastHTML, /#i-bell-off/, 'колокольчик, а не перечёркнутый');
+  assert.match(els['notify-txt']._lastHTML, /Уведомления: города/);
+  assert.match(els['notify-txt']._lastHTML, /#i-warn/, 'предупреждение — значок, а не эмодзи');
   assert.equal(els['btn-notify']._classes.has('denied'), true);
   assert.match(els['btn-notify'].title, /Города: вкл · Поиск: выкл/);
 
   notifySettings = { enabled: false, city_complete: true, search_complete: true };
   updateNotifyBtn();
-  assert.equal(els['notify-icon'].textContent, '🔕');
+  assert.match(els['notify-icon']._lastHTML, /#i-bell-off/, 'выключено — колокольчик перечёркнут');
 });
 
 test('подсказка про разрешение объясняет, что звук работает и без окон', () => {

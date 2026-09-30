@@ -448,10 +448,21 @@ class TestReviewedBatch:
         keys = ["https://ya.ru/1", "https://ya.ru/2"]
         d = client.post("/reviewed/batch", json={"keys": keys, "reviewed": True}).get_json()
         assert d == {"ok": True, "changed": 2}
-        assert client.get("/reviewed").get_json() == {"https://ya.ru/1": True, "https://ya.ru/2": True}
+        # Значение отметки теперь несёт дату: по ней строится «Динамика по дням».
+        saved = client.get("/reviewed").get_json()
+        assert set(saved) == set(keys)
+        assert all(v["reviewed_at"] > 0 for v in saved.values())
         d2 = client.post("/reviewed/batch", json={"keys": keys, "reviewed": False}).get_json()
         assert d2["changed"] == 2
         assert client.get("/reviewed").get_json() == {}
+
+    def test_remark_keeps_the_original_date(self, client):
+        """Повторная отметка не сдвигает день: двойной клик не переносит
+        запись из дня первого просмотра в сегодняшний."""
+        client.post("/reviewed/batch", json={"keys": ["k1"], "reviewed": True})
+        first = client.get("/reviewed").get_json()["k1"]["reviewed_at"]
+        client.post("/reviewed/batch", json={"keys": ["k1"], "reviewed": True})
+        assert client.get("/reviewed").get_json()["k1"]["reviewed_at"] == first
 
     def test_idempotent_repeat(self, client):
         client.post("/reviewed/batch", json={"keys": ["k1"], "reviewed": True})

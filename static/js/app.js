@@ -160,7 +160,7 @@ function showFieldError(wrapEl, msg) {
     err.className = 'field-error';
     wrapEl.appendChild(err);
   }
-  err.textContent = '⚠ ' + msg;
+  err.innerHTML = UI_ICONS.warn + escapeHtml(msg);
 }
 
 function clearFieldError(wrapEl) {
@@ -203,7 +203,7 @@ function showToast(message, type) {
   const toast = document.createElement('div');
   toast.className = 'toast ' + (type || 'success');
   const ok = (type || 'success') !== 'error';
-  toast.innerHTML = `<span class="t-ico">${ok ? '✓' : '✕'}</span><span>${escapeHtml(message)}</span>`;
+  toast.innerHTML = `<span class="t-ico">${ok ? UI_ICONS.check : UI_ICONS.x}</span><span>${escapeHtml(message)}</span>`;
   cont.appendChild(toast);
   requestAnimationFrame(() => requestAnimationFrame(() => toast.classList.add('show')));
   const hide = () => {
@@ -498,7 +498,8 @@ function onGridSlider() {
   hint.classList.remove('sparse', 'dense', 'dense2', 'ok', 'warn');
   if (tone) hint.classList.add(tone);
   const recTxt = `Рекомендуемое соотношение: 1:4 · Текущее: ${s} : ${r}`;
-  const line1 = `<span class="hint-state">${tone === 'ok' ? '✅ ' : tone === 'sparse' ? '⚠️ ' : 'ℹ️ '}${stateTxt}</span>`
+  const toneIcon = tone === 'ok' ? UI_ICONS.check : tone === 'sparse' ? UI_ICONS.warn : UI_ICONS.info;
+  const line1 = `<span class="hint-state">${toneIcon}${stateTxt}</span>`
     + ` <span class="hint-rec">${recTxt}</span>`;
   const forecast = `Прогноз: ~${tokFmt(cells)} ${tokWord(cells)}, ~${tokFmt(tokens)} запросов к API`
     + ` (~${tokFmt(tokens * 10)} организаций, ${tokenPct}% бесплатного тарифа)`;
@@ -655,7 +656,7 @@ function initCitySelect() {
   inp.autocomplete = 'off';
   const clr = document.createElement('button');
   clr.className = 'city-clear';
-  clr.textContent = '✕';
+  clr.innerHTML = UI_ICONS.x;
   clr.onclick = (e) => {
     e.preventDefault();
     citySearchText = '';
@@ -744,7 +745,7 @@ function renderCityTags() {
   const tagsRow = document.getElementById('city-tags-row');
   if (!tagsRow) return;
   tagsRow.innerHTML = selectedCities.map((c, i) =>
-    `<span class="city-tag">${c}<span class="city-tag-x" onclick="removeCity(${i})">✕</span></span>`
+    `<span class="city-tag">${c}<span class="city-tag-x" role="button" aria-label="Убрать город" onclick="removeCity(${i})">${UI_ICONS.x}</span></span>`
   ).join('');
   // Update placeholder
   const inp = document.getElementById('f-city-input');
@@ -849,7 +850,7 @@ function setRunBtnActive() {
   btn.classList.remove('run-paused');
   btn.classList.add('run-active');
   const icon = document.getElementById('btn-icon');
-  if (icon) icon.textContent = '⏸';
+  if (icon) icon.innerHTML = UI_ICONS.pause;
   const txt = document.getElementById('btn-txt');
   if (txt) txt.textContent = 'Пауза';
   const stopBtn = document.getElementById('btn-stop');
@@ -864,7 +865,7 @@ function pauseRun() {
   if (btn) {
     btn.disabled = true;
     // Город добивается до конца (graceful): кнопка честно говорит об этом.
-    if (txt) txt.textContent = '⏳ Завершаем город…';
+    if (txt) txt.innerHTML = UI_ICONS.busy + 'Завершаем город…';
   }
   const backToIdle = () => {
     // Нечего было паузить (запуск уже завершился) — иначе кнопка висела бы
@@ -954,11 +955,11 @@ function enterPausedState(resume) {
   const stopBtn = document.getElementById('btn-stop');
   if (stopBtn) { stopBtn.hidden = false; stopBtn.disabled = false; stopBtn.onclick = stopPausedRun; }
   const icon = document.getElementById('btn-icon');
-  if (icon) icon.textContent = '▶';
+  if (icon) icon.innerHTML = UI_ICONS.play;
   const txt = document.getElementById('btn-txt');
   if (txt) txt.textContent = 'Продолжить поиск';
   setRunIndicator(false);
-  setStatus('paused', '⏸ Пауза');
+  setStatus('paused', 'Пауза');
   if (posTxt) {
     appendLog('info', '  📍 ' + posTxt + quotaTxt);
   }
@@ -1140,10 +1141,10 @@ let _blAnimateWords = new Set();     // слова, которые надо ан
 // Шаблоны — готовые наборы слов под частые задачи. Добавляются К текущему
 // списку (не заменяют его), поэтому два шаблона складываются в один.
 const BLACKLIST_TEMPLATES = {
-  franchise:   {label: '🏪 Франшизы и сети',        words: ['франшиза', 'франчайзи', 'филиал', 'сеть']},
-  gov:         {label: '🏛 Госсектор',              words: ['администрация', 'министерство', 'мфц', 'гбу', 'муп']},
-  marketplace: {label: '📦 Маркетплейсы и ПВЗ',     words: ['пункт выдачи', 'пвз', 'wildberries', 'ozon']},
-  delivery:    {label: '🛵 Доставка и тёмные кухни', words: ['доставка', 'тёмная кухня', 'dark kitchen']},
+  franchise:   {label: 'Франшизы и сети',        words: ['франшиза', 'франчайзи', 'филиал', 'сеть']},
+  gov:         {label: 'Госсектор',              words: ['администрация', 'министерство', 'мфц', 'гбу', 'муп']},
+  marketplace: {label: 'Маркетплейсы и ПВЗ',     words: ['пункт выдачи', 'пвз', 'wildberries', 'ozon']},
+  delivery:    {label: 'Доставка и тёмные кухни', words: ['доставка', 'тёмная кухня', 'dark kitchen']},
 };
 
 // Сохранённые списки: {version, lists:[{name, words, updated_at}]}.
@@ -1195,11 +1196,13 @@ function fillBlacklistTemplateSelect() {
           + ' <span class="bl-dd-n">(' + l.words.length + ')</span></button>'
           + '<span class="bl-dd-actions">'
           + '<button type="button" class="bl-tpl-act" data-act="edit" title="Перезаписать этот список текущими словами"'
-          + ' aria-label="Перезаписать список «' + escapeHtml(l.name) + '»">✎</button>'
+          + ' aria-label="Перезаписать список «' + escapeHtml(l.name) + '»">'
+          + UI_ICONS.pencil + '</button>'
           + '<button type="button" class="bl-tpl-act bl-tpl-del" data-act="del" title="Удалить сохранённый список"'
-          + ' aria-label="Удалить список «' + escapeHtml(l.name) + '»">✕</button>'
+          + ' aria-label="Удалить список «' + escapeHtml(l.name) + '»">'
+          + UI_ICONS.x + '</button>'
           + '</span></div>').join('')
-      : '<div class="bl-dd-empty">Пока нет сохранённых списков — «💾 Сохранить список» создаст первый</div>')
+      : '<div class="bl-dd-empty">Пока нет сохранённых списков — «Сохранить список» создаст первый</div>')
     + '<div class="bl-dd-note">Шаблон добавляется к списку, а не заменяет его</div>';
   renderBlacklistListManage(saved);
 }
@@ -1269,10 +1272,10 @@ function openBlacklistSaveModal() {
       <h3>Сохранить список</h3>
       <p>В шаблон войдут текущие слова: ${blacklistWords.length} ${_pluralRu(blacklistWords.length, 'слово', 'слова', 'слов')}.</p>
       <input type="text" id="blacklist-list-name" maxlength="${BLACKLIST_LIST_NAME_MAX}" placeholder="Например: Франшизы и сети" autocomplete="off">
-      <div class="preset-modal-meta">Появится в «📂 Загрузить шаблон» → «Мои списки»</div>
+      <div class="preset-modal-meta">Появится в «Загрузить шаблон» → «Мои списки»</div>
       <div class="ui-modal-btns">
         <button type="button" class="m-cancel">Отмена</button>
-        <button type="button" class="m-ok">💾 Сохранить</button>
+        <button type="button" class="m-ok">${UI_ICONS.save}Сохранить</button>
       </div>
     </div>`;
   const input = overlay.querySelector('#blacklist-list-name');
@@ -1354,7 +1357,7 @@ function renderBlacklistChips(opts) {
       '<span class="bl-chip' + (animate.has(w) ? ' bl-new' : '') + '"><span>' + escapeHtml(w) + '</span>'
       + '<span class="bl-chip-x" role="button" tabindex="0" aria-label="Убрать слово «' + escapeHtml(w) + '»"'
       + ' onclick="removeBlacklistWord(' + i + ')"'
-      + ' onkeydown="onBlacklistChipKey(event, ' + i + ')">✕</span></span>'
+      + ' onkeydown="onBlacklistChipKey(event, ' + i + ')">' + UI_ICONS.x + '</span></span>'
     ).join('');
   }
   _blAnimateWords = new Set();
@@ -1731,7 +1734,7 @@ function showTab(name) {
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
   document.getElementById('t-' + name).classList.add('active');
   document.getElementById('p-' + name).classList.add('active');
-  if (name === 'map' && allResults.length && !mapInited) initMap();
+  if (name === 'map' && allResults.length && !mapInited) ensureMapReady();
   if (name === 'map' && leafMap) setTimeout(() => leafMap.invalidateSize(), 50);
   // Results tab: refresh city tabs + bulk counters (cheap, data may be stale)
   if (name === 'table') {
@@ -1748,22 +1751,32 @@ function showTab(name) {
   if (name === 'templates') {
     loadTemplates().then(() => renderTemplates());
   }
+  // Stats tab: «Динамика по дням» считается сервером по файлам на диске и
+  // грузится всегда — даже когда результатов в этой сессии ещё нет.
+  if (name === 'stats') {
+    loadDailyDynamics();
+  }
   // Re-render stats when switching to the stats tab. During an active run
   // only finished cities are shown (stable numbers); after the run ends the
   // full result set is rendered.
   if (name === 'stats' && allResults.length) {
     const recs = isRunActive() ? completedCityRecords() : allResults;
-    if (!recs.length) return;
-    renderStats(recs, _runElapsed(), _lastSkippedCities);
+    if (recs.length) renderStats(recs, _runElapsed(), _lastSkippedCities);
   }
 }
 
 // ═══════════════════════════════════════════
 //  Status + progress
 // ═══════════════════════════════════════════
-function setStatus(cls, text) {
+// Подпись состояния приходит без эмодзи: значок рисует сама пилюля
+// (#status-badge .ico в style.css) по классу состояния. Третий аргумент —
+// для случаев, когда класс и глиф не совпадают («остановлено по таймауту»
+// остаётся классом stopped, но иконка там та же).
+function setStatus(cls, text, icon) {
   const b = document.getElementById('status-badge');
-  b.className = cls; b.textContent = text;
+  if (!b) return;
+  b.className = cls;
+  b.innerHTML = (icon || STATUS_ICONS[cls] || UI_ICONS.info) + escapeHtml(text);
 }
 function setProgress(pct, label) {
   const pw = document.getElementById('prog-wrap');
@@ -2141,12 +2154,84 @@ async function copyLogText() {
             ok ? 'ok' : 'error');
 }
 
+// ── Иконки интерфейса ─────────────────────────────────────────────
+// Глифы живут в спрайте (templates/index.html, #icon-sprite): кнопка из
+// шаблона и кнопка, которую собирает JS, берут один и тот же <symbol> и не
+// могут разойтись по форме и толщине штриха. Ссылка, а не inline-<path>,
+// ещё и не дублируется в двух файлах. Иконка наследует currentColor через
+// класс .ico, поэтому переключается вместе с темой.
+// Эмодзи для этого не годились: на Windows они рисовались цветными, на
+// macOS монохромными, а часть значков (⏸ ⏹ 🔤) заменялась на чужой глиф —
+// ряд кнопок разъезжался.
+// Значения — плоские строки: тесты подгружают объект через eval, и вызов
+// функции-фабрики им пришлось бы тащить в область видимости.
+const UI_ICONS = {
+  search:      '<svg class="ico" aria-hidden="true"><use href="#i-search"/></svg>',
+  refresh:     '<svg class="ico" aria-hidden="true"><use href="#i-refresh"/></svg>',
+  upload:      '<svg class="ico" aria-hidden="true"><use href="#i-upload"/></svg>',
+  pause:       '<svg class="ico" aria-hidden="true"><use href="#i-pause"/></svg>',
+  play:        '<svg class="ico" aria-hidden="true"><use href="#i-play"/></svg>',
+  stop:        '<svg class="ico" aria-hidden="true"><use href="#i-stop"/></svg>',
+  code:        '<svg class="ico" aria-hidden="true"><use href="#i-code"/></svg>',
+  eye:         '<svg class="ico" aria-hidden="true"><use href="#i-eye"/></svg>',
+  eyeOff:      '<svg class="ico" aria-hidden="true"><use href="#i-eye-off"/></svg>',
+  bell:        '<svg class="ico" aria-hidden="true"><use href="#i-bell"/></svg>',
+  bellOff:     '<svg class="ico" aria-hidden="true"><use href="#i-bell-off"/></svg>',
+  sun:         '<svg class="ico" aria-hidden="true"><use href="#i-sun"/></svg>',
+  moon:        '<svg class="ico" aria-hidden="true"><use href="#i-moon"/></svg>',
+  x:           '<svg class="ico" aria-hidden="true"><use href="#i-x"/></svg>',
+  check:       '<svg class="ico" aria-hidden="true"><use href="#i-check"/></svg>',
+  square:      '<svg class="ico" aria-hidden="true"><use href="#i-square"/></svg>',
+  checkSquare: '<svg class="ico" aria-hidden="true"><use href="#i-check-square"/></svg>',
+  trash:       '<svg class="ico" aria-hidden="true"><use href="#i-trash"/></svg>',
+  save:        '<svg class="ico" aria-hidden="true"><use href="#i-save"/></svg>',
+  folder:      '<svg class="ico" aria-hidden="true"><use href="#i-folder"/></svg>',
+  folderOpen:  '<svg class="ico" aria-hidden="true"><use href="#i-folder-open"/></svg>',
+  spreadsheet: '<svg class="ico" aria-hidden="true"><use href="#i-spreadsheet"/></svg>',
+  file:        '<svg class="ico" aria-hidden="true"><use href="#i-file"/></svg>',
+  text:        '<svg class="ico" aria-hidden="true"><use href="#i-text"/></svg>',
+  book:        '<svg class="ico" aria-hidden="true"><use href="#i-book"/></svg>',
+  dice:        '<svg class="ico" aria-hidden="true"><use href="#i-dice"/></svg>',
+  pencil:      '<svg class="ico" aria-hidden="true"><use href="#i-pencil"/></svg>',
+  plus:        '<svg class="ico" aria-hidden="true"><use href="#i-plus"/></svg>',
+  download:    '<svg class="ico" aria-hidden="true"><use href="#i-download"/></svg>',
+  bolt:        '<svg class="ico" aria-hidden="true"><use href="#i-bolt"/></svg>',
+  bulb:        '<svg class="ico" aria-hidden="true"><use href="#i-bulb"/></svg>',
+  send:        '<svg class="ico" aria-hidden="true"><use href="#i-send"/></svg>',
+  box:         '<svg class="ico" aria-hidden="true"><use href="#i-box"/></svg>',
+  warn:        '<svg class="ico" aria-hidden="true"><use href="#i-warn"/></svg>',
+  info:        '<svg class="ico" aria-hidden="true"><use href="#i-info"/></svg>',
+  copy:        '<svg class="ico" aria-hidden="true"><use href="#i-copy"/></svg>',
+  key:         '<svg class="ico" aria-hidden="true"><use href="#i-key"/></svg>',
+  external:    '<svg class="ico" aria-hidden="true"><use href="#i-external"/></svg>',
+  pulse:       '<svg class="ico" aria-hidden="true"><use href="#i-pulse"/></svg>',
+  chart:       '<svg class="ico" aria-hidden="true"><use href="#i-chart"/></svg>',
+  gear:        '<svg class="ico" aria-hidden="true"><use href="#i-gear"/></svg>',
+  busy:        '<svg class="ico" aria-hidden="true"><use href="#i-hourglass"/></svg>',
+};
+
+// Значок пилюли состояния в шапке — по КЛАССУ состояния, а не по строке
+// текста: текст меняется («В очереди» → «Выполняется» → «Готово»), а класс
+// уже задаёт цвет пилюли, так что глиф и цвет не могут разойтись.
+// Раньше эмодзи стояли прямо в строках статуса, и один и тот же смысл
+// рисовался разными наборами глифов: ⏳ (эмодзи) в «Выполняется», ⏹ и ✔
+// (символы) в «Остановлено»/«Готово». На Windows часть из них цветная.
+const STATUS_ICONS = {
+  running: UI_ICONS.busy,     // поиск идёт
+  queued:  UI_ICONS.busy,     // ждём своей очереди
+  paused:  UI_ICONS.pause,
+  stopped: UI_ICONS.stop,
+  error:   UI_ICONS.x,
+  done:    UI_ICONS.check,
+};
+
 // Show/hide developer-detail lines collected behind the toggle.
 function toggleTechDetails() {
   _showTechDetails = !_showTechDetails;
   const btn = document.getElementById('btn-tech-details');
   if (btn) {
-    btn.textContent = _showTechDetails ? '🙈 Скрыть детали' : '🔧 Технические детали';
+    btn.innerHTML = (_showTechDetails ? UI_ICONS.eyeOff + 'Скрыть детали'
+                                      : UI_ICONS.code + 'Технические детали');
     btn.classList.toggle('active', _showTechDetails);
   }
   const logPanel = document.getElementById('log-output');
@@ -2452,7 +2537,7 @@ function _startRunWithParams(params) {
   }
   updateSocialFilterHint();
   setRunIndicator(true);
-  setStatus('running', '⏳ Выполняется');
+  setStatus('running', 'Выполняется');
   setProgress(0, 'Запуск…');
   setRunBtnActive();
   // `cities` is always present on a fresh launch; a resumed payload is
@@ -2482,12 +2567,12 @@ function _startRunWithParams(params) {
       if (status === 409 || (data && data.error)) {
         appendLog('warn', '  [!] ' + (data.error || 'Ошибка запуска'));
         showToast(data.error || 'Ошибка запуска', 'error');
-        resetBtn(); setStatus('error','✖ Ошибка'); hideProgress();
+        resetBtn(); setStatus('error','Ошибка'); hideProgress();
         return;
       }
       if (data && data.queued) {
         appendLog('info', `  ⏳ Поиск поставлен в очередь (позиция: ${data.position}). Текущий поиск завершится автоматически.`);
-        setStatus('queued', '⏳ В очереди');
+        setStatus('queued', 'В очереди');
         document.getElementById('btn-txt').textContent = 'В очереди…';
         setProgress(0, `Очередь: позиция ${data.position}`);
         // Poll /status and start SSE when our queued run becomes active.
@@ -2499,7 +2584,7 @@ function _startRunWithParams(params) {
           if (Date.now() > _pollDeadline) {
             clearInterval(_pollInterval);
             appendLog('warn', '  [!] Ожидание в очереди прервано по таймауту. Запустите поиск заново.');
-            resetBtn(); setStatus('stopped', '⏹ Тапмаут очереди'); hideProgress();
+            resetBtn(); setStatus('stopped', 'Таймаут очереди'); hideProgress();
             return;
           }
           fetch('/status').then(r => r.json()).then(s => {
@@ -2518,7 +2603,7 @@ function _startRunWithParams(params) {
       }
       startSSE();
     })
-    .catch(err => { appendLog('warn', '  [!] ' + err.message); resetBtn(); setStatus('error','✖ Ошибка'); hideProgress(); });
+    .catch(err => { appendLog('warn', '  [!] ' + err.message); resetBtn(); setStatus('error','Ошибка'); hideProgress(); });
 }
 
 function stopRun() {
@@ -2662,7 +2747,7 @@ function startSSE(runId) {
     }
   };
   evtSource.onerror = () => {
-    setStatus('error','✖ Соединение прервано');
+    setStatus('error','Соединение прервано');
     resetBtn(); hideProgress();
     evtSource.close(); evtSource = null;
   };
@@ -2747,7 +2832,7 @@ function onRunDone(msg) {
     showToast('Поиск на паузе — прогресс сохранён', 'info');
     return;                                   // no resetBtn / no downloads UI churn
   }
-  setStatus(stopped ? 'stopped' : 'done', stopped ? '⏹ Остановлено' : '✔ Готово');
+  setStatus(stopped ? 'stopped' : 'done', stopped ? 'Остановлено' : 'Готово');
   document.title = 'Яндекс.Карты — Парсер бизнесов';
   resetBtn();
   hideProgress();
@@ -2855,7 +2940,7 @@ function resetBtn() {
   if (stopBtn) { stopBtn.hidden = true; stopBtn.onclick = null; }
   _pausedRun = null;
   setRunIndicator(false);
-  document.getElementById('btn-icon').textContent = '🚀';
+  document.getElementById('btn-icon').innerHTML = UI_ICONS.search;
   document.getElementById('btn-txt').textContent = 'Найти компании';
   document.getElementById('btn-skip').style.display = 'none';
   // Run finished → back to ready/grey depending on what is filled in.
@@ -2883,7 +2968,7 @@ function updateScopeButton() {
   if (!b) return;
   const on = _resultsScope === 'all';
   b.classList.toggle('active', on);
-  b.textContent = (on ? '☑' : '☐') + ' Все поиски';
+  b.innerHTML = (on ? UI_ICONS.checkSquare : UI_ICONS.square) + 'Все поиски';
   b.title = on
     ? 'Показаны файлы всех поисков в папке. Нажмите, чтобы вернуться к текущему поиску.'
     : 'Показаны только результаты текущего поиска. Нажмите, чтобы увидеть все файлы в папке (прошлые поиски).';
@@ -2964,7 +3049,7 @@ function updateOutputDirHint(state) {
 
 function showOutputDirError(msg, field) {
   const box = document.getElementById('output-dir-err');
-  if (box) { box.textContent = '⚠ ' + msg; box.hidden = !msg; }
+  if (box) { box.innerHTML = UI_ICONS.warn + escapeHtml(msg); box.hidden = !msg; }
   ['f-output-dir', 'f-output-raw', 'f-output-processed', 'f-output-archive'].forEach(id => {
     const el = document.getElementById(id);
     if (el && el.classList) el.classList.toggle('field-invalid', !!msg && (!field || id === field));
@@ -3004,7 +3089,7 @@ function loadOutputDir() {
 // 📁 Обзор… — системный диалог открывает сервер (браузер не отдаёт путь).
 function pickOutputDir() {
   const btn = document.getElementById('btn-output-browse');
-  if (btn) { btn.disabled = true; btn.textContent = '⏳ Открываю…'; }
+  if (btn) { btn.disabled = true; btn.innerHTML = UI_ICONS.busy + 'Открываю…'; }
   postJSON('/folder-picker', {})
     .then(d => {
       if (d && d.ok && d.path) {
@@ -3017,14 +3102,14 @@ function pickOutputDir() {
       }
     })
     .catch(() => showOutputDirError('Не удалось открыть диалог выбора папки', null))
-    .finally(() => { if (btn) { btn.disabled = false; btn.textContent = '📁 Обзор…'; } });
+    .finally(() => { if (btn) { btn.disabled = false; btn.innerHTML = UI_ICONS.folder + 'Обзор…'; } });
 }
 
 function saveOutputDir() {
   const val = id => ((document.getElementById(id) || {}).value || '').trim();
   const advanced = !!(document.getElementById('f-output-advanced') || {}).checked;
   const btn = document.getElementById('btn-output-save');
-  if (btn) { btn.disabled = true; btn.textContent = '⏳ Проверяю…'; }
+  if (btn) { btn.disabled = true; btn.innerHTML = UI_ICONS.busy + 'Проверяю…'; }
   postJSON('/output-dir', {
     root: val('f-output-dir'), advanced,
     raw: advanced ? val('f-output-raw') : '',
@@ -3039,7 +3124,7 @@ function saveOutputDir() {
       }
     })
     .catch(() => showOutputDirError('Не удалось сохранить папку', null))
-    .finally(() => { if (btn) { btn.disabled = false; btn.textContent = '💾 Сохранить'; } });
+    .finally(() => { if (btn) { btn.disabled = false; btn.innerHTML = UI_ICONS.save + 'Сохранить'; } });
 }
 
 function resetOutputDir() {
@@ -3060,7 +3145,9 @@ function resetOutputDir() {
 // 🔄 Re-run stage 2 (filtering) on the saved raw data — no new crawling.
 // There are two of these buttons (the filter accordion and the RAW section of
 // «История файлов»); both drive the same call and show the same progress.
-const REFILTER_LABEL = '🔄 Применить фильтры заново';
+// Подпись с иконкой: эмодзи здесь перекрывало SVG из разметки (textContent
+// стирал значок), поэтому и восстановление идёт тем же инлайновым SVG.
+const REFILTER_LABEL = UI_ICONS.refresh + 'Применить фильтры заново';
 function _refilterButtons() {
   return ['btn-refilter', 'btn-refilter-files']
     .map(id => document.getElementById(id)).filter(Boolean);
@@ -3070,8 +3157,8 @@ function refilterNow() {
   // How much work is coming: the raw files are already on disk, so the count
   // is known before the request starts.
   const rawCount = ((filesData || {}).raw || []).length;
-  const busy = rawCount ? `⏳ Обрабатываю ${rawCount} ${pluralFiles(rawCount)}…` : '⏳ Обработка…';
-  buttons.forEach(b => { b.disabled = true; b.textContent = busy; });
+  const busy = rawCount ? `Обрабатываю ${rawCount} ${pluralFiles(rawCount)}…` : 'Обработка…';
+  buttons.forEach(b => { b.disabled = true; b.innerHTML = UI_ICONS.busy + busy; });
   const formats = [];
   if (document.getElementById('f-excel')?.checked) formats.push('excel');
   if (document.getElementById('f-json')?.checked)  formats.push('json');
@@ -3138,12 +3225,24 @@ function refilterNow() {
     })
     .catch(() => showToast('Ошибка обработки', 'error'))
     .finally(() => {
-      buttons.forEach(b => { b.disabled = false; b.textContent = REFILTER_LABEL; });
+      buttons.forEach(b => { b.disabled = false; b.innerHTML = REFILTER_LABEL; });
     });
 }
 
-const ICONS = {xlsx:'📊', json:'📋', csv:'📄', html:'🗺'};
-function fileIcon(n) { for (const [ext,ic] of Object.entries(ICONS)) if (n.endsWith('.'+ext)) return ic; return '📁'; }
+// Значки типов файлов — из того же спрайта, что и кнопки: в списке на 100+
+// строк эмодзи рисовались цветными квадратами разной ширины и не слушали
+// цвет темы (в тёмной теме выглядели как чужие).
+const FILE_TYPE_ICONS = {
+  xlsx: '<svg class="ico" aria-hidden="true"><use href="#i-spreadsheet"/></svg>',
+  json: '<svg class="ico" aria-hidden="true"><use href="#i-text"/></svg>',
+  csv:  '<svg class="ico" aria-hidden="true"><use href="#i-file"/></svg>',
+  html: '<svg class="ico" aria-hidden="true"><use href="#i-map"/></svg>',
+  dir:  '<svg class="ico" aria-hidden="true"><use href="#i-folder"/></svg>',
+};
+function fileIcon(n) {
+  const ext = String(n || '').toLowerCase().split('.').pop();
+  return FILE_TYPE_ICONS[ext] || FILE_TYPE_ICONS.dir;
+}
 
 function showDownloads(files, formats) {
   const allowed = new Set(formats || []);
@@ -3187,6 +3286,20 @@ function safeUrl(value) {
   } catch {
     return '#';
   }
+}
+
+// Ячейка «Телефон»: у записи бывает десяток номеров, и comma-joined строка
+// растягивала таблицу за горизонт. Нормализуем: каждый номер — своей
+// строкой, ячейка ограничена по ширине и высоте (прокрутка внутри).
+// Полный список остаётся в title и попадает в Excel/CSV без изменений.
+function phoneHTML(row) {
+  const raw = String(row.phone || '').trim();
+  if (!raw) return '—';
+  const list = raw.split(',').map(s => s.trim()).filter(Boolean);
+  if (list.length <= 1) return escapeHtml(raw);
+  return `<div class="tbl-phone" title="${escapeHtml(raw)}">`
+    + list.map(p => `<span>${escapeHtml(p)}</span>`).join('')
+    + '</div>';
 }
 
 function socialsHTML(row) {
@@ -3491,10 +3604,10 @@ function renderPage() {
         data-review-url="${reviewUrl}"
         onchange="toggleReviewed(this.dataset.reviewUrl, this)"></td>
       <td>${start + i + 1}</td>
-      <td><a href="${escapeHtml(safeUrl(r.yandex_maps_url || r.twogis_url))}" target="_blank" rel="noopener noreferrer" style="color:var(--g);font-weight:600;text-decoration:none">${escapeHtml(r.name || '—')}</a></td>
-      <td style="color:var(--muted)">${escapeHtml(r.category || '—')}</td>
+      <td><a class="tbl-link" href="${escapeHtml(safeUrl(r.yandex_maps_url || r.twogis_url))}" target="_blank" rel="noopener noreferrer">${escapeHtml(r.name || '—')}</a></td>
+      <td class="tbl-cat">${escapeHtml(r.category || '—')}</td>
       <td>${escapeHtml(r.address || '—')}</td>
-      <td>${escapeHtml(r.phone || '—')}</td>
+      <td>${phoneHTML(r)}</td>
       <td>${scoreHTML(r)}</td>
       <td>${socialsHTML(r)}</td>
     </tr>`;
@@ -3727,7 +3840,7 @@ function toggleUnviewedOnly() {
   const b = document.getElementById('btn-unviewed');
   if (b) {
     b.classList.toggle('active', unviewedOnly);
-    b.textContent = (unviewedOnly ? '☑' : '☐') + ' Непросмотренные';
+    b.innerHTML = (unviewedOnly ? UI_ICONS.checkSquare : UI_ICONS.square) + 'Непросмотренные';
   }
   curPage = 1;
   filterTable();
@@ -3820,15 +3933,15 @@ function updateBulkStats() {
     const willOpen = Math.min(count, openable, BULK_MAX_TABS);
     if (bulkBusy) {
       btn.disabled = true;
-      btn.textContent = '⏳ Открываем…';
+      btn.innerHTML = UI_ICONS.busy + 'Открываем…';
     } else if (!openable) {
       // Обход закончен: непросмотренных с этой соцсетью больше нет.
       btn.disabled = true;
-      btn.textContent = '✅ Все просмотрены';
+      btn.innerHTML = UI_ICONS.check + 'Все просмотрены';
     } else {
       // Кнопка обещает ровно то, что откроется этим кликом.
       btn.disabled = false;
-      btn.textContent = `🚀 Открыть ${willOpen} ${pluralProfiles(willOpen)}`;
+      btn.innerHTML = UI_ICONS.external + `Открыть ${willOpen} ${pluralProfiles(willOpen)}`;
     }
   }
   renderBulkProgress();
@@ -4141,8 +4254,8 @@ function showLinksModal(items, label) {
       <textarea readonly rows="10">${escapeHtml(text)}</textarea>
       <div class="ui-modal-btns">
         <button type="button" class="m-cancel">Закрыть</button>
-        <button type="button" class="m-mark">✓ Пометить просмотренными (${keys.length})</button>
-        <button type="button" class="m-ok neutral">📋 Скопировать все</button>
+        <button type="button" class="m-mark">${UI_ICONS.check}Пометить просмотренными (${keys.length})</button>
+        <button type="button" class="m-ok neutral">${UI_ICONS.copy}Скопировать все</button>
       </div>
     </div>`;
   const done = () => overlay.remove();
@@ -4168,7 +4281,7 @@ function showLinksModal(items, label) {
 // только сразу и с отчётом, сколько ячеек записали.
 async function persistReviewedMarks() {
   const btn = document.getElementById('bulk-persist-btn');
-  if (btn) { btn.disabled = true; btn.textContent = '⏳ Записываю…'; }
+  if (btn) { btn.disabled = true; btn.innerHTML = UI_ICONS.busy + 'Записываю…'; }
   try {
     const d = await autoPersistReviewed(true);
     if (!d) { showToast('Не удалось записать отметки — попробуйте ещё раз', 'error'); return; }
@@ -4179,7 +4292,7 @@ async function persistReviewedMarks() {
       showToast(`Не удалось записать ${d.errors.length} ${pluralFiles(d.errors.length)}: ${d.errors[0].file}`, 'error');
     }
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = '💾 Сохранить сейчас'; }
+    if (btn) { btn.disabled = false; btn.innerHTML = UI_ICONS.save + 'Сохранить сейчас'; }
   }
 }
 
@@ -4227,10 +4340,12 @@ const FILE_ACT_ICONS = {
 };
 
 function fileCardHTML(section, it) {
+  // Значок перед текстом — SVG, поэтому сообщение экранируем построчно, а не
+  // оборачиваем целиком (escapeHtml съел бы саму разметку значка).
   const meta = it.error
-    ? `⚠ ${it.error}`
-    : `${it.records} ${pluralRecords(it.records)} • ${fmtBytes(it.size)} • ${it.modified}`;
-  const icon = ICONS[it.ext] || '📁';
+    ? UI_ICONS.warn + escapeHtml(it.error)
+    : escapeHtml(`${it.records} ${pluralRecords(it.records)} • ${fmtBytes(it.size)} • ${it.modified}`);
+  const icon = FILE_TYPE_ICONS[it.ext] || FILE_TYPE_ICONS.dir;
   // Архивные файлы не архивируем повторно, но даём вернуть на место.
   const archiveBtn = section === 'archive'
     ? `<button class="file-btn" data-act="restore" data-path="${escapeHtml(it.path)}" title="Вернуть файл в рабочую папку">${FILE_ACT_ICONS.restore}</button>`
@@ -4244,7 +4359,7 @@ function fileCardHTML(section, it) {
         <span class="file-icon">${icon}</span>
         <div class="file-text">
           <div class="file-name" title="${escapeHtml(it.path)}">${escapeHtml(it.name)}</div>
-          <div class="file-meta">${escapeHtml(meta)}</div>
+          <div class="file-meta">${meta}</div>
         </div>
       </div>
       <div class="file-actions">
@@ -4514,6 +4629,49 @@ async function exportFiltered(fmt) {
 // ═══════════════════════════════════════════
 //  Map (Leaflet)
 // ═══════════════════════════════════════════
+// Leaflet подключается по требованию: библиотека лежит рядом с приложением
+// (static/vendor/leaflet) и грузится только при открытии вкладки «На карте».
+// Раньше <script> и <link> стояли в <head> и тянулись с unpkg при каждой
+// загрузке страницы — без интернета вкладка не работала вообще.
+// Промис кешируется: десять кликов по вкладке дают одну загрузку.
+let _leafletPromise = null;
+function loadLeaflet() {
+  if (window.L) return Promise.resolve();
+  if (_leafletPromise) return _leafletPromise;
+  const assets = window.LEAFLET_ASSETS || {};
+  _leafletPromise = new Promise((resolve, reject) => {
+    if (!assets.js) { reject(new Error('путь к библиотеке карт не передан')); return; }
+    const css = document.createElement('link');
+    css.rel = 'stylesheet';
+    css.href = assets.css;
+    document.head.appendChild(css);
+    const js = document.createElement('script');
+    js.src = assets.js;
+    js.onload = () => (window.L ? resolve() : reject(new Error('библиотека карт не инициализировалась')));
+    js.onerror = () => reject(new Error('файл библиотеки карт недоступен'));
+    document.head.appendChild(js);
+  });
+  // Неудачу не запоминаем: следующий клик по вкладке попробует снова.
+  _leafletPromise.catch(() => { _leafletPromise = null; });
+  return _leafletPromise;
+}
+
+// Вкладка карты: сначала библиотека, потом карта. Ошибку показываем на месте
+// карты — вместо пустого прямоугольника.
+function ensureMapReady() {
+  const container = document.getElementById('map-container');
+  if (container && !window.L) container.innerHTML = '<div class="no-data" style="padding:40px">Загружаю карту…</div>';
+  loadLeaflet()
+    .then(() => initMap())
+    .catch(err => {
+      if (container) {
+        container.innerHTML = '<div class="no-data" style="padding:40px">Карта недоступна: '
+          + escapeHtml(err && err.message ? err.message : 'библиотека не загрузилась')
+          + '. Результаты и выгрузка работают без неё.</div>';
+      }
+    });
+}
+
 function initMap() {
   const container = document.getElementById('map-container');
   const pts = allResults.filter(r => r.lat && r.lon);
@@ -4529,18 +4687,25 @@ function initMap() {
   pts.forEach(r => {
     const lat = parseFloat(r.lat), lon = parseFloat(r.lon);
     if (isNaN(lat) || isNaN(lon)) return;
+    // Попап — теми же классами, что и остальные всплывающие: инлайн-стили
+    // тянули за собой старую палитру (#888, тёмно-зелёный, красный) и
+    // не переключались вместе с темой.
     const socials = Object.entries(SOCIALS)
       .filter(([p]) => r[p])
-         .map(([p,c]) => `<a href="${escapeHtml(safeUrl(r[p]))}" target="_blank" rel="noopener noreferrer" style="display:inline-block;padding:2px 6px;margin:1px;background:${c};color:#fff;border-radius:3px;font-size:10px;font-weight:700;text-decoration:none">${SLABELS[p]}</a>`)
+      .map(([p, c]) => `<a class="map-soc" style="--tile:${c}" href="${escapeHtml(safeUrl(r[p]))}"`
+        + ` target="_blank" rel="noopener noreferrer">${SLABELS[p]}</a>`)
       .join('');
     const popup = `
-      <div style="min-width:180px;max-width:240px;font-family:sans-serif">
-         <b style="font-size:13px">${escapeHtml(r.name||'')}</b>
-         ${r.category ? `<div style="color:#888;font-size:11px">${escapeHtml(r.category)}</div>` : ''}
-         ${r.address  ? `<div style="font-size:11px">📍 ${escapeHtml(r.address)}</div>` : ''}
-         ${r.phone    ? `<div style="font-size:11px">📞 ${escapeHtml(r.phone)}</div>`   : ''}
-        ${socials    ? `<div style="margin-top:5px">${socials}</div>`       : ''}          ${r.twogis_url ? `<div style="margin-top:6px"><a href="${escapeHtml(safeUrl(r.twogis_url))}" target="_blank" rel="noopener noreferrer" style="font-size:11px;color:#0d7d4d">Открыть в 2ГИС ↗</a></div>` : ''}
-          ${r.yandex_maps_url ? `<div style="margin-top:6px"><a href="${escapeHtml(safeUrl(r.yandex_maps_url))}" target="_blank" rel="noopener noreferrer" style="font-size:11px;color:#c0392b">Открыть на Я.Картах ↗</a></div>` : ''}
+      <div class="map-pop">
+        <div class="map-pop-name">${escapeHtml(r.name || '')}</div>
+        ${r.category ? `<div class="map-pop-cat">${escapeHtml(r.category)}</div>` : ''}
+        ${r.address ? `<div class="map-pop-row">${escapeHtml(r.address)}</div>` : ''}
+        ${r.phone ? `<div class="map-pop-row">${escapeHtml(r.phone)}</div>` : ''}
+        ${socials ? `<div class="map-pop-soc">${socials}</div>` : ''}
+        <div class="map-pop-links">
+          ${r.twogis_url ? `<a href="${escapeHtml(safeUrl(r.twogis_url))}" target="_blank" rel="noopener noreferrer">Открыть в 2ГИС ↗</a>` : ''}
+          ${r.yandex_maps_url ? `<a href="${escapeHtml(safeUrl(r.yandex_maps_url))}" target="_blank" rel="noopener noreferrer">Открыть на Я.Картах ↗</a>` : ''}
+        </div>
       </div>`;
    L.marker([lat,lon]).addTo(leafMap).bindPopup(popup).bindTooltip(escapeHtml(r.name||''));
   });
@@ -4631,6 +4796,44 @@ function barRows(rows) {
   }).join('');
 }
 
+// Кольцевая диаграмма для долей (соцсети): SVG-окружности со штрих-даш-
+// массивом. Радиус 70 при ободе 16 — центр свободен под итог. Доли < 0.5%
+// сливаются с дорожкой, поэтому каждая дуга получает минимум 0.5%. Одна
+// соцсеть — полное кольцо (окружность целиком, а не 100%-dash).
+function donutHTML(rows, centerLabel) {
+  if (!rows || !rows.length) return '';
+  const total = rows.reduce((s, r) => s + r.count, 0) || 1;
+  const C = 2 * Math.PI * 70;
+  let offset = 0;
+  const arcs = rows.map(r => {
+    const frac = r.count / total;
+    const len = Math.max(frac * C, 0.005 * C);
+    const dash = `${len} ${C - len}`;
+    const el = `<circle class="donut-arc" cx="84" cy="84" r="70"`
+      + ` stroke="${r.color}" stroke-dasharray="${dash}"`
+      + ` stroke-dashoffset="${-offset}" stroke-linecap="butt"`
+      + ` title="${escapeHtml(r.label)}: ${r.count}"></circle>`;
+    offset += frac * C;
+    return el;
+  }).join('');
+  const single = rows.length === 1
+    ? `<circle class="donut-arc" cx="84" cy="84" r="70" stroke="${rows[0].color}"`
+      + ` title="${escapeHtml(rows[0].label)}: ${rows[0].count}"></circle>`
+    : arcs;
+  const legend = rows.map(r => `
+      <div class="donut-legend-row">
+        <i class="donut-swatch" style="background:${r.color}"></i>
+        <span title="${escapeHtml(r.label)}">${escapeHtml(r.label)}</span>
+        <b>${r.count} · ${Math.round(r.count / total * 100)}%</b>
+      </div>`).join('');
+  return `<div class="donut-wrap">`
+    + `<div class="donut"><svg width="168" height="168" viewBox="0 0 168 168" aria-hidden="true">`
+    + `<circle class="donut-track" cx="84" cy="84" r="70"></circle>${single}</svg>`
+    + `<div class="donut-center"><b>${_fmtCount(total)}</b>`
+    + `<span>${escapeHtml(centerLabel || '')}</span></div></div>`
+    + `<div class="donut-legend">${legend}</div></div>`;
+}
+
 function renderStats(data, elapsed, skippedCities) {
   if (!data.length) return;
   const total  = data.length;
@@ -4717,7 +4920,7 @@ function renderStats(data, elapsed, skippedCities) {
     const quotaHtml = quotaCardHtml();
     const analyticsHtml = (a && a.total_requests) || (c && c.total) ? `
     <div class="stat-section">
-      <h3>⚡ Аналитика</h3>
+      <h3>${UI_ICONS.bolt}Аналитика</h3>
       <div class="stat-cards">
         ${a.total_requests ? `
         <div class="stat-card" title="Фактическая скорость запросов к API (запросов в секунду)"><div class="num">${a.rps_actual}</div><div class="lbl">RPS (факт.)</div></div>
@@ -4748,19 +4951,604 @@ function renderStats(data, elapsed, skippedCities) {
 
     ${skippedHtml}
 
-    ${socialCounts.length ? `
-    <div class="stat-section">
-      <h3>По соцсетям</h3>
-      ${barRows(socialCounts.map(s => ({label: s.name, count: s.count, color: s.color})))}
-    </div>` : ''}
-
-    ${cats.length ? `
-    <div class="stat-section">
-      <h3>Топ категорий</h3>
-      ${barRows(cats.map(([name, cnt], i) => ({label: name, count: cnt, color: CAT_COLORS[i%CAT_COLORS.length]})))}
+    ${(socialCounts.length || cats.length) ? `
+    <div class="stat-split">
+      <div class="stat-split-main">
+        ${cats.length ? `
+        <div class="stat-section">
+          <h3>Топ категорий</h3>
+          ${barRows(cats.map(([name, cnt], i) => ({label: name, count: cnt, color: CAT_COLORS[i%CAT_COLORS.length]})))}
+        </div>` : ''}
+      </div>
+      <div class="stat-split-side">
+        ${socialCounts.length ? `
+        <div class="stat-section">
+          <h3>По соцсетям</h3>
+          ${donutHTML(socialCounts.map(s => ({label: s.name, count: s.count, color: s.color})), 'записей')}
+        </div>` : ''}
+      </div>
     </div>` : ''}
   `;
+    // Свежие файлы и отметки могли появиться только что — обновляем динамику,
+    // но не во время прогона: там renderStats зовётся каждые 1.5 с, а обход
+    // папки с пересчётом строк дешевле не становится.
+    if (!isRunActive()) loadDailyDynamics();
   }).catch(()=>{});
+}
+
+// ═══════════════════════════════════════════
+//  «Динамика по дням» (вкладка «Статистика»)
+// ═══════════════════════════════════════════
+// Данные считает сервер (/stats/daily): «найдено» — по строкам файлов
+// результатов за день, «просмотрено» — по дате отметки в _reviewed.json.
+// Блок живёт в своём контейнере #stats-daily: он показывает работу за все
+// дни, а не только за текущую сессию, и должен быть на месте даже тогда,
+// когда #stats-body ещё показывает заглушку «запустите поиск».
+// Быстрые периоды. «Сегодня» — окно в один день (`days=1`), которое сервер
+// разворачивает в почасовой ряд: время поиска пишется в имя файла
+// (`raw_2026-09-30_14-01_…`), поэтому 14:01 и 14:50 попадают в колонку «14».
+const DAILY_SEGMENTS = [
+  {days: 1, label: 'Сегодня'}, {days: 7, label: '7 дн.'},
+  {days: 14, label: '14 дн.'}, {days: 30, label: '30 дн.'},
+];
+const DAILY_DEFAULT_DAYS = 7;
+
+// Период графика — три режима на одни и те же дни: набор сегментов,
+// календарный месяц (input[type=month]) и произвольный диапазон «с … по …».
+// Окно считает сервер и возвращает его в ответе (`start`/`end`), поэтому
+// даты в полях и столбцы на графике не могут разойтись.
+let _dailyRange = {kind: 'days', days: DAILY_DEFAULT_DAYS, month: '', from: '', to: ''};
+let _dailyPayload = null;      // последний ответ: им предзаполнены поля периода
+let _dailyCustomOpen = false;  // развёрнут ли блок «с … по …»
+let _dailySeq = 0;             // ответ на устаревший период рисовать нельзя
+
+const DAILY_WEEKDAYS = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
+
+function _dailyDayLabel(iso) {
+  const d = new Date(iso + 'T00:00:00');
+  if (isNaN(d.getTime())) return {wd: '', dm: iso};
+  return {
+    wd: DAILY_WEEKDAYS[d.getDay()],
+    dm: String(d.getDate()).padStart(2, '0') + '.' + String(d.getMonth() + 1).padStart(2, '0'),
+  };
+}
+
+// Полная дата для подписи периода: 30.09.2026. В столбце хватает «30.09»,
+// а в «с 01.09.2026 по 30.09.2026» год нужен — иначе непонятно, за что график.
+function _dayFull(iso) {
+  const s = String(iso || '');
+  return /^\d{4}-\d{2}-\d{2}$/.test(s)
+    ? s.slice(8, 10) + '.' + s.slice(5, 7) + '.' + s.slice(0, 4) : s;
+}
+
+function _todayIso() {
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0')
+    + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+// Строка запроса к /stats/daily по текущему режиму периода. «Сегодня»
+// просит почасовой разворот: час в имени файла — единственный честный
+// источник времени поиска.
+function _dailyQuery() {
+  const r = _dailyRange;
+  if (r.kind === 'custom' && r.from && r.to) {
+    if (r.from === r.to) return 'from=' + encodeURIComponent(r.from)
+      + '&to=' + encodeURIComponent(r.to) + '&hours=1';
+  }
+  if (r.kind === 'custom' && r.from && r.to) {
+    return 'from=' + encodeURIComponent(r.from) + '&to=' + encodeURIComponent(r.to);
+  }
+  if (r.kind === 'month' && r.month) return 'month=' + encodeURIComponent(r.month);
+  return 'days=' + (r.days || DAILY_DEFAULT_DAYS) + (r.days === 1 ? '&hours=1' : '');
+}
+
+// Подпись показанного периода: одна дата для одного дня, диапазон — для окна.
+function _dailyRangeLabel(payload) {
+  if (!payload) return '';
+  return payload.days > 1
+    ? _dayFull(payload.start) + ' — ' + _dayFull(payload.end)
+    : _dayFull(payload.end);
+}
+
+// «Ничего не найдено» с человеческим именем периода: для набора 7/14/30 дней
+// это «за последние 7 дней», для месяца и диапазона — датами.
+function _dailyEmptyText(payload) {
+  if (payload.mode === 'days' || payload.mode === 'hours') {
+    const n = Number(payload.days) || 1;
+    return n === 1 ? 'За сегодня'
+      : 'За последние ' + n + ' ' + _pluralRu(n, 'день', 'дня', 'дней');
+  }
+  return 'С ' + _dayFull(payload.start) + ' по ' + _dayFull(payload.end);
+}
+
+// О чём график умалчивает: отметки без даты (старый формат `_reviewed.json`)
+// и обрезанный период. Молчать об этом хуже всего: «просмотрено 0» при сотне
+// отмеченных строк выглядит как поломка счётчика.
+function _dailyNoteHTML(payload) {
+  const out = [];
+  const undated = Number((payload.totals || {}).undated || 0);
+  if (undated) {
+    out.push('Ещё ' + _fmtCount(undated) + ' '
+      + _pluralRu(undated, 'отметка', 'отметки', 'отметок')
+      + ' «просмотрено» сделаны до того, как отметки начали хранить дату, —'
+      + ' в динамике по дням они не участвуют.');
+  }
+  if (payload.truncated) {
+    out.push('Период длиннее года: показаны последние 366 дней.');
+  }
+  return out.length ? '<div class="dyn-note">' + out.join(' ') + '</div>' : '';
+}
+
+// Разряды тонким пробелом (1 062): числа читаются быстрее, а локаль браузера
+// на формат не влияет — тесты сравнивают строки.
+function _fmtCount(n) {
+  return String(Math.round(Number(n) || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+}
+
+// Подписи оси — компактнее: у гуттера ширина 34px, и «123 456» в него не
+// влезает, а «123к» — влезает и читается на делении шкалы.
+function _fmtTick(n) {
+  const v = Math.round(Number(n) || 0);
+  return v >= 10000 ? Math.round(v / 1000) + 'к' : _fmtCount(v);
+}
+
+// Шкала графика: верхняя метка кратна шагу, шаг — из лестницы 0.5/1/2/2.5/5/10
+// от порядка максимума, делений 3–5. Так на оси всегда круглые числа
+// (50/100/150), а столбец самого богатого дня занимает бо́льшую часть высоты:
+// «просто максимум» давал подписи вида 531 и 1062.
+function dailyAxis(max) {
+  const top = Math.max(1, Math.ceil(Number(max) || 0));
+  const pow = Math.pow(10, Math.floor(Math.log10(top)));
+  // Для небольших чисел шаг 2.5 дал бы дробные подписи (7.5 откликов).
+  const mults = pow < 10 ? [0.5, 1, 2, 5, 10] : [0.5, 1, 2, 2.5, 5, 10];
+  for (const m of mults) {
+    const step = Math.max(1, m * pow);
+    const n = Math.ceil(top / step);
+    if (n >= 2 && n <= 4) return {top: n * step, step: step, n: n};
+  }
+  return {top: top, step: top, n: 1};   // совсем маленькие максимумы: 0 и он сам
+}
+
+// Подписи колонок скрываются, когда на них нет места: 9.5px-число требует
+// ~30px, поэтому плотность считаем по реальной ширине блока, а не по числу
+// дней — на телефоне и на десктопе порог разный.
+function _dailyDense(count) {
+  const box = document.getElementById('stats-daily');
+  const width = box ? box.clientWidth : 0;
+  if (!width) return count > 7;            // ширина неизвестна (скрытая вкладка)
+  return count * 30 > width - 44;          // 44 — гуттер оси и отступы
+}
+
+function dailyControlsHTML() {
+  const r = _dailyRange;
+  const segs = DAILY_SEGMENTS.map(s => {
+    const on = r.kind === 'days' && s.days === r.days;
+    return `<button type="button" class="dyn-range${on ? ' is-on' : ''}"`
+      + ` aria-pressed="${on}" onclick="setDailyRange(${s.days})">${s.label}</button>`;
+  }).join('');
+  // У поля месяца свой формат границы (YYYY-MM): полная дата в max сделала бы
+  // текущий месяц невалидным, и браузер не дал бы его выбрать.
+  const thisMonth = _todayIso().slice(0, 7);
+  return '<div class="dyn-controls">'
+    + `<div class="dyn-ranges" role="group" aria-label="Быстрый период">${segs}</div>`
+    + `<input type="month" id="dyn-month" class="dyn-month" max="${thisMonth}"`
+    + ' aria-label="Календарный месяц" title="Показать календарный месяц"'
+    + ` value="${escapeHtml(r.kind === 'month' ? r.month : '')}"`
+    + ' onchange="setDailyMonth(this.value)">'
+    + `<button type="button" class="dyn-range dyn-more${r.kind === 'custom' ? ' is-on' : ''}"`
+    + ` aria-expanded="${_dailyCustomOpen}" onclick="toggleDailyCustom()">Период…</button>`
+    + '</div>';
+}
+
+// Блок «с … по …» — отдельной строкой под шапкой: в одну строку с сегментами
+// он сжимал их до нечитаемого на телефоне. Даты предзаполнены текущим
+// периодом: обычно правят один его конец, а не набирают оба заново.
+function dailyCustomHTML() {
+  const r = _dailyRange;
+  const last = _dailyPayload || {};
+  const from = r.kind === 'custom' ? r.from : (last.start || '');
+  const to = r.kind === 'custom' ? r.to : (last.end || '');
+  const today = _todayIso();
+  const enter = " onkeydown=\"if(event.key==='Enter')applyDailyCustom()\"";
+  const input = (id, val) => `<input type="date" id="${id}" class="dyn-date"`
+    + ` value="${escapeHtml(val)}" min="2015-01-01" max="${today}"${enter}>`;
+  return `<div class="dyn-custom" id="dyn-custom"${_dailyCustomOpen ? '' : ' hidden'}>`
+    + '<span class="dyn-custom-lbl">с</span>' + input('dyn-from', from)
+    + '<span class="dyn-custom-lbl">по</span>' + input('dyn-to', to)
+    + '<button type="button" class="dyn-apply" onclick="applyDailyCustom()">Показать</button>'
+    + '</div>';
+}
+
+function dailySectionHTML(payload) {
+  const head = `<div class="dyn-head"><h3>${UI_ICONS.chart}Динамика по дням</h3>`
+             + dailyControlsHTML() + '</div>' + dailyCustomHTML();
+  const wrap = body => `<div class="stat-section dyn-section">${head}${body}</div>`;
+
+  if (!payload) {
+    return wrap('<div class="dyn-empty">Не удалось загрузить динамику — сервер не ответил.</div>');
+  }
+  if (payload.loading) {
+    return wrap('<div class="dyn-empty">Считаю файлы результатов…</div>');
+  }
+  const series = payload.series || [];
+  const totals = payload.totals || {found: 0, reviewed: 0};
+  const note = _dailyNoteHTML(payload);
+  if (!series.length || (!totals.found && !totals.reviewed)) {
+    return wrap('<div class="dyn-empty">' + _dailyEmptyText(payload)
+      + ' ничего не найдено и не отмечено просмотренным.</div>' + note);
+  }
+
+  // «Сегодня» рисуется по часам, если серверу есть из чего их собрать:
+  // время поиска пишется в имя raw-файла, а у processed его нет. Если
+  // файлы с часом не дали строк (найдено — из processed), дневной столбец
+  // честнее пустых суток.
+  if (payload.hours && payload.hours.some(h => h.found)) {
+    return wrap(dailyHoursChartHTML(payload));
+  }
+
+  // Одна шкала на оба ряда: «просмотрено» — это часть найденного, и на своей
+  // шкале короткая полоса выглядела бы такой же высокой, как длинная.
+  const maxFound = Math.max(1, ...series.map(d => d.found));
+  const axis = dailyAxis(maxFound);
+  const ticks = [];
+  for (let i = 0; i <= axis.n; i++) ticks.push(i * axis.step);
+  const dense = _dailyDense(series.length);
+  const todayIso = series[series.length - 1].date;
+
+  // Нулевой день высоты не получает вовсе: .is-zero рисует насечку 2px, а
+  // inline-высота её бы перебила (inline сильнее правила класса).
+  const bar = (cls, value) => {
+    const pct = value ? Math.max(2, Math.round(value / axis.top * 100)) : 0;
+    return `<div class="dyn-bar ${cls}${pct ? '' : ' is-zero'}"`
+         + (pct ? ` style="height:${pct}%"` : '') + `></div>`;
+  };
+  // Цифра над своим столбцом: bottom считается от его же высоты, поэтому
+  // подпись всегда едет вместе со столбцом. Ноль — приглушённый: он не
+  // «данные», а их отсутствие.
+  const series_ = (cls, value) => {
+    const pct = value ? Math.max(2, Math.round(value / axis.top * 100)) : 0;
+    const lab = `<span class="dyn-vlab${value ? '' : ' is-zero'}"`
+              + ` style="bottom:calc(${pct}% + 3px)">${_fmtCount(value)}</span>`;
+    return `<div class="dyn-series ${cls}">${lab}${bar(cls, value)}</div>`;
+  };
+
+  const cols = series.map(d => {
+    const {wd, dm} = _dailyDayLabel(d.date);
+    const pct = d.found ? Math.round(d.reviewed / d.found * 100) : 0;
+    return `<div class="dyn-col${d.date === todayIso ? ' is-today' : ''}"`
+      + ` data-wd="${wd}" data-dm="${dm}" data-found="${d.found}"`
+      + ` data-review="${d.reviewed}" data-files="${d.files || 0}" data-pct="${pct}">`
+      + `<div class="dyn-stack">${series_('dyn-found', d.found)}${series_('dyn-review', d.reviewed)}</div>`
+      + `<div class="dyn-day"><span class="dyn-wd">${wd}</span><span class="dyn-dm">${dm}</span></div>`
+      + `</div>`;
+  }).join('');
+
+  // Сетка и подписи оси живут в общем поле с колонками: линия — абсолютный
+  // элемент, поэтому она точно совпадает с высотой столбца самой богатой дни.
+  // Один день без почасовых данных — единственный столбец: ограничиваем его
+  // ширину (is-single), иначе колонка растянется на всю страницу.
+  const single = series.length === 1 ? ' is-single' : '';
+  const grid = '<div class="dyn-grid" aria-hidden="true">'
+    + ticks.filter(t => t > 0).map(t =>
+        `<i style="bottom:${t / axis.top * 100}%"></i>`).join('')
+    + '</div>';
+  const yaxis = '<div class="dyn-yaxis" aria-hidden="true">'
+    + ticks.map(t => `<span class="dyn-tick" style="bottom:${t / axis.top * 100}%">`
+        + `${_fmtTick(t)}</span>`).join('')
+    + '</div>';
+
+  // Подпись периода в той же строке: у месяца и произвольного диапазона
+  // сегменты не подсвечены, и без дат непонятно, что именно показано.
+  const legend = '<div class="dyn-legend">'
+    + `<span class="dyn-key"><i class="dyn-sw dyn-found"></i>Найдено <b>${_fmtCount(totals.found)}</b></span>`
+    + `<span class="dyn-key"><i class="dyn-sw dyn-review"></i>Просмотрено <b>${_fmtCount(totals.reviewed)}</b></span>`
+    + `<span class="dyn-span">${escapeHtml(_dailyRangeLabel(payload))}</span>`
+    + '</div>';
+
+  // Итоги периода: средний темп, лучший день и доля разобранного — то, ради
+  // чего в график вообще смотрят. Для одного дня средний темп — это он сам,
+  // а «лучший день» — весь период, поэтому такие факты не показываем.
+  const avg = Math.round(totals.found / series.length);
+  const best = series.reduce((a, b) => (b.found > a.found ? b : a), series[0]);
+  const bestLbl = _dailyDayLabel(best.date);
+  const share = totals.found ? Math.round(totals.reviewed / totals.found * 100) : 0;
+  const facts = [];
+  if (series.length > 1) {
+    facts.push('<span class="dyn-fact">В среднем <b>' + _fmtCount(avg) + '</b> в день</span>');
+    if (best.found) {
+      facts.push('<span class="dyn-fact">Лучший день — <b>'
+        + bestLbl.wd + ', ' + bestLbl.dm + '</b>: ' + _fmtCount(best.found) + '</span>');
+    }
+  }
+  facts.push('<span class="dyn-fact" title="Отмечено просмотренными из найденных за период">Разобрано <b>'
+    + share + '%</b></span>');
+
+  const aria = `Динамика с ${_dayFull(payload.start)} по ${_dayFull(payload.end)}`
+             + ` (${series.length} дней): найдено ${totals.found},`
+             + ` просмотрено ${totals.reviewed}, в среднем ${avg} в день`;
+  return wrap(
+    `<div class="dyn-chart${dense ? ' is-dense' : ''}" role="img" aria-label="${escapeHtml(aria)}">`
+    + `<div class="dyn-plot">${yaxis}<div class="dyn-area">${grid}`
+    + `<div class="dyn-cols${single}">${cols}</div></div></div>`
+    + '</div>'
+    + legend
+    + `<div class="dyn-facts">${facts.join('')}</div>`
+    + note);
+}
+
+// ── Почасовой график «Сегодня» ─────────────────────────────
+// Тот же plot, что и у дневного графика: одна шкала, сетка и ось — общие
+// helpers. Отличия — в подписях (колонка «14» вместо «ср 30.09») и в том,
+// что «просмотрено» за день остаётся в легенде, но не разбивается по часам:
+// время отметки в данных не хранится, поэтому раскладывать его по часам
+// нельзя. Пустые часы за активностью поиска не рисуются: на шкале 00–23
+// ряд из нулей до 9 утра — это шум, а не информация.
+function dailyHoursChartHTML(payload) {
+  const hours = payload.hours || [];
+  const totals = payload.totals || {found: 0, reviewed: 0};
+  const withData = hours.filter(h => h.found);
+  const firstH = withData.length ? withData[0].hour : 0;
+  const lastH = withData.length ? withData[withData.length - 1].hour : 23;
+  // Окно от первого до последнего часа с данными (+1 час запаса), минимум 3.
+  const from = Math.max(0, firstH - 1);
+  const to = Math.min(23, Math.max(lastH + 1, from + 2));
+  const shown = hours.slice(from, to + 1);
+
+  const maxFound = Math.max(1, ...shown.map(h => h.found));
+  const axis = dailyAxis(maxFound);
+  const ticks = [];
+  for (let i = 0; i <= axis.n; i++) ticks.push(i * axis.step);
+  const dense = _dailyDense(shown.length);
+
+  const bar = (cls, value) => {
+    const pct = value ? Math.max(2, Math.round(value / axis.top * 100)) : 0;
+    return `<div class="dyn-bar ${cls}${pct ? '' : ' is-zero'}"`
+         + (pct ? ` style="height:${pct}%"` : '') + `></div>`;
+  };
+  const series_ = (cls, value) => {
+    const pct = value ? Math.max(2, Math.round(value / axis.top * 100)) : 0;
+    const lab = `<span class="dyn-vlab${value ? '' : ' is-zero'}"`
+              + ` style="bottom:calc(${pct}% + 3px)">${_fmtCount(value)}</span>`;
+    return `<div class="dyn-series ${cls}">${lab}${bar(cls, value)}</div>`;
+  };
+
+  const cols = shown.map(h => {
+    const lbl = String(h.hour).padStart(2, '0');
+    return `<div class="dyn-col" data-wd="Час" data-dm="${lbl}:00"`
+      + ` data-found="${h.found}" data-review="0" data-files="${h.files || 0}" data-pct="0">`
+      + `<div class="dyn-stack">${series_('dyn-found', h.found)}${series_('dyn-review', 0)}</div>`
+      + `<div class="dyn-day"><span class="dyn-dm">${lbl}</span></div>`
+      + `</div>`;
+  }).join('');
+
+  const grid = '<div class="dyn-grid" aria-hidden="true">'
+    + ticks.filter(t => t > 0).map(t =>
+        `<i style="bottom:${t / axis.top * 100}%"></i>`).join('')
+    + '</div>';
+  const yaxis = '<div class="dyn-yaxis" aria-hidden="true">'
+    + ticks.map(t => `<span class="dyn-tick" style="bottom:${t / axis.top * 100}%">`
+        + `${_fmtTick(t)}</span>`).join('')
+    + '</div>';
+
+  const label = _dayFull(payload.end);
+  const legend = '<div class="dyn-legend">'
+    + `<span class="dyn-key"><i class="dyn-sw dyn-found"></i>Найдено <b>${_fmtCount(totals.found)}</b></span>`
+    + `<span class="dyn-key"><i class="dyn-sw dyn-review"></i>Просмотрено <b>${_fmtCount(totals.reviewed)}</b></span>`
+    + `<span class="dyn-span">${escapeHtml(label)} · по часам</span>`
+    + '</div>';
+
+  const aria = `Почасовая динамика за ${label}: найдено ${totals.found},`
+             + ` просмотрено ${totals.reviewed}`;
+  return `<div class="dyn-chart${dense ? ' is-dense' : ''}" role="img" aria-label="${escapeHtml(aria)}">`
+    + `<div class="dyn-plot">${yaxis}<div class="dyn-area">${grid}`
+    + `<div class="dyn-cols">${cols}</div></div></div>`
+    + '</div>'
+    + legend;
+}
+
+// ── Подсказка при наведении ────────────────────────────────
+// Своя карточка вместо атрибута title: в title не влезает разбор дня, а
+// системная подсказка перекрывает сам график и исчезает через секунду.
+//
+// Живёт она в <body> с position:fixed — не внутри графика, как раньше:
+// * панель «Статистика» прокручивается (overflow-y:auto) и режет всё, что
+//   вылезло за её верх: подсказка над богатым столбцом у высокого графика
+//   обрезалась именно так;
+// * у .dyn-cols overflow-x:auto — вложенную подсказку срезала бы и она.
+// Координаты берутся из getBoundingClientRect(), то есть в тех же CSS-пикселях,
+// в которых заданы left/top у fixed-элемента. При масштабировании страницы
+// масштабируются оба значения одинаково, и подсказка остаётся приклеенной к
+// столбцу — раньше она считалась от вложенных смещений и уезжала от курсора.
+let _dailyTip = null;
+let _dailyTipCol = null;    // колонка, для которой сейчас посчитано содержимое
+let _dailyTipSize = null;   // размер замеряется при смене содержимого, а не на каждый mousemove
+
+const DAILY_TIP_GAP = 8;
+
+function _dailyTipNode() {
+  if (!_dailyTip || !_dailyTip.isConnected) {
+    _dailyTip = document.createElement('div');
+    _dailyTip.className = 'dyn-tip';
+    _dailyTip.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(_dailyTip);
+    _dailyTipCol = null;
+    _dailyTipSize = null;
+  }
+  return _dailyTip;
+}
+
+function _dailyTipHTML(col) {
+  const g = k => Number(col.getAttribute('data-' + k) || 0);
+  const title = col.getAttribute('data-wd') + ', ' + col.getAttribute('data-dm');
+  const files = g('files');
+  return `<div class="dyn-tip-day">${escapeHtml(title)}</div>`
+    + `<div class="dyn-tip-row"><i class="dyn-sw dyn-found"></i>Найдено<b>${_fmtCount(g('found'))}</b></div>`
+    + `<div class="dyn-tip-row"><i class="dyn-sw dyn-review"></i>Просмотрено<b>${_fmtCount(g('review'))}</b></div>`
+    + `<div class="dyn-tip-note">${files ? files + ' ' + _pluralRu(files, 'файл', 'файла', 'файлов')
+        + ' · ' : ''}разобрано ${g('pct')}%</div>`;
+}
+
+// Границы, в которых подсказке разрешено стоять: видимая часть окна, но не
+// выше верха панели статистики — под ней шапка приложения, и заезжать на неё
+// некрасиво, даже когда подсказку никто не режет. Верх панели зажимается
+// в окно: на мобильной раскладке панель может оказаться ниже экрана целиком,
+// и «её верх» утащил бы подсказку за край.
+function _dailyTipBounds(size) {
+  const panel = document.getElementById('p-stats');
+  const r = panel && panel.getBoundingClientRect ? panel.getBoundingClientRect() : null;
+  const vh = window.innerHeight;
+  const limit = Math.max(0, vh - size.height - 4);
+  return {top: r && r.height ? Math.min(Math.max(r.top, 0), limit) : 0, bottom: vh};
+}
+
+function _placeDailyTip(tip, cr) {
+  const size = _dailyTipSize;
+  if (!size || !cr) return;
+  const pad = 4;
+  const b = _dailyTipBounds(size);
+  const minTop = b.top + pad;
+  const maxTop = Math.max(minTop, b.bottom - size.height - pad);
+  // По центру столбца, но целиком в экране: половина карточки за краем окна
+  // выглядела бы как подсказка «не к тому» дню.
+  let left = cr.left + cr.width / 2 - size.width / 2;
+  left = Math.min(Math.max(left, pad), window.innerWidth - size.width - pad);
+  // Над столбцом; если места нет (столбец уехал под шапку) — под ним.
+  let top = cr.top - DAILY_TIP_GAP - size.height;
+  const below = top < minTop;
+  if (below) top = cr.bottom + DAILY_TIP_GAP;
+  top = Math.min(Math.max(top, minTop), maxTop);
+  tip.style.left = Math.round(left) + 'px';
+  tip.style.top = Math.round(top) + 'px';
+  tip.classList.toggle('is-below', below);
+}
+
+function _showDailyTip(col) {
+  if (!col) return;
+  const tip = _dailyTipNode();
+  if (col !== _dailyTipCol) {
+    tip.innerHTML = _dailyTipHTML(col);
+    _dailyTipCol = col;
+    _dailyTipSize = null;
+  }
+  tip.classList.add('is-on');
+  if (!_dailyTipSize) {
+    const r = tip.getBoundingClientRect();
+    _dailyTipSize = {width: r.width, height: r.height};
+  }
+  _placeDailyTip(tip, col.getBoundingClientRect());
+}
+
+function _hideDailyTip() {
+  if (_dailyTip) _dailyTip.classList.remove('is-on');
+  _dailyTipCol = null;
+}
+
+let _dailyHoverBound = false;
+function _bindDailyHover() {
+  const box = document.getElementById('stats-daily');
+  if (!box || _dailyHoverBound) return;
+  _dailyHoverBound = true;
+  // Позиция пересчитывается на каждом mousemove, а не только при смене
+  // столбца: после прокрутки или смены масштаба курсор остаётся в той же
+  // колонке, и подсказка замерла бы в старой точке.
+  box.addEventListener('mousemove', e => {
+    const col = e.target && e.target.closest ? e.target.closest('.dyn-col') : null;
+    if (col) _showDailyTip(col); else _hideDailyTip();
+  });
+  box.addEventListener('mouseleave', _hideDailyTip);
+  // Прокрутка и масштаб двигают столбцы без события mousemove — подсказку
+  // лучше спрятать, чем оставить висеть в устаревшей точке.
+  const panel = document.getElementById('p-stats');
+  if (panel && panel.addEventListener) panel.addEventListener('scroll', _hideDailyTip, {passive: true});
+  if (window.addEventListener) window.addEventListener('resize', _hideDailyTip);
+}
+
+function renderDailyDynamics(payload) {
+  const box = document.getElementById('stats-daily');
+  if (!box) return;
+  // Последний удачный ответ — им предзаполнены поля периода, в том числе во
+  // время загрузки следующего.
+  if (payload && payload.series) _dailyPayload = payload;
+  box.innerHTML = dailySectionHTML(payload);
+  // Ряд может быть длинным (месяц, диапазон): показываем свежие дни, а не
+  // начало периода, которое уже прокрутилось влево.
+  const cols = box.querySelector ? box.querySelector('.dyn-cols') : null;
+  if (cols) cols.scrollLeft = cols.scrollWidth;
+  _bindDailyHover();
+}
+
+async function loadDailyDynamics() {
+  const box = document.getElementById('stats-daily');
+  if (!box) return;
+  // Первый показ — сразу заголовок с переключателем периода, чтобы блок не
+  // появлялся «из ничего» после ответа сервера.
+  if (!box.innerHTML) renderDailyDynamics({days: _dailyRange.days, loading: true});
+  // Счётчик, а не флаг занятости: пока грузится 7 дней, пользователь может
+  // выбрать 30, и ответ на старый запрос не должен перерисовать новый период.
+  const seq = ++_dailySeq;
+  try {
+    const r = await fetch('/stats/daily?' + _dailyQuery());
+    const data = await r.json();
+    if (seq !== _dailySeq) return;
+    renderDailyDynamics(data);
+  } catch (e) {
+    if (seq === _dailySeq) renderDailyDynamics(null);
+  }
+}
+
+// Перезапрос с тем же состоянием: заголовок и поля периода видны сразу.
+function _reloadDaily() {
+  renderDailyDynamics({days: _dailyRange.days, loading: true});
+  loadDailyDynamics();
+}
+
+function setDailyRange(n) {
+  const days = Number(n) || DAILY_DEFAULT_DAYS;
+  if (_dailyRange.kind === 'days' && days === _dailyRange.days) return;
+  _dailyRange = {kind: 'days', days: days, month: '', from: '', to: ''};
+  _reloadDaily();
+}
+
+// Календарный месяц целиком. Очистка поля возвращает набор 7/14/30 дней:
+// пустой контрол рядом с активным периодом читался бы как «ничего выбрано».
+function setDailyMonth(month) {
+  const value = String(month || '').trim();
+  if (!value) {
+    if (_dailyRange.kind !== 'month') return;
+    _dailyRange = {kind: 'days', days: _dailyRange.days, month: '', from: '', to: ''};
+    _reloadDaily();
+    return;
+  }
+  if (_dailyRange.kind === 'month' && value === _dailyRange.month) return;
+  _dailyRange = {kind: 'month', days: _dailyRange.days, month: value, from: '', to: ''};
+  _reloadDaily();
+}
+
+function _dateInputValue(id) {
+  const el = document.getElementById(id);
+  const v = el && el.value ? String(el.value) : '';
+  return /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : '';
+}
+
+function applyDailyCustom() {
+  const from = _dateInputValue('dyn-from');
+  const to = _dateInputValue('dyn-to');
+  if (!from || !to) return;
+  const a = from <= to ? from : to;      // поля, заполненные наоборот, — не ошибка
+  const b = from <= to ? to : from;
+  if (_dailyRange.kind === 'custom' && a === _dailyRange.from && b === _dailyRange.to) return;
+  _dailyRange = {kind: 'custom', days: _dailyRange.days, month: '', from: a, to: b};
+  _dailyCustomOpen = true;
+  _reloadDaily();
+}
+
+function toggleDailyCustom() {
+  _dailyCustomOpen = !_dailyCustomOpen;
+  const panel = document.getElementById('dyn-custom');
+  if (panel) panel.hidden = !_dailyCustomOpen;
+  const btn = document.querySelector ? document.querySelector('.dyn-more') : null;
+  if (btn) btn.setAttribute('aria-expanded', String(_dailyCustomOpen));
 }
 
 // ═══════════════════════════════════════════
@@ -4932,8 +5720,8 @@ function renderPresets() {
       + ' title="Применить пресет «' + safeName + '»">'
       + '<span class="preset-dd-name">' + safeName + '</span>'
       + '<span class="preset-dd-actions">'
-      + '<button type="button" class="preset-dd-edit" title="Перезаписать пресет текущими настройками формы" aria-label="Редактировать пресет" data-edit="' + i + '">✎</button>'
-      + '<button type="button" class="preset-dd-del" title="Удалить пресет" aria-label="Удалить пресет" data-del="' + i + '">✕</button>'
+      + '<button type="button" class="preset-dd-edit" title="Перезаписать пресет текущими настройками формы" aria-label="Редактировать пресет" data-edit="' + i + '">' + UI_ICONS.pencil + '</button>'
+      + '<button type="button" class="preset-dd-del" title="Удалить пресет" aria-label="Удалить пресет" data-del="' + i + '">' + UI_ICONS.x + '</button>'
       + '</span>'
       + '</div>';
   }).join('');
@@ -5026,7 +5814,7 @@ function openPresetModal() {
       <div class="preset-modal-meta">Сохранённых пресетов: ${existing.length} из 10</div>
       <div class="ui-modal-btns">
         <button type="button" class="m-cancel">Отмена</button>
-        <button type="button" class="m-ok">💾 Сохранить</button>
+        <button type="button" class="m-ok">${UI_ICONS.save}Сохранить</button>
       </div>
     </div>`;
   const done = val => { overlay.remove(); document.removeEventListener('keydown', onKey, true); if (val) finishSavePreset(val); };
@@ -5233,8 +6021,8 @@ function updateNotifyBtn() {
   const st   = notifyState();
   const warn = !('Notification' in window) || Notification.permission === 'denied';
   btn.className = warn ? 'denied' : (notifySettings.enabled ? 'granted' : '');
-  icon.textContent = st === 'all_off' ? '🔕' : '🔔';
-  txt.textContent  = notifyStateLabel() + (warn ? ' ⚠' : '');
+  icon.innerHTML = st === 'all_off' ? UI_ICONS.bellOff : UI_ICONS.bell;
+  txt.innerHTML = escapeHtml(notifyStateLabel()) + (warn ? ' ' + UI_ICONS.warn : '');
   btn.title        = notifyStateTitle();
   const pop = document.getElementById('notify-pop');
   btn.setAttribute('aria-expanded', pop && !pop.hidden ? 'true' : 'false');
@@ -5641,7 +6429,7 @@ function applyColClasses() {
   if (btn) {
     const n = hiddenCols.size;
     btn.classList.toggle('active', n > 0);
-    btn.innerHTML = n > 0 ? `⚙ Столбцы <span style="background:var(--g);color:#fff;border-radius:10px;padding:1px 6px;font-size:10px">${COLS.length - n}/${COLS.length}</span>` : '⚙ Столбцы';
+    btn.innerHTML = n > 0 ? `${UI_ICONS.gear}Столбцы <span style="background:var(--c);color:var(--on-accent);border-radius:10px;padding:1px 6px;font-size:10px">${COLS.length - n}/${COLS.length}</span>` : UI_ICONS.gear + 'Столбцы';
   }
 }
 
@@ -5804,17 +6592,17 @@ function updateApiKeysStatus(yandex, twogis, vk) {
   const have = [yandex, twogis, vk].filter(Boolean).length;
   let cls, txt, title;
   if (have === total) {
-    cls = 'ok'; txt = `✅ Готово ${have}/${total}`;
+    cls = 'ok'; txt = UI_ICONS.check + `Готово ${have}/${total}`;
     title = 'Все API-ключи настроены: Яндекс, 2GIS, VK';
   } else if (have > 0) {
-    cls = 'warn'; txt = `⚠️ ${have}/${total} ключей`;
+    cls = 'warn'; txt = UI_ICONS.warn + `${have}/${total} ключей`;
     title = 'Настроены не все API-ключи — часть функций (соцсети, активность ВК, 2GIS) будет недоступна';
   } else {
-    cls = 'err'; txt = `❌ 0/${total} ключей`;
+    cls = 'err'; txt = UI_ICONS.x + `0/${total} ключей`;
     title = 'API-ключи не найдены — поиск может не работать';
   }
   badge.className = 'api-badge ' + cls;
-  badge.textContent = txt;
+  badge.innerHTML = txt;
   badge.title = title;
   // Per-key dots next to each field label (green = key is set).
   const dots = { 'key-dot-yandex': yandex, 'key-dot-2gis': twogis, 'key-dot-vk': vk };
@@ -5915,13 +6703,13 @@ function saveApiKeys() {
 
   btn.disabled = true;
   const orig = btn.textContent;
-  btn.textContent = '⏳ Сохраняю…';
+  btn.innerHTML = UI_ICONS.busy + 'Сохраняю…';
 
   const show = (ok, msg) => {
     if (!status) return;
     status.style.display = 'block';
     status.className = ok ? 'ok' : 'err';
-    status.textContent = (ok ? '✓ ' : '✕ ') + msg;
+    status.innerHTML = (ok ? UI_ICONS.check : UI_ICONS.x) + escapeHtml(msg);
   };
 
   fetch('/save-api-keys', {
@@ -5982,7 +6770,8 @@ function applyTheme(dark, animate) {
     themeAnimTimer = setTimeout(() => root.classList.remove('theme-anim'), 260);
   }
   root.setAttribute('data-theme', dark ? 'dark' : 'light');
-  document.getElementById('btn-theme').textContent = dark ? '☀️' : '🌙';
+  const themeBtn = document.getElementById('btn-theme');
+  if (themeBtn) themeBtn.innerHTML = dark ? UI_ICONS.sun : UI_ICONS.moon;
 }
 
 function toggleTheme() {
@@ -6200,7 +6989,7 @@ function startSendSSE() {
 function resetSendBtn() {
   senderRunning = false;
   document.getElementById('btn-send-run').disabled = false;
-  document.getElementById('send-btn-icon').textContent = '📨';
+  document.getElementById('send-btn-icon').innerHTML = UI_ICONS.send;
   document.getElementById('send-btn-txt').textContent = 'Запустить рассылку';
   document.getElementById('btn-send-stop').style.display = 'none';
 }
@@ -6214,7 +7003,7 @@ function showLogsModal() {
   const overlay = document.createElement('div');
   overlay.className = 'logs-modal-overlay';
   overlay.innerHTML = `<div class="logs-modal">
-    <h3>📜 Логи запусков</h3>
+    <h3>${UI_ICONS.book}Логи запусков</h3>
     <div class="logs-empty">Загрузка…</div>
   </div>`;
   document.body.appendChild(overlay);
@@ -6225,7 +7014,7 @@ function showLogsModal() {
       const logs = data.logs || [];
       const modal = overlay.querySelector('.logs-modal');
       if (!logs.length) {
-        modal.innerHTML = `<h3>📜 Логи запусков</h3><div class="logs-empty">Логов пока нет. Запустите поиск чтобы создать лог.</div><div style="text-align:right;margin-top:12px"><button class="skip-cancel" onclick="this.closest('.logs-modal-overlay').remove()">Закрыть</button></div>`;
+        modal.innerHTML = `<h3>${UI_ICONS.book}Логи запусков</h3><div class="logs-empty">Логов пока нет. Запустите поиск чтобы создать лог.</div><div style="text-align:right;margin-top:12px"><button class="skip-cancel" onclick="this.closest('.logs-modal-overlay').remove()">Закрыть</button></div>`;
         return;
       }
       const listHtml = logs.map(l => {
@@ -6239,13 +7028,163 @@ function showLogsModal() {
           </span>
         </li>`;
       }).join('');
-      modal.innerHTML = `<h3>📜 Логи запусков</h3>
+      modal.innerHTML = `<h3>${UI_ICONS.book}Логи запусков</h3>
         <ul class="logs-list">${listHtml}</ul>
         <div style="text-align:right;margin-top:12px"><button class="skip-cancel" onclick="this.closest('.logs-modal-overlay').remove()">Закрыть</button></div>`;
     })
     .catch(() => {
-      overlay.querySelector('.logs-modal').innerHTML = `<h3>📜 Логи запусков</h3><div class="logs-empty">Ошибка загрузки</div><div style="text-align:right;margin-top:12px"><button class="skip-cancel" onclick="this.closest('.logs-modal-overlay').remove()">Закрыть</button></div>`;
+      overlay.querySelector('.logs-modal').innerHTML = `<h3>${UI_ICONS.book}Логи запусков</h3><div class="logs-empty">Ошибка загрузки</div><div style="text-align:right;margin-top:12px"><button class="skip-cancel" onclick="this.closest('.logs-modal-overlay').remove()">Закрыть</button></div>`;
     });
+}
+
+// ═══════════════════════════════════════════
+//  🩺 Диагностика: самопроверка по кнопке
+// ═══════════════════════════════════════════
+// Отвечает на «ничего не работает» без чтения логов: живые ли ключи, куда
+// пишем, готово ли окружение и понимает ли текущая версия старые сборы.
+// Живые проверки ключей стоят квоты 2ГИС и времени, поэтому запускаются
+// ТОЛЬКО по нажатию и разделены по кнопкам: «только ключи» / «без запросов
+// к API». Тексты приходят с сервера, поэтому любой из них пропускается
+// через escapeHtml.
+// Заголовки групп и значки статусов — из того же спрайта, что и кнопки: в
+// отчёте рядом стоят три состояния, и разнобой между ними читался как шум.
+const DIAG_GROUP_TITLES = {
+  keys:  UI_ICONS.key + 'Ключи API',
+  files: UI_ICONS.folder + 'Файлы и папки',
+  data:  UI_ICONS.box + 'Данные прошлых сборов',
+  env:   UI_ICONS.info + 'Окружение',
+};
+const DIAG_STATUS = {
+  ok:    { icon: UI_ICONS.check, label: 'в порядке' },
+  warn:  { icon: UI_ICONS.warn,  label: 'предупреждение' },
+  error: { icon: UI_ICONS.x,     label: 'ошибка' },
+};
+let _diagBusy = false;
+
+function showDiagnostics() {
+  const existing = document.getElementById('diag-overlay');
+  if (existing) existing.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'diag-overlay';
+  overlay.className = 'ui-modal-overlay';
+  overlay.innerHTML = `
+    <div class="ui-modal diag-modal" role="dialog" aria-modal="true" aria-labelledby="diag-title">
+      <h3 id="diag-title">${UI_ICONS.pulse}Диагностика</h3>
+      <div class="diag-lead">Проверю ключи API, права на папку результатов, окружение и данные прошлых
+        сборов — это четыре причины, из-за которых чаще всего «ничего не работает». Читать логи не нужно.</div>
+      <div class="diag-note">${UI_ICONS.key}Проверка ключей делает живые запросы: 2ГИС списывает 1–2 запроса из месячной
+        квоты, Яндекс — один пробный. Остальные проверки бесплатны и мгновенны.</div>
+      <div class="diag-actions">
+        <button type="button" class="btn-sm diag-run" onclick="runDiagnostics(['keys','files','data','env'], this)">${UI_ICONS.checkSquare}Проверить всё</button>
+        <button type="button" class="btn-sm diag-run" onclick="runDiagnostics(['keys'], this)">${UI_ICONS.key}Только ключи</button>
+        <button type="button" class="btn-sm diag-run" onclick="runDiagnostics(['files','data','env'], this)">${UI_ICONS.folder}Без запросов к API</button>
+      </div>
+      <div class="diag-summary" id="diag-summary" role="status" aria-live="polite">Нажмите «Проверить всё» — покажу, что работает, а что нет.</div>
+      <div class="diag-results" id="diag-results"></div>
+      <div class="ui-modal-btns">
+        <button type="button" class="m-cancel" onclick="closeDiagnostics()">Закрыть</button>
+      </div>
+    </div>`;
+  overlay.addEventListener('click', e => { if (e.target === overlay) closeDiagnostics(); });
+  overlay.addEventListener('keydown', e => { if (e.key === 'Escape') closeDiagnostics(); });
+  document.body.appendChild(overlay);
+  // Клавиатура: Esc должен работать и без клика внутри модалки.
+  document.addEventListener('keydown', _diagEscape);
+}
+
+function _diagEscape(e) {
+  if (e && e.key === 'Escape') closeDiagnostics();
+}
+
+function closeDiagnostics() {
+  document.removeEventListener('keydown', _diagEscape);
+  const overlay = document.getElementById('diag-overlay');
+  if (overlay) overlay.remove();
+}
+
+// Группы проверок: ['keys'] стоит квоту и сети, остальные — только локальные.
+function runDiagnostics(groups, btn) {
+  if (_diagBusy) return Promise.resolve();
+  const list = Array.isArray(groups) && groups.length ? groups : ['keys', 'files', 'data', 'env'];
+  _diagBusy = true;
+  const buttons = [...document.querySelectorAll('.diag-run')];
+  // innerHTML, а не textContent: подписи несут значок из спрайта, и возврат
+  // через textContent вставил бы <svg …> в кнопку как обычный текст.
+  const labels = buttons.map(b => b.innerHTML);
+  const pressed = btn || buttons[0];
+  const pressedLabel = pressed ? pressed.innerHTML : '';
+  buttons.forEach(b => { b.disabled = true; });
+  if (pressed) pressed.innerHTML = UI_ICONS.busy + 'Проверяю…';
+  setDiagSummary('⏳ Идут проверки…' + (list.includes('keys') ? ' Ключи проверяются живыми запросами.' : ''));
+  return fetch('/diagnostics/run', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({groups: list}),
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (!data || data.ok === false) {
+        setDiagSummary('⛔ Проверки не выполнились: '
+          + escapeHtml((data && data.error) || 'сервер не ответил'), 'error');
+        return;
+      }
+      renderDiagnostics(data.results || [], list);
+    })
+    .catch(() => setDiagSummary('⛔ Не удалось выполнить проверки — сервер недоступен.', 'error'))
+    .then(() => {
+      _diagBusy = false;
+      buttons.forEach((b, i) => { b.disabled = false; b.innerHTML = labels[i]; });
+      if (pressed) pressed.innerHTML = pressedLabel;
+    });
+}
+
+function setDiagSummary(html, status) {
+  const el = document.getElementById('diag-summary');
+  if (!el) return;
+  el.innerHTML = html;
+  el.className = 'diag-summary' + (status ? ' diag-summary-' + status : '');
+}
+
+function renderDiagnostics(results, groups) {
+  const box = document.getElementById('diag-results');
+  if (!box) return;
+  const errors = results.filter(r => r.status === 'error').length;
+  const warns = results.filter(r => r.status === 'warn').length;
+  const ok = results.filter(r => r.status === 'ok').length;
+  const plural = _pluralRu(results.length, 'проверка', 'проверки', 'проверок');
+  let summary = `Проверок: ${results.length} (${plural}): `
+    + `<b>${ok}</b> в порядке`
+    + (warns ? `, <b>${warns}</b> с предупреждениями` : '')
+    + (errors ? `, <b>${errors}</b> с ошибками` : '') + '.';
+  if (errors) summary += ' Сначала разберитесь с ошибками — с ними работа не пойдёт.';
+  else if (warns) summary += ' Ошибок нет; предупреждения — это места, где результат будет хуже обычного.';
+  else summary += ' Всё готово к работе.';
+  setDiagSummary(summary, errors ? 'error' : (warns ? 'warn' : 'ok'));
+
+  const order = Array.isArray(groups) && groups.length ? groups : Object.keys(DIAG_GROUP_TITLES);
+  box.innerHTML = order.map(group => {
+    const rows = results.filter(r => r.group === group);
+    if (!rows.length) return '';
+    return `<div class="diag-group">
+      <div class="diag-group-title">${DIAG_GROUP_TITLES[group] || escapeHtml(group)}</div>
+      ${rows.map(diagRowHTML).join('')}
+    </div>`;
+  }).join('') || '<div class="diag-empty">Проверки ничего не вернули.</div>';
+}
+
+// Одна строка отчёта: значок по статусу, заголовок, объяснение и что делать.
+function diagRowHTML(row) {
+  const meta = DIAG_STATUS[row.status] || DIAG_STATUS.warn;
+  const detail = row.detail ? `<div class="diag-detail">${escapeHtml(row.detail)}</div>` : '';
+  const hint = row.hint ? `<div class="diag-hint">${UI_ICONS.info}${escapeHtml(row.hint)}</div>` : '';
+  return `<div class="diag-row" data-status="${escapeHtml(row.status || 'warn')}">
+    <div class="diag-row-head">
+      <span class="diag-ico" aria-hidden="true">${meta.icon}</span>
+      <span class="diag-title">${escapeHtml(row.title || '')}</span>
+      <span class="diag-sr">${meta.label}</span>
+    </div>
+    ${detail}${hint}
+  </div>`;
 }
 
 // ═══════════════════════════════════════════
@@ -6317,7 +7256,8 @@ function manualUpdateCheck(btn) {
   if (!btn || btn.dataset.busy) return;
   btn.dataset.busy = '1';
   btn.classList.remove('has-update');
-  btn.innerHTML = '<span class="spin" style="width:11px;height:11px;border-width:1.5px"></span> Проверяю…';
+  btn.innerHTML = '<span class="spin" style="width:11px;height:11px;border-width:1.5px"></span>'
+    + '<span class="hdr-lbl">Проверяю…</span>';
   checkForUpdates(false)
     .catch(() => {})
     .finally(() => {
@@ -6337,7 +7277,9 @@ setInterval(() => { if (!_devBuild) checkForUpdates(true); }, UPDATE_CHECK_INTER
 // Кнопка «Обновления» живёт в приклеенной шапке, поэтому её видно при любой
 // прокрутке: она и есть главный индикатор (надпись «⬆ Обновить до vX» +
 // пульсация), а тонкая точка — только дополнение к ней.
-const UPDATE_BTN_IDLE = '🔄 Обновления';
+// Подпись — в обёртке .hdr-lbl: на узком экране она скрывается, и в шапке
+// остаются только значки (иначе кнопка снова растягивала страницу вбок).
+const UPDATE_BTN_IDLE = UI_ICONS.refresh + '<span class="hdr-lbl">Обновления</span>';
 let _availableVersion = '';
 
 function renderUpdateIndicator() {
@@ -6346,7 +7288,10 @@ function renderUpdateIndicator() {
   const on = !!_availableVersion;
   if (!btn.dataset.busy) {
     btn.classList.toggle('has-update', on);
-    btn.textContent = on ? `⬆ Обновить до v${_availableVersion}` : UPDATE_BTN_IDLE;
+    btn.innerHTML = on
+      ? (UI_ICONS.upload + '<span class="hdr-lbl">' + `Обновить до v${_availableVersion}` + '</span>')
+      : UPDATE_BTN_IDLE;
+    btn.setAttribute('aria-label', on ? `Обновить до v${_availableVersion}` : 'Обновления');
   }
   let dot = document.getElementById('update-dot');
   if (!dot) {
@@ -6411,12 +7356,12 @@ function showUpdateBanner(newVer, changelog, url) {
     banner.dataset.version = String(newVer);
     banner.innerHTML = `
       <span class="ub-text">🔄 Доступна новая версия <b>v${newVer}</b>${changelog ? ' — ' + escapeHtml(changelog) : ''}</span>
-      <button class="ub-btn" id="ub-changelog" onclick="showChangelog()" title="Подробнее об изменениях в новой версии">📄 Что нового</button>
+      <button class="ub-btn" id="ub-changelog" onclick="showChangelog()" title="Подробнее об изменениях в новой версии">${UI_ICONS.file}Что нового</button>
       ${frozen
-        ? `<button class="ub-btn ub-primary" id="ub-self-update" onclick="selfUpdate()" title="Скачать и установить прямо из приложения — после установки просто обновите страницу">⬆ Обновить сейчас</button>
+        ? `<button class="ub-btn ub-primary" id="ub-self-update" onclick="selfUpdate()" title="Скачать и установить прямо из приложения — после установки просто обновите страницу">${UI_ICONS.upload}Обновить сейчас</button>
            <a class="ub-btn" href="${url}" target="_blank" rel="noopener noreferrer" title="Страница релизов на GitHub">GitHub ↗</a>`
         : `<a class="ub-btn ub-primary" href="${url}" target="_blank" rel="noopener noreferrer" title="Скачайте сборку для своей системы на странице релизов">Скачать v${newVer} ↗</a>`}
-      <button class="ub-close" onclick="dismissUpdateBanner()" title="Скрыть (индикация останется в шапке)">✕</button>
+      <button class="ub-close" onclick="dismissUpdateBanner()" title="Скрыть (индикация останется в шапке)">${UI_ICONS.x}</button>
     `;
     document.body.prepend(banner);
     _syncBannerOffset();
@@ -6428,7 +7373,7 @@ function showUpdateBanner(newVer, changelog, url) {
     banner.innerHTML = `
       <span class="ub-text">🔄 Доступна новая версия <b>v${newVer}</b>${changelog ? ' — ' + escapeHtml(changelog) : ''}</span>
       <a class="ub-btn ub-primary" href="${url}" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
-      <button class="ub-close" onclick="dismissUpdateBanner()" title="Скрыть (индикация останется в шапке)">✕</button>
+      <button class="ub-close" onclick="dismissUpdateBanner()" title="Скрыть (индикация останется в шапке)">${UI_ICONS.x}</button>
     `;
     document.body.prepend(banner);
     _syncBannerOffset();
@@ -6454,7 +7399,7 @@ function showChangelog() {
     overlay.className = 'ui-modal-overlay';
     overlay.innerHTML = `
       <div class="ui-modal changelog-modal">
-        <h3>📄 Что нового</h3>
+        <h3>${UI_ICONS.file}Что нового</h3>
         <div class="cl-list">${rows}</div>
         <div class="ui-modal-btns">
           <button type="button" class="m-cancel" onclick="document.getElementById('changelog-overlay').remove()">Закрыть</button>
@@ -6830,7 +7775,7 @@ function updateTplSelectionUi() {
     const n = _tplSelectedIds.size;
     btn.hidden = n === 0;
     btn.disabled = n === 0;
-    btn.textContent = '🗑 Удалить выбранные (' + n + ')';
+    btn.innerHTML = UI_ICONS.trash + 'Удалить выбранные (' + n + ')';
   }
   updateSelectAllBtn();
 }
@@ -7195,7 +8140,7 @@ function updatePickModalCount() {
   const save = document.getElementById('tpl-pick-modal-save');
   const ids = randomTemplateIds[_pickModalCat] || [];
   const total = messageTemplates.filter(t => t.category === _pickModalCat).length;
-  if (count) count.textContent = '📊 Выбрано: ' + ids.length + ' из ' + total;
+  if (count) count.innerHTML = UI_ICONS.spreadsheet + 'Выбрано: ' + ids.length + ' из ' + total;
   if (save) save.disabled = ids.length === 0;
   if (hint) {
     if (!ids.length) { hint.textContent = 'Выберите хотя бы один шаблон, чтобы сохранить набор.'; hint.hidden = false; }
@@ -7263,7 +8208,7 @@ function openTemplateModal(id) {
   _tplEditId = id || null;
   const t = id ? messageTemplates.find(x => x.id === id) : null;
   const title = document.getElementById('tpl-modal-title');
-  if (title) title.textContent = t ? '✏️ Редактировать шаблон' : '✏️ Новый шаблон';
+  if (title) title.innerHTML = UI_ICONS.pencil + (t ? 'Редактировать шаблон' : 'Новый шаблон');
   const nameEl = document.getElementById('tpl-name');
   if (nameEl) nameEl.value = t ? t.name : '';
   const textEl = document.getElementById('tpl-text');
@@ -7324,14 +8269,14 @@ function updateTemplatePreview() {
   const note = document.getElementById('tpl-preview-note');
   const company = firstCompanyForPreview();
   if (company) {
-    if (title) title.textContent = '👁 Превью с данными из первой компании:';
+    if (title) title.innerHTML = UI_ICONS.eye + 'Превью с данными из первой компании:';
     if (note) note.hidden = true;
     body.textContent = substituteTemplate(text, company);
   } else {
-    if (title) title.textContent = '👁 Превью (пример):';
+    if (title) title.innerHTML = UI_ICONS.eye + 'Превью (пример):';
     body.textContent = substituteTemplate(text, TEMPLATE_DEMO_COMPANY);
     if (note) {
-      note.textContent = 'ℹ️ Это пример на вымышленных данных. Реальные данные компаний подставятся при работе с таблицей.';
+      note.innerHTML = UI_ICONS.info + 'Это пример на вымышленных данных. Реальные данные компаний подставятся при работе с таблицей.';
       note.hidden = false;
     }
   }
@@ -7363,9 +8308,8 @@ async function saveTemplateFromModal() {
     const okSave = await uiChoose(
       'Неизвестные переменные: ' + unknown.map(u => '{' + u + '}').join(', ')
       + '. В сообщении они останутся как есть — проверьте имя или создайте свою переменную.',
-      'Проверьте переменные',
-      [{value: 'save', label: '💾 Сохранить как есть'},
-       {value: 'fix', label: '✏️ Вернуться к правке'}]);
+      'Проверьте переменные',[{value: 'save', label: 'Сохранить как есть'},
+                    {value: 'fix', label: 'Вернуться к правке'}]);
     if (!okSave || okSave.value !== 'save') return false;
   } else {
     saveVarFromModal._varsWarned = false;
@@ -7691,7 +8635,7 @@ function openVarModal(name) {
   _tplEditVarName = name || null;
   const v = name ? (customVariables || []).find(x => x.name === name) : null;
   const title = document.getElementById('tpl-var-modal-title');
-  if (title) title.textContent = v ? '✏️ Редактировать переменную' : '➕ Новая переменная';
+  if (title) title.innerHTML = v ? UI_ICONS.pencil + 'Редактировать переменную' : UI_ICONS.plus + 'Новая переменная';
   const nameEl = document.getElementById('tpl-var-name');
   if (nameEl) { nameEl.value = v ? v.name : ''; nameEl.disabled = !!v; }
   const src = document.getElementById('tpl-var-source');
@@ -7910,12 +8854,12 @@ function renderBulkQueue() {
   const items = [...texts.entries()];
   box.innerHTML = '<div class="bulk-queue-head"><span>Тексты готовы: '
     + items.filter(([k]) => copied.has(k)).length + ' из ' + items.length + '</span>'
-    + '<button type="button" onclick="bulkCopyNext()">📋 Скопировать следующее</button></div>'
+    + '<button type="button" onclick="bulkCopyNext()">' + UI_ICONS.copy + 'Скопировать следующее</button></div>'
     + items.map(([key, v]) =>
         '<div class="bulk-queue-item' + (copied.has(key) ? ' done' : '') + '">'
         + '<span class="bqi-name">' + escapeHtml(v.name || 'Без названия')
         + (v.tpl_name ? ' <span class="bqi-tpl">📋 (' + escapeHtml(v.tpl_name) + ')</span>' : '') + '</span>'
-        + '<button type="button" data-copy="' + escapeHtml(key) + '">📋</button></div>').join('');
+        + '<button type="button" data-copy="' + escapeHtml(key) + '">' + UI_ICONS.copy + '</button></div>').join('');
   box.querySelectorAll('[data-copy]').forEach(b =>
     b.addEventListener('click', () => bulkCopyOne(b.dataset.copy)));
 }
@@ -8181,8 +9125,8 @@ function renderHistoryEntry(entry) {
             ).join('')}
           </div>
           <div class="hist-dl-row">
-            <button class="hist-btn blue" data-run="${escapeHtml(entry.run_id || '')}" onclick="rerunSearch(this.dataset.run)">🔄 Повторить поиск</button>
-            <button class="hist-btn red" data-run="${escapeHtml(entry.run_id || '')}" onclick="deleteHistory(this.dataset.run)">🗑 Удалить</button>
+            <button class="hist-btn blue" data-run="${escapeHtml(entry.run_id || '')}" onclick="rerunSearch(this.dataset.run)">${UI_ICONS.refresh}Повторить поиск</button>
+            <button class="hist-btn red" data-run="${escapeHtml(entry.run_id || '')}" onclick="deleteHistory(this.dataset.run)">${UI_ICONS.trash}Удалить</button>
           </div>
         </div>
       </div></div>
@@ -8236,7 +9180,7 @@ function loadSeenStatus() {
       if (data.count > 0) {
         const date = data.saved_at ? new Date(data.saved_at).toLocaleString('ru-RU') : '';
         el.style.display = 'block';
-        el.innerHTML = `📦 В кэше <b>${data.count}</b> бизнесов${date ? ' (обновлено: ' + date + ')' : ''}. Повторные запуски по тем же городам пропустят уже найденные.`;
+        el.innerHTML = `${UI_ICONS.box}В кэше <b>${data.count}</b> бизнесов${date ? ' (обновлено: ' + date + ')' : ''}. Повторные запуски по тем же городам пропустят уже найденные.`;
       } else {
         el.style.display = 'none';
       }

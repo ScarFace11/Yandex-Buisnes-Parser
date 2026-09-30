@@ -86,6 +86,20 @@ VARIABLE_ALIASES = {
 # Встроенные имена заняты: свою переменную так назвать нельзя.
 RESERVED_VAR_NAMES = frozenset(VARIABLE_ALIASES) | {key for key, _label, _f in VARIABLES}
 
+# Служебные переменные: значение вычисляется в момент подстановки, хранить
+# нечего. Дата/время — по часовому поясу сервера, приветствие — по часу.
+SPECIAL_VARIABLES = ("дата", "время", "приветствие")
+RESERVED_VAR_NAMES |= frozenset(SPECIAL_VARIABLES)
+
+# Пороги для {приветствие}: [до) → форма. Границы включительно слева.
+_GREETING_PARTS = (
+    (5, "Доброй ночи"),
+    (12, "Доброе утро"),
+    (18, "Добрый день"),
+    (22, "Добрый вечер"),
+    (24, "Доброй ночи"),
+)
+
 # Имя пользовательской переменной: буквы/цифры/подчёркивание, кириллица —
 # тот же алфавит, что у подстановки \{...\} в тексте шаблона.
 _VAR_NAME_RE = re.compile(r"^[A-Za-z0-9_а-яА-ЯёЁ]+$")
@@ -379,15 +393,32 @@ def _socials_text(record: dict) -> str:
     return ", ".join(names)
 
 
+def _special_value(key: str) -> str:
+    """Значение служебной переменной в момент подстановки."""
+    now = datetime.now()
+    if key == "дата":
+        return now.strftime("%d.%m.%Y")
+    if key == "время":
+        return now.strftime("%H:%M")
+    if key == "приветствие":
+        hour = now.hour
+        for bound, form in _GREETING_PARTS:
+            if hour < bound:
+                return form
+        return "Добрый день"
+    return ""
+
+
 def substitute(text: str, record: dict, show_missing_as_var: bool = False,
                custom_variables=None) -> str:
     """Подставить {переменные} значениями записи.
 
     Свои переменные (custom_variables) приоритетнее встроенных: задан
-    столбец — значение из записи, иначе статичный текст. Известная, но
-    пустая переменная → «—» (или остаётся {var} при show_missing_as_var).
-    Неизвестная переменная остаётся как есть — так её видно и можно
-    поправить шаблон.
+    столбец — значение из записи, иначе статичный текст. Служебные
+    ({дата}, {время}, {приветствие}) вычисляются в момент подстановки.
+    Известная, но пустая переменная → «—» (или остаётся {var} при
+    show_missing_as_var). Неизвестная переменная остаётся как есть — так
+    её видно и можно поправить шаблон.
     """
     record = record or {}
     custom = {
@@ -407,6 +438,8 @@ def substitute(text: str, record: dict, show_missing_as_var: bool = False,
             if value is None or str(value).strip() == "":
                 return match.group(0) if show_missing_as_var else "—"
             return str(value)
+        if key in SPECIAL_VARIABLES:
+            return _special_value(key)
         canonical = VARIABLE_ALIASES.get(key, key)
         if canonical not in _VAR_FIELD:
             return match.group(0)

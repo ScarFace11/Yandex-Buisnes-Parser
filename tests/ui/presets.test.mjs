@@ -183,6 +183,8 @@ for (const name of ['BLACKLIST_MAX_WORDS', 'BLACKLIST_MAX_LEN']) {
 }
 
 (0, eval)([
+  grabConst('UI_ICONS'),
+  grab('escapeHtml'),
   grabConst('FORM_DEFAULTS'),
   grabConst('COMPANY_TYPE_PERIODS'),
   grab('normalizeBlacklist'),

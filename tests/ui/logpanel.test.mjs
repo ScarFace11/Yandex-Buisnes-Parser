@@ -125,7 +125,8 @@ function grabConst(name) {
   return src.slice(i, src.indexOf(';', i) + 1);
 }
 (0, eval)(fns.map(grab).join('\n')
-  + '\n' + ['LOG_NOISE_RE', 'LOG_KEEP_RE', 'LOG_CITY_RE', 'LOG_SUBLINE_RE', 'LOG_FILTERS']
+  + '\n' + ['LOG_NOISE_RE', 'LOG_KEEP_RE', 'LOG_CITY_RE', 'LOG_SUBLINE_RE', 'LOG_FILTERS',
+    'UI_ICONS']
     .map(grabConst).join('\n'));
 
 const logEl = els['log-output'];
@@ -210,12 +211,16 @@ test('tech lines are stored but hidden until the toggle is on', () => {
 
   globalThis.toggleTechDetails();
   assert.equal(globalThis._showTechDetails, true);
-  assert.equal(els['btn-tech-details'].textContent, '🙈 Скрыть детали');
+  // Значок кнопки — инлайновый SVG: подпись читаем по тексту, состояние —
+  // по классу .ico/иконке eyeOff из UI_ICONS.
+  assert.match(els['btn-tech-details'].innerHTML, /Скрыть детали/);
+  assert.match(els['btn-tech-details'].innerHTML, /#i-eye-off/);
   assert.equal(logEl._classes.has('show-tech'), true, 'now revealed');
 
   globalThis.toggleTechDetails();
   assert.equal(globalThis._showTechDetails, false);
-  assert.equal(els['btn-tech-details'].textContent, '🔧 Технические детали');
+  assert.match(els['btn-tech-details'].innerHTML, /Технические детали/);
+  assert.doesNotMatch(els['btn-tech-details'].innerHTML, /Скрыть детали/);
   assert.equal(logEl._classes.has('show-tech'), false);
   assert.equal(globalThis._ls().stats.tech, 1, 'counted for the «Технические» filter');
 });

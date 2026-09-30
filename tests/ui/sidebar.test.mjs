@@ -26,6 +26,14 @@ function grab(name) {
   throw new Error('unbalanced braces while slicing: ' + name);
 }
 
+// Slice a `const NAME = {...};` block (object literal, ends with `};`).
+function grabConst(name) {
+  const i = src.indexOf('const ' + name + ' = {');
+  assert.ok(i >= 0, 'const not found in app.js: ' + name);
+  const end = src.indexOf('\n};', i);
+  return src.slice(i, end + 3);
+}
+
 // ── Minimal DOM stub ──────────────────────────────────────────
 function mkEl(id) {
   const classes = new Set();
@@ -97,7 +105,10 @@ const asyncGrab = name => {
   throw new Error('unbalanced braces while slicing: ' + name);
 };
 (0, eval)(fns.map(grab).join('\n') + '\n'
-  + asyncGrab('stopRunWithConfirm') + '\n' + asyncGrab('stopPausedRun'));
+  + asyncGrab('stopRunWithConfirm') + '\n' + asyncGrab('stopPausedRun') + '\n'
+  // Кнопка запуска рисует состояние значком из UI_ICONS (SVG, не эмодзи).
+  + grabConst('UI_ICONS')
+  + '\n' + grab('escapeHtml'));
 // resetBtn repaints the «Статистика» tab badge — irrelevant here.
 globalThis.updateStatsBadge = () => {};
 // setRunBtnActive/resetBtn rewire the dock button's onclick to these —
@@ -329,7 +340,7 @@ test('setRunBtnActive: one control — main button = ⏸ Пауза, small ⏹ s
   assert.equal(els['btn-run']._classes.has('run-active'), true, 'red active style');
   assert.equal(els['btn-run']._classes.has('run-ready'), false, 'teal removed');
   assert.equal(els['btn-txt'].textContent, 'Пауза');
-  assert.equal(els['btn-icon'].textContent, '⏸');
+  assert.match(els['btn-icon'].innerHTML, /#i-pause/, 'пауза — значок из спрайта');
   // The small stop button appears next to it.
   assert.equal(els['btn-stop'].hidden, false, 'stop button visible');
   assert.equal(typeof els['btn-stop'].onclick, 'function', 'stop wired to stopRunWithConfirm');
@@ -362,7 +373,8 @@ test('pauseRun: disables the main button, shows the wait text', () => {
   els['btn-txt'].textContent = 'Пауза';
   globalThis.pauseRun();
   assert.equal(els['btn-run'].disabled, true, 'button disabled while pausing');
-  assert.equal(els['btn-txt'].textContent, '⏳ Завершаем город…');
+  assert.match(els['btn-txt'].innerHTML, /#i-hourglass/, 'ожидание — значок часов');
+  assert.match(els['btn-txt'].innerHTML, /Завершаем город…/);
 });
 
 test('enterPausedState: orange resume button + paused badge', () => {
@@ -377,9 +389,11 @@ test('enterPausedState: orange resume button + paused badge', () => {
   assert.equal(els['btn-run']._classes.has('run-paused'), true, 'orange paused style');
   assert.equal(els['btn-run']._classes.has('run-active'), false, 'run-active cleared');
   assert.equal(els['btn-txt'].textContent, 'Продолжить поиск');
-  assert.equal(els['btn-icon'].textContent, '▶', 'resume icon ▶');
+  assert.match(els['btn-icon'].innerHTML, /#i-play/, 'resume icon: треугольник');
   assert.equal(globalThis.__status.cls, 'paused', 'status badge = paused');
-  assert.equal(globalThis.__status.txt, '⏸ Пауза');
+  // Подпись без эмодзи: значок рисует сама пилюля по классу состояния
+  // (STATUS_ICONS → #status-badge .ico).
+  assert.equal(globalThis.__status.txt, 'Пауза');
   // ⏹ must stay reachable next to «▶ Продолжить» — it used to vanish here,
   // leaving no way to stop a paused search.
   assert.equal(els['btn-stop'].hidden, false, 'stop button visible while paused');
@@ -512,7 +526,7 @@ test('resetBtn restores «Найти компании» and re-evaluates readine
   assert.equal(typeof els['btn-run'].onclick, 'function', 'onclick back to startRun');
   assert.equal(els['btn-run']._classes.has('run-active'), false, 'red cleared');
   assert.equal(els['btn-run']._classes.has('run-ready'), true, 'teal restored');
-  assert.equal(els['btn-icon'].textContent, '🚀');
+  assert.match(els['btn-icon'].innerHTML, /#i-search/, 'вернулась иконка поиска');
 
   // Run finishes, user cleared the form during the run → back to grey
   els['btn-run'].disabled = true;
@@ -571,22 +585,25 @@ test('updateApiKeysStatus: all 3 keys → «Готово 3/3»', () => {
   globalThis.updateApiKeysStatus(true, true, true);
   const b = els['api-status-badge'];
   assert.ok(b._classes.has('ok'));
-  assert.match(b.textContent, /Готово 3\/3/);
+  assert.match(b.innerHTML, /#i-check/);
+  assert.match(b.innerHTML, /Готово 3\/3/);
 });
 test('updateApiKeysStatus: partial → orange badge with the exact ratio', () => {
   globalThis.updateApiKeysStatus(true, true, false);
   const b = els['api-status-badge'];
   assert.ok(b._classes.has('warn'), 'orange warn class');
-  assert.match(b.textContent, /2\/3/, 'exact count shown');
+  assert.match(b.innerHTML, /2\/3/, 'exact count shown');
+  assert.match(b.innerHTML, /#i-warn/);
   globalThis.updateApiKeysStatus(true, false, false);
   assert.ok(els['api-status-badge']._classes.has('warn'));
-  assert.match(els['api-status-badge'].textContent, /1\/3/);
+  assert.match(els['api-status-badge'].innerHTML, /1\/3/);
 });
 test('updateApiKeysStatus: no keys → «0/3» + err', () => {
   globalThis.updateApiKeysStatus(false, false, false);
   const b = els['api-status-badge'];
   assert.ok(b._classes.has('err'));
-  assert.match(b.textContent, /0\/3/);
+  assert.match(b.innerHTML, /0\/3/);
+  assert.match(b.innerHTML, /#i-x/);
 });
 test('updateApiKeysStatus: per-key dots follow each key', () => {
   globalThis.updateApiKeysStatus(true, false, true);

@@ -151,7 +151,11 @@ globalThis.SUBTAB_KEY = 'yp_results_subtab';
 globalThis.CITY_TAB_KEY = 'yp_results_city_tab';
 globalThis.BULK_OPEN_KEY = 'yp_bulk_open';
 globalThis.PAGE_SIZE = 50;
-globalThis.ICONS = { xlsx: '📊', json: '📋', csv: '📄', html: '🗺' };
+globalThis.FILE_TYPE_ICONS = {
+  xlsx: '<svg data-icon="xlsx"/>', json: '<svg data-icon="json"/>',
+  csv: '<svg data-icon="csv"/>', html: '<svg data-icon="html"/>',
+  dir: '<svg data-icon="dir"/>',
+};
 globalThis.reviewedState = {};
 globalThis.allResults = [];
 globalThis.filteredRows = [];
@@ -223,14 +227,14 @@ globalThis.clearTimeout = () => {};
 
 // Score tables and limits live at module scope — load them verbatim.
 (0, eval)(['SCORE_MAX', 'SCORE_AGGREGATORS', 'SCORE_EXPENSIVE', 'SCORE_RULES',
-  'REVIEWED_AUTOSAVE_MS', 'FILE_ACT_ICONS', 'REFILTER_LABEL',
+  'REVIEWED_AUTOSAVE_MS', 'FILE_ACT_ICONS', 'UI_ICONS', 'REFILTER_LABEL',
   // «🎯 Тип компании» едет в рефильтр вместе с остальными фильтрами.
   'COMPANY_TYPE_PERIODS', 'COMPANY_TYPE_DEFAULT_MONTHS'].map(grabConst).join('\n'));
 
 const fns = [
   'pluralNum', 'pluralRecords', 'pluralProfiles', 'pluralFiles', 'fmtBytes', 'basenameOf',
   'clampInt', 'safeSocialUrl', 'cityOf', 'reviewKey', 'isReviewed', 'escapeHtml', 'safeUrl',
-  'socialsHTML', 'renderPage', 'filterTable', 'refreshReviewedUI',
+  'socialsHTML', 'phoneHTML', 'renderPage', 'filterTable', 'refreshReviewedUI',
   'bulkScopeRows', 'bulkScopeStats', 'bulkOpenable', 'bulkWillOpen', 'renderCityTabs', 'setCityTab',
   'updateBulkStats', 'renderBulkProgress', 'resetBulkProgress', 'setBulkCount',
   'toggleUnviewedOnly', 'fileCardHTML', 'renderFiles', 'bulkParams',
@@ -454,7 +458,8 @@ test('updateBulkStats paints counters, option labels and the button', () => {
   assert.equal(els['bulk-social'].options[3].textContent, 'Instagram — 0');
   assert.equal(els['bulk-open-btn'].disabled, false);
   // 3 of the 4 sample companies have VK; 5 were requested
-  assert.match(els['bulk-open-btn'].textContent, /Открыть 3 профиля/);
+  assert.match(els['bulk-open-btn'].innerHTML, /#i-external/);
+  assert.match(els['bulk-open-btn'].innerHTML, /Открыть 3 профиля/);
   assert.ok(presets[0]._classes.has('active'), 'preset 5 is highlighted');
 });
 
@@ -463,7 +468,7 @@ test('updateBulkStats opens everything asked for in one click', () => {
   els['bulk-count'].value = '20';
   globalThis.updateBulkStats();
   // Запросили 20, но непросмотренных с VK всего 3 — обещаем ровно 3
-  assert.match(els['bulk-open-btn'].textContent, /Открыть 3 профиля/);
+  assert.match(els['bulk-open-btn'].innerHTML, /Открыть 3 профиля/);
   assert.ok(!presets[0]._classes.has('active'));
 });
 
@@ -471,7 +476,7 @@ test('updateBulkStats disables the button only when everything is viewed', () =>
   resetState([REC('Без соцсетей', 'Уфа')]);
   globalThis.updateBulkStats();
   assert.equal(els['bulk-open-btn'].disabled, true);
-  assert.match(els['bulk-open-btn'].textContent, /Все просмотрены/);
+  assert.match(els['bulk-open-btn'].innerHTML, /Все просмотрены/);
 });
 
 test('updateBulkStats keeps the button live between batches', () => {
@@ -479,24 +484,24 @@ test('updateBulkStats keeps the button live between batches', () => {
   // 3 записи с VK: две в Уфе, одна в Москве
   globalThis.updateBulkStats();
   assert.equal(els['bulk-open-btn'].disabled, false);
-  assert.match(els['bulk-open-btn'].textContent, /Открыть 3 профиля/);
+  assert.match(els['bulk-open-btn'].innerHTML, /Открыть 3 профиля/);
 
   els['bulk-count'].value = '2';
   globalThis.updateBulkStats();
-  assert.match(els['bulk-open-btn'].textContent, /Открыть 2 профиля/);
+  assert.match(els['bulk-open-btn'].innerHTML, /Открыть 2 профиля/);
 
   // После батча осталось 1 — кнопка по-прежнему живая и считает честно
   globalThis.reviewedState[globalThis.reviewKey(ROWS[0])] = true;
   globalThis.reviewedState[globalThis.reviewKey(ROWS[1])] = true;
   globalThis.updateBulkStats();
   assert.equal(els['bulk-open-btn'].disabled, false, 'кнопка не выключается после первого батча');
-  assert.match(els['bulk-open-btn'].textContent, /Открыть 1 профиль/);
+  assert.match(els['bulk-open-btn'].innerHTML, /Открыть 1 профиль/);
 
   // Осталось 0 → единственный случай, когда кнопка гаснет
   globalThis.reviewedState[globalThis.reviewKey(ROWS[2])] = true;
   globalThis.updateBulkStats();
   assert.equal(els['bulk-open-btn'].disabled, true);
-  assert.match(els['bulk-open-btn'].textContent, /Все просмотрены/);
+  assert.match(els['bulk-open-btn'].innerHTML, /Все просмотрены/);
 });
 
 test('bulkWillOpen never promises more than what is left', () => {
@@ -804,7 +809,7 @@ test('fileCardHTML shows meta, four actions for RAW and no archive for ARCHIVE',
     size: 18432, records: 42, modified: '15.09.2026 22:19', ext: 'xlsx',
   });
   assert.match(raw, /42 записи • 18 КБ • 15\.09\.2026 22:19/);
-  assert.match(raw, /📊/);
+  assert.match(raw, /data-icon="xlsx"/, 'у файла Excel свой значок');
   ['open', 'download', 'archive', 'delete'].forEach(a =>
     assert.match(raw, new RegExp('data-act="' + a + '"'), 'missing action ' + a));
 
@@ -832,7 +837,8 @@ test('fileCardHTML surfaces read errors instead of a record count', () => {
     name: 'broken.xlsx', path: 'raw/broken.xlsx', size: 5, error: 'не удалось прочитать файл',
     modified: '01.01.2026 00:00', ext: 'xlsx',
   });
-  assert.match(broken, /⚠ не удалось прочитать файл/);
+  assert.match(broken, /#i-warn/, 'ошибка чтения — значок, а не эмодзи');
+  assert.match(broken, /не удалось прочитать файл/);
   assert.ok(!/записей/.test(broken));
 });
 
@@ -856,7 +862,7 @@ test('renderFiles filters by name and fills the counters line', () => {
   assert.match(els['files-count'].innerHTML, /files-badge archive">ARCHIVE 0</);
   assert.equal(els['files-found'].textContent, '', 'no counter while the search is empty');
   assert.equal((els['history-raw'].innerHTML.match(/file-card/g) || []).length, 2);
-  assert.match(els['history-processed'].innerHTML, /📋/, 'json files get their own icon');
+  assert.match(els['history-processed'].innerHTML, /data-icon="json"/, 'json files get their own icon');
   assert.match(els['history-archive'].innerHTML, /no-data/, 'empty section shows a placeholder');
 
 
@@ -995,7 +1001,8 @@ test('«Сохранить сейчас» reports what it wrote', async () => {
   globalThis.reviewedDirty = true;
   await globalThis.persistReviewedMarks();
   assert.equal(els['bulk-persist-btn'].disabled, false, 'кнопка снова активна');
-  assert.equal(els['bulk-persist-btn'].textContent, '💾 Сохранить сейчас');
+  assert.match(els['bulk-persist-btn'].innerHTML, /#i-save/);
+  assert.match(els['bulk-persist-btn'].innerHTML, /Сохранить сейчас/);
   assert.ok(toasts.some(t => /Отметки записаны/.test(t.msg)));
 });
 
@@ -1079,7 +1086,8 @@ test('file cards use theme-aware SVG icons, not emoji', () => {
     name: 'raw_кафе_уфа.xlsx', path: 'raw/raw_кафе_уфа.xlsx',
     size: 1024, records: 12, modified: '01.01.2026 10:00', ext: 'xlsx',
   });
-  assert.equal((html.match(/<svg/g) || []).length, 4, 'open/download/archive/delete are SVGs');
+  // Значок типа файла + четыре действия — все SVG с stroke="currentColor".
+  assert.equal((html.match(/<svg/g) || []).length, 5, 'значок типа и четыре действия — SVG');
   assert.ok(!/🗑/.test(html), 'the invisible emoji trash is gone');
   assert.ok(!/📥/.test(html) && !/📦/.test(html), 'no emoji left in the action row');
   assert.match(html, /stroke="currentColor"/);
@@ -1195,7 +1203,7 @@ test('refilterNow sends every stage-2 filter and reports progress', async () => 
   globalThis.fetch = async (url, opts) => {
     if (url === '/process-filters') {
       body = JSON.parse(opts.body);
-      busyLabel = els['btn-refilter'].textContent;
+      busyLabel = els['btn-refilter'].innerHTML;
       return {ok: true, json: async () => ({ok: true, count: 9, empty: false,
                                             files: ['a.xlsx'], out_dir: '/data/MyResults'})};
     }
@@ -1227,8 +1235,10 @@ test('refilterNow sends every stage-2 filter and reports progress', async () => 
   assert.equal(body.only_single_branch, true);
   assert.equal(body.only_new_months, 12);
 
+  assert.match(busyLabel, /#i-hourglass/, 'работа идёт — значок часов');
   assert.match(busyLabel, /Обрабатываю 3 файла/, 'виден объём работы: ' + busyLabel);
-  assert.equal(els['btn-refilter'].textContent, '🔄 Применить фильтры заново', 'кнопка вернулась в норму');
+  assert.match(els['btn-refilter'].innerHTML, /Применить фильтры заново/, 'кнопка вернулась в норму');
+  assert.match(els['btn-refilter'].innerHTML, /<svg class="ico"/, 'и подпись снова со значком');
   assert.equal(filesReloads, 1, 'список файлов обновился');
   // Полный путь в журнале: папка результатов может быть пользовательской.
   assert.ok(logLines.some(l => /🎯 Processed: 9 организаций.*\/data\/MyResults\/processed\//.test(l.msg)),
@@ -1274,7 +1284,7 @@ test('both refilter buttons share the progress state', async () => {
   let labels = null;
   globalThis.fetch = async (url, opts) => {
     if (url === '/process-filters') {
-      labels = [els['btn-refilter'].textContent, els['btn-refilter-files'].textContent];
+      labels = [els['btn-refilter'].innerHTML, els['btn-refilter-files'].innerHTML];
       return {ok: true, json: async () => ({ok: true, count: 1, files: [], out_dir: '/x'})};
     }
     return {ok: true, json: async () => ({})};
@@ -1285,7 +1295,10 @@ test('both refilter buttons share the progress state', async () => {
   } finally {
     globalThis.fetch = realFetch;
   }
-  assert.deepEqual(labels, ['⏳ Обрабатываю 1 файл…', '⏳ Обрабатываю 1 файл…']);
+  labels.forEach(l => {
+    assert.match(l, /#i-hourglass/);
+    assert.match(l, /Обрабатываю 1 файл…/);
+  });
   assert.equal(els['btn-refilter-files'].disabled, false, 'обе кнопки снова доступны');
 });
 

@@ -96,6 +96,12 @@ PAIRS = [
     ("--txt", "--field"), ("--txt", "--term"), ("--txt", "--bdr"),
     ("--sub", "--bg"), ("--sub", "--card"), ("--sub", "--panel"),
     ("--muted", "--bg"), ("--muted", "--card"), ("--muted", "--panel"),
+    # Строки таблицы: текст читается и на зебре, и на подсветке курсора, а не
+    # только на белой карточке. --muted на этих тонах норму не добирает —
+    # в строке служебный текст живёт на --sub.
+    ("--txt", "--row-alt"), ("--txt", "--row-hover"),
+    ("--sub", "--row-alt"), ("--sub", "--row-hover"),
+    ("--muted", "--row-alt"),
     ("--c", "--bg"), ("--c", "--card"), ("--c", "--cl"), ("--c", "--panel"),
     ("--on-accent", "--brand"), ("--on-accent", "--hdr"),
     ("--on-accent", "--red-btn"), ("--on-accent", "--red-btn-2"),
@@ -150,8 +156,15 @@ class TestOneTokenSet:
     def test_rules_do_not_hardcode_colours(self):
         """Цвет вне блоков токенов не переключается вместе с темой."""
         css = re.sub(r"/\*.*?\*/", "", STYLE, flags=re.S)
-        light_block = css[css.index(":root{"):css.index("\n}")]
-        dark_block = css[css.index(DARK + "{"):css.index("\n}", css.index(DARK + "{"))]
+        # Закрывающая скобка блока ищется ОТ его начала: искать «\n}» по всему
+        # файлу нельзя — первый такой переход встречается раньше @font-face.
+        def block_of(selector: str) -> str:
+            start = css.index(selector + "{")
+            return css[start:css.index("\n}", start)]
+
+        light_block = block_of(":root")
+        dark_block = block_of(DARK)
+        assert "--bg:" in light_block and "--bg:" in dark_block
         rest = css.replace(light_block, "").replace(dark_block, "")
         literals = []
         for line in rest.split("\n"):
@@ -174,8 +187,9 @@ class TestContrast:
         assert ratio >= 4.5, f"тёмная тема: {fg} на {bg} = {ratio:.2f}:1 < 4.5:1"
 
     def test_dark_theme_is_soft_not_black_and_white(self):
-        assert DARK_TOKENS["--bg"] == "#191C22"
-        assert DARK_TOKENS["--txt"] == "#E3E7EE"
+        """Графит вместо чёрного и мягкий светлый текст вместо белого."""
+        assert DARK_TOKENS["--bg"] == "#101216"
+        assert DARK_TOKENS["--txt"] == "#E6E9EF"
 
     def test_pause_is_orange_in_both_themes(self):
         """⏸ Пауза — оранжевая; красный остаётся за ⏹ «Остановить»."""
