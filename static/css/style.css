@@ -156,7 +156,10 @@ header h1{font-size:14px;font-weight:700;letter-spacing:-.015em}
    чтобы на 11px линия осталась ≈1px после масштабирования из viewBox 24. */
 #status-badge .ico{width:11px;height:11px;stroke-width:2.2}
 #status-badge.running{background:var(--pause-to);color:var(--pause-txt)}
-#status-badge.done{background:var(--ok-bg);color:var(--ok-strong);border:1px solid var(--ok-bdr)}
+/* «Готово» — нейтральная пилюля в тоне шапки, а не яркое зелёное пятно:
+   поиск закончен, и самое время приглушить. Зелёный остаётся за тостами
+   и бейджами оценки в таблице. */
+#status-badge.done{background:rgba(255,255,255,.10);color:var(--on-accent);border:1px solid rgba(255,255,255,.22)}
 #status-badge.stopped{background:var(--bdr);color:var(--txt);border:1px solid var(--bdr-h)}
 #status-badge.error{background:var(--err-bg);color:var(--err-strong);border:1px solid var(--err-bdr)}
 /* One base style for every header button; variants below.
@@ -243,6 +246,10 @@ header h1{font-size:14px;font-weight:700;letter-spacing:-.015em}
 .logs-list .log-dl{background:rgba(80,180,120,.3);color:var(--txt)}
 .logs-list .log-actions a:hover{opacity:.8}
 .logs-empty{color:var(--muted);font-size:13px;padding:20px;text-align:center}
+/* Точка-индикатор у подписи «Уведомления»: зелёная — включены, серая — нет.
+   Состояние читается без слов: подпись в шапке одна для всех режимов. */
+.notify-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--grn);margin-left:2px;flex:0 0 auto}
+.notify-dot.is-off{background:rgba(255,255,255,.35)}
 #btn-notify,#btn-theme{
   /* базовый «призрачный» вид берётся из .hdr-right > button */
 }
@@ -822,6 +829,9 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
   display:flex;align-items:center;gap:5px;padding:7px 15px;
   flex-wrap:wrap;border-bottom:1px solid var(--bdr);background:var(--panel);
 }
+/* Строка спрятана: данных нет (empty) или колонка соцсетей скрыта
+   (col-hidden — фильтр без объекта только путает). */
+.tbl-social-row.empty,.tbl-social-row.col-hidden{display:none}
 .social-filter-lbl{font-size:11px;color:var(--muted);font-weight:700;white-space:nowrap;margin-right:2px}
 .sf-tag{
   display:inline-flex;align-items:center;padding:3px 9px;border-radius:20px;
@@ -841,13 +851,19 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
 /* ── Column toggle ── */
 .col-toggle-wrap{position:relative}
 #btn-cols{
-  padding:5px 11px;border:1px solid var(--bdr);border-radius:6px;
-  background:var(--card);color:var(--sub);font-size:12px;font-weight:700;
+  /* Кнопка заметнее соседних фильтров: это настройка всей таблицы, а не
+     фильтр одной выборки — мелкий шрифт терялся в тулбаре. */
+  padding:7px 14px;border:1px solid var(--bdr-h);border-radius:7px;
+  background:var(--card);color:var(--txt);font-size:13px;font-weight:700;
   cursor:pointer;white-space:nowrap;
-  display:flex;align-items:center;gap:5px;
+  display:flex;align-items:center;gap:6px;
   transition:border-color .12s,color .12s;font-family:inherit;
+  box-shadow:var(--sh);
 }
 #btn-cols:hover,#btn-cols.active{border-color:var(--c);color:var(--c);background:var(--cl)}
+/* Список — ровные колонки: чекбокс | подпись, без «лесенки» из-за длины
+   подписей (раньше чекбоксы разъезжались по строкам). */
+#col-items{display:grid;grid-template-columns:1fr}
 #col-dropdown{
   position:absolute;top:calc(100% + 5px);right:0;
   background:var(--card);border:1px solid var(--bdr);border-radius:var(--r-md);
@@ -856,12 +872,13 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
 }
 #col-dropdown.open{display:block}
 .col-item{
-  display:flex;align-items:center;gap:8px;padding:7px 12px;
+  display:grid;grid-template-columns:14px 1fr;align-items:center;column-gap:9px;
+  padding:7px 12px;
   cursor:pointer;border-radius:var(--r-sm);font-size:13px;color:var(--txt);
   transition:background .1s;user-select:none;
 }
 .col-item:hover{background:var(--row-hover)}
-.col-item input{width:14px;height:14px;accent-color:var(--c);cursor:pointer;flex-shrink:0}
+.col-item input{grid-column:1;width:14px;height:14px;accent-color:var(--c);cursor:pointer;flex-shrink:0}
 .col-sep{height:1px;background:var(--bdr);margin:4px 10px}
 .col-all-btn{
   width:100%;padding:5px 12px;border:none;background:none;
@@ -878,6 +895,11 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
 #results-table.col-hide-6 th:nth-child(6),#results-table.col-hide-6 td:nth-child(6){display:none}
 #results-table.col-hide-7 th:nth-child(7),#results-table.col-hide-7 td:nth-child(7){display:none}
 #results-table.col-hide-8 th:nth-child(8),#results-table.col-hide-8 td:nth-child(8){display:none}
+
+/* Кнопка импорта — label, оборачивающий скрытый file input: стилизация
+   нативного поля невозможна, а выглядеть должна как соседняя кнопка. */
+.data-import-btn{display:inline-flex;align-items:center;gap:5px;cursor:pointer}
+.data-import-btn input[hidden]{display:none}
 
 /* ── Export filtered ── */
 #export-sel-wrap{display:none;align-items:center;gap:6px;margin-left:auto}
@@ -1015,14 +1037,32 @@ input[type="range"]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;b
 .grid-wand:active{transform:scale(1.1)}
 
 /* Stats tab: 2GIS Places quota card */
-.quota-card{border-left:3px solid var(--c)}
+.quota-card{border-left:3px solid var(--c);max-width:420px}
 .quota-card.warn{border-left-color:var(--yel)}
 .quota-card.crit{border-left-color:var(--red)}
+/* Крупные цифры — суть карточки: «521 / 1000» читается до подписей. */
+.quota-big{display:flex;align-items:baseline;gap:5px;justify-content:flex-end;margin:2px 0 0}
+.quota-num{font-size:24px;font-weight:800;color:var(--txt);font-variant-numeric:tabular-nums;line-height:1.1}
+.quota-cap{font-size:13px;font-weight:700;color:var(--muted);font-variant-numeric:tabular-nums}
+.quota-left{font-size:12.5px;color:var(--sub)}
+.quota-left b{color:var(--txt)}
+/* Пояснение переехало в tooltip: ⓘ вместо абзаца на карточке. */
+.quota-info{margin-left:auto;color:var(--muted);cursor:help;font-size:12px;font-style:normal}
+.quota-info:hover,.quota-info:focus{color:var(--txt)}
+/* Малозаметное поле ручной коррекции: как значение, вводимое изредка.
+   Специфичность выше глобального input[type=number], который даёт
+   width:100%/13px и перебил бы компактный вид. */
+.quota-card input.quota-manual{
+  width:90px;margin-top:7px;padding:2px 7px;font-size:11px;font-family:inherit;
+  border:1px dashed var(--bdr);border-radius:6px;background:transparent;
+  color:var(--txt);font-variant-numeric:tabular-nums;
+}
+.quota-card input.quota-manual:hover{border-color:var(--bdr-h)}
+.quota-card input.quota-manual:focus{outline:none;border-style:solid;border-color:var(--c);box-shadow:0 0 0 3px var(--focus-ring)}
 .quota-track{height:8px;border-radius:4px;background:var(--bdr);overflow:hidden;margin:6px 0 4px}
 .quota-fill{height:100%;border-radius:4px;background:var(--grn);transition:width .3s}
 .quota-card.warn .quota-fill{background:var(--yel)}
 .quota-card.crit .quota-fill{background:var(--red)}
-.quota-sub{font-size:11px;color:var(--muted)}
 
 .apikey-row{display:flex;gap:6px;align-items:flex-start}
 .apikey-row input{flex:1}
@@ -1282,6 +1322,13 @@ input[type="range"]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;b
   border:1px solid var(--bdr);border-radius:var(--pill);padding:3px 10px;
 }
 .dyn-fact b{color:var(--txt)}
+/* Итоги читаются раньше остального: средний темп — крупнее, лучший день
+   подсвечен, доля разобранного — жирным значением. */
+.dyn-fact{font-size:12px}
+.dyn-fact-avg{font-size:13px}
+.dyn-fact-best{border-color:var(--grn);background:var(--acc-soft)}
+.dyn-fact-best b{color:var(--grn)}
+.dyn-fact-share b{font-weight:800}
 /* О чём график умалчивает: отметки без даты и обрезанный период. */
 .dyn-note{margin-top:8px;font-size:11.5px;color:var(--muted);line-height:1.5}
 .dyn-empty{color:var(--muted);font-size:12.5px;padding:4px 2px}
@@ -1532,6 +1579,8 @@ details[open].sender-advanced summary::before{content:"▼  "}
 .donut{position:relative;width:168px;height:168px}
 .donut svg{display:block;transform:rotate(-90deg)}
 .donut circle{fill:none;stroke-width:16}
+/* Проценты внутри секторов: жирные, но мелкие — это метки, не данные. */
+.donut-pct{font-size:11px;font-weight:700;text-anchor:middle;dominant-baseline:central;pointer-events:none}
 .donut .donut-track{stroke:var(--track)}
 .donut-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;pointer-events:none}
 .donut-center b{font-size:22px;line-height:1.1;color:var(--txt);font-variant-numeric:tabular-nums}
@@ -1541,6 +1590,8 @@ details[open].sender-advanced summary::before{content:"▼  "}
 .donut-legend-row b{margin-left:auto;color:var(--txt);font-variant-numeric:tabular-nums}
 .donut-swatch{display:inline-block;width:9px;height:9px;border-radius:3px;flex:0 0 auto}
 .stat-city-card h4{font-size:13px;font-weight:700;color:var(--c);margin:0 0 9px}
+/* Заголовок с ⓘ-подсказкой (карточка 2GIS): иконка уезжает вправо. */
+.stat-city-card h4{display:flex;align-items:center;gap:5px}
 .stat-city-card .stat-mini-row{display:flex;justify-content:space-between;align-items:baseline;font-size:12px;color:var(--muted);padding:4px 0}
 .stat-city-card .stat-mini-row span:last-child{font-weight:800;font-size:14.5px;color:var(--txt)}
 
@@ -1806,7 +1857,7 @@ html.theme-anim #log-output{
 [data-theme="dark"] .hdr-right .notify-wrap > button{border-color:rgba(255,255,255,.34);color:var(--txt)}
 [data-theme="dark"] .hdr-right > button:hover,
 [data-theme="dark"] .hdr-right .notify-wrap > button:hover{background:rgba(255,255,255,.1);opacity:1}
-[data-theme="dark"] #status-badge.done{background:var(--grn);color:var(--ok-on);border-color:var(--ok-txt)}
+[data-theme="dark"] #status-badge.done{background:rgba(255,255,255,.16);color:var(--on-accent);border-color:rgba(255,255,255,.30)}
 [data-theme="dark"] input[type=text],[data-theme="dark"] input[type=number],
 [data-theme="dark"] input[type=password],[data-theme="dark"] textarea,
 [data-theme="dark"] select{background:var(--field);border:1px solid var(--bdr);color:var(--txt)}
@@ -2805,7 +2856,7 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 /* Dark theme header is teal, so a 15%-alpha badge washed out (contrast ~1.5:1).
    Solid fills with dark text keep every state readable on the teal bar. */
 [data-theme="dark"] #status-badge{background:rgba(255,255,255,.22);color:var(--on-accent);border:1px solid rgba(255,255,255,.38)}
-[data-theme="dark"] #status-badge.done{background:var(--grn);color:var(--ok-on);border-color:var(--ok-bdr)}
+[data-theme="dark"] #status-badge.done{background:rgba(255,255,255,.16);color:var(--on-accent);border-color:rgba(255,255,255,.30)}
 [data-theme="dark"] #status-badge.running{background:var(--yel);color:var(--warn-on);border-color:var(--warn-bdr)}
 [data-theme="dark"] #status-badge.paused{background:var(--yel);color:var(--warn-on);border-color:var(--warn-bdr)}
 [data-theme="dark"] #status-badge.error{background:var(--red);color:var(--on-accent);border-color:var(--err-bdr)}

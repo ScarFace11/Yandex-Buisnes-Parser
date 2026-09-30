@@ -146,6 +146,25 @@ def quota_reset_for_new_key() -> None:
         _quota_save_locked(0)
 
 
+def quota_set_manual(total: int) -> int:
+    """Ручная коррекция счётчика: пользователь знает фактический расход.
+
+    Автосчёт покрывает только запросы из этого приложения; токены, потраченные
+    в Platform Manager или прошлой сборкой, в него не попадают. Значение
+    сохраняется в persisted-файл текущего месяца как база: _quota_used этой
+    сессии остаётся сверху. Отрицательное/мусорное — сброс к автосчёту.
+    Возвращает применённое значение (база + текущая сессия).
+    """
+    global _quota_base, _quota_file_loaded
+    with _quota_lock:
+        if not _quota_file_loaded:
+            _quota_load_locked()
+        value = max(0, int(total))
+        _quota_base = max(0, value - _quota_used)
+        _quota_save_locked(_quota_base)
+        return _quota_base + _quota_used
+
+
 def quota_spent_this_run() -> int:
     """Billed Places requests spent by THIS process (i.e. this run)."""
     with _quota_lock:

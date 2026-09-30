@@ -181,6 +181,28 @@ _RESULT_LOCK = threading.Lock()
 
 # ── Logging helpers ───────────────────────────────────────────
 
+def short_path(path: str) -> str:
+    """Короткий путь файла для лога: «output/москва_….xlsx» вместо полного.
+
+    Полный путь (C:\\Users\\User\\…) в строке лога длиннее самой строки:
+    переносы ломают чтение, а корень всегда один и тот же. Обрезаем до
+    корня результатов (RESULTS_DIR) — в логе остаётся «output/файл.xlsx»
+    (сегмент корня подписываем сами, он настраиваемый). При любом сбое
+    возвращаем как есть — лог не должен падать из-за косметики.
+    """
+    try:
+        p = str(path)
+        root = str(RESULTS_DIR or "")
+        if root and (p.startswith(root) or p.lower().startswith(root.lower())):
+            cut = p[len(root):].lstrip("\\/").replace("\\", "/")
+            return "output/" + cut if cut else p
+        # Фолбэк: два последних сегмента (папка + файл).
+        parts = p.replace("\\", "/").rstrip("/").split("/")
+        return "/".join(parts[-2:]) if len(parts) > 2 else p
+    except Exception:
+        return str(path)
+
+
 def _cli_write(msg: str) -> None:
     """CLI-mode console write that never raises.
 

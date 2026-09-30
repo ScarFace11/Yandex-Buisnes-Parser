@@ -57,10 +57,41 @@ def _load_reviewed() -> dict:
     return {}
 
 
+def _backup_reviewed() -> None:
+    """Тихая дневная копия отметок в output/_backup/ (последние 7 дней).
+
+    _reviewed.json — вся работа по разбору результатов: его потеря
+    (сбой диска, случайное удаление output/) невосстановима. Копия пишется
+    не чаще раза в день при каждой записи отметок и никогда не ломает
+    основной запрос: сбой бэкапа не должен отменять отметку.
+    """
+    try:
+        bdir = os.path.join(OUTPUT_DIR, "_backup")
+        os.makedirs(bdir, exist_ok=True)
+        today = date.today().isoformat()
+        dst = os.path.join(bdir, f"_reviewed.{today}.json")
+        if not os.path.exists(dst):
+            shutil.copy2(REVIEWED_FILE, dst)
+        # Держим последние 7 дневных копий, старые удаляем.
+        backups = sorted(f for f in os.listdir(bdir)
+                         if f.startswith("_reviewed.") and f.endswith(".json"))
+        for old in backups[:-7]:
+            try:
+                os.remove(os.path.join(bdir, old))
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+
 def _save_reviewed(data: dict):
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     with open(REVIEWED_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+    try:
+        _backup_reviewed()
+    except Exception:
+        pass
 
 
 def _mark(key: str, ts: float | None = None) -> dict:
@@ -170,6 +201,108 @@ def set_reviewed():
     _set_mark(reviewed, url, state_val)
     _save_reviewed(reviewed)
     return jsonify({"ok": True})
+
+
+# ═══════════════════════════════════════════════════════════
+#  Экспорт / импорт пользовательских данных (отметки + настройки)
+# ═══════════════════════════════════════════════════════════
+
+@bp.route("/data/export")
+def data_export():
+    """Zip с отметками «просмотрено» и настройками (включая шаблоны).
+
+    Перенос работы между машинами или запасная копия руками. Файлы
+    результатов не включаются: они большие и их можно выгрузить из
+    «Истории файлов» по одному.
+    """
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        if os.path.exists(REVIEWED_FILE):
+            zf.write(REVIEWED_FILE, "_reviewed.json")
+        try:
+            from paths import settings_path
+            sp = settings_path()
+            if sp.exists():
+                zf.write(str(sp), "settings.json")
+        except Exception:
+            pass
+    buf.seek(0)
+    return Response(
+        buf.getvalue(),
+        mimetype="application/zip",
+        headers={"Content-Disposition":
+                 "attachment; filename=parser-data-export.zip"},
+    )
+
+
+@bp.route("/data/import", methods=["POST"])
+def data_import():
+    """Импорт zip из /data/export: отметки и/или настройки.
+
+    Файлы берутся только из архива (пути внутри игнорируются), отметки
+    объединяются с существующими: отметка ставится, если её ещё нет, —
+    импорт не может стереть работу, сделанную после экспорта. Настройки
+    замещают ключи целиком (это состояние, а не журнал). Существующий
+    settings.json копируется в _backup перед записью.
+    """
+    import zipfile
+    file = request.files.get("file")
+    if not file or not file.filename:
+        return jsonify({"ok": False, "error": "Файл не выбран"}), 400
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(file.read()))
+        names = zf.namelist()
+    except Exception:
+        return jsonify({"ok": False, "error": "Это не zip-архив"}), 400
+
+    imported = {"marks": 0, "settings": False}
+
+    if "_reviewed.json" in names:
+        try:
+            incoming = json.loads(zf.read("_reviewed.json").decode("utf-8"))
+        except Exception:
+            incoming = None
+        if not isinstance(incoming, dict):
+            return jsonify({"ok": False,
+                            "error": "_reviewed.json в архиве повреждён"}), 400
+        reviewed = _load_reviewed()
+        for key, value in incoming.items():
+            k = str(key or "").strip()
+            if not k or reviewed.get(k):
+                continue          # уже есть — не трогаем (и дату не сдвигаем)
+            reviewed[k] = value
+            imported["marks"] += 1
+        _save_reviewed(reviewed)
+
+    if "settings.json" in names:
+        try:
+            incoming = json.loads(zf.read("settings.json").decode("utf-8"))
+        except Exception:
+            incoming = None
+        if not isinstance(incoming, dict):
+            return jsonify({"ok": False,
+                            "error": "settings.json в архиве повреждён"}), 400
+        try:
+            from paths import settings_path, load_settings
+            sp = settings_path()
+            if sp.exists():
+                bdir = os.path.join(os.path.dirname(str(sp)), "_backup")
+                os.makedirs(bdir, exist_ok=True)
+                shutil.copy2(str(sp), os.path.join(
+                    bdir, f"settings.{date.today().isoformat()}.json"))
+            merged = load_settings()
+            merged.update(incoming)
+            sp.write_text(json.dumps(merged, ensure_ascii=False, indent=2),
+                          encoding="utf-8")
+            imported["settings"] = True
+        except Exception as exc:
+            return jsonify({"ok": False, "error": f"Настройки: {exc}"}), 500
+
+    if not imported["marks"] and not imported["settings"]:
+        return jsonify({"ok": False,
+                        "error": "В архиве нет _reviewed.json и settings.json"}), 400
+    return jsonify({"ok": True, **imported})
 
 
 @bp.route("/results/<path:filename>")
@@ -339,6 +472,29 @@ def _write_env_keys(keys: dict):
                         "path": str(env_path), "quota_reset": quota_reset})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@bp.route("/twogis/quota", methods=["POST"])
+def twogis_quota_manual():
+    """Ручная коррекция счётчика токенов 2GIS Places API.
+
+    Body: {"used": <int>} — фактический расход за месяц (виден в Platform
+    Manager). Автосчёт видит только запросы из этого приложения, ручное
+    значение его замещает. Reply: {ok, used} — применённое значение.
+    """
+    data = request.get_json(silent=True) or {}
+    try:
+        value = int(data.get("used"))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "used must be an integer"}), 400
+    if value < 0 or value > 100000:
+        return jsonify({"ok": False, "error": "used out of range"}), 400
+    try:
+        from yandex_maps_parser.twogis import quota_set_manual
+        applied = quota_set_manual(value)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    return jsonify({"ok": True, "used": applied})
 
 
 @bp.route("/export-filtered", methods=["POST"])

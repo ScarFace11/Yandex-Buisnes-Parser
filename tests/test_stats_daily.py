@@ -365,5 +365,7 @@ class TestHours:
         assert "hours" not in self._get(client, "days=7")
 
     def test_hours_flag_without_single_day_window_is_ignored(self, client):
+        if date.today().day == 1:
+            pytest.skip("1-го числа окно месяца — один день: hours там уместен")
         res = self._get(client, "month=" + date.today().strftime("%Y-%m") + "&hours=1")
         assert "hours" not in res

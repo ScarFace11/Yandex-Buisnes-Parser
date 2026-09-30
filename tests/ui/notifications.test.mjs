@@ -342,17 +342,33 @@ test('notifyAllowed учитывает мастер и тип уведомлен
 
 test('состояние и подпись кнопки отражают, какие типы включены', () => {
   reset();
+  // Подпись в шапке одна («Уведомления»), режимы показывает точка-индикатор
+  // (is-off — все выключены) и tooltip; подпись от режима больше не зависит.
   const cases = [
-    [{ enabled: false, city_complete: true,  search_complete: true },  'all_off', 'Уведомления выкл.'],
-    [{ enabled: true,  city_complete: true,  search_complete: false }, 'partial', 'Уведомления: города'],
-    [{ enabled: true,  city_complete: false, search_complete: true },  'partial', 'Уведомления: поиск'],
-    [{ enabled: true,  city_complete: true,  search_complete: true },  'all_on',  'Уведомления вкл.'],
+    [{ enabled: false, city_complete: true,  search_complete: true },  'all_off'],
+    [{ enabled: true,  city_complete: true,  search_complete: false }, 'partial'],
+    [{ enabled: true,  city_complete: false, search_complete: true },  'partial'],
+    [{ enabled: true,  city_complete: true,  search_complete: true },  'all_on'],
   ];
-  for (const [settings, state, label] of cases) {
+  for (const [settings, state] of cases) {
     notifySettings = settings;
     assert.equal(notifyState(), state, JSON.stringify(settings));
-    assert.equal(notifyStateLabel(), label, JSON.stringify(settings));
+    assert.equal(notifyStateLabel(), 'Уведомления', JSON.stringify(settings));
   }
+});
+
+test('индикатор-точка: зелёная при включённых, серая (is-off) при выключенных', () => {
+  reset();
+  notifySettings = { enabled: true, city_complete: true, search_complete: true };
+  updateNotifyBtn();
+  let html = els['notify-txt']._lastHTML;
+  assert.match(html, /class="notify-dot"/, 'точка есть');
+  assert.doesNotMatch(html, /notify-dot is-off/);
+
+  notifySettings = { enabled: true, city_complete: false, search_complete: false };
+  updateNotifyBtn();
+  html = els['notify-txt']._lastHTML;
+  assert.match(html, /notify-dot is-off/, 'все типы выключены — точка серая');
 });
 
 test('иконка и подпись кнопки обновляются, «запрещено» даёт ⚠, но не прячет состояние', () => {
@@ -361,7 +377,8 @@ test('иконка и подпись кнопки обновляются, «за
   updateNotifyBtn();
   assert.match(els['notify-icon']._lastHTML, /<svg class="ico"/);
   assert.doesNotMatch(els['notify-icon']._lastHTML, /#i-bell-off/, 'колокольчик, а не перечёркнутый');
-  assert.match(els['notify-txt']._lastHTML, /Уведомления: города/);
+  assert.match(els['notify-txt']._lastHTML, /Уведомления/);
+  assert.match(els['notify-txt']._lastHTML, /notify-dot/, 'режим показывает точка, а не подпись');
   assert.match(els['notify-txt']._lastHTML, /#i-warn/, 'предупреждение — значок, а не эмодзи');
   assert.equal(els['btn-notify']._classes.has('denied'), true);
   assert.match(els['btn-notify'].title, /Города: вкл · Поиск: выкл/);

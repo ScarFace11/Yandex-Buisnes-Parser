@@ -1256,6 +1256,18 @@
             <span id="excel-cols-count" class="panel-note"></span>
           </div>
           <div class="chk-grid" id="excel-cols-grid"></div>
+
+          <!-- Данные: экспорт/импорт отметок и настроек -->
+          <h3 class="panel-title" style="margin-top:26px">Данные</h3>
+          <p class="panel-desc">Отметки «Просмотрено» и настройки (включая шаблоны) хранятся рядом с результатами. Экспорт — запасная копия или перенос на другую машину; импорт добавляет отметки из архива, не стирая сделанные после экспорта.</p>
+          <div class="history-actions" style="align-items:center">
+            <button class="btn-sm" onclick="exportAppData()"><svg class="ico" aria-hidden="true"><use href="#i-download"/></svg>Экспорт данных</button>
+            <label class="btn-sm data-import-btn">
+              <svg class="ico" aria-hidden="true"><use href="#i-save"/></svg>Импорт данных
+              <input type="file" id="data-import-file" accept=".zip" hidden onchange="importAppData(this)">
+            </label>
+            <span id="data-backup-note" class="panel-note">Автокопия отметок пишется ежедневно в output/_backup/ (хранятся 7 дней).</span>
+          </div>
         </div>
       </div>
 

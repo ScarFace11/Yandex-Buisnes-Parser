@@ -15,9 +15,9 @@
 Свежие разделы сверху. Нерелизнутое живёт под `[Unreleased]` и при выпуске
 переименовывается в номер версии.
 
-## [Unreleased]
+## [2.3.3] — Динамика по дням, почасовой «Сегодня», перенос данных и шлифовка интерфейса
 
-**«Динамика по дням»** (`routes/api.py`, `static/js/app.js`,
+**Почасовой «Сегодня», растянутые колонки, таблица, разбивки** (`routes/api.py`,
 `templates/index.html`, `static/css/style.css`, `tests/test_stats_daily.py`,
 `tests/ui/statsdaily.test.mjs`, `tests/test_ui_markup.py`,
 `tests/test_results_files.py`, `tests/ui/sidebar.test.mjs`)
@@ -180,6 +180,69 @@
   `test_ui_markup.py::TestDailyDynamics` — отсутствие `max-width:72px`,
   `phoneHTML`, ширины колонок 6/8 таблицы, `donutHTML`/`.stat-split`;
   `results.test.mjs` — в набор grab добавлен `phoneHTML`.
+
+**Резервная копия отметок, экспорт/импорт, ручная квота 2GIS, шлифовка UI**
+(`routes/api.py`, `yandex_maps_parser/state.py`, `yandex_maps_parser/runner.py`,
+`yandex_maps_parser/twogis.py`, `yandex_maps_parser/browser_client.py`,
+`static/js/app.js`, `static/css/style.css`, `templates/index.html`,
+`tests/test_data_backup.py`, `tests/test_ui_markup.py`,
+`tests/ui/notifications.test.mjs`)
+
+- Автокопия: `_save_reviewed()` после каждой записи зовёт `_backup_reviewed()`
+  — раз в день копия `_reviewed.json` в `output/_backup/` (хранятся 7
+  дневных, старые удаляются). Копия обёрнута в try/except ДВАЖДЫ: внутри
+  функции (частичный сбой) и на вызове (полный) — сбой бэкапа не отменяет
+  отметку.
+- `GET /data/export` — zip с `_reviewed.json` + `settings.json` (отметки +
+  настройки + шаблоны; файлы результатов не включаются — их выгружают из
+  «Истории файлов»). `POST /data/import` — только имена из корня архива,
+  отметки сливаются (существующая отметка не перезаписывается и дата не
+  сдвигается), настройки мержатся ключами; существующий settings.json
+  копируется в `_backup/settings.<день>.json` перед записью. Битые JSON в
+  архиве → 400, а не полуимпорт.
+- UI переноса: блок «Данные» в «Форматах вывода»; `importAppData()` шлёт
+  multipart и после успеха перечитывает отметки (`loadReviewed()`) и
+  динамику (`_reloadDaily()`).
+- Ручная квота 2GIS: `twogis.quota_set_manual(total)` — значение замещает
+  месячную базу в persisted-файле (`_quota_base = total − _quota_used`),
+  сессионный счётчик остаётся сверху; эндпоинт `POST /twogis/quota`
+  валидирует диапазон 0…100000. В карточке — `.quota-manual` (dashed,
+  placeholder = текущее значение), `setTwogisQuotaManual()` очищает поле
+  после применения.
+- Карточка 2GIS: `.quota-sub` удалён, пояснение — в `title` у «ⓘ»
+  (`.quota-info`), крупные цифры `.quota-num` 24px, `.quota-manual` —
+  малозаметный ввод; `h4` стат-карточек получил `display:flex` — ⓘ уезжает
+  вправо.
+- Лог: `state.short_path()` обрезает путь до корня `RESULTS_DIR` и подписывает
+  сегмент `output/` (корень настраиваемый), слэши унифицируются; фолбэк —
+  два последних сегмента. Применён к итоговым строкам «CSV/JSON/Excel/Карта
+  → …» и к «📁 город: файлы» в `runner.py`.
+- «Готово» (`#status-badge.done`) — нейтральная пилюля в обеих темах
+  (`rgba(255,255,255,.10/.16)`), зелёные варианты удалены из правил и тёмных
+  переопределений (2 шт.); `test_theme_contrast` поймал жёсткий `#5fb88c` в
+  `.notify-dot` — заменён на `var(--grn)`.
+- Уведомления: подпись кнопки всегда «Уведомления» (`notifyStateLabel()`
+  больше не ветвится по режимам), режим показывает `.notify-dot` (серая
+  `is-off`, когда все типы выключены) + прежний tooltip
+  `notifyStateTitle()`.
+- Таблица: бейджи соцсетей получили `title` из `SNAMES` («ВКонтакте»,
+  «Telegram»…); кольцо подписывает проценты внутри секторов ≥ 8%
+  (`<text class="donut-pct">`, позиция — середина дуги под углом a).
+- «Столбцы»: кнопка крупнее (13px, `--bdr-h`, тень); список — grid
+  `14px 1fr` (чекбокс|подпись в ровные колонки); строка фильтра соцсетей
+  прячется вместе с колонкой (`.tbl-social-row.col-hidden`) — состояние
+  переведено с inline `style.display` на классы `empty`/`col-hidden`, иначе
+  два механизма перебивали друг друга.
+- «Chrome не запустился. Использую резервный режим.» — переформулировка
+  предупреждения fallback-режима в `browser_client.py` (пользователь не
+  обязан знать слово Chromium).
+- Тесты: `test_data_backup.py` (17) — копия/дедуп/ротация 7 дней/устойчивость
+  к сбою, экспорт zip, импорт со слиянием без затирания, отказы на мусоре,
+  валидация квоты, `short_path` (корень/вложенность/чужой путь);
+  `test_ui_markup.py` — факты дашборда, нейтральный «Готово» (включая тёмные
+  переопределения), компактная карточка 2GIS с ручным вводом, `SNAMES`-title,
+  проценты в кольце, «Столбцы»/grid/col-hidden, экспорт-импорт; в
+  `notifications.test.mjs` — подпись «Уведомления» + точка-индикатор.
 
 **Статус-пилюля без эмодзи** (`templates/index.html`, `static/js/app.js`,
 `static/css/style.css`, `tests/test_ui_markup.py`, `tests/ui/sidebar.test.mjs`)

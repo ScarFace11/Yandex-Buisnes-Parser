@@ -270,7 +270,7 @@ def init_browser(pool_size: int = 8) -> bool:
     state.syslog("browser_client: testing Chromium launch in subprocess...")
     if not _test_playwright_in_subprocess():
         state.syslog("browser_client: Chromium test failed, using httpx fallback")
-        state.warn("⚠ Chromium не может запуститься. Используем httpx fallback.")
+        state.warn("⚠ Chrome не запустился. Использую резервный режим.")
         return False
     state.syslog("browser_client: Chromium test passed")
 

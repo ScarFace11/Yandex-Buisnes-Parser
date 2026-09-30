@@ -1465,6 +1465,62 @@ class TestDailyDynamics:
         assert ".stat-split{" in STYLE and ".donut{" in STYLE
         assert ".donut-legend-row{" in STYLE
 
+    def test_dashboard_facts_are_readable(self):
+        """Итоги периода — не сноска: средний темп крупнее, лучший день
+        подсвечен зелёным, доля разобранного — жирным значением."""
+        assert 'class="dyn-fact dyn-fact-avg"' in APP_JS
+        assert 'class="dyn-fact dyn-fact-best"' in APP_JS
+        assert 'class="dyn-fact dyn-fact-share"' in APP_JS
+        assert ".dyn-fact-avg{font-size:13px}" in STYLE
+        assert ".dyn-fact-best b{color:var(--grn)}" in STYLE
+        assert ".dyn-fact-share b{font-weight:800}" in STYLE
+
+    def test_done_status_is_neutral_not_green(self):
+        """«Готово» — приглушённая пилюля в тоне шапки: поиск закончен,
+        и самое яркое пятно на экране не должно молчать про это."""
+        start = STYLE.index("#status-badge.done{")
+        rule = STYLE[start:STYLE.index("}", start)]
+        assert "var(--grn)" not in rule and "var(--ok-bg)" not in rule, rule
+        for dark in ("[data-theme=\"dark\"] #status-badge.done{",):
+            rule_d = STYLE[STYLE.index(dark) + len(dark):]
+            rule_d = rule_d[:rule_d.index("}")]
+            assert "var(--grn)" not in rule_d, rule_d
+
+    def test_quota_card_is_compact_with_manual_input(self):
+        """Карточка 2GIS: цифры крупно, пояснение — в tooltip «ⓘ», ручной
+        ввод расхода — малозаметное поле у значения."""
+        assert 'class="quota-info"' in APP_JS and "ⓘ" in APP_JS
+        assert ".quota-sub" not in STYLE, "пояснение уехало в tooltip"
+        assert "quota-manual" in APP_JS and "setTwogisQuotaManual" in APP_JS
+        assert "/twogis/quota" in APP_JS and "twogis_quota_manual" in API_PY
+        assert ".quota-num{font-size:24px" in STYLE
+        assert ".quota-manual{" in STYLE
+
+    def test_social_badges_have_full_names(self):
+        """VK/TG/WA в таблице расшифровываются при наведении."""
+        assert 'SNAMES[p] || SLABELS[p]' in APP_JS
+
+    def test_donut_sectors_carry_percentages_when_wide(self):
+        """Проценты внутри секторов: дуга < 8% не подписывается — там не
+        помещается, значение остаётся в легенде."""
+        assert "donut-pct" in APP_JS and "pct < 0.08" in APP_JS
+        assert ".donut-pct{" in STYLE
+
+    def test_columns_button_is_visible_and_dropdown_aligned(self):
+        """«Столбцы» заметнее соседей; список — ровные колонки
+        чекбокс|подпись; фильтр соцсетей прячется вместе с колонкой."""
+        assert "#btn-cols{\n  /* Кнопка заметнее" in STYLE
+        assert ".col-item{\n  display:grid;grid-template-columns:14px 1fr" in STYLE
+        assert "col-hidden" in APP_JS and ".tbl-social-row.col-hidden{display:none}" in STYLE
+
+    def test_data_export_import_is_in_ui(self):
+        """Экспорт/импорт отметок и настроек — во вкладке «Форматы вывода»."""
+        assert 'id="data-import-file"' in TEMPLATE
+        assert "exportAppData" in APP_JS and "importAppData" in APP_JS
+        assert '@bp.route("/data/export")' in API_PY
+        assert '@bp.route("/data/import", methods=["POST"])' in API_PY
+        assert "_backup_reviewed" in API_PY
+
     def test_every_day_carries_its_own_numbers(self):
         """Колонка несёт данные для подсказки: иначе карточка при наведении
         показывала бы не тот день, на который наведён курсор."""

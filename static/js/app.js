@@ -2768,7 +2768,7 @@ function onLiveResult(rec) {
   // On first result: reveal the right panel
   if (allResults.length === 1) {
     document.querySelector('.right-col').classList.add('revealed');
-    document.getElementById('social-filter-row').style.display = '';
+    document.getElementById('social-filter-row').classList.remove('empty');
     const exportWrap = document.getElementById('export-sel-wrap');
     if (exportWrap) exportWrap.style.display = 'flex';
   }
@@ -3308,6 +3308,7 @@ function socialsHTML(row) {
   for (const [p, color] of Object.entries(SOCIALS)) {
     const url = row[p];
     if (url) h += `<a class="social-badge" style="background:${color}" href="${escapeHtml(safeUrl(url))}" target="_blank" rel="noopener noreferrer"`
+      + ` title="${escapeHtml(SNAMES[p] || SLABELS[p])}"`
       + ` data-social="${p}" data-key="${key}" onclick="onSocialBadgeClick(event, this)">${SLABELS[p]}</a>`;
   }
   return h || '—';
@@ -3417,7 +3418,9 @@ function renderTable(data) {
   document.getElementById('tbl-search').value = '';
   resetSortHeaders();
   // Show the social filter row only when there are results
-  document.getElementById('social-filter-row').style.display = data.length ? '' : 'none';
+  // Показ строки и видимость колонки соцсетей — независимы: классы, а не
+  // inline display, иначе перебивали бы друг друга.
+  document.getElementById('social-filter-row').classList.toggle('empty', !data.length);
   // City tabs + bulk counters follow the freshly loaded data
   renderCityTabs(_lastCities);
   updateBulkStats();
@@ -4603,6 +4606,42 @@ function initResultsPanel() {
 // ═══════════════════════════════════════════
 //  Export filtered rows
 // ═══════════════════════════════════════════
+// ── Экспорт/импорт данных приложения (отметки + настройки) ──
+// Кнопки во вкладке «Форматы вывода». Экспорт — обычная ссылка на zip;
+// импорт показывает сводку и перезагружает отметки, чтобы таблица и
+// динамика увидели их сразу.
+function exportAppData() {
+  window.location.href = '/data/export';
+  showToast('Готовлю архив с отметками и настройками…', 'info');
+}
+
+async function importAppData(input) {
+  const file = input.files && input.files[0];
+  if (!file) return;
+  if (!file.name.toLowerCase().endsWith('.zip')) {
+    showToast('Нужен zip-архив из «Экспорта данных»', 'warning');
+    input.value = '';
+    return;
+  }
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    const r = await fetch('/data/import', { method: 'POST', body: fd });
+    const d = await r.json();
+    if (!d.ok) { showToast(d.error || 'Импорт не удался', 'error'); input.value = ''; return; }
+    const parts = [];
+    if (d.marks) parts.push(_pluralRu(d.marks, 'отметка', 'отметки', 'отметок'));
+    if (d.settings) parts.push('настройки');
+    showToast('Импортировано: ' + (parts.join(', ') || 'ничего нового'), 'success');
+    // Отметки приходят с сервера: перечитываем их и перерисовываем таблицу.
+    try { loadReviewed(); } catch (e) {}
+    try { _reloadDaily(); } catch (e) {}
+  } catch (e) {
+    showToast('Импорт не удался — сервер не ответил', 'error');
+  }
+  input.value = '';
+}
+
 async function exportFiltered(fmt) {
   if (!filteredRows.length) return;
   // Выгрузка должна нести актуальные отметки, а не те, что были до батча.
@@ -4756,18 +4795,53 @@ function quotaCardHtml() {
   if (tq <= 0) return '';
   const cap = 1000, pct = Math.min(100, Math.round(tq / cap * 100));
   const cls = pct >= 95 ? 'crit' : pct >= 85 ? 'warn' : '';
-  const orgs = tq * 10;
   const left = Math.max(0, cap - tq);
+  // Пояснение — в tooltip (ⓘ): раньше текст на карточке занимал больше места,
+  // чем сами цифры. Читается при наведении на «ⓘ».
+  const tip = 'Счётчик приложения: ≈ ' + (tq * 10).toLocaleString('ru-RU')
+    + ' организаций · 1 запрос ≈ 10 организаций. 2GIS не показывает точный '
+    + 'остаток — платный лимит видно только в Platform Manager (dev.2gis.ru) '
+    + 'с задержкой ~1 день. Цифру израсходованных запросов можно ввести вручную.';
   return `
   <div class="stat-section">
-    <div class="stat-city-card quota-card ${cls}" style="max-width:420px">
-      <h4>🧮 Токены 2GIS Places API</h4>
-      <div class="stat-mini-row"><span>Израсходовано за месяц</span><span><b>${tq}</b> / ${cap}</span></div>
+    <div class="stat-city-card quota-card ${cls}">
+      <h4>🧮 Токены 2GIS Places API
+        <span class="quota-info" tabindex="0" title="${escapeHtml(tip)}" aria-label="Пояснение к счётчику">ⓘ</span></h4>
+      <div class="quota-big"><span class="quota-num">${_fmtCount(tq)}</span><span class="quota-cap">/ ${cap}</span></div>
       <div class="quota-track"><div class="quota-fill" style="width:${pct}%"></div></div>
-      <div class="stat-mini-row"><span>Осталось до конца месяца</span><span style="font-weight:700">${left} запросов (≈ ${(left * 10).toLocaleString('ru-RU')} организаций)</span></div>
-      <div class="quota-sub">Счётчик приложения: ≈ ${orgs.toLocaleString('ru-RU')} организаций · 1 запрос ≈ 10 организаций · 2GIS не показывает точный остаток — платный лимит видно только в Platform Manager (dev.2gis.ru) с задержкой ~1 день</div>
+      <div class="quota-left">Осталось: <b>${_fmtCount(left)} запросов</b> (≈ ${_fmtCount(left * 10)} организаций)</div>
+      <input type="number" class="quota-manual" min="0" max="100000" placeholder="${tq}"
+             aria-label="Израсходовано за месяц — вручную"
+             title="Знаете точный расход из Platform Manager? Введите его — счётчик замещается. Пустое поле оставляет текущее значение."
+             onchange="setTwogisQuotaManual(this)">
     </div>
   </div>`;
+}
+
+// Ручная коррекция счётчика: точный расход виден в Platform Manager, автосчёт
+// покрывает только запросы из этого приложения. Пустое значение — ничего.
+async function setTwogisQuotaManual(input) {
+  const raw = String(input.value || '').trim();
+  if (!raw) { input.value = ''; return; }
+  const value = parseInt(raw, 10);
+  if (!isFinite(value) || value < 0) { input.value = ''; return; }
+  try {
+    const r = await fetch('/twogis/quota', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ used: value }),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      _twogisQuotaLive = d.used;
+      input.value = '';
+      renderQuotaCard();
+      showToast('Счётчик 2GIS обновлён: ' + _fmtCount(d.used), 'success');
+    } else {
+      showToast(d.error || 'Не удалось обновить счётчик', 'error');
+    }
+  } catch (e) {
+    showToast('Не удалось обновить счётчик', 'error');
+  }
 }
 
 function renderQuotaCard() {
@@ -4805,6 +4879,17 @@ function donutHTML(rows, centerLabel) {
   const total = rows.reduce((s, r) => s + r.count, 0) || 1;
   const C = 2 * Math.PI * 70;
   let offset = 0;
+  // Подпись внутри сектора: середина дуги под углом a (0° = вверх, по часовой).
+  // Сектор < 8% не подписываем — число там не помещается, остаётся в легенде.
+  const labels = rows.map(r => {
+    const pct = r.count / total;
+    if (pct < 0.08) return '';
+    const a = (offset / C) * 2 * Math.PI + (r.count / total) * Math.PI;
+    const x = 84 + Math.sin(a) * 70;
+    const y = 84 - Math.cos(a) * 70;
+    return `<text class="donut-pct" x="${x.toFixed(1)}" y="${y.toFixed(1)}"`
+      + ` fill="#fff">${Math.round(pct * 100)}%</text>`;
+  });
   const arcs = rows.map(r => {
     const frac = r.count / total;
     const len = Math.max(frac * C, 0.005 * C);
@@ -4828,7 +4913,7 @@ function donutHTML(rows, centerLabel) {
       </div>`).join('');
   return `<div class="donut-wrap">`
     + `<div class="donut"><svg width="168" height="168" viewBox="0 0 168 168" aria-hidden="true">`
-    + `<circle class="donut-track" cx="84" cy="84" r="70"></circle>${single}</svg>`
+    + `<circle class="donut-track" cx="84" cy="84" r="70"></circle>${single}${labels.join('')}</svg>`
     + `<div class="donut-center"><b>${_fmtCount(total)}</b>`
     + `<span>${escapeHtml(centerLabel || '')}</span></div></div>`
     + `<div class="donut-legend">${legend}</div></div>`;
@@ -5255,13 +5340,13 @@ function dailySectionHTML(payload) {
   const share = totals.found ? Math.round(totals.reviewed / totals.found * 100) : 0;
   const facts = [];
   if (series.length > 1) {
-    facts.push('<span class="dyn-fact">В среднем <b>' + _fmtCount(avg) + '</b> в день</span>');
+    facts.push('<span class="dyn-fact dyn-fact-avg">В среднем <b>' + _fmtCount(avg) + '</b> в день</span>');
     if (best.found) {
-      facts.push('<span class="dyn-fact">Лучший день — <b>'
+      facts.push('<span class="dyn-fact dyn-fact-best" title="День с самым большим числом найденных">Лучший день — <b>'
         + bestLbl.wd + ', ' + bestLbl.dm + '</b>: ' + _fmtCount(best.found) + '</span>');
     }
   }
-  facts.push('<span class="dyn-fact" title="Отмечено просмотренными из найденных за период">Разобрано <b>'
+  facts.push('<span class="dyn-fact dyn-fact-share" title="Отмечено просмотренными из найденных за период">Разобрано <b>'
     + share + '%</b></span>');
 
   const aria = `Динамика с ${_dayFull(payload.start)} по ${_dayFull(payload.end)}`
@@ -5993,10 +6078,12 @@ function notifyState() {
 }
 
 function notifyStateLabel() {
+  // Короткая подпись: режимы (города/поиск) перечислены в tooltip, в шапке
+  // им хватает точки-индикатора и слова «Уведомления».
   const st = notifyState();
-  if (st === 'all_off') return 'Уведомления выкл.';
-  if (st === 'all_on')  return 'Уведомления вкл.';
-  return notifySettings.city_complete ? 'Уведомления: города' : 'Уведомления: поиск';
+  if (st === 'all_off') return 'Уведомления';
+  if (st === 'all_on')  return 'Уведомления';
+  return 'Уведомления';
 }
 
 // Подпись кнопки показывает и состояние типов, и проблему с разрешением:
@@ -6022,7 +6109,13 @@ function updateNotifyBtn() {
   const warn = !('Notification' in window) || Notification.permission === 'denied';
   btn.className = warn ? 'denied' : (notifySettings.enabled ? 'granted' : '');
   icon.innerHTML = st === 'all_off' ? UI_ICONS.bellOff : UI_ICONS.bell;
-  txt.innerHTML = escapeHtml(notifyStateLabel()) + (warn ? ' ' + UI_ICONS.warn : '');
+  // Точка-индикатор: зелёная — хоть один тип уведомлений включён, серая —
+  // все выключены. Подпись в шапке одна («Уведомления»), состояние — точкой
+  // и в tooltip: длинный режим «Уведомления: поиск» удлинял шапку.
+  const dot = st === 'all_off' ? ' is-off' : '';
+  txt.innerHTML = escapeHtml(notifyStateLabel())
+    + `<i class="notify-dot${dot}" aria-hidden="true"></i>`
+    + (warn ? ' ' + UI_ICONS.warn : '');
   btn.title        = notifyStateTitle();
   const pop = document.getElementById('notify-pop');
   btn.setAttribute('aria-expanded', pop && !pop.hidden ? 'true' : 'false');
@@ -6424,6 +6517,10 @@ function applyColClasses() {
   const tbl = document.getElementById('results-table');
   if (!tbl) return;
   COLS.forEach(c => tbl.classList.toggle('col-hide-' + c.idx, hiddenCols.has(c.key)));
+  // Строка фильтра «Сеть: …» управляет скрытой колонкой соцсетей: когда
+  // колонка скрыта, фильтр остаётся без объекта и только путает — прячем.
+  const sfRow = document.getElementById('social-filter-row');
+  if (sfRow) sfRow.classList.toggle('col-hidden', hiddenCols.has('socials'));
   // Update button badge
   const btn = document.getElementById('btn-cols');
   if (btn) {

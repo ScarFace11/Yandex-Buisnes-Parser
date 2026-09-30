@@ -541,10 +541,10 @@ def run() -> None:
         def _skip(rel_path: str) -> bool:
             import os as _os
             return _os.path.basename(rel_path) in shown
-        if state.OUTPUT_CSV and not _skip(paths["csv"]):   state.ok(f"  CSV   → {paths['csv']}")
-        if state.OUTPUT_JSON and not _skip(paths["json"]):  state.ok(f"  JSON  → {paths['json']}")
-        if state.OUTPUT_EXCEL and not _skip(paths["xlsx"]): state.ok(f"  Excel → {paths['xlsx']}")
-        if state.OUTPUT_MAP and not _skip(paths["map"]):   state.ok(f"  Карта → {paths['map']}")
+        if state.OUTPUT_CSV and not _skip(paths["csv"]):   state.ok(f"  CSV   → {state.short_path(paths['csv'])}")
+        if state.OUTPUT_JSON and not _skip(paths["json"]):  state.ok(f"  JSON  → {state.short_path(paths['json'])}")
+        if state.OUTPUT_EXCEL and not _skip(paths["xlsx"]): state.ok(f"  Excel → {state.short_path(paths['xlsx'])}")
+        if state.OUTPUT_MAP and not _skip(paths["map"]):   state.ok(f"  Карта → {state.short_path(paths['map'])}")
 
     if len(completed) == total_points:
         clear_checkpoint(ckpt_key)
@@ -971,7 +971,7 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None, pause_event=
 
             if city_files:
                 _shown_file_paths.update(city_files)
-                _weblog("ok", f"  📁 {city}: {', '.join(city_files)}")
+                _weblog("ok", f"  📁 {city}: {', '.join(state.short_path(f) for f in city_files)}")
         _loop_ok = True
     finally:
         # «Города уже парсились ранее»: each city that ran returned zero new
