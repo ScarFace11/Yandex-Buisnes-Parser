@@ -200,26 +200,28 @@ jobs:
           ok=0
           for i in $(seq 1 45); do
             sleep 2
-            if curl -fsS --max-time 5 "http://127.0.0.1:$PORT/" | grep -q "Поиск клиентов"; then ok=1; break; fi
+            curl -fsS --max-time 5 "http://127.0.0.1:$PORT/" -o /tmp/page.html 2>/dev/null || true
+            if [ -s /tmp/page.html ] && grep -qF "Поиск клиентов" /tmp/page.html; then
+              ok=1
+              break
+            fi
           done
           kill "$PID" 2>/dev/null || true
           if [ "$ok" != "1" ]; then
             echo "::error::smoke test failed: no HTTP 200 on $PORT"
-            echo "--- /tmp/app.log (stdout/stderr шелла) ---"
+            echo "--- /tmp/app.log ---"
             tail -60 /tmp/app.log || true
-            # Оконный .app стартует без консоли: sys.stdout = None, и app.py
-            # сам перенаправляет вывод в app.log рядом с данными. Настоящий
-            # traceback при падении старта лежит там, а не в /tmp/app.log.
+            echo "--- /tmp/page.html (первые 40 строк) ---"
+            head -40 /tmp/page.html 2>/dev/null || true
             echo "--- ~/Library/Application Support/YandexBusinessParser/app.log ---"
             tail -80 "$HOME/Library/Application Support/YandexBusinessParser/app.log" 2>/dev/null || true
             exit 1
           fi
           echo "Smoke test passed: ответил на 127.0.0.1:$PORT"
-          # Данные на macOS живут в Application Support, а не внутри бандла.
           if [ -d "$HOME/Library/Application Support/YandexBusinessParser" ]; then
             echo "Каталог данных создан: ~/Library/Application Support/YandexBusinessParser"
           else
-            echo "::warning::каталог данных не создан — приложение, возможно, не дошло до инициализации"
+            echo "::warning::каталог данных не создан"
           fi
 
       - name: Package the .zip (ditto keeps symlinks and permissions)
