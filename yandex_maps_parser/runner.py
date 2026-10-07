@@ -137,7 +137,13 @@ def run() -> None:
     # COLLAPSE_CHAINS needs the whole record set to merge chains, so it can't
     # append row-by-row — disable the incremental workbook and rebuild Excel
     # once at the end from the filtered records instead.
-    if state.OUTPUT_EXCEL and not state.COLLAPSE_CHAINS:
+    # Two-stage pipeline (PIPELINE == "raw"): the legacy root-level exports
+    # ({city}_{ts}.xlsx/.csv/...) must stay silent — raw data lives in
+    # output/raw/ and the filtered result is written by stage 2 into
+    # output/processed/{format}/. Writing both duplicated every file and
+    # confused «Формат результата» (e.g. CSV requested, root xlsx appeared).
+    _legacy_exports = state.PIPELINE != "raw"
+    if state.OUTPUT_EXCEL and not state.COLLAPSE_CHAINS and _legacy_exports:
         state._EXCEL_APPEND_ENABLED = True
         try:
             _init_excel(paths["xlsx"])
@@ -375,7 +381,7 @@ def run() -> None:
                     _new_candidates += point_stats[1]
                     all_results.extend(records)
                     completed.update(processed_keys)
-                    if records and state.OUTPUT_CSV:
+                    if records and state.OUTPUT_CSV and _legacy_exports:
                         save_csv(records, paths["csv"], append=True)
                         state.syslog(f"csv_append: +{len(records)} records")
 
@@ -464,7 +470,7 @@ def run() -> None:
         except Exception:
             pass
 
-    if state.OUTPUT_JSON and jsonl_records:
+    if state.OUTPUT_JSON and jsonl_records and _legacy_exports:
         try:
             save_json(full_records, paths["json"], append=False)
             state.syslog(f"json_save: {len(full_records)} records → {paths['json']}")
@@ -492,7 +498,7 @@ def run() -> None:
                     save_excel(full_records, paths["xlsx"])
             except Exception:
                 pass
-    elif state.OUTPUT_EXCEL and full_records:
+    elif state.OUTPUT_EXCEL and full_records and _legacy_exports:
         # CLI fallback (shouldn't normally happen)
         try:
             save_excel(full_records, paths["xlsx"])
@@ -515,7 +521,7 @@ def run() -> None:
             except Exception:
                 pass
 
-    if full_records:
+    if full_records and _legacy_exports:
         if state.OUTPUT_MAP:
             state.syslog(f"map_generate: {len(full_records)} records...")
             save_map(full_records, paths["map"], center_lat, center_lon)
@@ -541,10 +547,11 @@ def run() -> None:
         def _skip(rel_path: str) -> bool:
             import os as _os
             return _os.path.basename(rel_path) in shown
-        if state.OUTPUT_CSV and not _skip(paths["csv"]):   state.ok(f"  CSV   → {state.short_path(paths['csv'])}")
-        if state.OUTPUT_JSON and not _skip(paths["json"]):  state.ok(f"  JSON  → {state.short_path(paths['json'])}")
-        if state.OUTPUT_EXCEL and not _skip(paths["xlsx"]): state.ok(f"  Excel → {state.short_path(paths['xlsx'])}")
-        if state.OUTPUT_MAP and not _skip(paths["map"]):   state.ok(f"  Карта → {state.short_path(paths['map'])}")
+        if _legacy_exports:
+            if state.OUTPUT_CSV and not _skip(paths["csv"]):   state.ok(f"  CSV   → {state.short_path(paths['csv'])}")
+            if state.OUTPUT_JSON and not _skip(paths["json"]):  state.ok(f"  JSON  → {state.short_path(paths['json'])}")
+            if state.OUTPUT_EXCEL and not _skip(paths["xlsx"]): state.ok(f"  Excel → {state.short_path(paths['xlsx'])}")
+            if state.OUTPUT_MAP and not _skip(paths["map"]):   state.ok(f"  Карта → {state.short_path(paths['map'])}")
 
     if len(completed) == total_points:
         clear_checkpoint(ckpt_key)
@@ -648,6 +655,17 @@ def _apply_params(params: dict) -> None:
     else:
         state.EXCEL_COLUMNS = None
     state.USE_BROWSER    = bool(params.get("use_browser", True))
+    # Способ загрузки карточек (detail-страниц): auto | cdp | playwright | httpx.
+    # Чужое значение молча откатывается к "auto" (лестница CDP → Playwright →
+    # httpx), как и до появления выбора. httpx отключает браузерные пулы
+    # целиком — карточки идут через троттленный HTTP.
+    _engine = str(params.get("fetch_engine", "auto") or "auto")
+    state.FETCH_ENGINE = _engine if _engine in ("auto", "cdp", "playwright", "httpx") else "auto"
+    if state.FETCH_ENGINE == "httpx":
+        state.USE_BROWSER = False
+    # Debug window: separate Chrome, visible, CDP only (no Playwright pool,
+    # no tab pool). Optional; off by default.
+    state.DEBUG_CDP_WINDOW = bool(params.get("debug_cdp_window", False))
     # Socials are ALWAYS collected from business cards (the UI has no switch
     # for it any more): without them neither the social filters nor the lead
     # score can work. `fetch_detail=False` stays honored for API clients.
@@ -858,10 +876,23 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None, pause_event=
             _weblog("info", f"  📐 Сетка: ~{_est_cells} ячеек × {len(state.SEARCH_QUERIES)} запросов × до {_pages_per_point} стр. ≈ ~{_est_tokens} токенов Places API (1 токен = 10 организаций, всего ~{_est_tokens * 10})")
 
     # Initialize browser pool for detail-page fetching (if enabled)
-    # Priority: Playwright > CDP (Chrome DevTools Protocol) > httpx
+    # Priority: CDP (Chrome DevTools Protocol) > Playwright > httpx.
+    # CDP first: Playwright's Node.js driver segfaults on Python 3.14 (only
+    # when Chromium для playwright не установлен — тогда сабпроцесс-тест
+    # быстро вернёт False и время не тратится).
     # 2GIS: only CDP is used — for the firm-page fallback when the key has
     # no contacts permission (demo keys strip contact_groups from the API).
-    if state.USE_BROWSER and state.FETCH_DETAIL and state.SOURCE == "2gis":
+    # fetch_engine=httpx отключает пул целиком (USE_BROWSER=False выше);
+    # fetch_engine=playwright — наоборот, сразу Playwright без попытки CDP.
+    if state.USE_BROWSER and state.FETCH_DETAIL and state.FETCH_ENGINE == "playwright":
+        browser_ok = _init_browser(pool_size=min(state.MAX_WORKERS, 10))
+        if browser_ok:
+            _syslog("Browser pool: Playwright initialized (fetch_engine=playwright)")
+            _weblog("info", "  🌐 Режим: встроенный браузер (Playwright) для карточек")
+        else:
+            _syslog("Browser pool: Playwright failed (fetch_engine=playwright), fallback to httpx")
+            _weblog("warn", "  ⚠ Playwright недоступен — карточки пойдут через HTTP (медленнее)")
+    elif state.USE_BROWSER and state.FETCH_DETAIL and state.SOURCE == "2gis":
         cdp_ok = cdp_client.init_browser(pool_size=min(state.MAX_WORKERS, 10))
         if cdp_ok:
             _syslog("Browser pool: CDP initialized (2GIS firm-page fallback)")
@@ -870,18 +901,32 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None, pause_event=
             _syslog("Browser pool: CDP failed for 2GIS mode")
             _weblog("warn", "  ⚠ Chrome CDP недоступен: если у ключа 2GIS нет доступа к контактам, соцсети найти не получится")
     elif state.USE_BROWSER and state.FETCH_DETAIL:
-        browser_ok = _init_browser(pool_size=min(state.MAX_WORKERS, 10))
-        if browser_ok:
-            _syslog("Browser pool: Playwright initialized — detail pages via browser")
-            _weblog("info", "  🌐 Режим: браузер (Playwright) для detail-страниц")
+        cdp_ok = cdp_client.init_browser(pool_size=min(state.MAX_WORKERS, 20))
+        if cdp_ok:
+            _syslog("Browser pool: CDP initialized (Chrome DevTools Protocol)")
+            _weblog("info", "  🌐 Режим: браузер (Chrome CDP) для detail-страниц")
+        elif state.FETCH_ENGINE == "cdp":
+            # Пользователь выбрал Chrome явно — Playwright не подменяем.
+            _syslog("Browser pool: CDP failed (fetch_engine=cdp), fallback to httpx")
+            _weblog("warn", "  ⚠ Chrome не найден — карточки пойдут через HTTP (медленнее)")
         else:
-            # Playwright failed — try CDP (works on Python 3.14)
-            cdp_ok = cdp_client.init_browser(pool_size=min(state.MAX_WORKERS, 20))
-            if cdp_ok:
-                _syslog("Browser pool: CDP initialized (Chrome DevTools Protocol)")
-                _weblog("info", "  🌐 Режим: браузер (Chrome CDP) для detail-страниц")
+            # CDP failed — try Playwright (сабпроцесс-тест отсеет крэш)
+            browser_ok = _init_browser(pool_size=min(state.MAX_WORKERS, 10))
+            if browser_ok:
+                _syslog("Browser pool: Playwright initialized — detail pages via browser")
+                _weblog("info", "  🌐 Режим: браузер (Playwright) для detail-страниц")
             else:
                 _syslog("Browser pool: all browser options failed, fallback to httpx")
+                _weblog("warn", "  ⚠ Chrome не запустился. Использую резервный режим.")
+    # Debug window — separate visible Chrome (CDP only, no tab pool)
+    if state.DEBUG_CDP_WINDOW:
+        dp = cdp_client.open_debug_window()
+        if dp is not None:
+            _syslog(f"debug_cdp_window: opened, CDP port={dp}")
+            _weblog("info", f"  🔬 Отладочный Chrome открыт: CDP порт {dp}")
+        else:
+            _syslog("debug_cdp_window: failed to open window")
+            _weblog("warn", "  ⚠ Не удалось открыть отладочный Chrome")
     # Deduped: the same line was previously printed twice for single-city
     # runs (once here, once via the city header path).
     _dedup_weblog("info", f"  Поиск: {len(cities)} город(ов), запросы: {', '.join(state.SEARCH_QUERIES)}")

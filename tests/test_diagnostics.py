@@ -77,6 +77,26 @@ class TestYandexKey:
         assert "недействителен" in row["title"]
         assert "Invalid api key" in row["detail"]
 
+    def test_key_valid_for_geocoder_only_is_named_precisely(self, monkeypatch):
+        """Ключ жив в Геокодере, но Search API его отклоняет — это РАЗНЫЕ
+        сервисы Яндекса: диагностика обязана назвать причину точно, а не
+        советовать «проверьте ключ» человеку с рабочим ключом."""
+        import httpx
+
+        def _get(url, params=None, timeout=None, headers=None):
+            if "geocode-maps" in url:
+                return _Resp(200, payload={"response": {}})
+            return _Resp(
+                403, text='<?xml version="1.0"?><error><statusCode>403</statusCode>'
+                          '<error>Forbidden</error><message>Invalid api key</message></error>')
+
+        monkeypatch.setattr(httpx, "get", _get)
+        row = diag.check_yandex_key("sec-ret-key")
+        assert row["status"] == "error", "без сервиса «Поиск по организациям» поиск не работает"
+        assert "другого сервиса" in row["title"]
+        assert "Геокодер" in row["detail"] and "Invalid api key" in row["detail"]
+        assert "Поиск по организациям" in row["hint"], "нужен точный совет по кабинету"
+
     def test_quota_exceeded_is_not_confused_with_an_invalid_key(self, monkeypatch):
         _fake_httpx(monkeypatch, _Resp(
             403, text='<error><message>Quota exceeded</message></error>'))

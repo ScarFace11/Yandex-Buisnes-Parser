@@ -72,64 +72,42 @@ def _try_import_playwright():
 
 
 def _auto_install_playwright() -> bool:
-    """Установка Playwright для .exe с использованием встроенных браузеров"""
+    """Установка Playwright для запуска из исходников (не для .exe).
+
+    В сборке .exe модуль bundлится в exe (parser.spec), поэтому докачивать
+    pip-пакет во время поиска не нужно; Chromium пользователь ставит один
+    раз через `playwright install chromium`. Если запуск Chromium не удался,
+    сабпроцесс-тест это отловит и включится fallback на Chrome CDP/httpx.
+    """
+    if getattr(sys, "frozen", False):
+        state.syslog("browser_client: frozen build — playwright auto-install skipped (CDP/httpx fallback)")
+        return False
+
     state.syslog("browser_client: playwright not found, attempting auto-install...")
 
     # Определяем базовую директорию
-    if getattr(sys, 'frozen', False):
-        # Запущено как .exe
-        base_dir = os.path.dirname(sys.executable)
-    else:
-        base_dir = os.path.dirname(os.path.abspath(__file__))
+    base_dir = os.path.dirname(os.path.abspath(__file__))
 
-    # Устанавливаем путь для браузеров ВНУТРИ папки с .exe
+    # Устанавливаем путь для браузеров рядом с исходниками
     browsers_path = os.path.join(base_dir, 'browsers')
     os.environ['PLAYWRIGHT_BROWSERS_PATH'] = browsers_path
 
     try:
-        # Для .exe используем другой подход
-        if getattr(sys, 'frozen', False):
-            # Используем встроенный Python (если есть в системе)
-            python_exe = _find_system_python()
-            if not python_exe:
-                state.syslog("browser_client: Python not found in system")
-                return False
-
-            # Устанавливаем в папку с .exe
-            subprocess.check_call(
-                [python_exe, "-m", "pip", "install", "playwright"],
-                timeout=120
-            )
-            subprocess.check_call(
-                [python_exe, "-m", "playwright", "install", "chromium"],
-                timeout=300
-            )
-        else:
-            # Обычная установка для скрипта
-            subprocess.check_call(
-                [sys.executable, "-m", "pip", "install", "playwright"],
-                timeout=120
-            )
-            subprocess.check_call(
-                [sys.executable, "-m", "playwright", "install", "chromium"],
-                timeout=300
-            )
+        # Обычная установка (sys.executable — Python, из которого запущено)
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "playwright"],
+            timeout=120
+        )
+        subprocess.check_call(
+            [sys.executable, "-m", "playwright", "install", "chromium"],
+            timeout=300
+        )
 
         state.syslog("browser_client: playwright auto-installed successfully")
         return True
     except Exception as e:
         state.syslog(f"browser_client: auto-install failed: {e}")
         return False
-
-def _find_system_python():
-    """Находит системный Python для .exe"""
-    import shutil
-    for cmd in ['python', 'python3']:
-        python_path = shutil.which(cmd)
-        if python_path:
-            return python_path
-    return None
-
 
 def _init_cache():
     """Initialize disk cache directory."""
@@ -227,50 +205,94 @@ def _cache_set(biz_id: str, html: str) -> None:
 
 def _test_playwright_in_subprocess() -> bool:
     """Test if Playwright can launch Chromium in a subprocess.
-    
+
     This catches hard crashes (0xC0000005) that can't be caught by try/except.
     Returns True if Playwright works, False otherwise.
+
+    При неудаче пишет в лог последнюю строку stderr сабпроцесса — чтобы в
+    интерфейсе была видна настоящая причина (крэш, отсутствие браузеров,
+    таймаут), а не безликое «недоступен».
+
+    В frozen-сборке `python -c` недоступен (sys.executable — сам exe), поэтому
+    там запускается этот же exe с YP_BROWSER_PROBE=1: app.py в probe-режиме
+    молча стартует Chromium и выходит с кодом 0/1 (см. app._maybe_run_browser_probe).
     """
+    if getattr(sys, "frozen", False):
+        cmd = [sys.executable]
+        env = dict(os.environ)
+        env["YP_BROWSER_PROBE"] = "1"
+        env["YP_OPEN_BROWSER"] = "0"
+        kwargs = {"env": env}
+    else:
+        code = ("from playwright.sync_api import sync_playwright; "
+                "p = sync_playwright().start(); "
+                "b = p.chromium.launch(headless=True); "
+                "b.close(); p.stop()")
+        cmd = [sys.executable, "-c", code]
+        kwargs = {}
     try:
         result = subprocess.run(
-            [sys.executable, "-c",
-             "from playwright.sync_api import sync_playwright; "
-             "p = sync_playwright().start(); "
-             "b = p.chromium.launch(headless=True); "
-             "b.close(); p.stop()"],
+            cmd,
             capture_output=True,
             timeout=30,
+            **kwargs,
         )
-        return result.returncode == 0
-    except Exception:
+    except subprocess.TimeoutExpired:
+        state.syslog("browser_client: Chromium subprocess test TIMED OUT (30s)")
+        state.warn("⚠ Тест Playwright не прошёл: запуск Chromium не уложился"
+                   " в 30 секунд (вероятно, машина занята — первый запуск"
+                   " распаковки браузера бывает долгим). Карточки пойдут через"
+                   " Chrome/HTTP.")
         return False
+    except Exception as exc:
+        state.syslog(f"browser_client: Chromium subprocess test failed: {exc}")
+        state.warn(f"⚠ Тест Playwright не прошёл: {exc}")
+        return False
+    if result.returncode == 0:
+        return True
+    # Провал: вытаскиваем содержательную причину из stderr.
+    stderr_tail = (result.stderr or b"").decode(errors="replace").strip().splitlines()
+    reason = stderr_tail[-1] if stderr_tail else f"exit code {result.returncode}"
+    reason = (reason[:300] + "…") if len(reason) > 300 else reason
+    state.syslog("browser_client: Chromium subprocess test FAILED ("
+                 f"exit {result.returncode}): {reason}")
+    state.warn(f"⚠ Тест Playwright не прошёл: {reason}. Карточки пойдут через"
+               " Chrome/HTTP.")
+    return False
 
 
 def init_browser(pool_size: int = 8) -> bool:
     """Initialize Playwright browser with a pool of pages.
-    
-    Auto-installs Playwright if not found.  Returns True if browser was
-    initialized, False if Playwright is not available (fallback to httpx).
-    
+
+    Auto-installs Playwright only when running from sources (see
+    _auto_install_playwright).  Returns True if browser was
+    initialized, False if Playwright is not available (fallback to
+    CDP / httpx).
+
     Tests Chromium launch in a subprocess first to avoid hard crashes.
+    Сборка .exe тоже идёт по этому пути: playwright bundлится в exe
+    (parser.spec, с версии 2.3.1), а если в системе нет Chromium для
+    playwright — тот же сабпроцесс-тест это отловит и вернёт False.
     """
     global _pw_instance, _browser, _page_pool, _pool_size, _rate_semaphore
 
     pw_mod = _try_import_playwright()
-    if pw_mod is None:
-        # Try auto-install
+    if pw_mod is None and not getattr(sys, "frozen", False):
+        # Только запуск из исходников: одна автоустановка. В сборке .exe
+        # playwright уже в комплекте (parser.spec) — pip-докачек «за спиной
+        # пользователя» во время поиска нет, при отсутствии модуля — сразу
+        # fallback на CDP/httpx.
         if _auto_install_playwright():
             pw_mod = _try_import_playwright()
-        if pw_mod is None:
-            state.syslog("browser_client: playwright not available, using httpx fallback")
+    if pw_mod is None:
+            state.syslog("browser_client: playwright not available, using CDP/httpx fallback")
             state.warn("⚠ Playwright не установлен. Для ускорения: pip install playwright && playwright install chromium")
             return False
 
     # Test Chromium launch in subprocess to avoid hard crash
     state.syslog("browser_client: testing Chromium launch in subprocess...")
     if not _test_playwright_in_subprocess():
-        state.syslog("browser_client: Chromium test failed, using httpx fallback")
-        state.warn("⚠ Chrome не запустился. Использую резервный режим.")
+        state.syslog("browser_client: Chromium test failed, falling back to CDP/httpx")
         return False
     state.syslog("browser_client: Chromium test passed")
 

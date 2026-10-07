@@ -232,17 +232,26 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
             state.syslog(f"fetch_detail: biz_id={biz_id}, name={biz_name}, raw_socials={len(socials)}")
             detail_url = detail_url_override or f"https://yandex.ru/maps/org/{biz_id}"
             # Try browser first (fast, no throttling), fallback to httpx
-            # Priority: Playwright > CDP > httpx
+            # Priority: CDP > Playwright > httpx — the pool that is up is
+            # usually CDP (runner initializes it first; Playwright is only
+            # a fallback for sources on Python < 3.14).
             html = None
             _fetch_source = "none"
             _fetch_t0 = time.monotonic()
-            if state.USE_BROWSER:
-                if browser_client.is_available():
-                    html = browser_client.fetch_page(detail_url, biz_id=biz_id)
-                    _fetch_source = "playwright"
-                elif cdp_client.is_available():
+            # Способ загрузки карточки выбирает пользователь («Способ
+            # парсинга» в форме): auto — лестница CDP → Playwright; cdp /
+            # playwright — только выбранный движок (без подмены другим
+            # браузером); httpx — сразу HTTP (USE_BROWSER уже False).
+            # Выбранный движок недоступен → html остаётся None → проверка
+            # anti-block ниже уводит в HTTP-фолбэк, карточка не теряется.
+            _engine = getattr(state, "FETCH_ENGINE", "auto") or "auto"
+            if state.USE_BROWSER and _engine != "httpx":
+                if _engine in ("cdp", "auto") and cdp_client.is_available():
                     html = cdp_client.fetch_page(detail_url, biz_id=biz_id)
                     _fetch_source = "cdp"
+                elif _engine in ("playwright", "auto") and browser_client.is_available():
+                    html = browser_client.fetch_page(detail_url, biz_id=biz_id)
+                    _fetch_source = "playwright"
 
             # Anti-bot stub from the browser? Yandex serves an empty/"robot"
             # page to some requests — retry once via CDP on a fresh tab before
@@ -251,7 +260,11 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
             # (fetch_page returns None on stop) — in that case DON'T waste a
             # retry or a throttled httpx round-trip on a page we're about to
             # abandon anyway.
-            if not _stop_requested() and _looks_like_antiblock(html) and state.USE_BROWSER and cdp_client.is_available():
+            # Повтор через CDP при заглушке — для auto и явного выбора CDP
+            # (при выбранном Playwright повторять чужим движком нечестно —
+            # сразу HTTP-фолбэк).
+            if (not _stop_requested() and _looks_like_antiblock(html) and state.USE_BROWSER
+                    and _engine in ("cdp", "auto") and cdp_client.is_available()):
                 state.syslog(f"fetch_detail: anti-bot stub for {biz_name}, retrying via CDP fresh tab...")
                 html = cdp_client.fetch_page(detail_url, biz_id=biz_id)
                 _fetch_source = "cdp"

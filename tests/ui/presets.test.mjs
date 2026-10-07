@@ -15,9 +15,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { readAppSrc } from './_src.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const src = readFileSync(join(root, 'static', 'js', 'app.js'), 'utf8');
+const src = readAppSrc(root);
 
 function grab(name) {
   const i = src.indexOf('function ' + name + '(');
@@ -164,6 +165,16 @@ globalThis.localStorage = {
   removeItem(k) { delete this._s[k]; },
 };
 globalThis.markAppliedPreset = name => { globalThis.__appliedPreset = name; };
+// «Способ парсинга» (fetch_engine): глобал объявлен в 01-core-state.js, а
+// getCurrentSettings/applySettings (07-stats-daily.js) читают его и зовут
+// setFetchEngine. Песочница исполняет модули 07/08 без модуля 01 — даём
+// записываемый стаб (как для dataSource/vkMode).
+globalThis.fetchEngine = 'auto';
+globalThis.__setFetchEngineCalls = [];
+globalThis.setFetchEngine = engine => {
+  globalThis.fetchEngine = engine;
+  globalThis.__setFetchEngineCalls.push(engine);
+};
 // Чёрный список слов теперь часть пресета. Отрисовку чипов и счётчик
 // исключений проверяет tests/ui/blacklist.test.mjs — здесь важна одна
 // середина: список доехал до settings и вернулся обратно.
@@ -235,6 +246,8 @@ test('getCurrentSettings captures cities, source, socials, depth and formats', (
   // VK activity + lead score controls ride along in the preset
   assert.ok('vkCheck' in s && 'vkMode' in s && 'minScore' in s && 'sortScore' in s,
             'VK activity and lead-score settings are saved');
+  // «Способ парсинга» тоже входит в пресет
+  assert.equal(s.fetchEngine, 'auto', 'fetch engine saved in presets');
   // API keys never saved
   assert.ok(!('apikeys' in s) && !('yandex_key' in s));
 });
@@ -326,6 +339,7 @@ test('applySettings restores the full preset (round-trip)', () => {
   globalThis.socialMode = 'with_socials';
   globalThis.requiredSocials = new Set(['vk', 'tg']);
   globalThis.blacklistWords = ['Франшиза', 'Vip'];
+  globalThis.fetchEngine = 'cdp';
   els['f-grad'].value = '30';
   els['f-pages'].value = '10';
 
@@ -339,6 +353,7 @@ test('applySettings restores the full preset (round-trip)', () => {
   globalThis.applySettings(saved);
   assert.deepEqual(globalThis.selectedCities, ['Уфа', 'Москва'], 'cities restored');
   assert.equal(globalThis.dataSource, '2gis', 'source restored');
+  assert.equal(globalThis.fetchEngine, 'cdp', 'fetch engine restored');
   assert.equal(globalThis._gridMode, 'manual', 'grid restored');
   assert.deepEqual([...globalThis.requiredSocials].sort(), ['tg', 'vk'], 'social tiles restored');
   assert.equal(els['f-grad'].value, '30');

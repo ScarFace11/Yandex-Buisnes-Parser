@@ -408,6 +408,135 @@ class TestPickModes:
         assert empty["mode"] == "single" and empty["texts"] == []
 
 
+class TestCompositeTemplates:
+    """Составные шаблоны: variant_ids в нормализации и раскрытие в текст."""
+
+    def _tpls(self, extra=None):
+        import yandex_maps_parser.message_templates as mt
+
+        raw = [
+            {"id": "a", "name": "A", "text": "А", "category": "vk"},
+            {"id": "b", "name": "B", "text": "Б", "category": "vk"},
+            {"id": "c", "name": "C", "text": "В", "category": "telegram"},
+        ] + (extra or [])
+        return mt.normalize_templates(raw)
+
+    def test_variant_ids_pruned_to_same_category(self):
+        import yandex_maps_parser.message_templates as mt
+
+        out = self._tpls(extra=[
+            {"id": "s", "name": "S", "text": "С", "category": "vk",
+             "variant_ids": ["a", "b", "c", "ghost", "s", "", 42]},
+        ])
+        s = next(t for t in out if t["id"] == "s")
+        # чужая категория, несуществующий id, самоссылка и мусор — вычищены.
+        assert s["variant_ids"] == ["a", "b"]
+
+    def test_variant_ids_deduped_and_capped(self):
+        import yandex_maps_parser.message_templates as mt
+
+        many = [{"id": f"t{i}", "name": f"T{i}", "text": "т", "category": "vk"}
+                for i in range(mt.MAX_VARIANTS + 10)]
+        ids = [f"t{i}" for i in range(mt.MAX_VARIANTS + 10)]
+        out = self._tpls(extra=many + [
+            {"id": "s", "name": "S", "text": "С", "category": "vk",
+             "variant_ids": ids[:5] + ids[:5] + ids[5:]},
+        ])
+        s = next(t for t in out if t["id"] == "s")
+        assert len(s["variant_ids"]) == mt.MAX_VARIANTS
+
+    def test_resolve_variant_text_picks_from_pool(self):
+        import yandex_maps_parser.message_templates as mt
+
+        tpls = self._tpls(extra=[
+            {"id": "s", "name": "S", "text": "С", "category": "vk",
+             "variant_ids": ["a", "b"]},
+        ])
+        s = next(t for t in tpls if t["id"] == "s")
+        texts = {mt.resolve_variant_text(s, tpls) for _ in range(40)}
+        assert texts == {"А", "Б"}
+
+    def test_resolve_returns_none_without_live_variants(self):
+        import yandex_maps_parser.message_templates as mt
+
+        tpls = self._tpls(extra=[
+            {"id": "s", "name": "S", "text": "С", "category": "vk",
+             "variant_ids": ["ghost"]},
+        ])
+        s = next(t for t in tpls if t["id"] == "s")
+        assert s["variant_ids"] == []  # вычищены при нормализации
+        assert mt.resolve_variant_text(s, tpls) is None
+        plain = next(t for t in tpls if t["id"] == "a")
+        assert mt.resolve_variant_text(plain, tpls) is None
+
+    def test_resolve_unfolds_nested_composites(self):
+        import yandex_maps_parser.message_templates as mt
+
+        tpls = self._tpls(extra=[
+            {"id": "s", "name": "S", "text": "С", "category": "vk",
+             "variant_ids": ["m"]},
+            {"id": "m", "name": "M", "text": "М", "category": "vk",
+             "variant_ids": ["a", "b"]},
+        ])
+        s = next(t for t in tpls if t["id"] == "s")
+        texts = {mt.resolve_variant_text(s, tpls) for _ in range(40)}
+        assert texts == {"А", "Б"}
+
+    def test_resolve_cycle_falls_back_to_none(self):
+        import yandex_maps_parser.message_templates as mt
+
+        tpls = self._tpls(extra=[
+            {"id": "s", "name": "S", "text": "С", "category": "vk",
+             "variant_ids": ["m"]},
+            {"id": "m", "name": "M", "text": "М", "category": "vk",
+             "variant_ids": ["s"]},
+        ])
+        s = next(t for t in tpls if t["id"] == "s")
+        assert mt.resolve_variant_text(s, tpls) is None
+
+
+class TestRandomVariable:
+    """Случайная переменная: variants в нормализации и подстановке."""
+
+    def test_variants_normalized_deduped_capped(self):
+        import yandex_maps_parser.message_templates as mt
+
+        raw = ["Привет!", " Здравствуйте! ", "", 42, None, "Привет!"] \
+            + [f"в{i}" for i in range(mt.MAX_VAR_VARIANTS + 10)]
+        out = mt.normalize_custom_variables([{"name": "привет", "variants": raw}])
+        v = out[0]
+        assert v["variants"][0] == "Привет!" and v["variants"][1] == "Здравствуйте!"
+        assert len(v["variants"]) == mt.MAX_VAR_VARIANTS
+        assert v["value"] == "" and v["column"] == ""
+
+    def test_variants_alone_make_a_variable(self):
+        import yandex_maps_parser.message_templates as mt
+
+        out = mt.normalize_custom_variables([{"name": "привет", "variants": ["А", "Б"]}])
+        assert len(out) == 1 and out[0]["variants"] == ["А", "Б"]
+
+    def test_substitute_picks_random_variant(self):
+        import yandex_maps_parser.message_templates as mt
+
+        cvars = [{"name": "привет", "column": "", "value": "", "variants": ["А", "Б"]}]
+        got = {mt.substitute("{привет}!", {}, custom_variables=cvars) for _ in range(40)}
+        assert got == {"А!", "Б!"}
+
+    def test_variants_win_over_value_and_column(self):
+        import yandex_maps_parser.message_templates as mt
+
+        cvars = [{"name": "город_клиента", "column": "city", "value": "статик",
+                  "variants": ["Север", "Юг"]}]
+        got = {mt.substitute("{город_клиента}", RECORD, custom_variables=cvars) for _ in range(40)}
+        assert got == {"Север", "Юг"}
+
+    def test_single_variant_is_stable(self):
+        import yandex_maps_parser.message_templates as mt
+
+        cvars = [{"name": "привет", "variants": ["Только один"]}]
+        assert mt.substitute("{привет}", {}, custom_variables=cvars) == "Только один"
+
+
 class TestApi:
     def test_get_seeds_defaults(self, client):
         body = client.get("/templates").get_json()

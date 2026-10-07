@@ -10,9 +10,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { readAppSrc } from './_src.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const src = readFileSync(join(root, 'static', 'js', 'app.js'), 'utf8');
+const src = readAppSrc(root);
 
 // Slice a module-level `const NAME = …` (array/object literals or a plain
 // value) from the production bundle, so tests never duplicate the tables.
@@ -187,6 +188,10 @@ globalThis.bulkState = { social: 'vk', opened: 0, blocked: 0, keys: new Set(), c
 globalThis.syncTemplateSelects = () => {};
 globalThis.syncTableTemplatePicker = () => {};
 globalThis.getActiveTemplateFor = () => null;
+// bulkOpenBatch смотрит и на bulk-выбор шаблона: по умолчанию «не выбран».
+globalThis.getBulkTemplateFor = () => null;
+globalThis.bulkTemplateIds = { vk: null, telegram: null, whatsapp: null, instagram: null };
+globalThis.messageTemplates = [];
 globalThis.renderBulkQueue = () => {};
 globalThis.showMissingAsVar = false;
 // Режим случайного выбора: по умолчанию single с пустым набором —
@@ -217,6 +222,9 @@ globalThis.fetch = async (url, opts) => {
 };
 const toasts = [];
 globalThis.showToast = (msg, type) => toasts.push({ msg, type });
+// onSocialBadgeClick берёт шаблон для копирования; здесь он не нужен —
+// клик проверяется на отметке «просмотрено», без перехвата ссылки.
+globalThis.getTemplateFor = () => null;
 
 // Автосохранение отметок планирует таймер на 5 с — в тестах его ловим,
 // а не ждём (иначе процесс висит лишние секунды). Список сбрасывает
@@ -249,6 +257,8 @@ const fns = [
   'onlySingleChecked', 'newMonthsValue', 'newMonthsPeriod', 'companyTypeOn',
   'showBulkWarn', 'hideBulkWarn', 'postJSON', 'openBlankTabs', 'fillTab', 'closeTab',
   'markReviewedBatch', 'bulkOpenBatch',
+  // Клик по соцсети в таблице ставит отметку «просмотрено»
+  'toggleViewed', 'onSocialBadgeClick',
   // Автосохранение отметок «Просмотрено»
   'markReviewedDirty', 'updateReviewedSaveStatus', 'autoPersistReviewed', 'persistReviewedOnLeave',
   'setResultsSubTab', 'exportFiltered', 'persistReviewedMarks',
@@ -615,6 +625,37 @@ test('bulkOpenBatch отправляет порядок таблицы на се
   assert.equal('sort_asc' in call.body, true);
 });
 
+test('bulkOpenBatch: пустой random-набор расширяется до всех шаблонов категории', async () => {
+  globalThis.messageTemplates = [
+    { id: 't1', category: 'vk', name: 'A', text: 'A' },
+    { id: 't2', category: 'vk', name: 'B', text: 'B' },
+  ];
+  globalThis.templateModes.vk = 'random';
+  globalThis.randomTemplateIds.vk = [];
+  try {
+    await runBulk([{ url: 'https://vk.com/a', key: 'k1', name: 'А', text: 'x', tpl_name: 'A' }], { count: '1' });
+    const call = fetchCalls.find(c => c.url === '/bulk/urls');
+    assert.ok(call, 'запрос ушёл');
+    assert.deepEqual(call.body.template_ids.sort(), ['t1', 't2'],
+      'случайный режим без набора берёт все шаблоны категории, а не один активный');
+    assert.equal(call.body.template, '', 'random-режим не шлёт одиночный текст');
+  } finally {
+    globalThis.templateModes.vk = 'single';
+    globalThis.messageTemplates = [];
+  }
+});
+
+test('bulkOpenBatch: шаблон не выбран — текст не подставляется', async () => {
+  try {
+    await runBulk([{ url: 'https://vk.com/a', key: 'k1', name: 'А' }], { count: '1' });
+    const call = fetchCalls.find(c => c.url === '/bulk/urls');
+    assert.ok(call, 'запрос ушёл');
+    assert.equal(call.body.template, '', '«шаблон не выбран» = текст не копируется');
+    assert.deepEqual(call.body.template_ids, []);
+  } finally {
+  }
+});
+
 // ── 5. Table filters ──────────────────────────────────────────
 test('filterTable applies the city tab filter', () => {
   resetState();
@@ -648,6 +689,36 @@ test('refreshReviewedUI re-applies the unviewed filter after a bulk run', () => 
   assert.equal(globalThis.filteredRows.length, 2, 'marked rows drop out at once');
   assert.equal(els['tbl-count'].textContent, '2 записей');
   assert.equal(els['unviewed-count'].textContent, '2', 'bulk counter follows the marks');
+});
+
+
+test('клик по соцсети в таблице помечает организацию просмотренной', async () => {
+  // Клик по бейджу VK ставит ту же отметку, что и чекбокс строки, —
+  // и шлёт её на /reviewed, чтобы отметка пережила перезагрузку.
+  resetState();
+  globalThis.filterTable();
+  fetchCalls = [];
+  const key = globalThis.reviewKey(ROWS[0]);
+  const el = { dataset: { social: 'vk', key }, getAttribute: () => 'https://vk.com/a' };
+  await globalThis.onSocialBadgeClick({ preventDefault: () => {} }, el);
+  assert.ok(globalThis.reviewedState[key], 'запись помечена просмотренной');
+  const post = fetchCalls.find(c => c.url === '/reviewed');
+  assert.ok(post, 'отметка ушла на сервер');
+  assert.deepEqual(post.body, { url: key, reviewed: true });
+});
+
+
+test('повторный клик по соцсети снимает отметку', async () => {
+  resetState();
+  globalThis.filterTable();
+  fetchCalls = [];
+  const key = globalThis.reviewKey(ROWS[0]);
+  globalThis.reviewedState[key] = true;
+  const el = { dataset: { social: 'vk', key }, getAttribute: () => 'https://vk.com/a' };
+  await globalThis.onSocialBadgeClick({ preventDefault: () => {} }, el);
+  assert.equal(globalThis.reviewedState[key], undefined, 'отметка снята');
+  const post = fetchCalls.find(c => c.url === '/reviewed');
+  assert.deepEqual(post.body, { url: key, reviewed: false });
 });
 
 test('currentFileNote is appended to the table counter', () => {

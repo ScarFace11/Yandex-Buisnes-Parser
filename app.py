@@ -162,33 +162,156 @@ def _available_port(preferred: int, tries: int = 20) -> int:
 
 
 def _should_open_browser() -> bool:
-    """Открывать ли браузер самим (macOS .app запускают двойным кликом).
+    """Открывать ли интерфейс при старте в браузере по умолчанию.
 
-    Windows-сборка оставляет видимой консоль с адресом — там поведение не
-    меняется. На macOS у .app окна нет вообще, и без этого шага пользователь
-    видел бы только значок в доке. YP_OPEN_BROWSER=0 отключает автозапуск
-    (нужно автотестам сборки и тому, кто держит свою вкладку).
+    Раньше интерфейс открывался в окне Chrome (CDP-окно): у пользователей
+    без Chrome окно не появлялось вовсе. Теперь стартовая страница всегда
+    открывается в системном браузере по умолчанию — Windows берёт
+    ассоциацию ОС (Edge/Opera/Chrome…), macOS открывает Safari.
+    YP_OPEN_BROWSER=0 отключает автозапуск (нужно автотестам сборки и
+    тому, кто держит свою вкладку).
     """
     if os.getenv("YP_OPEN_BROWSER", "").strip().lower() in ("0", "false", "no"):
         return False
-    return sys.platform == "darwin" and paths.is_frozen()
+    return True
+
+
+def _open_default_browser(url: str) -> bool:
+    """Открывает URL в системном браузере по умолчанию (macOS → Safari).
+
+    Windows: os.startfile использует ассоциацию ОС — откроется тот браузер,
+    что выбран в системе по умолчанию (Edge, Opera, Chrome, Firefox…),
+    без требования установленного Chrome. macOS: сначала явно Safari
+    (браузер ОС по умолчанию), при неудаче — общий webbrowser.open.
+    Возвращает True, если открытие удалось.
+    """
+    import webbrowser
+    try:
+        if sys.platform == "darwin":
+            try:
+                return bool(webbrowser.get("safari").open(url))
+            except webbrowser.Error:
+                pass  # Safari недоступен — общий путь ниже
+            return bool(webbrowser.open(url))
+        if sys.platform == "win32":
+            try:
+                os.startfile(url)
+                return True
+            except OSError:
+                pass  # нет ассоциации — webbrowser.open ниже
+        return bool(webbrowser.open(url))
+    except Exception:
+        return False
+
+
+def _open_startup_url(url: str) -> None:
+    """Показывает интерфейс пользователю при старте.
+
+    Сначала — браузер по умолчанию (macOS: Safari). Если открыть его не
+    удалось (нет ассоциации, headless-окружение) — прежнее видимое окно
+    Chrome с CDP, если Chrome установлен. Иначе остаётся консоль/лог
+    с адресом.
+    """
+    if _open_default_browser(url):
+        return
+    try:
+        import atexit
+        from yandex_maps_parser import cdp_client
+        atexit.register(cdp_client.close_debug_window)
+        cdp_client.open_debug_window(start_url=url)
+    except Exception:
+        pass  # адрес уже напечатан в консоли/логе
 
 
 def _open_browser_later(url: str, delay: float = 1.5) -> None:
     """Открывает вкладку после старта сервера (не блокирует app.run)."""
     import threading
-    import webbrowser
 
     def _go():
         try:
-            webbrowser.open(url)
+            _open_startup_url(url)
         except Exception:
             pass
 
     threading.Timer(delay, _go).start()
 
 
+def _maybe_run_browser_probe() -> bool:
+    """Probe-режим для проверки Chromium внутри .exe (YP_BROWSER_PROBE=1).
+
+    В frozen-сборке `sys.executable` — это сам exe, поэтому обычный
+    сабпроцесс-тест «python -c …» из browser_client там не работает.
+    Вместо него родитель запускает СВОЙ exe с YP_BROWSER_PROBE=1: процесс
+    молча стартует Playwright+Chromium и выходит с кодом 0/1 — так же,
+    как делал бы python -c. Позволяет отловить крэш 0xC0000005 и другие
+    проблемы запуска ДО боевого прогона.
+
+    Returns True, если процесс работал в probe-режиме (и надо выйти).
+    """
+    if os.environ.get("YP_BROWSER_PROBE", "").strip().lower() not in ("1", "true", "yes", "on"):
+        return False
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            b = p.chromium.launch(headless=True)
+            b.close()
+        sys.exit(0)
+    except SystemExit:
+        raise
+    except Exception:
+        sys.exit(1)
+
+
+def _should_open_cdp_window() -> bool:
+    """Открывать ли при старте отдельное окно Chrome с CDP.
+
+    По умолчанию НЕТ: интерфейс теперь открывается в браузере по умолчанию,
+    а для парсинга runner сам запускает свой headless Chrome — стартовое
+    окно Chrome не нужно (у пользователей без Chrome оно и раньше не
+    открывалось). YP_DEBUG_WINDOW=1 включает окно для отладки: видимый
+    Chrome на временном профиле с CDP-портом, работает и при сломанном
+    системном Chrome.
+    """
+    return os.getenv("YP_DEBUG_WINDOW", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _open_cdp_window_later(url: str, delay: float = 0.5) -> None:
+    """Открывает отладочное окно Chrome в фоне (не блокирует app.run).
+
+    В окне сразу открывается интерфейс приложения (url), чтобы не
+    набирать адрес вручную. Окно живёт до выхода из приложения
+    (close_debug_window в atexit).
+    """
+    import atexit
+    import threading
+
+    def _go():
+        try:
+            from yandex_maps_parser import cdp_client
+            atexit.register(cdp_client.close_debug_window)
+            port = cdp_client.open_debug_window(start_url=url)
+            # print — отдельно: на cp1251-консоли эмодзи падает, а окно
+            # уже открыто; главное, чтобы сам процесс запустился.
+            try:
+                if port:
+                    print(f"  [CDP] окно Chrome открыто, CDP-порт {port}")
+                else:
+                    print("  [CDP] окно Chrome не открылось (см. лог)")
+            except Exception:
+                pass
+        except Exception as e:
+            try:
+                print(f"  [CDP] окно Chrome: {e}")
+            except Exception:
+                pass
+
+    threading.Timer(delay, _go).start()
+
+
 if __name__ == "__main__":
+    # Probe-режим: молча проверить Chromium и выйти (используется .exe-сборкой
+    # для сабпроцесс-теста — см. _maybe_run_browser_probe в этом файле).
+    _maybe_run_browser_probe()
     _port = _available_port(_startup_port())
     try:
         from config import APP_VERSION, is_dev_build
@@ -203,4 +326,6 @@ if __name__ == "__main__":
         pass
     if _should_open_browser():
         _open_browser_later(f"http://127.0.0.1:{_port}/")
+    if _should_open_cdp_window():
+        _open_cdp_window_later(f"http://127.0.0.1:{_port}/")
     app.run(host="127.0.0.1", port=_port, debug=False)

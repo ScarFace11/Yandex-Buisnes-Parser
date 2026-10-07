@@ -7,9 +7,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { readAppSrc } from './_src.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const src = readFileSync(join(root, 'static', 'js', 'app.js'), 'utf8');
+const src = readAppSrc(root);
 
 // Slice a full function (balanced braces) from the production bundle.
 function grab(name) {
@@ -114,7 +115,7 @@ const fns = ['_trimLog', '_isDup', 'appendLog', 'toggleTechDetails', 'clearLog',
   'handleProgress', 'handleCityDone',
   'logStamp', '_elapsedStamp', '_logNorm', '_scrollLogIfFollowing', 'updateTermProgress', '_etaText',
   'setRunIndicator', 'renderLogStats',
-  '_ls', '_logLevel', '_logIsNoise', '_logIsCity', '_logIndent', '_onLogScroll',
+  '_ls', '_logLevel', '_logIsNoise', '_logIsSummary', '_logIsCity', '_logIndent', '_onLogScroll',
   '_updateLogJump', 'logJumpToBottom', 'setLogFilter', '_refreshLogFilter',
   'toggleLogBlock', '_logPlainText', 'saveLogFile', 'copyLogText'];
 // Constants the sliced functions close over: declared with `const` in app.js,
@@ -125,9 +126,10 @@ function grabConst(name) {
   return src.slice(i, src.indexOf(';', i) + 1);
 }
 (0, eval)(fns.map(grab).join('\n')
-  + '\n' + ['LOG_NOISE_RE', 'LOG_KEEP_RE', 'LOG_CITY_RE', 'LOG_SUBLINE_RE', 'LOG_FILTERS',
+  + '\n' + ['LOG_NOISE_RE', 'LOG_KEEP_RE', 'LOG_SUMMARY_RE', 'LOG_CITY_RE', 'LOG_SUBLINE_RE', 'LOG_FILTERS',
     'UI_ICONS']
     .map(grabConst).join('\n'));
+// _logIsSummary uses LOG_SUMMARY_RE and LOG_NOISE_RE.
 
 const logEl = els['log-output'];
 const visibleLines = () => logEl.children.filter(c => c.className !== undefined);
@@ -475,14 +477,35 @@ test('«Технические»/«Все» still show the mechanics «Важн�
   assert.equal(logEl._classes.has('f-all'), true);
 });
 
-test('«Важные» marks mechanics as noise but never drops them', () => {
+test('«Важные» shows ONLY the summary lines, not the whole log', () => {
   resetLog();
   globalThis.appendLog('info', '  📡 Геокодирую «Ленина 1»');
+  globalThis.appendLog('info', '  [!] Сеть: RemoteProtocolError — повтор 1/2');
   globalThis.appendLog('info', '  🏙  Город 1/1: Уфа');
+  globalThis.appendLog('info', '  ✅ «кафе»: 138 записей');
+  globalThis.appendLog('info', '  📦 Raw: 138 организаций (без фильтров) → output/raw/');
   globalThis.setLogFilter('important');
-  assert.equal(globalThis._ls().stats.noise, 1);
+  // Механика и город — не итоги; ошибка живёт во вкладке «Ошибки».
   assert.match(logEl.children[0].className, /\bnoise\b/);
-  assert.equal(els['log-filter-empty'].hidden, true, 'the city header is still important');
+  assert.ok(!/\bsum\b/.test(logEl.children[1].className), 'errors are not summary');
+  assert.ok(!/\bsum\b/.test(logEl.children[2].className), 'city header is not summary');
+  assert.match(logEl.children[3].className, /\bsum\b/);
+  assert.match(logEl.children[4].className, /\bsum\b/);
+  assert.equal(globalThis._ls().stats.sum, 2);
+  // Есть итоги → плашка пустоты скрыта; пустой вердикт считается по итоговым
+  // строкам, а не по «всему, что не шум».
+  assert.equal(els['log-filter-empty'].hidden, true, 'summaries fill the tab');
+  resetLog();
+  globalThis.appendLog('info', '  📡 Геокодирую «Ленина 1»');
+  globalThis.setLogFilter('important');
+  assert.equal(els['log-filter-empty'].hidden, false, 'no summaries → empty verdict');
+  assert.equal(els['log-filter-empty'].textContent, 'Итогов пока нет — включите «Все»');
+
+  // warn-строки с итоговым эмодзи (пауза/стоп) остаются итогами.
+  resetLog();
+  globalThis.appendLog('warn', '  ⏸ Поиск на паузе — прогресс сохранён.');
+  assert.match(logEl.children[0].className, /\bsum\b/);
+  assert.equal(globalThis._ls().stats.sum, 1);
 
   globalThis.setLogFilter('tech');
   globalThis.appendLog('tech', 'http_client: GET 429');

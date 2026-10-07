@@ -24,6 +24,7 @@ from .constants import (
     QUERY_COLORS,
 )
 from . import state
+from .social_normalize import normalize_record
 
 # 2GIS source adds a twogis_url column; keep CSV_FIELDS stable for the
 # Yandex path by appending dynamically when a 2GIS record is present.
@@ -393,7 +394,7 @@ def save_csv(records: list[dict], path: str, append: bool) -> None:
         w = csv.DictWriter(f, fieldnames=CSV_FIELDS, extrasaction="ignore", delimiter=";")
         if mode == "w":
             w.writeheader()
-        w.writerows(records)
+        w.writerows(normalize_record(r) for r in records)
 
 
 # ── JSON ──────────────────────────────────────────────────────
@@ -407,7 +408,8 @@ def save_json(records: list[dict], path: str, append: bool) -> None:
         except Exception:
             pass
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(existing + records, f, ensure_ascii=False, indent=2)
+        json.dump([normalize_record(r) for r in existing + records],
+                  f, ensure_ascii=False, indent=2)
 
 
 # ── Frontend-friendly merged JSON ──────────────────────────────
@@ -442,6 +444,57 @@ def _records_from_xlsx(path: str) -> list[dict]:
             if rec.get("name") or rec.get("yandex_maps_url"):
                 out.append(rec)
         wb.close()
+    except Exception:
+        pass
+    return out
+
+
+def _records_from_csv(path: str) -> list[dict]:
+    """Read records out of a parser CSV with correct english keys.
+
+    Зеркало _records_from_xlsx: русские заголовки конвертируются обратно в
+    английские ключи (HEADER_LABELS), «✓» у reviewed не важен. Кодировка —
+    UTF-8 c BOM (encoding="utf-8-sig"), как их пишет save_csv.
+    """
+    import csv
+
+    out: list[dict] = []
+    try:
+        with open(path, encoding="utf-8-sig", errors="ignore", newline="") as fh:
+            # save_csv пишет с ';' (русская локаль Excel), но принимать надо
+            # и запятую/таб — файлы могут приходить из внешних источников.
+            # Sniffer не умеет в кавычки с запятой внутри, поэтому просто
+            # считаем поля заголовка каждым кандидатом: где больше — тот и
+            # разделитель.
+            header = fh.readline()
+            fh.seek(0)
+            delim, best_n = ";", 0
+            for d in ";,\t":
+                try:
+                    n = len(next(csv.reader([header], delimiter=d)))
+                except (csv.Error, StopIteration):
+                    continue
+                if n > best_n:
+                    delim, best_n = d, n
+            reader = csv.DictReader(fh, delimiter=delim)
+            if not reader.fieldnames:
+                return out
+            fields = [(_LABEL_TO_FIELD.get(str(h).strip(), str(h).strip())
+                       if str(h).strip() not in _LABEL_TO_FIELD
+                       else _LABEL_TO_FIELD[str(h).strip()])
+                      for h in reader.fieldnames]
+            for row in reader:
+                rec: dict = {}
+                for f, h in zip(fields, reader.fieldnames):
+                    v = (row.get(h) or "").strip() if isinstance(row.get(h), str) else row.get(h)
+                    if v in (None, ""):
+                        continue
+                    if f == "reviewed":
+                        rec[f] = str(v).strip().lower() in ("1", "true", "да", "✓")
+                    else:
+                        rec[f] = v
+                if rec.get("name") or rec.get("yandex_maps_url") or rec.get("twogis_url"):
+                    out.append(rec)
     except Exception:
         pass
     return out
@@ -498,6 +551,16 @@ def write_frontend_json(files: list[str], out_dir: str, cities: list[str] | None
         xlsx_files = [f for f in files if f.endswith(".xlsx") and not f.startswith("~")]
         for name in xlsx_files:
             recs = _records_from_xlsx(os.path.join(out_dir, name))
+            city = _city_from_fname(name)
+            for rec in recs:
+                if city and not rec.get("city"):
+                    rec["city"] = city
+            merged.extend(recs)
+        # CSV (например processed/csv/*_filtered.csv при «Формат результата: CSV»):
+        # без этого CSV-поиск не наполнял таблицу сразу после завершения.
+        csv_files = [f for f in files if f.endswith(".csv") and not f.startswith(("_", "."))]
+        for name in csv_files:
+            recs = _records_from_csv(os.path.join(out_dir, name))
             city = _city_from_fname(name)
             for rec in recs:
                 if city and not rec.get("city"):
@@ -693,7 +756,7 @@ def _append_excel(record: dict) -> None:
             return
         ws = _excel.wb.active
         ri = ws.max_row + 1
-        _write_row(ws, ri, record)
+        _write_row(ws, ri, normalize_record(record))
         _excel._dirty += 1
         # Batched save: only write to disk periodically
         if _excel._dirty >= _EXCEL_BATCH_SIZE:
@@ -769,6 +832,7 @@ def save_excel(all_records: list[dict], path: str, extra_fields: tuple[str, ...]
     `extra_fields` adds columns that are not part of the user's report but
     are needed on disk (see INTERNAL_FIELDS).
     """
+    all_records = [normalize_record(r) for r in all_records]
     fields = _enabled_fields(extra_fields, all_records)
     wb = openpyxl.Workbook()
     ws = wb.active

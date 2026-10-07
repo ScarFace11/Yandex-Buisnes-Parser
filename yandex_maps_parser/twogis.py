@@ -155,7 +155,7 @@ def quota_set_manual(total: int) -> int:
     сессии остаётся сверху. Отрицательное/мусорное — сброс к автосчёту.
     Возвращает применённое значение (база + текущая сессия).
     """
-    global _quota_base, _quota_file_loaded
+    global _quota_base
     with _quota_lock:
         if not _quota_file_loaded:
             _quota_load_locked()

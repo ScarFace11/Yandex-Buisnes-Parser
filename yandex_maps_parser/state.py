@@ -15,6 +15,9 @@ import time as _time
 from colorama import Fore, Style
 from tqdm import tqdm
 
+# ⏸ Отладочный CDP-браузер (видимый, без пула вкладок, без headless).
+DEBUG_CDP_WINDOW = False  # задаётся через runner.run_web(params)
+
 # Реэкспорт настроек config: остальные модули читают их через state.*.
 # (pyflakes помечает эти импорты как «unused» — это ложное срабатывание,
 # привязки нужны именно в пространстве имён state.)
@@ -44,6 +47,7 @@ from config import (
     MAX_PAGES,
     FETCH_DETAIL,
     USE_BROWSER,
+    FETCH_ENGINE,
     MAX_CANDIDATES_PER_CITY,
     YANDEX_API_KEY,
     PROXIES,

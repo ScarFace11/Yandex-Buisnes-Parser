@@ -17,6 +17,9 @@ colorama~=0.4.6
 
 # Browser automation (Playwright for detail pages, or CDP fallback)
 playwright~=1.62.0
+# Pin: greenlet 3.5.5 падает сегфолтом (0xC0000005) в Node-драйвере Playwright
+# при запуске сабпроцесс-теста на Python 3.14 — 3.5.6 чинит GC-крэш.
+greenlet>=3.5.6
 websocket-client~=1.9  # CDP WebSocket for Chrome DevTools Protocol
 
 # Excel export

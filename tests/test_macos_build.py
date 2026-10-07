@@ -117,35 +117,131 @@ class TestResourceDir:
 # ── Браузер и авто-обновление ─────────────────────────────────
 
 class TestBrowserAutostart:
-    def test_only_the_frozen_macos_build_opens_the_browser(self, monkeypatch):
+    def test_macos_build_opens_the_default_browser(self, monkeypatch):
         import app
         monkeypatch.delenv("YP_OPEN_BROWSER", raising=False)
         monkeypatch.setattr(app.sys, "platform", "darwin")
         monkeypatch.setattr(app.paths, "is_frozen", lambda: True)
         assert app._should_open_browser() is True
 
-    def test_windows_build_keeps_the_console_behaviour(self, monkeypatch):
+    def test_windows_build_opens_the_default_browser(self, monkeypatch):
+        """Windows больше не зависит от Chrome: интерфейс открывает
+        браузер по умолчанию (ассоциация ОС)."""
         import app
         monkeypatch.delenv("YP_OPEN_BROWSER", raising=False)
         monkeypatch.setattr(app.sys, "platform", "win32")
         monkeypatch.setattr(app.paths, "is_frozen", lambda: True)
-        assert app._should_open_browser() is False
+        assert app._should_open_browser() is True
 
     def test_env_switch_disables_autostart(self, monkeypatch):
         """Нужно смоук-тестам сборки и тому, у кого открыта своя вкладка."""
         import app
-        monkeypatch.setattr(app.sys, "platform", "darwin")
-        monkeypatch.setattr(app.paths, "is_frozen", lambda: True)
         for value in ("0", "false", "NO"):
             monkeypatch.setenv("YP_OPEN_BROWSER", value)
             assert app._should_open_browser() is False
 
-    def test_source_run_never_steals_the_browser(self, monkeypatch):
+    def test_source_run_opens_the_default_browser_too(self, monkeypatch):
+        """Запуск из исходников (python app.py) тоже не привязан к Chrome:
+        как и сборки, он открывает браузер по умолчанию."""
         import app
         monkeypatch.delenv("YP_OPEN_BROWSER", raising=False)
-        monkeypatch.setattr(app.sys, "platform", "darwin")
         monkeypatch.setattr(app.paths, "is_frozen", lambda: False)
-        assert app._should_open_browser() is False
+        assert app._should_open_browser() is True
+
+
+class TestDefaultBrowserOpen:
+    """Стартовая страница — в браузере по умолчанию (macOS: Safari)."""
+
+    def test_macos_uses_safari_first(self, monkeypatch):
+        import webbrowser as wb
+        import app
+        monkeypatch.setattr(app.sys, "platform", "darwin")
+        calls = {}
+
+        class _FakeSafari:
+            def open(self, url):
+                calls["safari"] = url
+                return True
+
+        def _get(name):
+            if name == "safari":
+                return _FakeSafari()
+            raise wb.Error(name)
+
+        monkeypatch.setattr(wb, "get", _get)
+        assert app._open_default_browser("http://127.0.0.1:5000/") is True
+        assert calls["safari"] == "http://127.0.0.1:5000/"
+
+    def test_macos_falls_back_when_safari_missing(self, monkeypatch):
+        import webbrowser as wb
+        import app
+        monkeypatch.setattr(app.sys, "platform", "darwin")
+        calls = {}
+
+        def _get(name):
+            raise wb.Error("no safari")
+
+        monkeypatch.setattr(wb, "get", _get)
+        monkeypatch.setattr(wb, "open", lambda url: calls.setdefault("open", url) and True)
+        assert app._open_default_browser("http://x/") is True
+        assert calls["open"] == "http://x/"
+
+    def test_windows_uses_os_association(self, monkeypatch):
+        import os as _os
+        import app
+        monkeypatch.setattr(app.sys, "platform", "win32")
+        calls = {}
+
+        def _startfile(url):
+            calls["startfile"] = url
+
+        monkeypatch.setattr(_os, "startfile", _startfile, raising=False)
+        assert app._open_default_browser("http://x/") is True
+        assert calls["startfile"] == "http://x/"
+
+    def test_windows_falls_back_to_webbrowser_on_oserror(self, monkeypatch):
+        import os as _os
+        import webbrowser as wb
+        import app
+        monkeypatch.setattr(app.sys, "platform", "win32")
+        calls = {}
+
+        def _startfile(url):
+            raise OSError("no association")
+
+        monkeypatch.setattr(_os, "startfile", _startfile, raising=False)
+        monkeypatch.setattr(wb, "open", lambda url: calls.setdefault("open", url) and True)
+        assert app._open_default_browser("http://x/") is True
+        assert calls["open"] == "http://x/"
+
+    def test_failure_falls_back_to_chrome_cdp_window(self, monkeypatch):
+        """Браузер по умолчанию не открылся → прежнее окно Chrome (если есть):
+        интерфейс обязан появиться хотя бы одним способом."""
+        import types
+        import app
+        import yandex_maps_parser
+
+        opened = {}
+        fake_cdp = types.SimpleNamespace(
+            open_debug_window=lambda start_url="about:blank":
+                opened.setdefault("url", start_url) or 9222,
+            close_debug_window=lambda: None,
+        )
+        monkeypatch.setattr(app, "_open_default_browser", lambda url: False)
+        monkeypatch.setattr(yandex_maps_parser, "cdp_client", fake_cdp, raising=False)
+        app._open_startup_url("http://x/")
+        assert opened["url"] == "http://x/"
+
+    def test_cdp_window_off_by_default(self, monkeypatch):
+        """Окно Chrome при старте больше не навязывается: интерфейс идёт
+        в браузер по умолчанию, YP_DEBUG_WINDOW=1 включает окно для отладки."""
+        import app
+        monkeypatch.delenv("YP_DEBUG_WINDOW", raising=False)
+        assert app._should_open_cdp_window() is False
+        monkeypatch.setenv("YP_DEBUG_WINDOW", "1")
+        assert app._should_open_cdp_window() is True
+        monkeypatch.setenv("YP_DEBUG_WINDOW", "0")
+        assert app._should_open_cdp_window() is False
 
 
 class TestPortFallback:

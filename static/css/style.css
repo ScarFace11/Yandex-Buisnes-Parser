@@ -89,6 +89,9 @@
   --glow:rgba(51,64,79,.28);
   --glow-warn:rgba(224,137,0,.30);
   --glow-red:rgba(196,64,64,.28);
+  /* Высота шапки — одна переменная на весь интерфейс. Раньше литерал
+     повторялся в 4 местах: header, #update-banner, .notify-pop и в медиа. */
+  --hdr-h:56px;
   --r:var(--r-md);
   --sh:0 1px 2px rgba(16,24,40,.04),0 1px 3px rgba(16,24,40,.06);
   --sh-lg:0 4px 12px rgba(16,24,40,.07),0 16px 40px rgba(16,24,40,.12);
@@ -135,7 +138,7 @@ body{
    цветного свечения. Цвет ушёл из фона в акцент (единственное действие). */
 header{
   background:var(--hdr);color:var(--on-accent);
-  height:56px;padding:0 20px;flex:0 0 auto;
+  height:var(--hdr-h);padding:0 20px;flex:0 0 auto;
   display:flex;align-items:center;justify-content:space-between;
   position:sticky;top:0;z-index:200;
   border-bottom:1px solid rgba(255,255,255,.07);
@@ -156,6 +159,10 @@ header h1{font-size:14px;font-weight:700;letter-spacing:-.015em}
    чтобы на 11px линия осталась ≈1px после масштабирования из viewBox 24. */
 #status-badge .ico{width:11px;height:11px;stroke-width:2.2}
 #status-badge.running{background:var(--pause-to);color:var(--pause-txt)}
+/* Пауза в светлой теме раньше не подсвечивалась вовсе: правило жило только
+   под [data-theme="dark"] — светлая тема показывала нейтральный серый бейдж,
+   хотя кнопка «Продолжить» уже была оранжевой. Тот же тон, что у кнопки. */
+#status-badge.paused{background:var(--pause-to);color:var(--pause-txt)}
 /* «Готово» — нейтральная пилюля в тоне шапки, а не яркое зелёное пятно:
    поиск закончен, и самое время приглушить. Зелёный остаётся за тостами
    и бейджами оценки в таблице. */
@@ -189,12 +196,14 @@ header h1{font-size:14px;font-weight:700;letter-spacing:-.015em}
   cursor:pointer;
 }
 #btn-run.run-active:hover{filter:brightness(1.06)}
+/* «Пропустить город» — единственная кнопка в шапке с цветом по назначению.
+   Раньше фон был литеральным rgba(100,140,200,…) — вне палитры. */
 #btn-skip{
-  display:none;background:rgba(100,140,200,.55);font-weight:700;
+  display:none;background:var(--blu);color:var(--on-accent);font-weight:700;
 }
-#btn-skip:hover{background:rgba(100,140,200,.8);opacity:1}
-[data-theme="dark"] #btn-skip{background:var(--bdr);color:var(--sub)}
-[data-theme="dark"] #btn-skip:hover{background:var(--bdr-h);opacity:1}
+#btn-skip:hover{background:var(--blu);filter:brightness(1.10);opacity:1}
+[data-theme="dark"] #btn-skip{background:var(--blu);opacity:.92}
+[data-theme="dark"] #btn-skip:hover{opacity:1;filter:brightness(1.05)}
 
 /* ── City progress bar (multi-city run strip under the header) ──
    Was inline-styled white in the HTML — dark theme could not repaint it.
@@ -225,13 +234,10 @@ header h1{font-size:14px;font-weight:700;letter-spacing:-.015em}
 .skip-modal p{margin:0 0 20px;font-size:13px;color:var(--muted);line-height:1.5}
 .skip-modal-btns{display:flex;gap:10px;justify-content:flex-end}
 .skip-modal-btns button{padding:8px 20px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;border:none}
-.skip-modal-btns .skip-confirm{background:rgba(100,140,200,.8);color:var(--on-accent)}
-.skip-modal-btns .skip-confirm:hover{background:rgba(100,140,200,1)}
-.skip-modal-btns .skip-cancel{background:rgba(120,140,148,.3);color:var(--txt)}
-.skip-modal-btns .skip-cancel:hover{background:rgba(120,140,148,.5)}
-#btn-logs{
-  /* ghost: transparent + white hairline (base style) */
-}
+.skip-modal-btns .skip-confirm{background:var(--blu);color:var(--on-accent)}
+.skip-modal-btns .skip-confirm:hover{background:var(--blu);filter:brightness(1.08)}
+.skip-modal-btns .skip-cancel{background:var(--track);color:var(--sub)}
+.skip-modal-btns .skip-cancel:hover{background:var(--row-hover);color:var(--txt)}
 /* Logs modal */
 .logs-modal-overlay{position:fixed;inset:0;background:var(--scrim);z-index:9999;display:flex;align-items:center;justify-content:center}
 .logs-modal{background:var(--card);border:1px solid var(--bdr);border-radius:var(--r-lg);padding:24px 28px;max-width:700px;width:90%;max-height:80vh;overflow-y:auto;box-shadow:var(--sh-lg)}
@@ -242,18 +248,14 @@ header h1{font-size:14px;font-weight:700;letter-spacing:-.015em}
 .logs-list .log-name{color:var(--txt);font-family:monospace}
 .logs-list .log-meta{color:var(--muted);font-size:11px;margin:0 12px}
 .logs-list .log-actions a{padding:4px 10px;border-radius:4px;font-size:11px;text-decoration:none;margin-left:6px}
-.logs-list .log-view{background:rgba(100,140,200,.3);color:var(--txt)}
-.logs-list .log-dl{background:rgba(80,180,120,.3);color:var(--txt)}
-.logs-list .log-actions a:hover{opacity:.8}
+.logs-list .log-view{background:var(--c-soft);color:var(--txt)}
+.logs-list .log-dl{background:var(--ok-bg);color:var(--ok-txt)}
+.logs-list .log-actions a:hover{opacity:.85}
 .logs-empty{color:var(--muted);font-size:13px;padding:20px;text-align:center}
 /* Точка-индикатор у подписи «Уведомления»: зелёная — включены, серая — нет.
    Состояние читается без слов: подпись в шапке одна для всех режимов. */
 .notify-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--grn);margin-left:2px;flex:0 0 auto}
 .notify-dot.is-off{background:rgba(255,255,255,.35)}
-#btn-notify,#btn-theme{
-  /* базовый «призрачный» вид берётся из .hdr-right > button */
-}
-#btn-notify:hover,#btn-theme:hover{background:rgba(255,255,255,.12)}
 #btn-notify.granted{background:rgba(40,130,90,.45);border-color:rgba(40,190,110,.35)}
 #btn-notify.denied{background:rgba(196,64,64,.28);cursor:default}
 
@@ -359,6 +361,9 @@ header h1{font-size:14px;font-weight:700;letter-spacing:-.015em}
 @media(max-width:860px){
   .layout{grid-template-columns:1fr;padding:12px;overflow:visible}
   aside,.right-col{overflow:visible;max-height:none}
+  /* На узких экранах панель не имеет фиксированной высоты — держим таблицу
+     компактной (внутренний скролл), как и раньше. */
+  .tbl-wrap{max-height:60vh}
 }
 
 /* left column stacks and scrolls on its own — the sticky run-button dock
@@ -704,7 +709,14 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
 /* Таблица результатов. Плотность подобрана так, чтобы строка читалась
    одной строкой текста (высота ~36px): адрес и название переносятся, а не
    уезжают вбок, а числа выровнены по разрядам. */
-.tbl-wrap{flex:1;overflow:auto;scrollbar-width:thin;scrollbar-color:var(--bdr) transparent}
+.tbl-wrap{
+  /* Занимает всё оставшееся место панели — таблица идёт до низа экрана,
+     а не обрывается на 400px. При нехватке высоты сжимается (min-height —
+     пол), и строки скроллятся внутри, под липкой шапкой; если места совсем
+     нет — целиком прокручивается панель #rs-current. */
+  flex:1 1 auto;min-height:200px;
+  overflow:auto;scrollbar-width:thin;scrollbar-color:var(--bdr) transparent;
+}
 .tbl-wrap::-webkit-scrollbar{width:10px;height:10px}
 .tbl-wrap::-webkit-scrollbar-thumb{background:var(--bdr);border-radius:5px}
 .tbl-wrap::-webkit-scrollbar-thumb:hover{background:var(--bdr-h)}
@@ -839,7 +851,14 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
   opacity:.25;transition:opacity .12s,transform .1s;user-select:none;
 }
 .sf-tag:hover{opacity:.52}
-.sf-tag.active{opacity:1;box-shadow:0 0 0 2px var(--on-accent),0 0 0 3.5px currentColor;transform:scale(1.06)}
+/* Активный тег раньше обводился currentColor (= цвет текста = белый):
+   внешнее кольцо совпадало с внутренним и исчезало. Обводка берёт цвет
+   самой плитки — рисуется как «двойное кольцо» вокруг брендового чипа. */
+.sf-tag.active{
+  opacity:1;
+  box-shadow:0 0 0 2px var(--card),0 0 0 3.5px var(--tile,var(--c));
+  transform:scale(1.06);
+}
 .sf-clear{
   font-size:11px;padding:2px 9px;border:1px solid var(--bdr);border-radius:20px;
   background:none;cursor:pointer;color:var(--muted);margin-left:4px;
@@ -939,6 +958,12 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
 .vk-mode-opt:last-child{border-right:none}
 .vk-mode-opt:hover{background:var(--cl);color:var(--c)}
 .vk-mode-opt.active{background:var(--brand);color:var(--on-accent);border-color:var(--c)}
+/* Активный пункт в «Фильтрация результата» — заливка как у кнопок способа
+   парсинга: в тёмной теме --brand сливается с фоном, поэтому тот же паттерн
+   --cd с белым текстом (см. .source-mode-opt[data-engine].active). */
+[data-theme="dark"] .parse-mode-opt.active,
+[data-theme="dark"] .social-mode-opt.active,
+[data-theme="dark"] .vk-mode-opt.active{background:var(--cd);border-color:var(--cd);color:var(--on-accent)}
 [data-theme="dark"] .vk-mode-opt{background:var(--panel)}
 /* Numeric row under the VK segmented control */
 .num-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:10px}
@@ -949,8 +974,8 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
 /* ── Data source toggle: Яндекс.Карты / 2GIS ──
    Segmented control with brand-colored active states so the chosen
    source is obvious at a glance (red = Yandex, green = 2GIS). */
-.source-mode-bar{display:flex;gap:0;border:1px solid var(--bdr);border-radius:8px;overflow:hidden}
-.source-mode-opt{position:relative;flex:1;padding:8px 6px;text-align:center;font-size:12px;font-weight:700;cursor:pointer;color:var(--sub);background:var(--card);transition:all .13s;border-right:1px solid var(--bdr);margin:0;display:flex;align-items:center;justify-content:center;gap:5px}
+.source-mode-bar{display:flex;gap:0;border:1px solid var(--bdr);border-radius:8px;overflow:hidden; flex-wrap:wrap;}
+.source-mode-opt{position:relative;flex:1;padding:8px 6px;text-align:center;font-size:12px;font-weight:700;cursor:pointer;color:var(--sub);background:var(--card);transition:all .13s;border-right:1px solid var(--bdr);margin:0;display:flex;align-items:center;justify-content:center;gap:5px;}
 .source-mode-opt input[type="radio"]{position:absolute;width:1px;height:1px;margin:0;opacity:0;pointer-events:none;clip-path:inset(50%)}
 .source-mode-opt:last-child{border-right:none}
 .source-mode-opt:hover{background:var(--cl);color:var(--c)}
@@ -965,6 +990,25 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
 [data-theme="dark"] .source-mode-opt.active[data-src="2gis"]{background:var(--ok-strong);border-color:var(--ok-strong);color:var(--on-accent)}
 .source-hint-key{color:var(--sub);font-weight:600}
 .source-hint-key.missing{color:var(--red)}
+/* «Способ парсинга» (engine-mode-bar): переиспользует .source-mode-*,
+   но без брендовых фонов — активный пункт подсвечивается плашкой
+   акцента, чтобы выбор читался в обеих темах. Прежняя версия красила
+   только ТЕКСТ активного пункта в белый (--on-accent), а фона не было
+   вовсе: в светлой теме получался белый на белом. */
+.source-mode-opt[data-engine].active{background:var(--c);border-color:var(--c)}
+[data-theme="dark"] .source-mode-opt[data-engine].active{background:var(--cd);border-color:var(--cd);color:var(--on-accent)}
+/* Доступность движка: бейдж под селектором («Chrome найден/не найден»). */
+.engine-badge{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px;margin-left:6px;vertical-align:middle}
+.engine-badge.ok{background:var(--ok-bg);color:var(--ok-txt);border:1px solid var(--ok-bdr)}
+.engine-badge.miss{background:var(--err-bg);color:var(--red);border:1px solid var(--red)}
+/* «?» — кнопка сравнения способов рядом с заголовком. */
+.engine-help-btn{border:1px solid var(--bdr);background:var(--card);color:var(--sub);border-radius:50%;width:18px;height:18px;line-height:1;font-size:11px;font-weight:800;cursor:pointer;padding:0;margin-left:6px;flex:none}
+.engine-help-btn:hover{background:var(--cl);color:var(--c);border-color:var(--c)}
+/* «рекоменд.» — бейдж рекомендованного варианта в переключателе способа
+   парсинга. Текст — var(--ok-on), не --on-accent: в светлой теме бейдж
+   --ok-strong (#0b6b45) с белым текстом читается, а в тёмной остаётся
+   контрастным за счёт --ok-on. */
+.src-rec{font-size:9px;font-weight:800;letter-spacing:.02em;text-transform:uppercase;background:var(--ok-strong);color:var(--ok-on);border-radius:4px;padding:1px 4px;line-height:1.4}
 
 /* ── Grid coverage: radio modes + range sliders ──
    Replaces the old checkbox+steppers block: «Весь город» keeps everything
@@ -1259,6 +1303,19 @@ input[type="range"]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;b
 .dyn-col .dyn-series{max-width:16px}
 .dyn-bar{width:100%;background:var(--c);border-radius:3px 3px 0 0;transition:height .3s ease}
 .dyn-bar.dyn-review{background:var(--grn)}
+/* Появление графика: столбики вырастают снизу волной (задержка --d растёт
+   с номером колонки — ставит JS инлайном на .dyn-col, переменная наследуется
+   в .dyn-bar), цифры над ними проявляются следом. Анимация только на вставку:
+   график перерисовывается заново при смене периода, а во время прогона рендер
+   не трогается — дёргаться нечему. Инлайн-height не перебивает keyframes:
+   animation сильнее инлайнового стиля. */
+.dyn-bar{animation:bar-in .45s cubic-bezier(.2,.7,.3,1) backwards;animation-delay:var(--d,0ms)}
+@keyframes bar-in{from{height:0}}
+.dyn-vlab{animation:vlab-in .4s ease .35s backwards;animation-delay:calc(var(--d,0ms) + 200ms)}
+@keyframes vlab-in{from{opacity:0}}
+@media (prefers-reduced-motion:reduce){
+  .dyn-bar,.dyn-vlab{animation:none}
+}
 /* Ноль — не «нет данных»: столбец остаётся видимой насечкой, иначе пустой
    день неотличим от пропуска (файлы есть, но записей не нашлось). */
 .dyn-bar.is-zero{height:2px;background:var(--bdr-h)}
@@ -1579,8 +1636,12 @@ details[open].sender-advanced summary::before{content:"▼  "}
 .donut{position:relative;width:168px;height:168px}
 .donut svg{display:block;transform:rotate(-90deg)}
 .donut circle{fill:none;stroke-width:16}
-/* Проценты внутри секторов: жирные, но мелкие — это метки, не данные. */
-.donut-pct{font-size:11px;font-weight:700;text-anchor:middle;dominant-baseline:central;pointer-events:none}
+/* Дуги вырастают из нуля при появлении (анимация только на вставку:
+   .donut отрисовывается заново при каждом рендере статистики, а повторный
+   ховер-ререндер не happens — анимация не дёргается на каждый тик). */
+.donut .donut-arc{animation:donut-in .7s cubic-bezier(.2,.7,.3,1) both}
+@keyframes donut-in{from{stroke-dasharray:0 var(--dash-rest,999)}}
+@media (prefers-reduced-motion:reduce){.donut .donut-arc{animation:none}}
 .donut .donut-track{stroke:var(--track)}
 .donut-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;pointer-events:none}
 .donut-center b{font-size:22px;line-height:1.1;color:var(--txt);font-variant-numeric:tabular-nums}
@@ -1607,7 +1668,7 @@ details[open].sender-advanced summary::before{content:"▼  "}
      position:sticky внутри потока — баннер уезжал вместе со страницей и
      его было видно только после прокрутки вниз (иногда его перекрывала
      приклеенная шапка). */
-  position:fixed;top:58px;left:0;right:0;z-index:240;
+  position:fixed;top:calc(var(--hdr-h) + 2px);left:0;right:0;z-index:240;
   box-shadow:0 6px 18px rgba(9,30,36,.22);
 }
 /* Пока баннер висит поверх контента, сдвигаем страницу на его высоту.
@@ -1814,6 +1875,8 @@ input:focus-visible,textarea:focus-visible,select:focus-visible{
   --sh-lg:0 4px 12px rgba(0,0,0,.42),0 18px 44px rgba(0,0,0,.38);
   --r:var(--r-md);
   --g:var(--c);--gl:var(--cl);--g2:var(--cd);
+  /* Высота шапки задаётся в :root; повторена для паритета токенов светлой/тёмной тем. */
+  --hdr-h:56px;
 }
 /*/TOK*/
 /* ── Переключение темы без «вспышки» ──────────────────────────────────────
@@ -1903,9 +1966,10 @@ html.theme-anim #log-output{
    RESPONSIVE
    ════════════════════════════════ */
 @media(max-width:860px){
-  header{padding:0 16px;height:52px}
-  /* шапка ниже — баннер опускаем вместе с ней */
-  #update-banner{top:52px;padding:9px 16px}
+  :root{--hdr-h:52px}
+  header{padding:0 16px}
+  /* шапка ниже — баннер опускается вместе с ней (top берётся из --hdr-h) */
+  #update-banner{padding:9px 16px}
   .layout{padding:12px;gap:12px}
   .flow-steps{grid-template-columns:1fr}
   .onboarding{padding:28px 18px;min-height:400px}
@@ -1919,7 +1983,7 @@ html.theme-anim #log-output{
      но место в шапке экономим: остаётся только иконка. */
   #notify-txt{display:none}
   #btn-notify{padding:6px 9px}
-  .notify-pop{position:fixed;left:8px;right:8px;top:60px;width:auto;max-height:70vh;overflow-y:auto}
+  .notify-pop{position:fixed;left:8px;right:8px;top:calc(var(--hdr-h) + 8px);width:auto;max-height:70vh;overflow-y:auto}
   /* На телефоне список пресетов и ползунок получают всю ширину строки. */
   .notify-snd{flex:1 1 auto}
   .notify-snd select{max-width:none;flex:1 1 auto;min-width:0}
@@ -2458,14 +2522,9 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 [data-theme="dark"] .ui-modal .m-cancel{background:var(--track);color:var(--txt)}
 [data-theme="dark"] .hist-dl{background:var(--panel)}
 
-/* ── Управление сохранёнными списками исключений ────────── */
-.bl-tpl-act{
-  display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;
-  border:1px solid var(--bdr);border-radius:6px;background:transparent;color:var(--sub);
-  font:inherit;font-size:11px;cursor:pointer;transition:all .12s;
-}
-.bl-tpl-act:hover{border-color:var(--c);color:var(--c);background:var(--c-soft)}
-.bl-tpl-del:hover{border-color:var(--err-strong);color:var(--err-strong);background:var(--err-bg)}
+/* ── Управление сохранёнными списками исключений ──────────
+   (Здесь раньше дублировались .bl-tpl-act / .bl-tpl-del — они определены
+   выше, в секции «🚫 Исключить по словам». Дубли удалены.) */
 /* ── «Сохранить пресет» in-app modal ─────────────────────── */
 .preset-modal input[type=text]{
   width:100%;padding:10px 12px;border:1px solid var(--bdr);border-radius:8px;
@@ -2594,17 +2653,22 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
   transition:all 0.15s;
   font-family:inherit;white-space:nowrap;line-height:1.4;
 }
+/* Ховер раньше красился литеральным бирюзовым rgba(0,126,140,.05) — единственная
+   точка в светлой теме, где остался старый бренд. Теперь цвет берётся из
+   токена --c-soft, как и все остальные подложки. */
 .clear-all-btn:hover{
   border-color:var(--c);
   color:var(--c);
-  background:rgba(0, 126, 140, 0.05);
+  background:var(--c-soft);
 }
 .acc-summary{font-size:12px;color:var(--muted);padding:8px 13px 2px;line-height:1.45}
 
 /* Thin separators between field groups (all but the last) */
 #acc-basic .acc-inner>div{border-bottom:1px solid var(--bdr);padding-bottom:16px;margin-bottom:16px}
 #acc-basic .acc-inner>div:last-child{border-bottom:none;padding-bottom:0;margin-bottom:0}
-[data-theme="dark"] var(--sub)-basic .acc-inner>div{border-bottom-color:var(--bdr)}
+/* Раньше здесь стоял невалидный селектор `var(--sub)-basic` — правило молча
+   не применялось вообще. Правильный — #acc-basic. */
+[data-theme="dark"] #acc-basic .acc-inner>div{border-bottom-color:var(--bdr)}
 [data-theme="dark"] .hint-count,[data-theme="dark"] .lbl-count,
 [data-theme="dark"] .clear-all-btn{color:var(--sub);border-color:var(--bdr-h)}
 [data-theme="dark"] .clear-all-btn:hover{color:var(--c);border-color:var(--c);background:var(--c-soft)}
@@ -2815,8 +2879,12 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
   transform:rotate(45deg);transition:transform .2s;
 }
 .api-status-header.open .api-chev{transform:rotate(225deg);border-color:var(--c)}
+/* [hidden] на элементе с display:flex не пересекается с этим правилом —
+   !important не нужен: атрибут сильнее класса, если только класс не задаёт
+   display явно. Здесь как раз и задаёт, поэтому селектор [hidden] должен
+   быть ниже по файлу или специфичнее — используем атрибут в связке. */
 .api-status-body{padding:4px 13px 13px;display:flex;flex-direction:column}
-.api-status-body[hidden]{display:none !important}
+.api-status-body[hidden]{display:none}
 .api-status-body .lbl{margin-bottom:5px}
 .btn-save-api{
   margin-top:10px;padding:9px 12px;border:1px solid var(--bdr);border-radius:8px;
@@ -2901,8 +2969,11 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 }
 .subt-link:hover{border-color:var(--c);color:var(--c)}
 
-/* Both sub-tab bodies; the current one behaves like the old #p-table child */
-#rs-current{display:flex;flex-direction:column;flex:1;min-height:0}
+/* Both sub-tab bodies; the current one behaves like the old #p-table child.
+   Панель «Результаты» прокручивается целиком: панель массового обхода и
+   таблица больше не конкурируют за высоту — на небольших мониторах всё
+   доступно без потери строк таблицы. */
+#rs-current{display:flex;flex-direction:column;flex:1;min-height:0;overflow-y:auto}
 #rs-history{flex:1;min-height:0;min-width:0;overflow-y:auto;overflow-x:hidden;padding:15px 15px 24px}
 #rs-current[hidden],#rs-history[hidden],#bulk-body[hidden],#bulk-progress[hidden],
 #bulk-warn[hidden],.city-tabs[hidden]{display:none}
@@ -2966,6 +3037,7 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 .bulk-stats{font-size:12px;color:var(--muted);font-weight:600}
 .bulk-stats b{color:var(--txt);font-size:13px}
 /* Порядок обхода = порядок строк таблицы (иначе вкладки открывались вразброс) */
+.bulk-tpl-note{font-size:11px;color:var(--muted);font-weight:600;white-space:nowrap}
 .bulk-order{font-size:11.5px;color:var(--muted);font-weight:600;margin-top:2px}
 .bulk-order:empty{display:none}
 /* Статус автосохранения отметок «Просмотрено» */
@@ -3035,6 +3107,13 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 .files-badge.archive{background:var(--warn-bg);color:var(--warn-txt);border-color:var(--warn-bdr)}
 .history-panel{display:grid;gap:22px;min-width:0}
 .history-section{display:grid;gap:8px;min-width:0}
+/* Разделы «Истории файлов» сворачиваются по клику на заголовок. */
+.history-collapse{cursor:pointer;user-select:none;border-radius:6px}
+.history-collapse:focus-visible{outline:2px solid var(--c);outline-offset:2px}
+.history-caret{margin-left:auto;font-size:11px;color:var(--muted);transition:transform .15s}
+.history-section.is-collapsed .history-caret{transform:rotate(-90deg)}
+.history-section.is-collapsed .history-hint,
+.history-section.is-collapsed .history-list{display:none}
 .history-title{
   font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--sub);
   font-weight:800;padding-left:9px;border-left:3px solid var(--c);
@@ -3126,11 +3205,8 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 .template-vars{font-size:11px;color:var(--muted)}
 .template-vars code{background:var(--chip-bg);color:var(--chip-txt);border-radius:4px;padding:1px 5px;font-size:10.5px}
 .tpl-empty{padding:26px;text-align:center;color:var(--muted);border:1px dashed var(--bdr);border-radius:8px}
-.tpl-add{
-  margin-top:14px;width:100%;padding:11px;border:1px dashed var(--bdr);border-radius:8px;
-  background:transparent;color:var(--c);font:inherit;font-size:12.5px;font-weight:700;cursor:pointer;transition:all .12s;
-}
-.tpl-add:hover{border-color:var(--c);background:var(--c-soft)}
+/* «+ Добавить шаблон» живёт в тулбаре (btn-sm) — крупные стили больше не
+   нужны, кнопка внизу списка удалена. */
 /* Поиск по шаблонам */
 .tpl-search{display:flex;align-items:center;gap:10px;margin-bottom:14px}
 .tpl-search input{
@@ -3315,6 +3391,12 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 }
 .tpl-pick-modal-list .chk{border:none;background:transparent;padding:2px 0;font-weight:500}
 .tpl-pick-modal-list .chk:hover{border:none;background:transparent;color:var(--txt)}
+/* Составной шаблон: чекбокс + список вложенных шаблонов в модалке редактирования. */
+.tpl-variants-block{margin:10px 0;border:1px solid var(--bdr);border-radius:8px;padding:10px 12px}
+.tpl-variants-block .chk{font-weight:500}
+#tpl-variants-wrap[hidden]{display:none}
+/* Бейдж составного шаблона в карточке списка. */
+.tpl-comp-badge{display:inline-flex;align-items:center;gap:4px;color:var(--muted);font-size:12px;font-weight:500}
 .tpl-pick-modal-hint{margin-top:8px;font-size:11.5px;color:var(--muted)}
 .tpl-pick-modal-hint[hidden]{display:none}
 .sender-random-chk{margin-top:8px;font-weight:500}
@@ -3496,7 +3578,13 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 /* ── Фильтры: скрытие — чистое CSS, строки никогда не теряются ──────── */
 #log-output .ll.tech{display:none}
 #log-output.show-tech .ll.tech{display:block}
-#log-output.f-important .ll.noise{display:none}
+/* «Важные» — ТОЛЬКО итоги: зелёные summary-строки и карточка «Статистика».
+   Ошибки/предупреждения — во вкладке «Ошибки», механика — в «Технических». */
+#log-output.f-important .ll:not(.sum){display:none}
+/* Карточка «Статистика» — итог прогона: видна во «Все» и «Важные».
+   В «Ошибки»/«Технические» не показывается вовсе. */
+#log-output.f-errors .log-stats,
+#log-output.f-tech .log-stats{display:none}
 #log-output.f-errors .ll:not(.warn):not(.error):not(.quota-warn):not(.quota-critical){display:none}
 #log-output.f-tech .ll:not(.tech){display:none}
 #log-output.f-tech .ll.tech{display:block;font-style:normal;opacity:1}
@@ -3540,3 +3628,324 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
   /* Подпись скрыта — кнопка снова только со значком: центрируем без зазора. */
   .hdr-right .ico{margin-right:0}
 }
+
+/* ══════════════════════════════════════════════════════════
+   КЛАССЫ, ДОБАВЛЕННЫЕ В HTML (см. index.html)
+   ══════════════════════════════════════════════════════════ */
+
+/* Скрытие без inline-стиля. Утилита, а не display:none — сохраняет
+   исходный display элемента (flex/grid), если JS переключает класс. */
+.is-hidden{display:none}
+
+/* ── Живая сводка прогона ─────────────────────────────────
+   Раньше жила в inline-стилях #live-stats: в тёмной теме полоса
+   оставалась светлой, а её подписи выпадали из контраста. */
+.live-stats{
+  display:flex;align-items:center;flex-wrap:wrap;gap:16px;
+  padding:7px 24px;
+  background:var(--cl);
+  border-bottom:1px solid var(--bdr);
+  font-size:12.5px;
+}
+.live-stats.is-hidden{display:none}
+.live-stats-title{
+  font-weight:700;color:var(--sub);letter-spacing:.01em;
+}
+.live-stats-right{
+  margin-left:auto;display:flex;align-items:center;gap:5px;
+  color:var(--muted);font-size:11.5px;font-weight:600;
+}
+.live-found-num{font-size:15px;font-weight:800;color:var(--grn)}
+.live-found-lbl{color:var(--sub);font-weight:600}
+#ls-stage{color:var(--sub);font-weight:600;font-style:italic}
+
+/* Мини-спиннер для живой сводки */
+.spin-sm{width:10px;height:10px;border-width:1.5px}
+
+/* ── Мульти-город: список под шапкой ── */
+.city-progress-list{display:flex;flex-wrap:wrap;gap:8px}
+
+/* ── Тулбар экспорта ── */
+.export-sel-lbl{font-size:11px;color:var(--muted);font-weight:700}
+
+/* ── Инлайн-сноска внутри <label> ── */
+.lbl-note-inline{font-weight:400;text-transform:none;color:var(--muted)}
+
+/* ── Разделители в .sender-stats ── */
+.sender-stat-sep{color:var(--bdr)}
+
+/* ── Тёмная тема: то же, через токены ── */
+[data-theme="dark"] .live-stats{background:var(--panel);border-bottom-color:var(--bdr)}
+[data-theme="dark"] .live-stats-title{color:var(--sub)}
+[data-theme="dark"] .live-stats-right{color:var(--muted)}
+[data-theme="dark"] .live-found-lbl{color:var(--sub)}
+[data-theme="dark"] .sender-stat-sep{color:var(--bdr-h)}
+
+/* ══════════════════════════════════════════════════════════
+   ВИЗУАЛЬНАЯ ШЛИФОВКА
+   Задача — сделать интерфейс «приглушённее»: меньше резких смен
+   цвета, мягче тени, единый ритм. Все значения через токены.
+   ══════════════════════════════════════════════════════════ */
+
+/* ── Типографика: чуть плотнее заголовки, ровнее подписи ── */
+h1,h2,h3,.acc-title,.card-hdr,.panel-title{
+  letter-spacing:-.018em;
+}
+.card-hdr{
+  font-weight:800;
+  padding:15px 18px 14px;
+}
+.intro-copy{
+  color:var(--muted);
+  font-size:12.5px;
+  line-height:1.6;
+}
+.hint{
+  font-size:11px;
+  line-height:1.55;
+  color:var(--muted);
+}
+
+/* ── Кнопки: единый отклик на нажатие ── */
+.btn-sm,
+.tbl-filter-btn,
+.subt-link,
+.term-clear,
+.sender-config-toggle,
+.preset-act-btn,
+.preset-new-btn,
+.file-btn,
+.hist-dl,
+.log-filter,
+.tpl-cat,
+.rt-btn,
+.bulk-preset,
+.bulk-copy-btn,
+.bulk-persist-btn,
+.score-preset{
+  transition:border-color .14s,color .14s,background .14s,transform .1s,box-shadow .14s;
+}
+.btn-sm:active:not(:disabled),
+.tbl-filter-btn:active:not(:disabled),
+.subt-link:active:not(:disabled),
+.term-clear:active:not(:disabled),
+.log-filter:active:not(:disabled),
+.rt-btn:active:not(:disabled),
+.bulk-preset:active:not(:disabled),
+.score-preset:active:not(:disabled){
+  transform:translateY(1px);
+}
+
+/* ── Поля ввода: кольцо фокуса тоньше и точнее ── */
+input[type=text]:focus,
+input[type=number]:focus,
+input[type=password]:focus,
+textarea:focus,
+select:focus{
+  border-color:var(--c);
+  box-shadow:0 0 0 3px var(--c-soft);
+}
+/* В тёмной теме то же кольцо плотнее — на тёмном поле 8% не видно */
+[data-theme="dark"] input:focus,
+[data-theme="dark"] textarea:focus,
+[data-theme="dark"] select:focus{
+  box-shadow:0 0 0 3px var(--focus-ring);
+}
+
+/* ── Таблица: аккуратнее строки и hover ── */
+#results-table th{
+  padding:10px 12px;
+  font-size:10.5px;
+  letter-spacing:.06em;
+  color:var(--muted);
+}
+#results-table td{
+  padding:9px 12px;
+  border-bottom:1px solid var(--bdr-soft);
+}
+/* Hover — не сплошной заливкой, а «подсветкой строки»: полоска
+   слева от строки, как в нативных таблицах macOS */
+#results-table tbody tr{
+  position:relative;
+  transition:background .12s;
+}
+#results-table tbody tr:hover td:first-child{
+  box-shadow:inset 3px 0 0 var(--c);
+}
+/* Зебра мягче — сейчас она спорит с карточкой */
+#results-table tr:nth-child(even) td{background:var(--row-alt)}
+#results-table tr:nth-child(even):hover td{background:var(--row-hover)}
+
+/* ── Бейджи: чуть компактнее, ровнее ── */
+.social-badge,
+.score-badge,
+.hist-chip,
+.files-badge{
+  letter-spacing:.02em;
+  padding:2px 7px;
+}
+.score-badge{
+  min-width:28px;
+  padding:3px 7px;
+}
+
+/* ── Карточки: тени появляются при взаимодействии, а не всегда ── */
+.acc,
+.card,
+.stat-card,
+.file-card,
+.template-card,
+.hist-card{
+  box-shadow:none;
+  transition:border-color .15s,box-shadow .2s;
+}
+.card{box-shadow:var(--sh)}
+.acc.open{box-shadow:var(--sh)}
+.stat-card:hover,
+.file-card:hover,
+.template-card:hover,
+.hist-card:hover{box-shadow:var(--sh)}
+.acc.open:hover{box-shadow:var(--sh-lg)}
+
+/* ── Шапка аккордеона: индикатор открытого состояния — линия слева ── */
+.acc-hdr{position:relative}
+.acc-hdr::before{
+  content:'';
+  position:absolute;left:0;top:8px;bottom:8px;width:2px;
+  background:var(--c);border-radius:0 2px 2px 0;
+  opacity:0;transition:opacity .18s;
+}
+.acc.open>.acc-hdr::before{opacity:1}
+
+/* ── Чекбоксы и радио: более аккуратные размеры ── */
+.chk input[type=checkbox]{
+  width:15px;height:15px;
+  border-radius:4px;
+}
+input[type=radio]{accent-color:var(--c)}
+
+/* ── Табы: активная вкладка заметнее ── */
+.tab-btn{
+  padding:9px 15px;
+  font-size:12.5px;
+  letter-spacing:-.005em;
+}
+.tab-btn.active{
+  background:var(--acc-soft);
+  color:var(--c);
+  font-weight:800;
+  box-shadow:inset 0 -2px 0 var(--c);
+  border-radius:8px 8px 0 0;
+}
+
+/* ── Toast: чище появление, тоньше тень ── */
+.toast{
+  padding:11px 16px;
+  font-size:12.5px;
+  font-weight:700;
+  box-shadow:0 6px 20px rgba(0,0,0,.18),0 2px 6px rgba(0,0,0,.08);
+}
+[data-theme="dark"] .toast{
+  box-shadow:0 6px 20px rgba(0,0,0,.5),0 2px 6px rgba(0,0,0,.3);
+}
+
+/* ── Empty state: больше воздуха ── */
+.no-data{
+  padding:64px 24px;
+  font-size:12.5px;
+  line-height:1.6;
+  color:var(--muted);
+}
+/* Внутри таблицы пустое состояние — компактнее */
+#results-table .no-data{padding:44px 20px}
+
+/* ── Модалки: мягче фон, аккуратнее заголовок ── */
+.ui-modal{
+  padding:22px 24px 18px;
+  border-radius:var(--r-lg);
+}
+.ui-modal h3{
+  font-size:15px;
+  font-weight:800;
+  letter-spacing:-.015em;
+  margin-bottom:12px;
+}
+.ui-modal p{font-size:12.5px;line-height:1.6;color:var(--sub)}
+@supports(backdrop-filter:blur(6px)){
+  .ui-modal-overlay,
+  .tpl-modal-overlay,
+  .skip-modal-overlay,
+  .logs-modal-overlay{backdrop-filter:blur(2px)}
+}
+
+/* ── Поля с числами: ровные разряды везде ── */
+input[type=number],
+.tbl-phone,
+#tbl-count,
+.dyn-vlab,
+.snum,
+.bar-val,
+.cp-val{
+  font-variant-numeric:tabular-nums;
+}
+
+/* ── Хедер: тонкая тень вместо жёсткой границы ── */
+header{
+  border-bottom:1px solid rgba(255,255,255,.06);
+  box-shadow:0 1px 0 rgba(0,0,0,.04);
+}
+[data-theme="dark"] header{
+  border-bottom-color:rgba(255,255,255,.04);
+  box-shadow:0 1px 0 rgba(0,0,0,.4);
+}
+
+/* ── Кнопки шапки: мягче hover ── */
+.hdr-right > button,
+.hdr-right .notify-wrap > button{
+  transition:background .14s ease,color .14s ease;
+}
+.hdr-right > button:active,
+.hdr-right .notify-wrap > button:active{
+  transform:translateY(1px);
+}
+
+/* ── Скроллбары: одинаковые везде ── */
+*::-webkit-scrollbar{width:10px;height:10px}
+*::-webkit-scrollbar-thumb{
+  background:var(--bdr);
+  border:3px solid transparent;
+  background-clip:content-box;
+  border-radius:8px;
+}
+*::-webkit-scrollbar-thumb:hover{
+  background:var(--bdr-h);
+  background-clip:content-box;
+}
+
+/* ── Списки файлов и шаблонов: ровнее ритм ── */
+.history-list,
+.tpl-list,
+.tpl-var-cards{gap:10px}
+.file-card,
+.template-card,
+.tpl-var-card{padding:13px 15px}
+
+/* ── Фокус на табах-подсветках: чуть заметнее ── */
+.tab-btn:focus-visible,
+.subt-tab:focus-visible,
+.tpl-subtab:focus-visible,
+.tpl-cat:focus-visible,
+.log-filter:focus-visible{
+  outline:2px solid var(--c);
+  outline-offset:-3px;
+  border-radius:6px;
+}
+
+/* ── Уменьшенное движение: уважать (уже есть, но усиливаем) ── */
+@media (prefers-reduced-motion:reduce){
+  .acc-body,
+  .tiles-reveal,
+  .hist-body{
+    transition-duration:0s;
+  }
+}

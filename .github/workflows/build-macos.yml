@@ -251,8 +251,8 @@ jobs:
             || { echo "::error::$APP без Contents/Frameworks — собран неверно"; exit 1; }
           find "$APP/Contents" -name 'index.html' -path '*templates*' | grep -q . \
             || { echo "::error::в бандле нет templates/index.html"; exit 1; }
-          find "$APP/Contents" -name 'app.js' -path '*static*' | grep -q . \
-            || { echo "::error::в бандле нет static/js/app.js"; exit 1; }
+          find "$APP/Contents" -name '01-core-state.js' -path '*static*' | grep -q . \
+            || { echo "::error::в бандле нет static/js/модулей (01-core-state.js)"; exit 1; }
           echo "Layout в порядке: $APP"
 
       - name: Upload the artifacts

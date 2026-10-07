@@ -10,7 +10,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 TEMPLATE = (ROOT / "templates" / "index.html").read_text(encoding="utf-8")
-APP_JS = (ROOT / "static" / "js" / "app.js").read_text(encoding="utf-8")
+from tests._appjs import read_app_js
+APP_JS = read_app_js()
 API_PY = (ROOT / "routes" / "api.py").read_text(encoding="utf-8")
 STYLE = (ROOT / "static" / "css" / "style.css").read_text(encoding="utf-8")
 
@@ -1369,6 +1370,17 @@ class TestDailyDynamics:
         assert "--brand" in block, "активный период — плотная плашка под белый текст"
         assert re.search(r"\.dyn-bar\.is-zero\{[^}]*height:2px", block), "ноль — насечка, не пропуск"
 
+    def test_chart_has_entrance_animation(self):
+        """Столбики вырастают волной (задержка --d по колонкам), цифры
+        проявляются следом; reduced-motion всё отключает."""
+        assert "@keyframes bar-in{from{height:0}}" in STYLE
+        assert "@keyframes vlab-in{from{opacity:0}}" in STYLE
+        assert "animation-delay:var(--d,0ms)" in STYLE
+        assert "--d:" in APP_JS, "задержка волны ставится инлайном на колонку"
+        reduced = STYLE[STYLE.index("@media (prefers-reduced-motion:reduce)"):]
+        reduced = reduced[:reduced.index("animation:none}") + len("animation:none}")]
+        assert ".dyn-bar,.dyn-vlab{animation:none}" in reduced
+
     def test_plot_geometry_leaves_room_for_the_numbers(self):
         """Три полосы по вертикали: запас под цифру над столбцом (16),
         шкала (112) и подписи дней (30). Если колонка станет ниже суммы,
@@ -1500,11 +1512,15 @@ class TestDailyDynamics:
         """VK/TG/WA в таблице расшифровываются при наведении."""
         assert 'SNAMES[p] || SLABELS[p]' in APP_JS
 
-    def test_donut_sectors_carry_percentages_when_wide(self):
-        """Проценты внутри секторов: дуга < 8% не подписывается — там не
-        помещается, значение остаётся в легенде."""
-        assert "donut-pct" in APP_JS and "pct < 0.08" in APP_JS
-        assert ".donut-pct{" in STYLE
+    def test_donut_is_clean_ring_without_inner_labels(self):
+        """Кольцо без подписей внутри секторов: они сливались с соседней
+        дугой и наезжали на край; точные значения — в легенде рядом."""
+        assert "donut-pct" not in APP_JS
+        assert "donut-pct" not in STYLE
+        assert 'class="donut-arc"' in APP_JS
+        # Анимация появления: дуга вырастает из нуля, остаток дуги -- в переменной.
+        assert ".donut .donut-arc{animation:donut-in" in STYLE
+        assert "--dash-rest" in APP_JS and "--dash-rest" in STYLE
 
     def test_columns_button_is_visible_and_dropdown_aligned(self):
         """«Столбцы» заметнее соседей; список — ровные колонки

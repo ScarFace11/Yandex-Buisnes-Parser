@@ -29,6 +29,7 @@ from yandex_maps_parser.message_templates import (
     load_templates,
     pick_random_text,
     resolve_pick_state,
+    resolve_variant_text,
     substitute,
 )
 from . import excel_manager as xm
@@ -108,6 +109,8 @@ def run_send(
             pick = {
                 "texts": [t["text"] for t in picked],
                 "names": [t["name"] for t in picked],
+                "tpls": picked,
+                "all_templates": state.get("templates") or [],
                 "avoid": tpl_avoid or resolved["avoid"],
                 "last": None,
             }
@@ -214,6 +217,8 @@ def run_send(
             pick["last"] = text
             idx = pick["texts"].index(text) if text in pick["texts"] else 0
             used_tpl_names.append(pick["names"][idx])
+            # Вложенный составной: выбранный вариант сам может быть составным.
+            text = resolve_variant_text(pick["tpls"][idx], pick["all_templates"]) or text
         else:
             text = substitute(message_tpl, rec.get("record") or {"name": name},
                               custom_variables=load_templates().get("custom_variables"))

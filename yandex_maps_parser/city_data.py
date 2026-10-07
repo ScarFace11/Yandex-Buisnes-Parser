@@ -3,7 +3,8 @@ City catalog for the «continuation» feature.
 
 Order matters: cities are listed by population (descending), so
 «continue after the last city» always walks the biggest cities first.
-Mirror of the CITIES_DATA list in static/js/app.js — keep both in sync.
+Mirror of the CITIES_DATA list in static/js/01-core-state.js — keep both
+in sync.
 """
 
 CITIES_CATALOG: list[dict] = [

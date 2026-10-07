@@ -279,7 +279,8 @@ class TestFolderPicker:
         from routes import api as api_mod
 
         win = api_mod.picker_command("win32")
-        assert win[0] == "powershell" and "FolderBrowserDialog" in win[-1]
+        assert win[0] == "powershell" and "OpenFileDialog" in win[-1]
+        assert "TopMost" in win[-1], "диалог обязан открываться поверх браузера"
         mac = api_mod.picker_command("darwin")
         assert mac[0] == "osascript" and "choose folder" in mac[-1]
         assert api_mod.picker_command("linux") is None

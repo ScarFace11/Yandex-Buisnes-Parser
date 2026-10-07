@@ -15,6 +15,311 @@
 Свежие разделы сверху. Нерелизнутое живёт под `[Unreleased]` и при выпуске
 переименовывается в номер версии.
 
+## [Unreleased]
+
+- **Playwright вернулся в .exe**: parser.spec больше не исключает playwright (модуль + Node-драйвер ~100 МБ в сборке; Chromium пользователь докачивает один раз). browser_client: в frozen-режиме сабпроцесс-тест Chromium запускает сам exe с YP_BROWSER_PROBE=1 (app._maybe_run_browser_probe — тихий старт Chromium и выход 0/1), т.к. `python -c` в .exe невозможен. init_browser в .exe больше не молчит: при отсутствии модуля показывает обычное предупреждение и уходит в CDP/httpx. diagnostics.probe_engines: убран ярлык «недоступен в этой сборке» — проверка идёт по факту. Тесты: test_browser_client обновлён под новый frozen-контракт, parser.spec/macos-спека — контракт сборки (playwright больше не в excludes; mac-спека сохраняет исключение — там свой путь). Тесты: +6 pytest.
+- **Составные шаблоны (variant_ids) и случайные переменные (variants)**: message_templates.normalize_templates хранит variant_ids (чистка чужих категорий, самоссылок и циклов, кап 50), resolve_variant_text раскрывает составной шаблон рекурсивно; substitute у своих переменных поддерживает variants (random.choice, приоритет над value/column). Зеркала в 10-templates.js (resolveVariantText/templateTextForCopy/редактор вариантов) и 11-bulk-sender-init.js (модалка переменной с режимом variants). /bulk/urls принимает template_id для раскрытия одиночного составного шаблона per-record; vk_sender/runner.py раскрывает вложенные в random-наборах. Тесты: +11 pytest (составные/варианты), +14 node.
+- **Лог: вкладка «Важные» показывает только итоги прогона** — зелёные строки-результаты (✅/📦 Raw/🎯 Processed/💾 Карта/пауза/стоп/пропуск города) и карточка «Статистика». Механика уехала в «Технические», ошибки — во вкладку «Ошибки»; карточка «Статистика» больше не появляется в «Ошибки»/«Технические».
+- **Диагностика Playwright стала честной** — при провале сабпроцесс-теста Chromium в лог и предупреждение пишется реальная причина (последняя строка stderr или таймаут 30 с), а не безликое «недоступен».
+- **Бейджи способов парсинга из исходников больше не врут** — «нет в .exe» показывалось на dev-машине из-за неверного определения frozen-сборки; теперь проверяется sys.frozen напрямую.
+- **Тёмная тема: активные кнопки в «Фильтрация результата»** («Тип организаций», «Соцсети в результате», «Активность ВК») залиты так же контрастно, как кнопки способа парсинга.
+**Индикаторы доступности движков + диагностика способов**
+(`routes/diagnostics.py`, `static/js/01-core-state.js`,
+`static/css/style.css`, `templates/index.html`)
+
+- GET `/engines/status` — мгновенная доступность (поиск Chrome,
+  импорт playwright, признак .exe) без сетевых проб; бейджи
+  «✔/✖» под селектором способа (`refreshEngineAvailability`).
+- `probe_engines(deep)` — группа «engines» в диагностике:
+  deep=False — наличие; deep=True — пробная загрузка одной
+  карточки Яндекса каждым способом с анти-бот детектом
+  (`_ANTIBOT_MARKERS_FOR_PROBE`); каждый способ изолирован в
+  try/except, падение одного не рушит отчёт.
+- `showEngineHelp()` — окно «?»: сравнение Авто/CDP/Playwright/HTTP
+  (особенности для Яндекса и 2GIS, ограничения .exe), отсылка к
+  диагностике; закрытие Escape/Enter/клик/кнопка.
+- Фиксы UI светлой темы: активный пункт селектора получил плашку
+  `--c`/`--cd` (был белый текст без фона — белый на белом); бейдж
+  «рекоменд.» — `--ok-on`; селектор `flex-wrap` — «Без браузера»
+  больше не обрезается в узкой панели.
+- Регресс в ходе работы: `_safe(..., deep=False)` → позиционный
+  аргумент (`_safe` не принимает kwargs) — поймано тестами
+  `test_diagnostics` (run_checks падал TypeError).
+
+**Стартовый браузер: по умолчанию, а не Chrome** (`app.py`,
+`tests/test_macos_build.py`)
+
+- `_should_open_browser` теперь возвращает True на всех платформах и в
+  любом режиме запуска (раньше — только macOS + frozen): интерфейс
+  открывается в системном браузере по умолчанию. `_open_default_browser`:
+  Windows — `os.startfile` (ассоциация ОС) → `webbrowser.open`; macOS —
+  явный Safari (`webbrowser.get("safari")`) → `webbrowser.open`.
+- `_should_open_cdp_window` по умолчанию False (было True): стартовое
+  окно Chrome не нужно — парсер и так запускает свой headless Chrome
+  в `run_web`, а у пользователей без Chrome окно и раньше не открывалось
+  (интерфейс терялся целиком). YP_DEBUG_WINDOW=1 — опция для отладки.
+- Fallback: если браузер по умолчанию не открылся → прежнее CDP-окно
+  Chrome (`_open_startup_url`), иначе консоль с адресом.
+- Тесты: политика автозапуска переписана под новое поведение
+  (win32/frozen и source-запуск теперь открывают), +6 тестов на
+  `_open_default_browser` (Safari-first, фолбэки), CDP-fallback и
+  дефолт `YP_DEBUG_WINDOW`.
+
+**Выбор способа парсинга карточек** (`fetch_engine`)
+
+- Способ загрузки detail-страниц выведен в интерфейс: раньше enrichment
+  молча брал первый доступный движок (CDP → Playwright → httpx).
+  Теперь `config.FETCH_ENGINE` → `state` → `runner._apply_params`
+  (чужое значение → `auto`; `httpx` → `USE_BROWSER=False`), выбор движка
+  в `enrichment.fetch_detail`, анти-бот повтор через CDP только для
+  `auto`/`cdp`. В `run_web` инициализация пула по выбору: `playwright` —
+  сразу Playwright (без doomed CDP-попытки), явный `cdp` не подменяется
+  Playwright'ом, недоступность → HTTP-фолбэк с предупреждением в лог.
+- UI: сегмент-контрол «Способ парсинга» в «Основных параметрах»
+  (`setFetchEngine`, подсказки с особенностями Яндекса/2GIS и бейдж
+  «рекоменд.»), `getParams().fetch_engine`, пресеты и localStorage
+  (`getCurrentSettings`/`applySettings`/`FORM_DEFAULTS`), CSS
+  `.src-rec`.
+- Тесты: `tests/test_fetch_engine.py` — 15 шт. (выбор движка без
+  подмены, деградация в HTTP, анти-бот пути, валидация `_apply_params`);
+  `presets.test.mjs` — стабы песочницы + round-trip `fetchEngine`.
+
+**Hot-reload ключей доведён до симметрии** (`routes/api.py`,
+`yandex_maps_parser/twogis.py`, `tests/test_api_keys.py`)
+
+- `_write_env_keys` обновлял `config.*` и `state.TWOGIS_API_KEY`, но не
+  `state.YANDEX_API_KEY` — state держит снапшот config (импорт при
+  старте), и потребители `state.YANDEX_API_KEY` (`geocoding.py`,
+  `search.py`, фолбэки `/api-keys/status` и диагностики) до старта
+  нового запуска читали бы старый ключ. Добавлена строка симметрии.
+- У `/save-api-keys` вообще не было тестов — `tests/test_api_keys.py`
+  (3 шт.): hot-reload во все четыре потребителя (config/state/
+  os.environ/.env), бейдж `api-keys/status`, отклонение ключа с
+  запрещёнными символами без записи в файл. Регрессия доказана:
+  без фикса `test_yandex_key_lands_everywhere` падает на
+  `assert pstate.YANDEX_API_KEY == "new_yandex"`.
+- `twogis.py: quota_set_manual` — убран избыточный `global
+  _quota_file_loaded` (pyflakes: имя читается, но не присваивается —
+  global нужен только для записи).
+- Сводка pyflakes по проекту: ошибок нет; оставшиеся предупреждения —
+  документированные re-export'ы (`state.py` ← config, `http_client` ←
+  rate_limit — проверено grep'ом по потребителям) и косметика в тестах.
+
+**Таблица результатов растягивается до низа панели** (`static/css/style.css`)
+
+- `.tbl-wrap`: снят `max-height:400px` (потолок в ~8 строк — под ним
+  оставалась мёртвая полоса внутри карточки). Теперь `flex:1 1 auto;
+  min-height:200px`: занимает всё свободное место `#rs-current` (растяг
+  при нехватке сжимается до пола 200px, дальше прокручивается сама
+  панель), строки скроллятся внутри под липкой шапкой.
+- В медиа-запросе ≤860px добавлен `.tbl-wrap{max-height:60vh}` — на узких
+  экранах панель не имеет фиксированной высоты, таблица останется
+  компактной, как и раньше.
+- Проверено вживую на 1440×800: низ `.tbl-wrap` == низ `.tab-panels`
+  (gap 1px), `#rs-current` без переполнения, внутренний скролл строк
+  ~2200px, страница не скроллится (doc-scroll 0); pytest (файлы, читающие
+  style.css) 258 passed; node filterspanel+logpanel 38/38.
+
+**`social_normalize.py` подключён к экспорту** (`yandex_maps_parser/social_normalize.py`,
+`yandex_maps_parser/exporters.py`, `routes/api.py`, `tests/test_social_normalize.py`,
+`tests/test_pipeline.py`)
+
+- Модуль лежал мёртвым (0 импортов, проверено тремя способами). Теперь
+  `normalize_record()` применяется во всех пяти точках записи: `save_csv`,
+  `save_json`, `save_excel`, `_append_excel` (построчная дозапись во время
+  поиска) и `/export-filtered` (выгрузка выборки).
+- Преобразования: `phone` — дедуп по цифрам с сохранением первого
+  написания; `whatsapp` — канонический `https://wa.me/<digits>` (мусорная
+  ссылка отбрасывается); `vk` — `vk.ru`/`m.vk.com` → `vk.com` (легаси-не-URL
+  не трогаем); `website` — `http://` → `https://`.
+- Фикс скрытого бага в самом модуле: `normalize_whatsapp_url('https://wa.me/89376154245')`
+  возвращала битую `wa.me/9376154245` без кода страны — пример из
+  собственного докстринга не выполнялся. Теперь РФ-номер получает `7`,
+  а код КР `996…` не трогается.
+- Нормализация идемпотентна — дозапись (append) в существующий файл
+  безопасна, старые строки переписываются при следующей записи.
+- Тесты: новый `tests/test_social_normalize.py` — 30 шт. (unit по примерам
+  докстринга + интеграция через каждый писатель + `/export-filtered`); в
+  `test_pipeline.py::test_merge_first_then_filters` ожидание `vk.ru`
+  заменено на канонический `vk.com` — `save_excel` теперь нормализует
+  записываемое (проверка по-прежнему точная, отражает новую канонику).
+- Проверено: pytest 1058 passed / 2 skipped, exit 0.
+
+**`static/js/app.js` разделён на 11 модулей** (`static/js/01-core-state.js` …
+`static/js/11-bulk-sender-init.js`, `templates/index.html`, `tests/_appjs.py`,
+`tests/ui/_src.mjs`, `.github/workflows/build-macos.yml`)
+
+- Однофайловый `app.js` (9425 строк) нарезан по границам функций на
+  последовательные модули: 01-core-state (760), 02-app-shell (951),
+  03-log-run (975), 04-results-table (961), 05-results-bulk (1053),
+  06-map-stats (450), 07-stats-daily (710), 08-presets-notify (677),
+  09-ui-extras (1100), 10-templates (861), 11-bulk-sender-init (927).
+  Склейка модулей байт-в-байт равна оригиналу (assert в скрипте нарезки);
+  порядок `<script>` в `index.html` совпадает с `JS_MODULES` в хелперах.
+- Тесты читают текст через общий хелпер: `tests/_appjs.py::read_app_js()`
+  (pytest) и `tests/ui/_src.mjs::readAppSrc()` (node). 13 node-тестов и
+  5 pytest-файлов переключены; строковые assert'ы не менялись.
+- CI: `build-macos.yml` проверяет в бандле `01-core-state.js` вместо `app.js`.
+- Удалены: `static/js/app.js` (заменён модулями) и одноразовые скрипты
+  миграции `scripts/split_app_js.py`, `scripts/_switch_mjs_tests.py`.
+- Устаревшие ссылки «в app.js» в комментариях `routes/api.py`,
+  `templates/index.html`, `city_data.py`, `message_templates.py` обновлены
+  на конкретные модули.
+- Проверено: `node --check` всех 11 модулей; node --test 418/418;
+  pytest 1028 passed / 2 skipped; живой запуск на модулях (страница
+  рендерится, вкладка «Результаты» открывается, консоль чистая).
+
+**Инвентаризация файлов: удалён мусор** (`test_roundtrip.csv`,
+`test_roundtrip2.csv`, `test_roundtrip3.csv` в корне)
+
+- Несколько проверок: untracked в git, 0 ссылок в проекте (grep по
+  `*.py/*.js/*.mjs/*.html/*.yml` — совпадений только в `.venv` у numpy),
+  содержимое — артефакт старого roundtrip-теста экспорта. Бэкапы
+  сохранены вне репозитория (`/tmp/yp_backup/`).
+- `yandex_maps_parser/social_normalize.py` — 0 ссылок тремя проверками
+  (grep импортов, grep имён функций, аудит динамических `importlib` в
+  `paths.py`): файл создан, но никуда не подключён. НЕ удалялся —
+  вынесен в отчёт в список «на проверку» (возможно, готовится к
+  подключению к экспорту).
+
+**Фикс вкладки «Результаты» + пометка соцсети кликом** (`static/js/app.js`,
+`tests/ui/results.test.mjs`, `tests/ui/templates.test.mjs`)
+
+- `renderPage()`: при удалении пагинации остался отсыл к удалённой переменной
+  `start` (`${start + i + 1}`) — `ReferenceError` на каждой отрисовке, таблица
+  пустая. Заменено на `${i + 1}`.
+- `showTab('table')`: первое открытие вкладки вызывает
+  `setResultsView(_resultsView)` (флаг `_resultsLoadedOnce`) — раньше данные
+  грузились только кнопкой «Сырые данные» или по `onRunDone`, и вкладка
+  после перезагрузки страницы оставалась на плейсхолдере.
+- `toggleViewed(key, checked)` — новая функция: ставит/снимает ту же отметку
+  «просмотрено», что и чекбокс строки (`POST /reviewed` + `markReviewedDirty`);
+  `onSocialBadgeClick` зовёт её и `refreshReviewedUI()`, в `socialsHTML`
+  появился маркер `.viewed-mark` рядом с бейджем при `rowIsRev`.
+- Возвращён `await copyText(text)` в 4 async-функции (`copyLogText`,
+  `showLinksModal`, `copyTemplateText`, `onSocialBadgeClick` снова async) —
+  широкий патч прошлой сессии снял `await` и везде, и промис становился
+  всегда истинным (тост «скопирован» врал при неудаче, тест
+  `test_log_panel.py` это и ловил).
+- Тесты: +2 в `results.test.mjs` (клик по VK ставит отметку и шлёт её на
+  `/reviewed`, повторный — снимает); в `templates.test.mjs` стабы
+  `toggleViewed`/`refreshReviewedUI`/`isReviewed` — там фокус на шаблонах.
+- Проверено вживую: перезагрузка → клик «Результаты» → 50 строк, консоль
+  чистая; node 418/418; pytest 1028 passed / 2 skipped (GitHub-лимит и
+  календарный `day <= 7`).
+
+**Отладочное окно Chrome с CDP** (`yandex_maps_parser/cdp_client.py`,
+`app.py`, `yandex_maps_parser/runner.py`)
+
+- `open_debug_window()` / `close_debug_window()`: отдельный видимый Chrome на
+  временном `--user-data-dir` (свежий профиль ⇒ порт CDP реально открывается,
+  даже когда системный Chrome запущен или сломан — новый процесс не
+  перепривязывается к существующему экземпляру), свободный порт, ожидание
+  ответа `/json/version` до 5 с вместо фиксированного `sleep`, гашение
+  процесса и чистка временного профиля при закрытии (RLock + atexit).
+- `app.py` открывает окно в фоне при старте (`YP_DEBUG_WINDOW=0` — не
+  открывать) и передаёт в него свой UI через `open_debug_window(start_url=…)`
+  — окно открывается сразу на `http://127.0.0.1:<port>/`, не на `about:blank`;
+  `runner.run_web()` — то же по флагу `debug_cdp_window`.
+- Ложная красная «⚠ Chrome не запустился» убрана из `browser_client`:
+  падение теста Chromium в Playwright теперь только в syslog, а
+  user-facing warn вынесен в `runner` — показывается лишь когда не
+  поднялись ни Playwright, ни CDP (оба упали → fallback httpx).
+- **Приоритет браузеров перевёрнут: CDP → Playwright → httpx**
+  (`runner.py`, `enrichment.py`, `tests/test_browser_client.py`).
+  Playwright пробовался первым и на Python 3.14 / в .exe заведомо падал —
+  каждый поиск терял 2-5 с. Теперь пул поднимает `cdp_client.init_browser`
+  (20 вкладок), Playwright — только как фолбэк (10 страниц); enrichment
+  тоже выбирает CDP-пул первым. Покрыто тестами `TestBrowserPriority`
+  (порядок вызовов через `run_web` со стабами).
+- **Диагностика: точный диагноз «Invalid api key»** (`routes/diagnostics.py`,
+  `tests/test_diagnostics.py`). Сервисы Яндекса у ключа разные: ключ
+  Геокодера принимает geocode-maps, но отклоняет search-maps (поиск
+  организаций). При 403 «Invalid api key» `check_yandex_key` теперь делает
+  дополнительный пробный запрос к Геокодеру: если тот 200 — возвращается
+  отдельный результат «Ключ выпущен для другого сервиса Яндекса» с советом
+  включить сервис «Поиск по организациям» (иначе — прежнее сообщение).
+  Тест: `test_key_valid_for_geocoder_only_is_named_precisely`.
+- `init_browser(pool_size, visible=False)`: `visible=True` запускает обычное
+  окно Chrome вместо headless (пул вкладок и CDP работают так же).
+
+**Без pip-докачек во время поиска в .exe** (`yandex_maps_parser/browser_client.py`,
+`tests/test_browser_client.py`)
+
+- `_auto_install_playwright()` в frozen-сборке (`sys.frozen`) сразу
+  возвращает False: раньше при первом поиске в .exe она скачивала
+  pip-пакет playwright в системный Python пользователя и браузер Chromium
+  (поиск «висел» на докачке библиотеки в консоли). Playwright и так
+  намеренно исключён из сборки (~300 МБ, parser.spec) — путь для .exe:
+  Chrome CDP → httpx. Из исходников автоустановка работает как раньше.
+- `init_browser()` в frozen-режиме не вызывает автоустановку вовсе и не
+  показывает предупреждение «pip install playwright…» (оно про исходники).
+- Удалена мёртвая `_find_system_python()` (использовалась только веткой
+  frozen в автоустановке).
+- Тесты: `tests/test_browser_client.py` — pip не запускается в frozen,
+  автоустановка жива из исходников, `init_browser` сразу fallback без
+  предупреждения.
+
+**CSV в результатах, современный пикер папки, без legacy-файлов в корне
+output** (`routes/api.py`, `yandex_maps_parser/exporters.py`,
+`yandex_maps_parser/runner.py`, `tests/test_results_files.py`,
+`tests/test_pipeline.py`, `tests/test_output_folder.py`)
+
+- `_view_files()`: в перечне processed-папок добавлена `csv` — раньше
+  сканировались только `json` и `excel`, и «Обработанные» оставались пустыми
+  при «Формат результата: CSV».
+- `_records_from_csv()`: разделитель определяется по заголовку (сравнение
+  числа полей для `;`, `,`, `\t`), а не фиксированная запятая — файлы
+  `save_csv` пишутся с `;` (русская локаль Excel), и раньше roundtrip давал
+  0 записей. `csv.Sniffer` не годится: падает на кавычках с запятой внутри
+  (`"ул. А, 1"`).
+- `write_frontend_json()`: после прогона читает ещё и `.csv` — таблица
+  «Текущий результат» наполняется сразу и для CSV-формата.
+- `runner.run_web`: в pipeline-режиме (`PIPELINE == "raw"`) выключен
+  legacy-экспорт в корень output (`{city}_{ts}.xlsx/.csv/.json`, инкрементный
+  Excel, карта): сырые данные живут в `raw/`, отфильтрованные пишет этап 2
+  в `processed/{format}/`. Флаг `_legacy_exports` гасит `save_csv` в цикле
+  точек, `save_json`, `_finalize_excel`/fallback-Excel, `save_map` и
+  финальные строки «CSV → …». Флаги `output_*` сохраняются — их читает
+  этап 2 для выбора форматов.
+- `picker_command()` (Windows): `FolderBrowserDialog` → `OpenFileDialog` —
+  современный диалог IFileDialog с кнопкой «Выбор папки»; невидимая
+  TopMost-форма-владелец выводит окно поверх браузера (раньше диалог
+  открывался за ним). Тест `test_command_is_built_per_platform` проверяет
+  и TopMost.
+- Тесты: `test_processed_view_reads_csv_too` (processed/csv читается и
+  попадает во «Все» с дедупом), `TestLegacyExportsOffInRawPipeline`
+  (флаги форматов доживают до этапа 2, pipeline сбрасывается).
+
+**Анимации появления графиков, donut без внутренних подписей**
+(`static/js/app.js`, `static/css/style.css`, `tests/test_ui_markup.py`,
+`tests/ui/statsdaily.test.mjs`)
+
+- `donutHTML()`: блок `labels` (текстовые метки процентов внутри секторов,
+  порог `pct < 0.08`) удалён целиком — в SVG идут только трек и дуги;
+  класс `.donut-pct` убран из CSS и разметки. Значения остаются в легенде
+  (`<b>${count} · ${pct}%</b>`).
+- Donut-анимация: `.donut .donut-arc{animation:donut-in}` — `from{stroke-dasharray:0 var(--dash-rest,999)}`; инлайн-переменная `--dash-rest` ставится
+  в `donutHTML()` (остаток дуги), иначе `from` не знает, до какого значения
+  рисовать `0`. `animation … both` — дуга видна только после анимации.
+- Волновая анимация динамики: инлайн `--d` на `.dyn-col` =
+  `min(i * 22ms, 660ms)` (в обоих рендерах — `dailySectionHTML()` и
+  `dailyHoursChartHTML()`); `.dyn-bar{animation:bar-in}` с
+  `animation-delay:var(--d,0ms)`, `.dyn-vlab` проявляется с задержкой
+  `calc(var(--d) + 200ms)`. Инлайн-`height` у `.dyn-bar` не конфликтует:
+  animation-кадры сильнее инлайновых стилей. Анимация играет только на
+  вставку узла — перерисовка во время прогона (`renderStats` каждые 1.5 с)
+  график не пересоздаёт, дёргаться нечему.
+- Оба блока отключаются при `prefers-reduced-motion:reduce` (плюс
+  уже существовавший глобальный reduce-блок в конце файла).
+- Тесты: `test_donut_sectors_carry_percentages_when_wide` заменён на
+  `test_donut_is_clean_ring_without_inner_labels` (не только «нет
+  donut-pct», но и есть `--dash-rest`-анимация); новый
+  `test_chart_has_entrance_animation` (keyframes, var(--d), reduce-блок);
+  в `statsdaily.test.mjs` — тест задержек волны (`0/22/44/66`, кап 660 →
+  фактически 638 для 30-й колонки при i*22) + `columnsOf` разрез ужесточён
+  до `class="dyn-col[\" ]` из-за нового инлайн-`style="--d:…"`.
+
 ## [2.3.3] — Динамика по дням, почасовой «Сегодня», перенос данных и шлифовка интерфейса
 
 **Почасовой «Сегодня», растянутые колонки, таблица, разбивки** (`routes/api.py`,

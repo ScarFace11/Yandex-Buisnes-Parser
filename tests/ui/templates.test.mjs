@@ -10,9 +10,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { readAppSrc } from './_src.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const src = readFileSync(join(root, 'static', 'js', 'app.js'), 'utf8');
+const src = readAppSrc(root);
 
 function grab(name) {
   let i = src.indexOf('function ' + name + '(');
@@ -56,7 +57,8 @@ for (const name of ['TEMPLATE_CATEGORIES', 'TEMPLATE_CAT_LABELS', 'TEMPLATE_MAX_
                     'TEMPLATE_SPECIAL_LABELS',
                     'RESERVED_VAR_NAMES', 'TEMPLATE_MAX_CUSTOM_VARS',
                     'TEMPLATE_MAX_VAR_NAME', 'TEMPLATE_MAX_VAR_VALUE',
-                    'TEMPLATE_MAX_VAR_DESC']) {
+                    'TEMPLATE_MAX_VAR_DESC', 'TEMPLATE_MAX_VARIANTS',
+                    'TEMPLATE_MAX_VAR_VARIANTS']) {
   (0, eval)('globalThis.' + name + ' = ' + grabConstValue(name) + ';');
 }
 
@@ -99,6 +101,8 @@ const IDS = ['tpl-list', 'tpl-var-list', 'tpl-show-missing', 'tpl-modal', 'tpl-m
              'btn-tpl-del-selected', 'btn-tpl-select-all',
              'tpl-var-name', 'tpl-var-source', 'tpl-var-value', 'tpl-var-desc',
              'tpl-var-column', 'tpl-var-text-wrap', 'tpl-var-column-wrap',
+             'tpl-var-variants-wrap', 'tpl-var-variants',
+             'tpl-composite', 'tpl-variants-wrap', 'tpl-variants-list',
              'tpl-var-modal', 'tpl-var-modal-title', 'tpl-var-modal-err'];
 for (const id of IDS) els[id] = mkEl(id);
 els['bulk-social'].value = 'vk';
@@ -127,6 +131,11 @@ globalThis.copyText = async () => globalThis._copyOk !== false;
 globalThis.postJSON = async () => ({ ok: true });
 globalThis.uiConfirm = async () => globalThis._confirm !== false;
 globalThis.reviewKey = r => (r && r.key) || '';
+// Клик по бейджу помечает запись просмотренной — эти стабы держат фокус тестов
+// на шаблонах; сама отметка проверяется в results.test.mjs.
+globalThis.isReviewed = () => false;
+globalThis.toggleViewed = () => { globalThis._viewedToggles = (globalThis._viewedToggles || 0) + 1; };
+globalThis.refreshReviewedUI = () => {};
 globalThis.SLABELS = { vk: 'VK', instagram: 'IG', telegram: 'TG', whatsapp: 'WA' };
 globalThis._pluralRu = (n, one, few, many) => {
   const m10 = n % 10, m100 = n % 100;
@@ -147,6 +156,7 @@ const INIT_VALUES = {
   customVariables: [],
   _tplSelectedIds: () => new Set(),
   activeTemplateIds: { vk: null, telegram: null, whatsapp: null, instagram: null },
+  bulkTemplateIds: { vk: null, telegram: null, whatsapp: null, instagram: null },
   templateModes: { vk: 'single', telegram: 'single', whatsapp: 'single', instagram: 'single' },
   randomTemplateIds: { vk: [], telegram: [], whatsapp: [], instagram: [] },
   _lastPickedTpl: {},
@@ -171,6 +181,13 @@ for (const name of Object.keys(INIT_VALUES)) {
   grab('genTemplateId'),
   grab('getActiveTemplateFor'),
   grab('pruneTemplatePicks'),
+  grab('resolveVariantText'),
+  grab('templateTextForCopy'),
+  grab('_editingVariantIds'),
+  grab('renderTemplateVariantsEditor'),
+  grab('onCompositeToggle'),
+  grab('onVariantItemToggle'),
+  grab('onTemplateCategoryChange'),
   grab('pickRandomTemplate'),
   grab('getTemplateFor'),
   grab('setActiveTemplate'),
@@ -238,6 +255,7 @@ for (const name of Object.keys(INIT_VALUES)) {
   grab('showTplSubtab'),
   grab('updateSelectAllBtn'),
   grab('isValidVarName'),
+  grab('_cleanVarVariantsClient'),
   grab('varColumnOptions'),
   grab('renderVarCards'),
   grab('openVarModal'),
@@ -269,6 +287,7 @@ const COMPANY = {
 function reset({ templates = TEMPLATES, active = {}, missing = false } = {}) {
   globalThis.messageTemplates = templates.map(t => ({ ...t }));
   globalThis.activeTemplateIds = Object.assign({ vk: null, telegram: null, whatsapp: null, instagram: null }, active);
+  globalThis.bulkTemplateIds = Object.assign({ vk: null, telegram: null, whatsapp: null, instagram: null }, active);
   globalThis.templateModes = { vk: 'single', telegram: 'single', whatsapp: 'single', instagram: 'single' };
   globalThis.randomTemplateIds = { vk: [], telegram: [], whatsapp: [], instagram: [] };
   globalThis.avoidRepeats = false;
@@ -1161,4 +1180,178 @@ test('importCustomVariables: пропуск не меняет существую
   globalThis.uiChoose = prevChoose;
   assert.equal(r.skipped, 1);
   assert.equal(globalThis.customVariables.find(v => v.name === 'подпись').value, 'СТАРАЯ');
+});
+
+// ── Составные шаблоны (variant_ids) ───────────────────────
+const COMPOSITE_TPLS = [
+  { id: 'a', category: 'vk', name: 'A', text: 'А', created_at: 'x' },
+  { id: 'b', category: 'vk', name: 'B', text: 'Б', created_at: 'x' },
+  { id: 'c', category: 'telegram', name: 'C', text: 'В', created_at: 'x' },
+  { id: 's', category: 'vk', name: 'S', text: 'Свой текст', variant_ids: ['a', 'b'], created_at: 'x' },
+];
+
+test('resolveVariantText берёт случайный из вложенных той же категории', () => {
+  reset({ templates: COMPOSITE_TPLS });
+  const s = globalThis.messageTemplates.find(t => t.id === 's');
+  const texts = new Set();
+  for (let i = 0; i < 60; i++) texts.add(globalThis.resolveVariantText(s));
+  assert.deepEqual([...texts].sort(), ['А', 'Б']);
+});
+
+test('resolveVariantText: чужая категория и битые ссылки → null', () => {
+  reset({ templates: [{ id: 's', category: 'vk', name: 'S', text: 'С', variant_ids: ['c', 'ghost'], created_at: 'x' }] });
+  const s = globalThis.messageTemplates.find(t => t.id === 's');
+  assert.equal(globalThis.resolveVariantText(s), null);
+  reset();
+  assert.equal(globalThis.resolveVariantText(globalThis.messageTemplates[0]), null);
+});
+
+test('templateTextForCopy: составной — случайный вложенный, обычный — свой текст', () => {
+  reset({ templates: COMPOSITE_TPLS });
+  const s = globalThis.messageTemplates.find(t => t.id === 's');
+  const texts = new Set();
+  for (let i = 0; i < 60; i++) texts.add(globalThis.templateTextForCopy(s));
+  assert.deepEqual([...texts].sort(), ['А', 'Б']);
+  const a = globalThis.messageTemplates.find(t => t.id === 'a');
+  assert.equal(globalThis.templateTextForCopy(a), 'А');
+  assert.equal(globalThis.templateTextForCopy(null), '');
+});
+
+test('pruneTemplatePicks вычищает variant_ids от чужих и удалённых', () => {
+  reset({ templates: COMPOSITE_TPLS });
+  const s = globalThis.messageTemplates.find(t => t.id === 's');
+  s.variant_ids = ['a', 'b', 'c', 'ghost', 's'];
+  globalThis.pruneTemplatePicks();
+  assert.deepEqual(s.variant_ids, ['a', 'b']);
+});
+
+test('normalizeTemplatesClient несёт variant_ids (без дублей и мусора)', () => {
+  reset();
+  const out = globalThis.normalizeTemplatesClient([
+    { id: 's', name: 'S', text: 'С', category: 'vk', variant_ids: ['a', '', 42, 'a', 'b'] },
+  ]);
+  assert.deepEqual(out[0].variant_ids, ['a', 'b']);
+});
+
+test('renderTemplateVariantsEditor показывает чекбоксы своей категории', () => {
+  reset({ templates: COMPOSITE_TPLS });
+  els['tpl-category'].value = 'vk';
+  globalThis.renderTemplateVariantsEditor(globalThis.messageTemplates.find(t => t.id === 's'));
+  assert.equal(els['tpl-composite'].checked, true);
+  assert.equal(els['tpl-variants-wrap'].hidden, false);
+  assert.match(els['tpl-variants-list'].innerHTML, /value="a"/);
+  assert.match(els['tpl-variants-list'].innerHTML, /value="b"/);
+  assert.doesNotMatch(els['tpl-variants-list'].innerHTML, /value="c"/);
+  assert.ok(els['tpl-variants-list'].innerHTML.includes('checked'));
+});
+
+test('onVariantItemToggle добавляет и снимает варианты, кап соблюдается', () => {
+  reset({ templates: COMPOSITE_TPLS });
+  els['tpl-category'].value = 'vk';
+  globalThis.renderTemplateVariantsEditor(null);
+  assert.equal(els['tpl-composite'].checked, false);
+  assert.equal(els['tpl-variants-wrap'].hidden, true);
+  els['tpl-composite'].checked = true;   // пользователь включил составной
+  globalThis.onCompositeToggle();
+  assert.equal(els['tpl-variants-wrap'].hidden, false);
+  els['tpl-composite'].checked = false;
+  globalThis.onCompositeToggle();
+  assert.equal(els['tpl-variants-wrap'].hidden, true);
+  els['tpl-composite'].checked = true;
+  globalThis.onCompositeToggle();
+  const cb = (v, checked) => ({ value: v, checked, _c: checked, get checked() { return this._c; }, set checked(c) { this._c = c; } });
+  const a = cb('a', true); a.checked = true;
+  globalThis.onVariantItemToggle(a);
+  const b = cb('b', true); b.checked = true;
+  globalThis.onVariantItemToggle(b);
+  assert.deepEqual(globalThis._editingVariantIds(), ['a', 'b']);
+  b.checked = false;
+  globalThis.onVariantItemToggle(b);
+  assert.deepEqual(globalThis._editingVariantIds(), ['a']);
+  for (let i = 0; i < globalThis.TEMPLATE_MAX_VARIANTS; i++) {
+    const c = cb('x' + i, true); c.checked = true;
+    globalThis.onVariantItemToggle(c);
+  }
+  const before = globalThis._editingVariantIds().length;
+  const ov = cb('overflow', true); ov.checked = true;
+  globalThis.onVariantItemToggle(ov);
+  assert.equal(globalThis._editingVariantIds().length, before);
+  assert.equal(ov.checked, false, 'лишний чекбокс сбрасывается');
+});
+
+test('onTemplateCategoryChange сбрасывает выбор вариантов', () => {
+  reset({ templates: COMPOSITE_TPLS });
+  els['tpl-category'].value = 'vk';
+  globalThis.renderTemplateVariantsEditor(null);
+  globalThis.onVariantItemToggle({ value: 'a', checked: true });
+  els['tpl-category'].value = 'telegram';
+  globalThis.onTemplateCategoryChange();
+  assert.deepEqual(globalThis._editingVariantIds(), []);
+  assert.equal(els['tpl-composite'].checked, false);
+  assert.match(els['tpl-variants-list'].innerHTML, /value="c"/);
+});
+
+test('duplicateTemplate копирует variant_ids', () => {
+  reset({ templates: COMPOSITE_TPLS });
+  globalThis.duplicateTemplate('s');
+  const dup = globalThis.messageTemplates.find(t => t.name === 'S (копия)');
+  assert.deepEqual(dup.variant_ids, ['a', 'b']);
+  flushTimers();
+});
+
+// ── Случайная переменная (variants) ──────────────────────
+test('_cleanVarVariantsClient: чистка, дедуп, кап', () => {
+  reset();
+  const out = globalThis._cleanVarVariantsClient(['Привет!', ' Здравствуйте! ', '', '  ', 'Привет!', 42, null]);
+  assert.deepEqual(out, ['Привет!', 'Здравствуйте!', '42']);
+  assert.equal(globalThis._cleanVarVariantsClient(Array(globalThis.TEMPLATE_MAX_VAR_VARIANTS + 5).fill(0)
+    .map((_, i) => 'v' + i)).length, globalThis.TEMPLATE_MAX_VAR_VARIANTS);
+  assert.deepEqual(globalThis._cleanVarVariantsClient('мусор'), []);
+});
+
+test('substituteTemplate подставляет случайный вариант переменной', () => {
+  reset();
+  globalThis.customVariables = [{ name: 'привет', column: '', value: '', variants: ['А', 'Б'] }];
+  const got = new Set();
+  for (let i = 0; i < 60; i++) got.add(globalThis.substituteTemplate('{привет}!', COMPANY));
+  assert.deepEqual([...got].sort(), ['А!', 'Б!']);
+  globalThis.customVariables = [{ name: 'привет', variants: ['Только один'] }];
+  assert.equal(globalThis.substituteTemplate('{привет}', COMPANY), 'Только один');
+});
+
+test('saveVarFromModal: режим variants требует минимум два варианта', () => {
+  reset();
+  els['tpl-var-name'].value = 'привет';
+  els['tpl-var-source'].value = 'variants';
+  els['tpl-var-variants'].value = 'Только один';
+  globalThis.onVarSourceChange();
+  assert.equal(els['tpl-var-variants-wrap'].hidden, false);
+  assert.equal(globalThis.saveVarFromModal(), false);
+  assert.match(els['tpl-var-modal-err'].textContent, /минимум два/);
+  els['tpl-var-variants'].value = 'Привет!\nЗдравствуйте!';
+  assert.equal(globalThis.saveVarFromModal(), true);
+  const v = globalThis.customVariables[0];
+  assert.deepEqual(v.variants, ['Привет!', 'Здравствуйте!']);
+  assert.equal(v.value, '');
+  flushTimers();
+});
+
+test('openVarModal заполняет textarea вариантами и режим variants', () => {
+  reset();
+  globalThis.customVariables = [{ name: 'привет', column: '', value: '', variants: ['А', 'Б'], description: '' }];
+  globalThis.openVarModal('привет');
+  assert.equal(els['tpl-var-source'].value, 'variants');
+  assert.equal(els['tpl-var-variants'].value, 'А\nБ');
+  assert.equal(els['tpl-var-variants-wrap'].hidden, false);
+});
+
+test('normalizeCustomVariablesClient несёт variants и режет одиночные', () => {
+  reset();
+  const out = globalThis.normalizeCustomVariablesClient([
+    { name: 'ок', variants: ['А', 'Б'] },
+    { name: 'один', variants: ['А'] },
+    { name: 'мусор', variants: [] },
+  ]);
+  assert.equal(out.length, 1);
+  assert.deepEqual(out[0].variants, ['А', 'Б']);
 });

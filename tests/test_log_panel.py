@@ -10,7 +10,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 TEMPLATE = (ROOT / "templates" / "index.html").read_text(encoding="utf-8")
-APP_JS = (ROOT / "static" / "js" / "app.js").read_text(encoding="utf-8")
+from tests._appjs import read_app_js
+APP_JS = read_app_js()
 STYLE = (ROOT / "static" / "css" / "style.css").read_text(encoding="utf-8")
 RUNNER = (ROOT / "yandex_maps_parser" / "runner.py").read_text(encoding="utf-8")
 STATS = (ROOT / "yandex_maps_parser" / "stats.py").read_text(encoding="utf-8")
@@ -38,12 +39,13 @@ class TestLogFilters:
         assert "function setLogFilter(" in APP_JS
         assert "function _refreshLogFilter(" in APP_JS
         assert "✅ Ошибок нет" in APP_JS
-        assert "'Важных сообщений нет — включите «Все»'" in APP_JS \
-            or "Важных сообщений нет" in APP_JS
+        assert "'Итогов пока нет — включите «Все»'" in APP_JS \
+            or "Итогов пока нет" in APP_JS
 
     def test_filters_hide_lines_with_css_only(self):
         """Смена фильтра не перерисовывает журнал — строки не теряются."""
-        assert "#log-output.f-important .ll.noise{display:none}" in STYLE
+        # «Важные» — только итоги (.sum); механика и ошибки скрыты.
+        assert "#log-output.f-important .ll:not(.sum){display:none}" in STYLE
         assert "#log-output.f-errors .ll:not(.warn):not(.error)" in STYLE
         assert "#log-output.f-tech .ll:not(.tech){display:none}" in STYLE
 
@@ -81,11 +83,16 @@ class TestLevelColours:
 
 
 class TestLogHeaderButtons:
+    def test_copy_log_text_uses_common_helper(self):
+        # copyLogText() переиспользует общий хелпер copyText, а не второй execCommand
+        assert "function copyLogText(" in APP_JS
+        assert "copyText(" in APP_JS
+
     def test_save_and_copy_exist_and_are_wired(self):
         assert 'id="btn-log-save"' in TEMPLATE and "saveLogFile()" in TEMPLATE
         assert 'id="btn-log-copy"' in TEMPLATE and "copyLogText()" in TEMPLATE
         assert "function saveLogFile(" in APP_JS
-        assert "async function copyLogText(" in APP_JS
+        assert "function copyLogText(" in APP_JS
         # Копирование переиспользует общий хелпер, а не второй execCommand.
         assert "await copyText(text)" in APP_JS
 
@@ -140,7 +147,7 @@ class TestLogCapAndEmptyState:
     def test_pragma_cleared_log_forgets_its_counters(self):
         body = APP_JS[APP_JS.index("function clearLog("):]
         body = body[: body.index("\n}")]
-        assert "S.stats = {total: 0, noise: 0, err: 0, tech: 0}" in body
+        assert "S.stats = {total: 0, noise: 0, err: 0, tech: 0, sum: 0}" in body
         assert "S.meta = []" in body
         assert re.search(r"_refreshLogFilter\(\);", body)
 
@@ -188,7 +195,12 @@ class TestJournalFilterRegexIsIntact:
             assert "\x00" not in line, f"{name}: NUL в шаблоне"
 
     def test_no_control_characters_anywhere_in_frontend_sources(self):
-        for path in ("static/js/app.js", "static/css/style.css", "templates/index.html"):
+        for path in ["static/js/" + m for m in (
+                    "01-core-state.js", "02-app-shell.js", "03-log-run.js",
+                    "04-results-table.js", "05-results-bulk.js", "06-map-stats.js",
+                    "07-stats-daily.js", "08-presets-notify.js", "09-ui-extras.js",
+                    "10-templates.js", "11-bulk-sender-init.js")] + [
+                "static/css/style.css", "templates/index.html"]:
             text = (ROOT / path).read_text(encoding="utf-8")
             bad = {c: text.count(c) for c in ("\x08", "\x07", "\x00") if c in text}
             assert not bad, f"{path}: управляющие символы {bad}"

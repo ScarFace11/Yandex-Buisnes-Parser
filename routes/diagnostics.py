@@ -37,7 +37,7 @@ bp = Blueprint("diagnostics", __name__)
 
 # Группы проверок: раздельно, потому что «ключи» стоят квоту и время, а
 # «файлы/данные/окружение» — бесплатны и мгновенны.
-GROUPS = ("keys", "files", "data", "env")
+GROUPS = ("keys", "files", "data", "env", "engines")
 
 _HTTP_TIMEOUT = 8.0                     # живые проверки не должны «висеть»
 _USER_AGENT = "YandexBusinessParser-diagnostics"
@@ -199,6 +199,22 @@ def check_yandex_key(key: str) -> dict:
         message = _error_message(text, data)
         low = message.lower()
         if any(word in low for word in ("invalid", "not found", "unknown", "не найден")):
+            # «Invalid api key» ≠ ключ отозван: сервисы Яндекса у ключей
+            # разные — ключ Геокодера жив, а поиск организаций его не
+            # принимает. Пробуем ключ на Геокодере, чтобы дать точный совет.
+            g_status, _g_text, _g_data, _g_note = _http_get(
+                "https://geocode-maps.yandex.ru/1.x/",
+                {"geocode": "Москва", "format": "json", "results": 1, "apikey": key},
+            )
+            if g_status == 200:
+                return _res("yandex_key", "keys", "error",
+                            "Ключ выпущен для другого сервиса Яндекса",
+                            f"Ключ принят Геокодером, а поиск по организациям его "
+                            f"отклоняет — Яндекс ответил: {message}.",
+                            "В кабинете разработчика откройте этот ключ и включите ему "
+                            "сервис «Поиск по организациям» (yandex.ru/maps-api) — либо "
+                            "выпустите новый ключ именно для него. Геокодер продолжит "
+                            "работать.")
             return _res("yandex_key", "keys", "error", "Ключ Яндекс.Карт недействителен",
                         f"Яндекс ответил: {message}.",
                         "Проверьте ключ в кабинете разработчика: он мог быть отозван "
@@ -472,6 +488,108 @@ def check_data() -> list[dict]:
 
 # ── Группа «env»: с чем работаем ──────────────────────────────
 
+def probe_engines(deep: bool = False) -> list[dict]:
+    """Проверка всех трёх способов загрузки карточек организаций.
+
+    deep=False — мгновенно (импорт/поиск бинарника): для панели «Диагностика».
+    deep=True  — пробная загрузка одной страницы каждым способом.
+
+    Отчёт — те же _res-строки: {id, status: ok|warn|error, title, detail}.
+    """
+    out: list[dict] = []
+    # Пробная страница: реальная карточка организации на Яндекс.Картах —
+    # та же геометрия ответа, что у боевых fetch_detail.
+    probe_url = "https://yandex.ru/maps/org/galateya/1025935617/"
+
+    # -- 1. HTTP (extractors.fetch_html — тот же путь, что в бою) --
+    try:
+        from yandex_maps_parser.extractors import fetch_html
+        if deep:
+            html = fetch_html(probe_url)
+            low = (html or "")[:4000].lower()
+            ok = bool(html) and len(html) >= 800 and not any(
+                m in low for m in _ANTIBOT_MARKERS_FOR_PROBE)
+            out.append(_res(
+                "engine_httpx", "engines", "ok" if ok else "warn",
+                "HTTP-загрузка карточек: " + ("работает" if ok else "страница-заглушка"),
+                ("Пробная страница получена (" + str(len(html or "")) + " байт)."
+                 if ok else
+                 "Яндекс отдал заглушку анти-бота — в бою часть карточек будет"
+                 " без соцсетей; для 2GIS с бесплатным ключом способ почти"
+                 " бесполезен."),
+                "" if ok else
+                "Выберите «Авто» или «Chrome (CDP)»: карточки через браузер"
+                " надёжнее."))
+        else:
+            out.append(_res("engine_httpx", "engines", "ok",
+                            "HTTP-загрузка: доступна всегда",
+                            "Работает без браузера; скорость зависит от пауз."))
+    except Exception as exc:
+        out.append(_res("engine_httpx", "engines", "error",
+                        "HTTP-загрузка: сбой", _exception_note(exc)))
+
+    # -- 2. Chrome CDP: найден ли браузер (+ пробная загрузка) --
+    try:
+        from yandex_maps_parser import cdp_client
+        chrome = cdp_client._find_chrome()
+        if not chrome:
+            out.append(_res(
+                "engine_cdp", "engines", "warn", "Chrome (CDP): не найден",
+                "Chrome, Chromium и Edge не обнаружены на этой машине.",
+                "Установите Google Chrome — это рекомендуемый способ для"
+                " 2GIS с бесплатным ключом."))
+        elif deep:
+            ok = cdp_client.init_browser(pool_size=1, visible=False)
+            html = cdp_client.fetch_page(probe_url) if ok else None
+            good = bool(html) and len(html) >= 800
+            cdp_client.close_browser()
+            out.append(_res(
+                "engine_cdp", "engines", "ok" if good else "warn",
+                "Chrome (CDP): " + ("работает" if good else "запустился, но страницу не загрузил"),
+                chrome + ("; пробная страница " + str(len(html or "")) + " байт." if good else ""),
+                "" if good else "Chrome есть, но карточку не отдал — попробуйте «Авто»."))
+        else:
+            out.append(_res("engine_cdp", "engines", "ok",
+                            "Chrome (CDP): найден", chrome))
+    except Exception as exc:
+        out.append(_res("engine_cdp", "engines", "error",
+                        "Chrome (CDP): сбой проверки", _exception_note(exc)))
+
+    # -- 3. Playwright: модуль + браузер (сабпроцесс-тест) --
+    try:
+        from yandex_maps_parser import browser_client
+        import sys as _sys
+        if not browser_client._try_import_playwright():
+            out.append(_res(
+                "engine_playwright", "engines", "warn", "Playwright: не установлен",
+                "Модуль playwright не найден.",
+                "pip install playwright && playwright install chromium"))
+        elif deep:
+            ok = browser_client.init_browser(pool_size=1)
+            html = browser_client.fetch_page(probe_url) if ok else None
+            good = bool(html) and len(html) >= 800
+            browser_client.close_browser()
+            out.append(_res(
+                "engine_playwright", "engines", "ok" if good else "warn",
+                "Playwright: " + ("работает" if good else "запустился, но страницу не загрузил"),
+                ("Встроенный Chromium; пробная страница " + str(len(html or "")) + " байт."
+                 if good else "Встроенный Chromium."),
+                "" if good else "Chromium есть, но карточку не отдал — попробуйте «Авто»."))
+        else:
+            out.append(_res("engine_playwright", "engines", "ok",
+                            "Playwright: установлен",
+                            "Встроенный Chromium готов к запуску."))
+    except Exception as exc:
+        out.append(_res("engine_playwright", "engines", "error",
+                        "Playwright: сбой проверки", _exception_note(exc)))
+    return out
+
+
+# Маркеры анти-бота для probe_engines: упрощённый набор — точные маркеры
+# лежат в extractors._ANTIBOT_MARKERS вместе с size-эвристикой.
+_ANTIBOT_MARKERS_FOR_PROBE = ("robot", "captcha", "access denied", "доступ ограничен")
+
+
 def check_environment() -> list[dict]:
     """Версия, окружение и браузер для докачки соцсетей с карточек."""
     out: list[dict] = []
@@ -597,9 +715,43 @@ def run_checks(groups=None) -> list[dict]:
         _safe("data", "data", check_data)
     if "env" in wanted:
         _safe("env", "env", check_environment)
+    if "engines" in wanted:
+        _safe("engines", "engines", probe_engines, False)
 
     order = {"error": 0, "warn": 1, "ok": 2}
     return sorted(results, key=lambda r: order.get(r["status"], 3))
+
+
+@bp.route("/engines/status", methods=["GET"])
+def engines_status():
+    """Мгновенная доступность способов парсинга для бейджа в форме.
+
+    Без сетевых запросов: только поиск Chrome и импорт playwright.
+    Reply: {ok, chrome: bool, chrome_path: str, playwright: bool,
+            frozen: bool}
+    """
+    chrome_path = ""
+    try:
+        from yandex_maps_parser import cdp_client
+        chrome_path = cdp_client._find_chrome() or ""
+    except Exception:
+        chrome_path = ""
+    playwright_ok = False
+    try:
+        from yandex_maps_parser import browser_client
+        # Playwright bundлится в .exe (parser.spec) — проверяем по факту,
+        # frozen-флаг больше не подменяет результат.
+        playwright_ok = browser_client._try_import_playwright() is not None
+    except Exception:
+        playwright_ok = False
+    try:
+        import sys as _sys
+        frozen = bool(getattr(_sys, "frozen", False))
+    except Exception:
+        frozen = False
+    return jsonify({"ok": True, "chrome": bool(chrome_path),
+                    "chrome_path": chrome_path,
+                    "playwright": bool(playwright_ok), "frozen": frozen})
 
 
 @bp.route("/diagnostics/run", methods=["POST"])

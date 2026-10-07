@@ -9,6 +9,28 @@ import os
 from yandex_maps_parser import processing, runner, state
 
 
+class TestLegacyExportsOffInRawPipeline:
+    """PIPELINE == "raw" гасит legacy-экспорт в корень output: сырые данные
+    живут в output/raw/, а отфильтрованные пишет этап 2 в output/processed/.
+    Без этого рядом с CSV-форматом появлялся лишний {city}_{ts}.xlsx и т.п.
+    """
+
+    def test_legacy_exports_flag_follows_pipeline(self):
+        runner._apply_params({"pipeline": "raw", "output_csv": True})
+        try:
+            assert state.PIPELINE == "raw"
+            # Флаги форматов остаются как задал пользователь — этап 2
+            # использует их, чтобы выбрать форматы экспорта.
+            assert state.OUTPUT_CSV is True
+            assert state.OUTPUT_EXCEL is True
+        finally:
+            runner._apply_params({"pipeline": ""})
+
+    def test_pipeline_reset_restores_legacy_exports(self):
+        runner._apply_params({"pipeline": ""})
+        assert state.PIPELINE == ""
+
+
 # ── Naming ────────────────────────────────────────────────────
 
 class TestNaming:
@@ -47,7 +69,9 @@ class TestApplyFilters:
         )
         assert res["count"] == 1          # merged, vk contact survived the merge
         rec = next(iter(res["groups"]["кафе"]["Уфа"]))
-        assert rec["vk"] == "https://vk.ru/a"
+        # save_excel нормализует экспортируемые поля (normalize_record):
+        # сырой vk.ru в файле отдаётся каноническим vk.com.
+        assert rec["vk"] == "https://vk.com/a"
 
     def test_name_city_key_merges_same_named(self, tmp_path):
         """Acceptance criterion: merge by «Название + Город» — two same-named

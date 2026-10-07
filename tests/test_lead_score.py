@@ -95,9 +95,8 @@ class TestFrontendMirror:
 
     @staticmethod
     def _app_js() -> str:
-        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(root, "static", "js", "app.js"), encoding="utf-8") as f:
-            return f.read()
+        from tests._appjs import read_app_js
+        return read_app_js()
 
     def test_maximum_matches(self):
         assert f"const SCORE_MAX = {MAX_SCORE};" in self._app_js()

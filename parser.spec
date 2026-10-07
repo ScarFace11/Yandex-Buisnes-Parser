@@ -5,9 +5,11 @@
 # Result: dist/YandexBusinessParser/YandexBusinessParser.exe  (onedir —
 # starts fast and trips fewer antivirus false positives than onefile).
 #
-# Playwright is deliberately EXCLUDED (~300 MB of browsers + driver).
-# The app falls back to Chrome CDP (installed Chrome) and then to httpx,
-# so the exe is fully functional without it.
+# Playwright IS bundled (since 2.3.1): the python package (+ driver ~100 МБ)
+# кладётся в сборку, а сам Chromium пользователь докачивает один раз через
+# `playwright install chromium` (кнопка «Диагностика» подскажет). Fallback
+# на Chrome CDP / httpx остаётся: если Chromium не докачан или запуск падает,
+# exe полностью функционален и без него.
 
 import os
 from PyInstaller.utils.hooks import collect_submodules
@@ -47,7 +49,6 @@ a = Analysis(
     runtime_hooks=[],
     excludes=[
         # Not needed at runtime, cuts ~100+ MB combined
-        'playwright',
         'tkinter',
         'pytest',
         'matplotlib',

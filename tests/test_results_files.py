@@ -143,6 +143,22 @@ class TestResultsView:
         # view=all merges both stages and de-duplicates by card URL
         assert client.get("/results-view?view=all").get_json()["count"] == 4
 
+    def test_processed_view_reads_csv_too(self, client):
+        """«Формат результата: CSV» — processed/csv/*_filtered.csv читается так же,
+        как excel/json, и попадает и в «Обработанные», и в «Все»."""
+        from yandex_maps_parser.exporters import save_csv
+
+        _make_raw(client, "raw_a.xlsx", SAMPLE)
+        csv_dir = client.dirs["proc"] / "csv"
+        csv_dir.mkdir(exist_ok=True)
+        path = csv_dir / "кафе_уфа_filtered.csv"
+        save_csv(SAMPLE[:2], str(path), append=False)
+        d = client.get("/results-view?view=processed").get_json()
+        assert d["count"] == 2
+        assert {r["name"] for r in d["records"]} == {SAMPLE[0]["name"], SAMPLE[1]["name"]}
+        # view=all dedupe по card URL: те же записи, что и в raw
+        assert client.get("/results-view?view=all").get_json()["count"] == 4
+
     def test_all_view_dedupes_distinct_records(self, client):
         _make_raw(client, "raw_a.xlsx", SAMPLE)
         extra = [_rec("Только в processed", "Уфа", "https://yandex.ru/maps/org/new")]

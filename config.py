@@ -122,6 +122,10 @@ USE_BROWSER  = True   # True = Playwright для detail-страниц (быст
                        # False = httpx (требует прокси для скорости)
 MAX_PAGES    = 1    # страниц результатов (50 позиций каждая)
 FETCH_DETAIL = True  # загружать карточку бизнеса для извлечения соцсетей
+# Способ загрузки карточек (detail-страниц). "auto" — первый доступный:
+# Chrome CDP → Playwright → httpx. Иные значения выбираются в интерфейсе:
+# "cdp" | "playwright" | "httpx" (валидация в runner._apply_params).
+FETCH_ENGINE = "auto"
 MAX_CANDIDATES_PER_CITY = 200  # максимум кандидатов на город (0 = без лимита)
 
 # Ключ API Яндекс (для геокодинга и поиска)

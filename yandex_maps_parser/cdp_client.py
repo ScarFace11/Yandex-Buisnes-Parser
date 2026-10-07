@@ -53,6 +53,13 @@ _pool_size = 0
 _init_lock = threading.Lock()
 _browser_lock = threading.Lock()
 
+# Debug window (separate visible Chrome, CDP only, own temp profile)
+_debug_proc = None
+_debug_port: int = 0
+_debug_profile_dir: str | None = None
+# RLock: open_debug_window() may call close_debug_window() on failure.
+_debug_lock = threading.RLock()
+
 # Rate limiting
 _rate_semaphore: threading.Semaphore | None = None
 
@@ -443,13 +450,129 @@ def is_available() -> bool:
     return _proc is not None and _tab_pool is not None
 
 
+# ── Debug window (visible Chrome, CDP only, no tab pool) ─────
+
+
+def open_debug_window(start_url: str = "about:blank") -> int | None:
+    """Отдельное ВИДИМОЕ окно Chrome с открытым CDP-портом.
+
+    start_url — что открыть в первом окне (по умолчанию about:blank;
+        приложение передаёт свой UI, чтобы не открывать его вручную).
+
+    Запускается на собственном временном профиле (--user-data-dir), поэтому
+    работает даже если системный Chrome сломан или уже запущен: новый
+    процесс не перепривязывается к существующему экземпляру и CDP-порт
+    действительно открывается. Бинарник берётся из _find_chrome() — сначала
+    Chromium из Playwright, затем системный Chrome/Edge.
+
+    Возвращает CDP-порт или None, если окно открыть не удалось.
+    """
+    global _debug_proc, _debug_port, _debug_profile_dir
+    with _debug_lock:
+        if _debug_proc is not None and _debug_proc.poll() is None:
+            return _debug_port
+        chrome_path = _find_chrome()
+        if not chrome_path:
+            state.warn("Отладочное окно: Chrome/Chromium не найден.")
+            return None
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("", 0))
+            _debug_port = s.getsockname()[1]
+        # Свежий временный профиль: изолирует окно от запущенного Chrome
+        # пользователя (иначе новый процесс просто откроет вкладку в нем
+        # и завершится, а CDP-порт так и не откроется).
+        import tempfile as _tempfile
+        try:
+            _debug_profile_dir = _tempfile.mkdtemp(prefix="yp-cdp-debug-")
+        except Exception:
+            _debug_profile_dir = None
+        cmd = [
+            chrome_path,
+            f"--remote-debugging-port={_debug_port}",
+            "--remote-allow-origins=*",
+            "--no-sandbox",
+            "--disable-gpu",
+            "--disable-dev-shm-usage",
+            "--disable-extensions",
+            "--disable-background-networking",
+            "--disable-component-update",
+            "--disable-default-apps",
+            "--disable-sync",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-translate",
+            "--disable-breakpad",
+            "--disable-domain-reliability",
+            "--mute-audio",
+            start_url,
+        ]
+        if _debug_profile_dir:
+            cmd.insert(1, f"--user-data-dir={_debug_profile_dir}")
+        try:
+            _debug_proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception as e:
+            state.syslog(f"debug: failed to launch Chrome: {e}")
+            _debug_proc = None
+            return None
+        # Ждём ответ CDP-порта (до ~5 с), а не фиксированный sleep.
+        for _ in range(10):
+            time.sleep(0.5)
+            if _cdp_get(_debug_port, "/json/version"):
+                state.syslog(f"debug: Chrome window opened, CDP port={_debug_port}")
+                return _debug_port
+            if _debug_proc.poll() is not None:
+                break
+        state.syslog("debug: Chrome window did not open (process exited)")
+        _close_debug_window_locked()
+        return None
+
+
+def _close_debug_window_locked() -> None:
+    """Гасит отладочное окно. Вызывается под _debug_lock."""
+    global _debug_proc, _debug_port, _debug_profile_dir
+    proc, profile = _debug_proc, _debug_profile_dir
+    _debug_proc = None
+    _debug_port = 0
+    _debug_profile_dir = None
+    if proc is not None:
+        try:
+            proc.terminate()
+            proc.wait(timeout=3)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+    if profile:
+        try:
+            import shutil as _shutil
+            _shutil.rmtree(profile, ignore_errors=True)
+        except Exception:
+            pass
+
+
+def close_debug_window() -> None:
+    """Закрывает отладочное окно Chrome (процесс + временный профиль)."""
+    with _debug_lock:
+        _close_debug_window_locked()
+
+
 def is_installed() -> bool:
     """Check if Chrome/Chromium is available on this system."""
     return _find_chrome() is not None
 
 
-def init_browser(pool_size: int = 8) -> bool:
-    """Launch Chrome and create a pool of tabs for parallel fetching."""
+def init_browser(pool_size: int = 8, visible: bool = False) -> bool:
+    """Launch Chrome and create a pool of tabs for parallel fetching.
+
+    pool_size — number of tabs in the pool (each tab is a renderer process).
+    visible — if True, launch a regular Chrome WINDOW instead of headless;
+        the CDP tab pool works the same way, you just see it happening.
+    """
     global _proc, _base_port, _tab_pool, _pool_size, _rate_semaphore, _CDP_USER_AGENT
     global _museum_warned
     _museum_warned = False  # fresh run — allow the block-page warning again
@@ -480,31 +603,35 @@ def init_browser(pool_size: int = 8) -> bool:
                         s.bind(("", 0))
                         _base_port = s.getsockname()[1]
 
+                    _cmd: list[str] = [
+                        chrome_path,
+                        f"--remote-debugging-port={_base_port}",
+                        "--remote-allow-origins=*",
+                        "--no-sandbox",
+                        "--disable-gpu",
+                        "--disable-dev-shm-usage",
+                        "--disable-features=VizDisplayCompositor",
+                        # Memory trim: kill background work (updates, sync,
+                        # extensions, crash dumps) that otherwise adds
+                        # processes and RAM for no benefit in headless.
+                        "--disable-extensions",
+                        "--disable-background-networking",
+                        "--disable-component-update",
+                        "--disable-default-apps",
+                        "--disable-sync",
+                        "--no-first-run",
+                        "--disable-translate",
+                        "--disable-breakpad",
+                        "--disable-domain-reliability",
+                        "--mute-audio",
+                        "about:blank",
+                    ]
+                    if not visible:
+                        # Headless (default): no window. visible=True keeps
+                        # the Chrome window open — same CDP pool inside.
+                        _cmd.insert(3, "--headless=new")
                     _proc = subprocess.Popen(
-                        [
-                            chrome_path,
-                            f"--remote-debugging-port={_base_port}",
-                            "--remote-allow-origins=*",
-                            "--headless=new",
-                            "--no-sandbox",
-                            "--disable-gpu",
-                            "--disable-dev-shm-usage",
-                            "--disable-features=VizDisplayCompositor",
-                            # Memory trim: kill background work (updates, sync,
-                            # extensions, crash dumps) that otherwise adds
-                            # processes and RAM for no benefit in headless.
-                            "--disable-extensions",
-                            "--disable-background-networking",
-                            "--disable-component-update",
-                            "--disable-default-apps",
-                            "--disable-sync",
-                            "--no-first-run",
-                            "--disable-translate",
-                            "--disable-breakpad",
-                            "--disable-domain-reliability",
-                            "--mute-audio",
-                            "about:blank",
-                        ],
+                        _cmd,
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
                     )

@@ -9,9 +9,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { readAppSrc } from './_src.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const src = readFileSync(join(root, 'static', 'js', 'app.js'), 'utf8');
+const src = readAppSrc(root);
 
 function grabConst(name) {
   const prefix = 'const ' + name + ' = ';
@@ -124,7 +125,28 @@ const payload = over => Object.assign(
 // Разрез по колонкам-дням: `class="dyn-col"` / `class="dyn-col is-today"`,
 // но НЕ `class="dyn-cols"` (контейнер ряда) — иначе в списке появился бы
 // лишний кусок до первой колонки.
-const columnsOf = html => html.split(/class="dyn-col[ "]/).slice(1);
+const columnsOf = html => html.split(/class="dyn-col[\" ]/).slice(1);
+
+// Задержка «волны» --d: растёт с номером колонки, кап 660ms.
+test('dailySectionHTML: анимация волны — у каждой колонки своя задержка', () => {
+  const html = dailySectionHTML(payload({
+    series: SERIES.concat(SERIES.map((d, i) => ({
+      ...d, date: `2026-10-0${i + 1}`,
+    }))),
+  }));
+  const delays = [...html.matchAll(/style="--d:(\d+)ms"/g)].map(m => Number(m[1]));
+  assert.equal(delays.length, 4);
+  assert.deepEqual(delays, [0, 22, 44, 66]);
+  // Кап: у 30 дней последняя колонка не ждёт минуту.
+  const long = dailySectionHTML(payload({
+    series: Array.from({ length: 30 }, (_, i) => ({
+      date: `2026-09-${String(i + 1).padStart(2, '0')}`,
+      found: i, reviewed: 0, files: 1,
+    })),
+  }));
+  const longDelays = [...long.matchAll(/style="--d:(\d+)ms"/g)].map(m => Number(m[1]));
+  assert.equal(longDelays[longDelays.length - 1], 638);
+});
 
 // ── Форматирование и шкала ────────────────────────────────────
 
@@ -609,6 +631,20 @@ test('часы: 14:01 и 14:50 попадают в одну колонку «14�
   assert.match(html, /data-found="45"/);
   assert.match(html, /по часам/, 'период помечен как почасовой');
   assert.doesNotMatch(html, /class="dyn-facts/, 'факты «в среднем в день» к часам не относятся');
+});
+
+test('часы: рисуются все 24 часа, «просмотрено» приходит по часам с сервера', () => {
+  const hours = Array.from({ length: 24 }, (_, h) => ({
+    hour: h, found: h === 14 ? 45 : 0, files: h === 14 ? 2 : 0, reviewed: h === 15 ? 7 : 0,
+  }));
+  const html = dailySectionHTML(hoursPayload({ hours, totals: { found: 45, reviewed: 7, undated: 0 } }));
+  const cols = columnsOf(html);
+  assert.equal(cols.length, 24, 'окно «от первого до последнего часа» обрезало утро/вечер — теперь сутки целиком');
+  assert.ok(cols[3].includes('data-dm="03:00"'), 'ночные часы присутствуют');
+  const rev = cols.find(c => c.includes('data-review="7"'));
+  assert.ok(rev, 'час с отметками «просмотрено» несёт число для подсказки');
+  assert.match(rev, /data-dm="15:00"/);
+  assert.match(rev, /class="dyn-bar dyn-review" style="height:/, 'не нулевой столбец «просмотрено» нарисован');
 });
 
 test('часы: пустой день без файлов с часом — обычный дневной столбец', () => {

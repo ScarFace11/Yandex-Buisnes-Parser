@@ -173,6 +173,18 @@ class TestDevPipeline:
         assert 'os.environ.get("YP_DEV"' in spec
         assert '"YandexBusinessParserDev" if DEV_BUILD else "YandexBusinessParser"' in spec
 
+    def test_windows_spec_bundles_playwright(self):
+        """Playwright больше не исключён из Windows-сборки: карточки в .exe
+        идут через встроенный Chromium, fallback на CDP/httpx остаётся.
+        Probe-режим (YP_BROWSER_PROBE) заменяет `python -c` в сабпроцесс-тесте."""
+        spec = (ROOT / "parser.spec").read_text(encoding="utf-8")
+        assert "'playwright'" not in spec, "playwright не должен быть в excludes"
+        app = (ROOT / "app.py").read_text(encoding="utf-8")
+        assert "_maybe_run_browser_probe" in app
+        assert "YP_BROWSER_PROBE" in app
+        bc = (ROOT / "yandex_maps_parser" / "browser_client.py").read_text(encoding="utf-8")
+        assert "YP_BROWSER_PROBE" in bc, "frozen-тест запускает exe с probe-env"
+
     def test_ci_does_not_build_a_dev_exe(self):
         """Сборка dev-exe — только локально: в репозитории нет ни workflow,
         ни упоминаний dev-сборки в публичных workflow."""

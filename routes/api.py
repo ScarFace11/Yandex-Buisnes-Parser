@@ -452,6 +452,11 @@ def _write_env_keys(keys: dict):
             from yandex_maps_parser import state as pstate
             if "TWOGIS_API_KEY" in clean:
                 pstate.TWOGIS_API_KEY = clean["TWOGIS_API_KEY"]
+            if "YANDEX_API_KEY" in clean:
+                # state — снапшот config при импорте; без этой строки
+                # геокодер/поиск до старта следующего запуска читали бы
+                # старый ключ (симметрия с TWOGIS_API_KEY выше).
+                pstate.YANDEX_API_KEY = clean["YANDEX_API_KEY"]
         except Exception:
             pass
 
@@ -501,8 +506,12 @@ def twogis_quota_manual():
 def export_filtered():
     import openpyxl
     from openpyxl.styles import Font, PatternFill, Alignment
+    from yandex_maps_parser.social_normalize import normalize_record
     data = request.get_json(force=True) or {}
-    rows = data.get("rows", [])
+    # Та же нормализация, что в save_csv/save_excel: выборка выгружается
+    # теми же каноническими значениями (без дублей телефонов, с рабочим
+    # wa.me и единым доменом vk.com), что и полные файлы.
+    rows = [normalize_record(r) for r in data.get("rows", [])]
     fmt  = data.get("format", "csv")
 
     HEADERS = ["#", "✓ Просмотрено", "Название", "Категория", "Адрес", "Телефон",
@@ -868,7 +877,8 @@ def _review_key(rec: dict) -> str:
     """Stable identity of a record for the «просмотрено» mark.
 
     Card URL first (yandex → 2gis), then a name|city|address composite for
-    rows without a card. Mirrored by reviewKey() in app.js — keep in sync.
+    rows without a card. Mirrored by reviewKey() in static/js/05-results-bulk.js
+    — keep in sync.
     """
     for field in ("yandex_maps_url", "twogis_url"):
         val = str(rec.get(field) or "").strip()
@@ -889,12 +899,16 @@ def _safe_http_url(url: str) -> str:
 
 
 def _read_records_file(path: str) -> list:
-    """Read one results file (xlsx/json) tolerantly; [] when unreadable."""
+    """Read one results file (xlsx/json/csv) tolerantly; [] when unreadable."""
     try:
-        if path.lower().endswith(".json"):
+        low = path.lower()
+        if low.endswith(".json"):
             with open(path, encoding="utf-8") as fh:
                 data = json.load(fh)
             return data if isinstance(data, list) else []
+        if low.endswith(".csv"):
+            from yandex_maps_parser.exporters import _records_from_csv
+            return _records_from_csv(path)
         from yandex_maps_parser.exporters import _records_from_xlsx
         return _records_from_xlsx(path)
     except Exception:
@@ -942,8 +956,8 @@ def _count_records(path: str) -> int | None:
 
 
 def _is_result_file(name: str) -> bool:
-    """Real results file: xlsx/json, not an internal (`_`) or Excel lock (`~$`)."""
-    return (name.lower().endswith((".xlsx", ".json"))
+    """Real results file: xlsx/json/csv, not an internal (`_`) or Excel lock (`~$`)."""
+    return (name.lower().endswith((".xlsx", ".json", ".csv"))
             and name[:1] not in ("_", "~") and not name.startswith("~$"))
 
 
@@ -992,7 +1006,7 @@ def _view_files(view: str, scope: str = "current") -> list[str]:
     if view in ("processed", "all"):
         proc_d = _processed_dir()
         if os.path.isdir(proc_d):
-            for sub in ("json", "excel"):
+            for sub in ("json", "excel", "csv"):
                 sd = os.path.join(proc_d, sub)
                 if os.path.isdir(sd):
                     out.extend(os.path.join(sd, f) for f in sorted(os.listdir(sd))
@@ -1116,13 +1130,16 @@ def _daily_found_in_window(window: set[str]) -> dict[str, dict]:
 
 
 def _daily_hours_for_day(day: str) -> list[dict] | None:
-    """Почасовой ряд за один день: 24 корзины {hour, found, files}.
+    """Почасовой ряд за один день: 24 корзины {hour, found, files, reviewed}.
 
     Считается по raw-файлам этого дня: час берётся из имени
     (`raw_2026-09-30_14-01_…` → колонка «14»), строки — _count_records.
     processed-файлы не участвуют: времени поиска у них в имени нет. Дни без
     единого файла с часом возвращают None — интерфейс рисует обычный
     дневной столбец, а не пустые сутки.
+
+    «Просмотрено» раскладывается по часам по времени отметки из
+    `_reviewed.json` (reviewed_at); легаси-значения без даты не участвуют.
     """
     found: dict[int, dict] = {}
     seen = 0
@@ -1141,9 +1158,26 @@ def _daily_hours_for_day(day: str) -> list[dict] | None:
         slot["files"] += 1
     if not seen:
         return None
+    reviewed: dict[int, int] = {}
+    try:
+        day_date = date.fromisoformat(day)
+    except ValueError:
+        day_date = None
+    if day_date is not None:
+        for value in _load_reviewed().values():
+            ts = _reviewed_ts(value)
+            if not ts:
+                continue
+            try:
+                dt = datetime.fromtimestamp(ts)
+            except (OSError, OverflowError, ValueError):
+                continue
+            if dt.date() == day_date:
+                reviewed[dt.hour] = reviewed.get(dt.hour, 0) + 1
     return [{"hour": h,
              "found": found.get(h, {}).get("found", 0),
-             "files": found.get(h, {}).get("files", 0)}
+             "files": found.get(h, {}).get("files", 0),
+             "reviewed": reviewed.get(h, 0)}
             for h in range(24)]
 
 
@@ -1336,7 +1370,8 @@ def _collect_records(view: str, rel_file: str | None = None,
 
 
 # Колонки таблицы результатов, по которым «Массовый обход» умеет повторять
-# порядок строк (см. sortTable() в app.js): 2 — название, 3 — категория,
+# порядок строк (см. sortTable() в static/js/04-results-table.js): 2 —
+# название, 3 — категория,
 # 4 — адрес, 5 — телефон. 6 — оценка лида, её считаем отдельно (числом).
 _VIEW_SORT_KEYS = {2: "name", 3: "category", 4: "address", 5: "phone"}
 
@@ -1570,9 +1605,9 @@ def get_templates():
 def set_templates():
     """Сохранить шаблоны (полный набор) и выбор активных.
 
-    Body: {templates: [...], active_template_ids?, show_missing_as_var?,
-           template_modes?, random_template_ids?, avoid_repeats?,
-           custom_variables?}
+    Body: {templates: [...], active_template_ids?, bulk_active_template_ids?,
+           show_missing_as_var?, template_modes?, random_template_ids?,
+           avoid_repeats?, custom_variables?}
     Пустой список допустим (заглушка «нет шаблонов»), но не-список — 400.
     """
     from yandex_maps_parser import message_templates as mt
@@ -1583,6 +1618,7 @@ def set_templates():
     state, _warnings = mt.normalize_state({
         "templates": raw,
         "active_template_ids": data.get("active_template_ids"),
+        "bulk_active_template_ids": data.get("bulk_active_template_ids"),
         "show_missing_as_var": data.get("show_missing_as_var"),
         "template_modes": data.get("template_modes"),
         "random_template_ids": data.get("random_template_ids"),
@@ -1659,6 +1695,20 @@ def bulk_urls():
         from yandex_maps_parser.message_templates import substitute as _subst
         substitute = lambda *a, **k: _subst(*a, custom_variables=custom_vars, **k)
 
+    # Составные шаблоны: клиент передаёт template_ids и для одиночного выбора —
+    # template_id; выбранный шаблон с вариантами раскрывается в случайный
+    # вложенный текст до подстановки переменных.
+    def _expand_template_text(text: str, tpl_id: str) -> str:
+        if not tpl_id:
+            return text
+        from yandex_maps_parser.message_templates import load_templates as _lt, resolve_variant_text as _rvt
+        state = _lt()
+        tpl = next((x for x in state.get("templates") or []
+                    if x["id"] == tpl_id), None)
+        if tpl is None:
+            return text
+        return _rvt(tpl, state.get("templates") or []) or text
+
     # Случайный выбор: клиент передаёт id шаблонов своей соцсети, сервер
     # резолвит их по общему хранилищу и выбирает на КАЖДУЮ запись — так
     # очередь обхода получает разные тексты без передачи самих текстов.
@@ -1666,6 +1716,7 @@ def bulk_urls():
         from yandex_maps_parser.message_templates import (
             load_templates,
             pick_random_text,
+            resolve_variant_text as _rvt3,
             substitute as _subst2,
         )
         state = load_templates()
@@ -1682,10 +1733,14 @@ def bulk_urls():
             text = pick_random_text(texts, last["text"], avoid)
             last["text"] = text
             idx = texts.index(text) if text in texts else 0
+            # Вложенный составной: выбранный вариант сам может быть составным.
+            chosen_tpl = chosen[idx]
+            text = _rvt3(chosen_tpl, chosen) or text
             return _subst2(text, record, show_missing, custom_variables=custom_vars), names[idx]
 
         return picker
 
+    single_tpl_id = str(data.get("template_id") or "").strip()
     tpl_ids_raw = data.get("template_ids")
     tpl_ids = [str(t).strip() for t in tpl_ids_raw if str(t or "").strip()] if isinstance(tpl_ids_raw, list) else []
     random_picker = _make_random_picker(tpl_ids, bool(data.get("tpl_avoid_repeats", False))) if tpl_ids else None
@@ -1709,7 +1764,8 @@ def bulk_urls():
         if random_picker is not None:
             item["text"], item["tpl_name"] = random_picker(r)
         elif substitute is not None:
-            item["text"] = substitute(template, r, show_missing)
+            item["text"] = substitute(
+                _expand_template_text(template, single_tpl_id), r, show_missing)
         pool.append(item)
     urls = pool[:count]
     return jsonify({
@@ -2141,20 +2197,30 @@ def set_output_dir():
 def picker_command(platform: str = "") -> list[str] | None:
     """Команда системного диалога выбора папки (None — системы без диалога).
 
-    Windows: FolderBrowserDialog через PowerShell; macOS: choose folder
-    через osascript. Браузер не отдаёт серверу абсолютный путь из обычного
-    поля выбора файлов, поэтому диалог открывает сам сервер — как апдейтер
-    запускает свой скрипт.
+    Windows: современный диалог IFileDialog (кнопка «Выбор папки») — через
+    OpenFileDialog с фиктивным именем файла; FolderBrowserDialog даёт
+    устаревшее дерево и открывается за окном браузера, поэтому невидимая
+    TopMost-форма-владелец выводит диалог на передний план. macOS: choose
+    folder через osascript. Браузер не отдаёт серверу абсолютный путь из
+    обычного поля выбора файлов, поэтому диалог открывает сам сервер — как
+    апдейтер запускает свой скрипт.
     """
     platform = platform or sys.platform
     if platform.startswith("win"):
         script = (
             "Add-Type -AssemblyName System.Windows.Forms;"
-            "$d = New-Object System.Windows.Forms.FolderBrowserDialog;"
-            "$d.Description = 'Папка для сохранения результатов';"
-            "$d.ShowNewFolderButton = $true;"
-            "if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK)"
-            " { [Console]::Out.Write($d.SelectedPath) }"
+            "$d = New-Object System.Windows.Forms.OpenFileDialog;"
+            "$d.Title = 'Папка для сохранения результатов';"
+            "$d.FileName = 'Выбор папки';"
+            "$d.CheckFileExists = $false;"
+            "$d.CheckPathExists = $true;"
+            "$d.ValidateNames = $false;"
+            "$d.InitialDirectory = [Environment]::GetFolderPath('Desktop');"
+            "$owner = New-Object System.Windows.Forms.Form;"
+            "$owner.TopMost = $true; $owner.ShowInTaskbar = $false;"
+            "$owner.Width = 1; $owner.Height = 1; $owner.StartPosition = 'Manual';"
+            "if ($d.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK)"
+            " { [Console]::Out.Write([System.IO.Path]::GetDirectoryName($d.FileName)) }"
         )
         return ["powershell", "-NoProfile", "-STA", "-Command", script]
     if platform == "darwin":

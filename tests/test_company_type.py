@@ -356,8 +356,8 @@ class TestPreviewCompanyType:
         """Реестр месяцев и дефолт в браузере — те же, что на сервере."""
         import re
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        app_js = open(os.path.join(root, "static", "js", "app.js"),
-                      encoding="utf-8").read()
+        from tests._appjs import read_app_js
+        app_js = read_app_js()
         decl = re.search(r"const COMPANY_TYPE_PERIODS = \{(.*?)\};\n", app_js, re.S)
         assert decl, "нет COMPANY_TYPE_PERIODS в app.js"
         assert [int(n) for n in re.findall(r"(\d+):", decl.group(1))] == \

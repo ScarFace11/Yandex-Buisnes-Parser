@@ -150,7 +150,8 @@ class TestOneTokenSet:
             bare.add(m.group(1).strip())
         assert not (bare - defined), (
             f"правила читают несуществующие токены без fallback: {sorted(bare - defined)}")
-        app_js = (ROOT / "static" / "js" / "app.js").read_text(encoding="utf-8")
+        from tests._appjs import read_app_js
+        app_js = read_app_js()
         assert "--tile:" in app_js, "карточки соцсетей должны нести свой цвет в --tile"
 
     def test_rules_do_not_hardcode_colours(self):
