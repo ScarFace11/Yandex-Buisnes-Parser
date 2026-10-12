@@ -267,8 +267,9 @@ jobs:
       - name: Attach to the GitHub Release
         # Релиз (черновик с телом из CHANGELOG) создаёт job release-draft в
         # build-exe.yml ещё до сборки exe — обычно он уже есть к этому моменту.
-        # Доливаем файлы в черновик; публикация — одной кнопкой в UI, когда
-        # оба билда зелёные (пока черновик, пользователи релиз не видят).
+        # Доливаем файлы в черновик. Публикует его publish-release.yml — сам,
+        # когда обе сборки (эта и Windows) зелёные (пока черновик,
+        # пользователи релиз не видят).
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

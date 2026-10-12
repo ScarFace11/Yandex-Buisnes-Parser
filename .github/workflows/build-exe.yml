@@ -96,7 +96,8 @@ jobs:
     name: Draft release with CHANGELOG body
     # Черновик создаётся ДО сборки: build (Windows) только добавляет exe,
     # build-macos.yml доливает .zip/.dmg. Пока релиз — черновик, пользователи
-    # его не видят; опубликовать можно одной кнопкой, когда оба билда зелёные.
+    # его не видят; публикует publish-release.yml — сам, как только обе сборки
+    # (Windows и macOS) завершатся успешно.
     needs: test
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
@@ -213,8 +214,8 @@ jobs:
       # CI/CD self-update chain (release tags only):
       #   1. Draft release created by release-draft (body from CHANGELOG)
       #   2. exe attached here, macOS .zip/.dmg attached by build-macos.yml
-      #   3. релиз ПУБЛИКУЮТ вручную, и тогда announce-release.yml пишет версию
-      #      в version.json на main
+      #   3. релиз публикует publish-release.yml, как только зелёными стали обе
+      #      сборки, и тогда announce-release.yml пишет версию в version.json
       #   → только после этого шага установленные .exe видят «Доступна новая
       #     версия» (в пределах 30 минут) и обновляются внутри приложения.
       #     Раньше версия попадала в main ещё до публикации, и обновлятор
@@ -234,7 +235,7 @@ jobs:
               $names = @($rel.assets | ForEach-Object { $_.name })
               $missing = @($need | Where-Object { $names -notcontains $_ })
               if ($missing.Count -eq 0) {
-                $state = if ($rel.isDraft) { 'draft (опубликуйте — включится авто-обновление у пользователей)' } else { 'published' }
+                $state = if ($rel.isDraft) { 'draft (publish-release.yml опубликует его, когда оба билда зелёные)' } else { 'published' }
                 Write-Host "Release $tag ready: $($names -join ', '), state = $state"
                 exit 0
               }

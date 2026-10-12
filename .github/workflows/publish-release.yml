@@ -1,0 +1,148 @@
+name: Publish release (auto)
+
+# Публикует черновик релиза сам — как только ЗЕЛЁНЫМИ стали обе сборки:
+# Windows (.exe) и macOS (.app). Раньше это был ручной клик, и релиз мог
+# сутками простоять черновиком: у установленных приложений не включалось
+# авто-обновление (обновлятор видит только опубликованный релиз).
+#
+# Как это работает:
+#   1. пуш тега v* → build-exe.yml и build-macos.yml собирают артефакты;
+#   2. каждый ЗАВЕРШИВШИЙСЯ из этих workflow запускает этот файл (workflow_run);
+#   3. job проверяет, что у ЭТОГО тега обе сборки завершились успешно и что на
+#      черновике лежат все файлы (иначе публикации не будет);
+#   4. если вторая сборка ещё идёт — выходим и ждём: её завершение запустит
+#      проверку снова (последний завершившийся видит обе готовыми);
+#   5. черновик публикуется (gh release edit --draft=false) — дальше
+#      announce-release.yml объявляет версию в static/version.json на main,
+#      и только после этого приложения видят обновление.
+#
+# Ручной запуск (workflow_dispatch) — для уже СОбранных релизов: публикует
+# черновик по тегу, ничего не пересобирая. Он же — аварийный выход, если
+# автоматика почему-то не сработала.
+#
+# Чего здесь нет и не должно быть: сборки (никаких pip install / pyinstaller),
+# правки версии и записи в version.json — этим занимаются build-* и
+# announce-release.yml соответственно.
+
+on:
+  workflow_run:
+    workflows: ["Build Windows EXE", "Build macOS .app"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Тег уже собранного черновика (например v2.3.4)'
+        required: true
+        type: string
+
+permissions:
+  contents: write   # публикация релиза
+  actions: read     # чтение статусов запусков
+
+jobs:
+  publish:
+    name: Publish the draft when both builds are green
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+      # Тег берём из запуска сборки (push тега) или из ручного ввода.
+      RAW_TAG: ${{ github.event.workflow_run.head_branch || inputs.tag }}
+      # Все файлы, которые обязаны лежать на релизе до публикации: без них
+      # обновление (или установка на macOS) просто нечем будет сделать.
+      REQUIRED_ASSETS: >-
+        YandexBusinessParser-windows-x64.zip
+        YandexBusinessParser-macos-arm64.zip
+        YandexBusinessParser-macos-x64.zip
+        CHANGELOG.md
+    steps:
+      - name: Check the tag — публикуем только стабильные релизы
+        id: tag
+        run: |
+          TAG="$RAW_TAG"
+          echo "Тег из события: '$TAG'"
+          # Регулярка намеренно строгая: dev- и прочие суффиксы ("v2.3.4-dev",
+          # "v2.3.4-rc1") не публикуются сами — это внутренние сборки.
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+(\.[0-9]+){2,3}$'; then
+            echo "Не стабильный релизный тег — публиковать нечего, выходим."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for both builds to be green
+        id: builds
+        if: steps.tag.outputs.publish == 'true'
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          # Ждём до 20 минут: вторую платформу мог запустить тот же пуш тега.
+          # PWAIT_* — только для тестов (tests/test_release_publish.py гоняет
+          # ту же логику на заглушке gh и не должна ждать реальные полминуты).
+          ATTEMPTS="${PWAIT_ATTEMPTS:-40}"
+          PAUSE="${PWAIT_SLEEP:-30}"
+          for attempt in $(seq 1 "$ATTEMPTS"); do
+            pending=""
+            for wf in build-exe.yml build-macos.yml; do
+              # --jq отдаёт «status conclusion» одной строкой: без python и
+              # без разбора JSON в оболочке.
+              line="$(gh run list --repo "$REPO" --workflow "$wf" --branch "$TAG" \
+                        --limit 1 --json status,conclusion \
+                        --jq '.[0] | "\(.status) \(.conclusion)"' 2>/dev/null \
+                        || echo 'missing ')"
+              status="${line%% *}"
+              concl="${line##* }"
+              echo "$wf: status=$status conclusion=${concl:-—}"
+              case "$concl" in
+                success) ;;
+                failure|cancelled|timed_out|startup_failure|action_required)
+                  echo "::error::$wf на $TAG завершился со статусом '$concl' — релиз не публикуем."
+                  exit 1 ;;
+                *) pending="$pending $wf" ;;
+              esac
+            done
+            if [ -z "$pending" ]; then
+              echo "Обе сборки зелёные: $TAG"
+              echo "ok=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "Ждём ещё:$pending (попытка $attempt/$ATTEMPTS)"
+            sleep "$PAUSE"
+          done
+          echo "::error::сборки для $TAG не позеленели за отведённое время — публикация отложена."
+          exit 1
+
+      - name: Check the draft — файлы на месте, релиз ещё черновик
+        id: draft
+        if: steps.builds.outputs.ok == 'true'
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          if ! gh release view "$TAG" --repo "$REPO" --json isDraft >/dev/null 2>&1; then
+            echo "Черновика $TAG нет (его создаёт job release-draft) — публиковать нечего."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          draft="$(gh release view "$TAG" --repo "$REPO" --json isDraft --jq '.isDraft')"
+          if [ "$draft" != "true" ]; then
+            echo "Релиз $TAG уже опубликован — ничего не делаем."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          names="$(gh release view "$TAG" --repo "$REPO" --json assets --jq '.assets[].name')"
+          echo "На релизе: $(echo "$names" | tr '\n' ' ')"
+          missing=""
+          for need in $REQUIRED_ASSETS; do
+            echo "$names" | grep -qx "$need" || missing="$missing $need"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::на черновике $TAG нет файлов:$missing — публикация отложена."
+            exit 1
+          fi
+          echo "ok=true" >> "$GITHUB_OUTPUT"
+
+      - name: Publish the release
+        if: steps.draft.outputs.ok == 'true'
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          gh release edit "$TAG" --repo "$REPO" --draft=false
+          echo "Релиз $TAG опубликован. Версию на главной объявит announce-release.yml."
