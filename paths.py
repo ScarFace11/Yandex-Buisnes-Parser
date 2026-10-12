@@ -63,6 +63,27 @@ def _app_slug() -> str:
     return APP_SLUG
 
 
+# Метка локальной сборки: её создают build.bat / build-mac.sh и workflow
+# build-manual.yml. У такой сборки версия не меняется, поэтому порог минимальной
+# версии к ней не применяется (см. config.skips_min_version) — автор запускает
+# любую версию у себя. У скачанного релиза метки нет, и он порог соблюдает.
+LOCAL_BUILD_MARKER = ".local-build"
+
+
+def local_build_marker() -> Path:
+    """Путь к метке локальной сборки.
+
+    Windows: рядом с exe (папка onedir). macOS: в корне .app — её создают ДО
+    подписи, поэтому файл входит в подпись бандла и ничего не ломает.
+    У скачанного релиза ни там, ни там метки нет.
+    """
+    d = _exe_dir()
+    if _is_macos():
+        # .app: Contents/MacOS/<bin> → .app/Contents → корень бандла
+        d = d.parent.parent
+    return d / LOCAL_BUILD_MARKER
+
+
 def resource_dir() -> Path:
     """Read-only bundled resources (templates/, static/)."""
     if not is_frozen():

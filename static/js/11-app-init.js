@@ -762,25 +762,30 @@ function declineTerms() {
 function initVersionGate() {
   fetch('/version/minimum')
     .then(r => r.json())
-    .then(v => {
-      if (!v || !v.blocked) return;
-      const gate = document.getElementById('version-gate');
-      const text = document.getElementById('version-gate-text');
-      const versions = document.getElementById('version-gate-versions');
-      if (text) {
-        text.textContent = 'Эта сборка приложения (v' + v.current + ') устарела: ' +
-          'она работает только с данными и маршрутами версии v' + v.minimum + ' и новее. ' +
-          'Продолжить работу на ней нельзя — это привело бы к ошибкам в результатах.';
-      }
-      if (versions) {
-        versions.textContent = 'Установлено: v' + v.current +
-          ' · минимально допустимая: v' + (v.minimum || '—') +
-          (v.latest ? ' · актуальная: v' + v.latest : '') +
-          (v.notice ? ' · ' + v.notice : '');
-      }
-      if (gate) gate.hidden = false;
-    })
+    .then(v => { if (v && v.blocked) showVersionGate(v); })
     .catch(() => {});   // сервер недоступен — не блокируем
+}
+
+// Показать окно блокировки. Зовётся и при старте, и когда сервер отказал
+// в запуске поиска (409 blocked) — это одна и та же ситуация: версия ниже
+// минимально допустимой, работать на ней нельзя (см. routes/update.py).
+function showVersionGate(v) {
+  const gate = document.getElementById('version-gate');
+  const text = document.getElementById('version-gate-text');
+  const versions = document.getElementById('version-gate-versions');
+  const target = (v && (v.target || v.minimum)) || '—';
+  if (text) {
+    text.textContent = 'Эта сборка приложения (v' + ((v && v.current) || '—') + ') устарела: ' +
+      'она работает только с данными и маршрутами версии v' + target + ' и новее. ' +
+      'Продолжить работу на ней нельзя — это привело бы к ошибкам в результатах.';
+  }
+  if (versions) {
+    versions.textContent = 'Установлено: v' + ((v && v.current) || '—') +
+      ' · минимально допустимая: v' + ((v && v.minimum) || '—') +
+      (v && v.latest ? ' · актуальная: v' + v.latest : '') +
+      (v && v.notice ? ' · ' + v.notice : '');
+  }
+  if (gate) gate.hidden = false;
 }
 
 // Кнопка на плашке «нужно обновить»: ведёт на страницу загрузки релиза.

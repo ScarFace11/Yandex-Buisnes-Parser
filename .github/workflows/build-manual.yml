@@ -52,6 +52,13 @@ jobs:
       - name: Build exe (parser.spec)
         run: pyinstaller parser.spec --noconfirm
 
+      - name: Mark the build as local
+        # Ручная сборка «как есть»: версия не меняется и порог минимальной версии
+        # (min_version в version.json) к ней не применяется — файл уезжает в
+        # архиве рядом с exe (см. config.skips_min_version). В тег-сборках его нет.
+        shell: pwsh
+        run: New-Item -ItemType File -Force -Path dist/YandexBusinessParser/.local-build | Out-Null
+
       - name: Smoke test the build
         shell: pwsh
         run: |
@@ -124,6 +131,11 @@ jobs:
         run: |
           rm -rf build dist-mac
           python -m PyInstaller parser-mac.spec --noconfirm --distpath dist-mac
+
+      - name: Mark the bundle as a local build
+        # Ручная сборка «как есть»: порог минимальной версии к ней не применяется.
+        # Метка создаётся ДО подписи, чтобы войти в подпись бандла.
+        run: touch "dist-mac/YandexBusinessParser.app/.local-build"
 
       # Manual/dev build: подпись не настраиваем (в секретах может не быть
       # сертификата). ad-hoc подпись убирает часть предупреждений Gatekeeper;

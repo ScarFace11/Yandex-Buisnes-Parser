@@ -226,6 +226,10 @@ jobs:
 
       - name: Package the .zip (ditto keeps symlinks and permissions)
         run: |
+          # Страховка: метка локальной сборки (.local-build) снимает порог
+          # минимальной версии — в релизе её быть не должно (её ставит только
+          # build-mac.sh / build-manual.yml, см. config.skips_min_version).
+          rm -f "dist-mac/YandexBusinessParser.app/.local-build"
           ARCH="${{ matrix.asset_arch }}"
           ditto -c -k --sequesterRsrc --keepParent \
             "dist-mac/YandexBusinessParser.app" "dist-mac/YandexBusinessParser-macos-$ARCH.zip"

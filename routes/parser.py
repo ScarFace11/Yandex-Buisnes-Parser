@@ -11,6 +11,25 @@ bp = Blueprint("parser", __name__)
 
 @bp.route("/run", methods=["POST"])
 def run_parser():
+    # Минимально допустимая версия: на устаревшей сборке поиск не стартует
+    # вовсе. Окно обновления показывает то же самое, но UI можно закрыть —
+    # поэтому отказ есть и на сервере (см. routes/update.minimum_state).
+    # Локальные сборки и запуск из исходников порог не соблюдают.
+    try:
+        from routes.update import minimum_state
+        state = minimum_state()
+    except Exception:
+        state = {}
+    if state.get("blocked"):
+        return jsonify({
+            "error": state.get("notice") or
+                     "Эта версия приложения больше не поддерживается — обновитесь",
+            "blocked": True,
+            "current": state.get("current", ""),
+            "minimum": state.get("minimum", ""),
+            "download_url": state.get("download_url", ""),
+        }), 409
+
     params = request.get_json(force=True) or {}
 
     queries = [q.strip() for q in params.get("queries", []) if q.strip()]

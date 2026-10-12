@@ -291,29 +291,44 @@ def _versions_below(current: str, minimum: str) -> bool:
     return a < b
 
 
-@bp.route("/version/minimum")
-def version_minimum():
-    """Минимально допустимая версия приложения — «ниже не работаем».
+def _is_local_build() -> bool:
+    """Локальная сборка/источник: порог минимальной версии не применяется."""
+    try:
+        from config import skips_min_version
+        return bool(skips_min_version())
+    except Exception:
+        return False
+
+
+def minimum_state() -> dict:
+    """Состояние порога минимальной версии — «ниже не работаем».
 
     Порог публикуется вместе с релизом в static/version.json (`min_version`)
     и нужен, когда старые сборки перестают быть совместимыми: формат данных,
-    маршруты API, требования площадок. В ответе только версии и ссылка на
-    страницу релизов.
+    маршруты API, требования площадок (например, обязательное пользовательское
+    соглашение). Одну и ту же реализацию используют окно обновления
+    (/version/minimum) и отказ начинать поиск (/run) — иначе блокировка была бы
+    только «на словах».
 
     Осторожность важнее строгости:
-      * DEV-сборка не блокируется никогда (это рабочая ветка);
+      * DEV-сборка и локальные сборки не блокируются никогда;
       * если GitHub недоступен, ответ уходит БЕЗ блокировки и с пояснением —
-        пропавшая сеть не должна «кирпить» приложение, установленное у
-        пользователя;
+        пропавшая сеть не должна «кирпить» приложение у пользователя;
       * если порог не задан в метаданных, блокировки нет.
+
+    В ответе только версии, признак обхода и ссылка на страницу релизов.
     """
     from config import APP_VERSION
     out = {"current": APP_VERSION, "minimum": "", "blocked": False,
            "download_url": _releases_page(),
            "auto_apply": _is_frozen() and _self_update_supported(),
-           "dev": _is_dev(), "notice": ""}
+           "dev": _is_dev(), "bypass": False, "notice": ""}
     if out["dev"]:
-        return jsonify(out)
+        return out
+    if _is_local_build():
+        # Своя сборка: порог не мешает — так автор запускает и старые версии.
+        out["bypass"] = True
+        return out
 
     cache = _state().get("min_version") or {}
     cached = cache.get("payload") or {}
@@ -329,7 +344,7 @@ def version_minimum():
                              "(GitHub недоступен) — обновление проверьте вручную.")
             out["minimum"] = str(cached.get("min_version") or "")
             out["blocked"] = _versions_below(APP_VERSION, out["minimum"])
-            return jsonify(out)
+            return out
         cached = {"min_version": str(meta.get("min_version") or ""),
                   "version": str(meta.get("version") or "")}
         _save_state(min_version={"payload": cached, "at": time.time()})
@@ -339,9 +354,20 @@ def version_minimum():
     out["latest"] = latest
     out["blocked"] = _versions_below(APP_VERSION, out["minimum"])
     if out["blocked"]:
+        # Цель обновления — не «последняя объявленная», а ГАРАНТИРОВАННО рабочая:
+        # если на main объявлена версия ниже порога (обычное дело, пока свежий
+        # релиз — черновик), предлагать её нельзя — она тоже не запустится.
+        target = latest if not _versions_below(latest, out["minimum"]) else out["minimum"]
+        out["target"] = target
         out["notice"] = ("Эта версия больше не поддерживается: обновитесь до "
-                         f"v{latest or out['minimum']} или новее.")
-    return jsonify(out)
+                         f"v{target} или новее.")
+    return out
+
+
+@bp.route("/version/minimum")
+def version_minimum():
+    """Минимально допустимая версия: окно «нужно обновить»."""
+    return jsonify(minimum_state())
 
 
 @bp.route("/update/status")
@@ -381,6 +407,18 @@ def update_status():
                 # walk the user through an update that silently no-ops.
                 out["newer"] = False
                 out["notice"] = why
+        # Сборка ниже порога не должна предлагать установку версии, которая
+        # тоже ниже порога (на main объявлена предыдущая, пока свежий релиз —
+        # черновик). Вместо баннера с обновлением — окно «нужно обновить» и
+        # ссылка на страницу релизов.
+        blocked_state = minimum_state()
+        if blocked_state.get("blocked"):
+            out["newer"] = False
+            out["blocked"] = True
+            out["minimum"] = blocked_state.get("minimum", "")
+            out["notice"] = blocked_state.get("notice", "")
+            out["download_url"] = blocked_state.get("download_url", "")
+
         # Remember the advertised version for /update/apply: the bat is built
         # later, and the zip must be verified against the SAME advertised
         # version even if GitHub is unreachable by then.

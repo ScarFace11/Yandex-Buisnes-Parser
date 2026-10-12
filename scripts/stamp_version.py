@@ -83,13 +83,22 @@ def summarize(body: str, limit: int = SUMMARY_LIMIT) -> str:
 
 def apply_version(path, version: str, *, changelog_file=None,
                   download_url: str = "", repo: str = "", asset: str = ZIP_ASSET,
-                  bump_history: bool = True) -> dict:
-    """Проставить версию в version.json и вернуть получившийся словарь."""
+                  bump_history: bool = True, min_version: str = "") -> dict:
+    """Проставить версию в version.json и вернуть получившийся словарь.
+
+    `min_version` — порог «ниже этой версии работать нельзя». Задаёт его автор
+    релиза, и только осознанно (например, когда появилось обязательное
+    пользовательское соглашение); пустая строка = не трогать то, что в файле.
+    Возврат версии в этом файле его НЕ сбрасывает.
+    """
     p = Path(path)
     text = p.read_text(encoding="utf-8-sig") if p.exists() else "{}"
     data = json.loads(text or "{}")
     version = strip_tag(version)
     data["version"] = version
+
+    if str(min_version or "").strip():
+        data["min_version"] = strip_tag(min_version)
 
     summary = ""
     if changelog_file:
@@ -148,6 +157,9 @@ def main() -> int:
     ap.add_argument("--asset", default=ZIP_ASSET)
     ap.add_argument("--no-history", action="store_true",
                     help="не трогать список history (только version/changelog/URL)")
+    ap.add_argument("--min-version", default="",
+                    help="минимально допустимая версия («ниже — не работаем»); "
+                         "не задана — значение в файле не меняется")
     args = ap.parse_args()
 
     data = apply_version(
@@ -158,8 +170,10 @@ def main() -> int:
         repo=args.repo,
         asset=args.asset,
         bump_history=not args.no_history,
+        min_version=args.min_version,
     )
     say(f"version.json -> version {data.get('version')}, "
+        f"min_version {data.get('min_version') or '—'}, "
         f"download_url {data.get('download_url')}, "
         f"history {len(data.get('history') or [])}")
     say(f"changelog: {data.get('changelog', '')[:120]}")

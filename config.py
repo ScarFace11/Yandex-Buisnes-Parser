@@ -22,6 +22,45 @@ def is_dev_build() -> bool:
     return v.endswith(("-dev", "-beta")) or "-dev." in v or "-beta." in v
 
 
+# ── Минимально допустимая версия ──────────────────────────────
+# Порог публикуется в static/version.json (min_version) и означает «ниже этой
+# версии работать нельзя»: пользователь видит окно обновления, а поиск
+# отказывается стартовать. Порог ставит автор релиза — например, когда в
+# новой версии появилось пользовательское соглашение, без которого прежние
+# сборки работать не должны.
+SKIP_MIN_VERSION_ENV = "YP_SKIP_MIN_VERSION"
+
+
+def skips_min_version() -> bool:
+    """True для сборок, которым порог минимальной версии не мешает.
+
+    Так помечены все локальные варианты запуска:
+
+      * внутренняя сборка (версия с суффиксом «-dev»);
+      * запуск из исходников (`python app.py`) — это не установленный релиз;
+      * готовая сборка из build.bat / build-mac.sh / workflow build-manual.yml:
+        рядом с exe (или в корне .app) лежит файл ``.local-build``
+        (см. paths.local_build_marker);
+      * явная переменная окружения ``YP_SKIP_MIN_VERSION=1``.
+
+    Скачанная с GitHub сборка не проходит ни по одному признаку и порог
+    соблюдает — в этом и смысл: ограничение касается пользователей, а не
+    автора, который должен иметь возможность запустить любую версию.
+    """
+    if is_dev_build():
+        return True
+    if os.environ.get(SKIP_MIN_VERSION_ENV, "").strip().lower() not in (
+            "", "0", "false", "no", "off"):
+        return True
+    try:
+        import paths
+        if not paths.is_frozen():
+            return True                     # из исходников: автор, не релиз
+        return paths.local_build_marker().exists()
+    except Exception:
+        return False
+
+
 # Порт по умолчанию для внутренней сборки — 5010 вместо 5000, чтобы она не
 # боролась за один порт с публичной.
 DEV_PORT = 5010

@@ -860,6 +860,9 @@ function _startRunWithParams(params) {
         appendLog('warn', '  [!] ' + (data.error || 'Ошибка запуска'));
         showToast(data.error || 'Ошибка запуска', 'error');
         resetBtn(); setStatus('error','Ошибка'); hideProgress();
+        // Версия ниже минимально допустимой: показываем то же окно, что и
+        // при старте — чтобы было видно, куда обновляться (routes/update.py).
+        if (data && data.blocked) showVersionGate(data);
         return;
       }
       if (data && data.queued) {

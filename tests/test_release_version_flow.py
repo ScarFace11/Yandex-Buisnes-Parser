@@ -12,6 +12,7 @@
 и сборка, и анонс релиза) и разводку шагов в workflow.
 """
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -129,6 +130,30 @@ class TestStampScript:
         assert data["download_url"].endswith("/v2.3.1/YandexBusinessParser-windows-x64.zip")
         assert [h["version"] for h in data["history"]] == ["2.3.1", "2.3.0"]
         assert load_version_json(target)["version"] == "2.3.1"  # записано на диск
+
+    def test_min_version_is_set_on_demand_and_never_reset(self, tmp_path):
+        """Порог ставит автор — и обычное обновление версии его не сбрасывает."""
+        mod = stamp_version
+        target = tmp_path / "version.json"
+        target.write_text(json.dumps({"version": "2.3.3", "min_version": "2.0.0"}),
+                          encoding="utf-8")
+        assert mod.apply_version(target, "2.3.3")["min_version"] == "2.0.0"
+        # «v» в аргументе — не ошибка
+        assert mod.apply_version(target, "2.3.3", min_version="v2.3.4")["min_version"] == "2.3.4"
+        # следующий релиз поднимает версию, но НЕ опускает порог
+        assert mod.apply_version(target, "2.3.5")["min_version"] == "2.3.4"
+        assert load_version_json(target)["min_version"] == "2.3.4"
+
+    def test_min_version_can_be_raised_from_the_command_line(self, tmp_path):
+        target = tmp_path / "version.json"
+        target.write_text(load_version_json().__str__().replace("'", '"'), encoding="utf-8")
+        res = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "stamp_version.py"),
+             "--version", "2.3.4", "--min-version", "2.3.4", "--no-history",
+             "--path", str(target)],
+            capture_output=True, text=True, timeout=60)
+        assert res.returncode == 0, res.stderr
+        assert load_version_json(target)["min_version"] == "2.3.4"
 
     def test_apply_version_does_not_duplicate_history(self, tmp_path):
         mod = self._mod()

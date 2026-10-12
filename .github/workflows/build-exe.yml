@@ -192,6 +192,10 @@ jobs:
       - name: Zip the build
         shell: pwsh
         run: |
+          # Страховка: метка локальной сборки (.local-build) снимает порог
+          # минимальной версии — в релизе её быть не должно (её ставит только
+          # build.bat / build-manual.yml, см. config.skips_min_version).
+          Remove-Item dist/YandexBusinessParser/.local-build -Force -ErrorAction SilentlyContinue
           Compress-Archive -Path dist/YandexBusinessParser/* `
             -DestinationPath dist/YandexBusinessParser-windows-x64.zip
 
