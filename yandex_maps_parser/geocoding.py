@@ -1,68 +1,34 @@
 """
-City geocoding and coordinate-grid generation.
+Координаты города и сетка точек поиска.
+
+Геокодер-API Яндекс.Карт тоже платный (а бесплатная версия запрещает
+сохранять данные), поэтому центр города берётся из карты: страница поиска
+по названию города в реальном браузере сама проставляет центр в адресе
+(ll/sll). Никаких HTTP-запросов с ключом приложение не делает.
 """
 import math
 
-from .http_client import _get
-from . import state
+from .browser_search import city_center
 
 _geocode_cache: dict[str, tuple[float, float, tuple[float, float, float, float] | None] | None] = {}
 
 
 def geocode_city(city: str) -> tuple[float, float, tuple[float, float, float, float] | None] | None:
     """
-    Return (lat, lon, envelope) for *city*, using the Yandex Geocoder API.
+    Return (lat, lon, envelope) for *city*.
 
-    envelope is the city's bounding box (lat_min, lat_max, lon_min, lon_max)
-    from GeoObject.boundedBy, or None when unavailable — the runner clips the
-    search grid to it so we don't waste Search API quota on empty corners.
+    envelope (рамка города) браузерная карта не отдаёт — возвращается None,
+    и сетка строится по одному радиусу GRID_RADIUS_KM. Так честнее: раньше
+    рамку давал геокодер-API, который мы больше не используем.
     """
     key = city.strip().lower()
     if key in _geocode_cache:
         return _geocode_cache[key]
 
-    r = _get(
-        "https://geocode-maps.yandex.ru/1.x/",
-        params={
-            "apikey": state.YANDEX_API_KEY,
-            "geocode": city,
-            "format": "json",
-            "results": 1,
-        },
-        timeout=15,
-    )
     result = None
-    if r and r.status_code == 200:
-        try:
-            geo = (
-                r.json()["response"]["GeoObjectCollection"]
-                ["featureMember"][0]["GeoObject"]
-            )
-            pos = geo["Point"]["pos"]
-            lon, lat = map(float, pos.split())
-
-            envelope = None
-            try:
-                env = geo.get("boundedBy", {}).get("Envelope", {})
-                if env.get("lowerCorner") and env.get("upperCorner"):
-                    lon1, lat1 = map(float, env["lowerCorner"].split())
-                    lon2, lat2 = map(float, env["upperCorner"].split())
-                    # Guard against a degenerate (point-like) bounding box.
-                    span_km = max(
-                        abs(lat2 - lat1) * 111.32,
-                        abs(lon2 - lon1) * 111.32 * math.cos(math.radians(lat)),
-                    )
-                    if span_km > 0.1:
-                        envelope = (
-                            min(lat1, lat2), max(lat1, lat2),
-                            min(lon1, lon2), max(lon1, lon2),
-                        )
-            except Exception:
-                envelope = None
-
-            result = (lat, lon, envelope)
-        except Exception:
-            pass
+    center = city_center(city)
+    if center:
+        result = (center[0], center[1], None)
 
     _geocode_cache[key] = result
     return result

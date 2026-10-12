@@ -33,6 +33,10 @@ function clearSocialFilters() {
 //  Column visibility
 // ═══════════════════════════════════════════
 const COLS_KEY = 'yp_cols_v2';
+const COLS_AUTO_KEY = 'yp_cols_auto_v1';   // столбцы, спрятанные «Скрыть пустые»
+// `idx` — только для совместимости со старыми сохранёнными настройками;
+// порядок столбцов задаёт COL_ORDER_DEFAULT/colOrder, а разметка находит
+// колонку по data-col, а не по позиции.
 const COLS = [
   { idx: 1, key: 'rev',      label: '✓ Просмотрено' },
   { idx: 2, key: 'num',      label: '# Номер' },
@@ -42,26 +46,230 @@ const COLS = [
   { idx: 6, key: 'phone',    label: 'Телефон' },
   { idx: 7, key: 'score',    label: 'Оценка' },
   { idx: 8, key: 'socials',  label: 'Соцсети' },
+  { idx: 9, key: 'rating',   label: 'Рейтинг' },
 ];
+const COL_LABELS = Object.fromEntries(COLS.map(c => [c.key, c.label]));
+
+// ── Порядок столбцов ──────────────────────────────────────────
+// «Рейтинг» по умолчанию НЕ в самом конце: раньше он стоял за соцсетями,
+// то есть за правой границей экрана — его приходилось искать прокруткой.
+// Теперь качественные числа (оценка лида и рейтинг) стоят рядом, а самая
+// широкая колонка (соцсети) — последней.
+const COL_ORDER_KEY = 'yp_cols_order_v1';
+const COL_ORDER_DEFAULT = ['rev', 'num', 'name', 'category', 'address', 'phone',
+                           'score', 'rating', 'socials'];
+let colOrder = COL_ORDER_DEFAULT.slice();
+
+// Полный набор ключей в сохранённом порядке: чужие ключи (старая версия
+// localStorage или переименованная колонка) выбрасываем, забытые добавляем
+// в конец — набор столбцов от порядка не зависит.
+function normalizeColOrder(saved) {
+  const known = COLS.map(c => c.key);
+  const out = [];
+  (Array.isArray(saved) ? saved : []).forEach(k => {
+    if (known.includes(k) && !out.includes(k)) out.push(k);
+  });
+  // Забытые/новые ключи — в стандартном порядке чтения, а не в порядке
+  // объявления COLS: им задан «Рейтинг рядом с оценкой».
+  COL_ORDER_DEFAULT.forEach(k => { if (!out.includes(k)) out.push(k); });
+  known.forEach(k => { if (!out.includes(k)) out.push(k); });
+  return out;
+}
+
+function loadColOrder() {
+  try {
+    colOrder = normalizeColOrder(JSON.parse(localStorage.getItem(COL_ORDER_KEY)));
+  } catch (e) {
+    colOrder = normalizeColOrder(null);
+  }
+  applyColOrder();
+  renderColDropdown();
+}
+
+function saveColOrder() {
+  localStorage.setItem(COL_ORDER_KEY, JSON.stringify(colOrder));
+}
+
+function resetColOrder() {
+  colOrder = COL_ORDER_DEFAULT.slice();
+  saveColOrder();
+  renderColDropdown();
+  applyColOrder();
+}
+
+// Порядок колонок в статической разметке — страховка для уже запущенного
+// сервера со старым index.html в Jinja-кэше: ячейкам без data-col ключ
+// проставляется по позиции. После перезапуска приложения разметка приходит
+// с data-col и это не используется.
+const COL_ID_BY_POS = ['rev', 'num', 'name', 'category', 'address', 'phone',
+                       'score', 'socials', 'rating'];
+
+function _stampMissingColIds(row) {
+  const cells = Array.from(row.children || []);
+  if (cells.length !== COL_ID_BY_POS.length) return;   // плейсхолдер / чужая таблица
+  if (cells.some(c => c.dataset && c.dataset.col)) return;   // разметка уже с data-col
+  cells.forEach((cell, i) => { if (cell.dataset) cell.dataset.col = COL_ID_BY_POS[i]; });
+}
+
+// Переставить ячейки по colOrder. Каждая ячейка (th и td) несёт data-col,
+// поэтому порядок применяется к любой строке независимо от разметки:
+// appendChild уже существующего узла = перемещение, а не копия.
+function applyColOrder() {
+  if (typeof document === 'undefined' || !document.querySelectorAll) return;
+  document.querySelectorAll('#results-table tr').forEach(row => {
+    _stampMissingColIds(row);
+    const cells = {};
+    let n = 0;
+    Array.from(row.children || []).forEach(cell => {
+      const key = cell.dataset && cell.dataset.col;
+      if (key) { cells[key] = cell; n++; }
+    });
+    if (n < 2) return;                  // плейсхолдер «Ничего не найдено»
+    colOrder.forEach(key => { if (cells[key]) row.appendChild(cells[key]); });
+  });
+  applyColClasses();
+}
+
+// Сдвиг стрелками (работает и без мыши с перетаскиванием).
+function moveCol(key, delta) {
+  const i = colOrder.indexOf(key), j = i + delta;
+  if (i < 0 || j < 0 || j >= colOrder.length) return;
+  [colOrder[i], colOrder[j]] = [colOrder[j], colOrder[i]];
+  saveColOrder();
+  renderColDropdown();
+  applyColOrder();
+}
+
+// ── Перетаскивание в списке столбцов ──────────────────────────
+let _colDragKey = null;
+
+function onColDragStart(e, key) {
+  _colDragKey = key;
+  if (e && e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move';
+    try { e.dataTransfer.setData('text/plain', key); } catch (err) {}
+  }
+  const items = document.getElementById('col-items');
+  if (items) items.classList.add('dragging');
+}
+
+// Живой предпросмотр: пока тянем, список и таблица уже переставляются.
+// Важно не перерисовывать список целиком — иначе браузер потеряет
+// перетаскиваемый узел; поэтому двигаем сами элементы списка.
+function onColDragOver(e, key) {
+  if (!_colDragKey || _colDragKey === key) return;
+  if (e && e.preventDefault) e.preventDefault();
+  const items = document.getElementById('col-items');
+  if (items && items.children) {
+    const list = Array.from(items.children);
+    const src = list.find(el => el.dataset && el.dataset.key === _colDragKey);
+    const dst = list.find(el => el.dataset && el.dataset.key === key);
+    if (src && dst && items.insertBefore) items.insertBefore(src, dst);
+  }
+  const from = colOrder.indexOf(_colDragKey), to = colOrder.indexOf(key);
+  if (from < 0 || to < 0 || from === to) return;
+  colOrder.splice(from, 1);
+  colOrder.splice(to, 0, _colDragKey);
+  applyColOrder();
+}
+
+function onColDragEnd() {
+  const items = document.getElementById('col-items');
+  if (items) items.classList.remove('dragging');
+  if (!_colDragKey) return;
+  _colDragKey = null;
+  saveColOrder();
+  renderColDropdown();      // обновить состояние стрелок
+  applyColOrder();
+}
+
+// Поля записи, которые наполняют колонку. null/пустой список = колонка
+// «служебная» и в «Скрыть пустые» не участвует.
+const COL_DATA_FIELDS = {
+  category: ['category'], address: ['address'], phone: ['phone'],
+  score: ['lead_score'], socials: ['vk', 'instagram', 'telegram', 'whatsapp'],
+  rating: ['rating', 'reviews_count'],
+};
+
+// Есть ли в колонке хоть одно непустое значение в наборе строк.
+function colHasData(key, rows) {
+  const fields = COL_DATA_FIELDS[key];
+  if (!fields || !rows || !rows.length) return false;
+  return rows.some(r => fields.some(f => {
+    const v = r[f];
+    return v !== undefined && v !== null && String(v).trim() !== '';
+  }));
+}
+
+// «Скрыть пустые»: прячем колонки, где во ВСЕХ строках нет данных.
+// Спрятанные так столбцы запоминаются отдельно (autoHiddenCols): когда новый
+// поиск приносит по ним данные, их снова показывают автоматически, а
+// вручную скрытые пользователем столбцы не трогают.
+function hideEmptyColumns() {
+  const rows = (typeof allResults !== 'undefined' && allResults) ? allResults : [];
+  let hidden = 0;
+  for (const c of COLS) {
+    if (!COL_DATA_FIELDS[c.key] || !rows.length) continue;   // служебные не скрываем
+    if (colHasData(c.key, rows)) continue;
+    autoHiddenCols.add(c.key);
+    if (!hiddenCols.has(c.key)) { hiddenCols.add(c.key); hidden++; }
+  }
+  saveColState();
+  applyColClasses();
+  renderColDropdown();
+  if (typeof showToast === 'function') {
+    showToast(hidden ? `Скрыто пустых столбцов: ${hidden}` : 'Пустых столбцов не нашлось', 'info');
+  }
+}
 let hiddenCols = new Set();
+// Столбцы, спрятанные кнопкой «Скрыть пустые» (а не вручную). Их можно
+// вернуть сами, как только по ним появятся данные.
+let autoHiddenCols = new Set();
+
+// Новый набор результатов: автоскрытые столбцы, по которым теперь есть
+// данные, показываем снова — иначе после нового поиска таблица оставалась
+// без столбцов до нажатия «Показать все».
+function syncAutoHiddenCols(rows) {
+  if (!autoHiddenCols.size) return;
+  const list = rows || ((typeof allResults !== 'undefined' && allResults) ? allResults : []);
+  let shown = 0;
+  for (const key of [...autoHiddenCols]) {
+    if (!colHasData(key, list)) continue;
+    autoHiddenCols.delete(key);
+    if (hiddenCols.delete(key)) shown++;
+  }
+  if (shown) { saveColState(); applyColClasses(); renderColDropdown(); }
+}
 
 function loadColState() {
   try {
     const saved = JSON.parse(localStorage.getItem(COLS_KEY));
     hiddenCols = new Set(Array.isArray(saved) ? saved : []);
   } catch { hiddenCols = new Set(); }
+  try {
+    const savedAuto = JSON.parse(localStorage.getItem(COLS_AUTO_KEY));
+    autoHiddenCols = new Set(Array.isArray(savedAuto) ? savedAuto : []);
+  } catch { autoHiddenCols = new Set(); }
   applyColClasses();
   renderColDropdown();
 }
 
 function saveColState() {
   localStorage.setItem(COLS_KEY, JSON.stringify([...hiddenCols]));
+  localStorage.setItem(COLS_AUTO_KEY, JSON.stringify([...autoHiddenCols]));
 }
 
+// Скрытие — классом на КАЖДОЙ ячейке столбца, а не по позиции (nth-child):
+// столбцы можно переставлять, и позиционные правила прятали бы не тот.
 function applyColClasses() {
   const tbl = document.getElementById('results-table');
   if (!tbl) return;
-  COLS.forEach(c => tbl.classList.toggle('col-hide-' + c.idx, hiddenCols.has(c.key)));
+  if (document.querySelectorAll) {
+    document.querySelectorAll('#results-table [data-col]').forEach(cell => {
+      const key = cell.dataset && cell.dataset.col;
+      cell.classList.toggle('col-hidden', !!key && hiddenCols.has(key));
+    });
+  }
   // Строка фильтра «Сеть: …» управляет скрытой колонкой соцсетей: когда
   // колонка скрыта, фильтр остаётся без объекта и только путает — прячем.
   const sfRow = document.getElementById('social-filter-row');
@@ -75,18 +283,30 @@ function applyColClasses() {
   }
 }
 
+// Список столбцов: видимость (чекбокс) + порядок (перетаскивание за ручку).
+// Порядок в списке = порядок колонок в таблице.
 function renderColDropdown() {
   const box = document.getElementById('col-items');
   if (!box) return;
-  box.innerHTML = COLS.map(c => `
-    <label class="col-item">
-      <input type="checkbox" ${hiddenCols.has(c.key) ? '' : 'checked'}
-        onchange="toggleCol('${c.key}', this.checked)">
-      ${c.label}
-    </label>`).join('');
+  box.innerHTML = colOrder.map((key, i) => `
+    <div class="col-item" draggable="true" data-key="${key}"
+         ondragstart="onColDragStart(event, '${key}')"
+         ondragover="onColDragOver(event, '${key}')"
+         ondrop="onColDragOver(event, '${key}'); onColDragEnd()"
+         ondragend="onColDragEnd()">
+      <span class="col-grip" title="Перетащите, чтобы изменить порядок столбцов">⠿</span>
+      <label class="col-lbl">
+        <input type="checkbox" ${hiddenCols.has(key) ? '' : 'checked'}
+          onchange="toggleCol('${key}', this.checked)">
+        <span class="col-lbl-txt">${COL_LABELS[key] || key}</span>
+      </label>
+    </div>`).join('');
 }
 
 function toggleCol(key, visible) {
+  // Ручное действие: столбец больше не считается «автоскрытым пустым»,
+  // поэтому новый поиск не покажет его вопреки выбору пользователя.
+  autoHiddenCols.delete(key);
   if (visible) hiddenCols.delete(key);
   else hiddenCols.add(key);
   saveColState();
@@ -94,6 +314,7 @@ function toggleCol(key, visible) {
 }
 
 function setAllCols(visible) {
+  autoHiddenCols.clear();
   if (visible) hiddenCols.clear();
   else COLS.forEach(c => hiddenCols.add(c.key));
   saveColState();
@@ -108,11 +329,13 @@ function toggleColDropdown(e) {
 }
 
 // ═══════════════════════════════════════════
-//  Excel export columns («Выгрузка Excel» tab)
-//  Mirrors constants.CSV_FIELDS / HEADER_LABELS. Choice persists in
-//  localStorage and is sent with every run (params.excel_columns).
+//  Что парсить: поля → столбцы отчёта (аккордеон 02)
+//  EXCEL_COLUMN_DEFS mirrors constants.CSV_FIELDS / HEADER_LABELS (used by
+//  the template column-variable picker). The user-facing selection lives in
+//  the «Что парсить» accordion and is sent with every run
+//  (params.excel_columns).
 // ═══════════════════════════════════════════
-const EXCEL_COLS_KEY = 'yp_excel_cols_v1';
+const PARSE_FIELDS_KEY = 'yp_parse_fields_v1';
 const EXCEL_COLUMN_DEFS = [
   { f: 'reviewed',       l: '✓ Просмотрено' },
   { f: 'lead_score',     l: 'Оценка лида' },
@@ -129,66 +352,181 @@ const EXCEL_COLUMN_DEFS = [
   { f: 'instagram',      l: 'Instagram' },
   { f: 'telegram',       l: 'Telegram' },
   { f: 'whatsapp',       l: 'WhatsApp' },
-  { f: 'aggregator_url', l: 'Taplink / Linktree' },
-  // Обе колонки-ссылки на карточку: в файл попадает та, что отвечает
-  // источнику запуска (Яндекс или 2ГИС) — пустой колонки-двойника нет.
+  { f: 'aggregator_url', l: 'Сайт / Таплинк' },
+  // Ссылка на карточку организации — единственный источник данных, Яндекс.Карты.
   { f: 'yandex_maps_url',l: 'Яндекс.Карты' },
-  { f: 'twogis_url',     l: '2ГИС' },
   { f: 'query',          l: 'Запрос' },
   { f: 'parsed_at',      l: 'Дата сбора' },
   { f: 'city',           l: 'Город' },
 ];
-let enabledExcelCols = null;  // null = все столбцы; иначе Set выбранных полей
-
-function getExcelCols() {
-  return enabledExcelCols === null ? null : [...enabledExcelCols];
-}
-
-function saveExcelCols() {
-  localStorage.setItem(EXCEL_COLS_KEY,
-    JSON.stringify(enabledExcelCols === null ? null : [...enabledExcelCols]));
-}
-
-function renderExcelCols() {
-  const grid = document.getElementById('excel-cols-grid');
-  if (!grid) return;
-  const all = enabledExcelCols === null;
-  grid.innerHTML = EXCEL_COLUMN_DEFS.map(c => {
-    const on = all || enabledExcelCols.has(c.f);
-    return `<label class="chk ${on ? 'on' : ''}">
-      <input type="checkbox" ${on ? 'checked' : ''}
-        onchange="toggleExcelCol('${c.f}', this.checked)"> ${c.l}</label>`;
-  }).join('');
-  const cnt = document.getElementById('excel-cols-count');
-  if (cnt) {
-    const n = all ? EXCEL_COLUMN_DEFS.length : enabledExcelCols.size;
-    cnt.textContent = `Активно столбцов: ${n} из ${EXCEL_COLUMN_DEFS.length}`;
-  }
-}
-
-function toggleExcelCol(f, on) {
-  if (enabledExcelCols === null) {
-    enabledExcelCols = new Set(EXCEL_COLUMN_DEFS.map(c => c.f));
-  }
-  if (on) enabledExcelCols.add(f); else enabledExcelCols.delete(f);
-  saveExcelCols();
-  renderExcelCols();
-}
-
-function setAllExcelCols(on) {
-  enabledExcelCols = on ? null : new Set();
-  saveExcelCols();
-  renderExcelCols();
-}
-
-function loadExcelCols() {
+function loadParseFields() {
   try {
-    const saved = JSON.parse(localStorage.getItem(EXCEL_COLS_KEY));
-    if (saved === null) enabledExcelCols = null;
-    else if (Array.isArray(saved)) enabledExcelCols = new Set(saved);
-    else enabledExcelCols = null;
-  } catch { enabledExcelCols = null; }
-  renderExcelCols();
+    const saved = JSON.parse(localStorage.getItem(PARSE_FIELDS_KEY));
+    parseFields = Array.isArray(saved) ? new Set(saved) : null;
+  } catch { parseFields = null; }
+  renderParseFields();
+}
+
+function saveParseFields() {
+  localStorage.setItem(PARSE_FIELDS_KEY,
+    JSON.stringify(parseFields === null ? null : [...parseFields]));
+}
+
+// Строим список столбцов отчёта из отмеченных полей (+ служебные поля).
+// Соцсетевые и VK-столбцы вырезаются целиком, когда мастер «Соцсети» выключен.
+function getExcelCols() {
+  const enabled = parseFieldsEnabled();
+  const socOn = enabled.has('socials');
+  const cols = new Set(PARSE_SERVICE_COLS);
+  for (const f of PARSE_REGULAR.concat(PARSE_PERSONAL)) {
+    if (!enabled.has(f.k)) continue;
+    if (!socOn && (f.k === 'socials' || f.k === 'vk_activity')) continue;
+    (PARSE_FIELD_COLS[f.k] || []).forEach(c => cols.add(c));
+  }
+  return [...cols];
+}
+
+function renderParseFieldGrid(list, gridId) {
+  const grid = document.getElementById(gridId);
+  if (!grid) return;
+  const enabled = parseFieldsEnabled();
+  const socOn = enabled.has('socials');
+  grid.innerHTML = list.map(f => {
+    const on = enabled.has(f.k);
+    const locked = !!f.locked;
+    // VK-активность требует и мастер «Соцсети», и сохранённый ключ ВК.
+    const gated = (f.needsKey && (!vkTokenReady || !socOn)) || (f.k === 'vk_activity' && !socOn);
+    const dis = locked || gated;
+    return `<label class="chk ${on ? 'on' : ''}${dis ? ' disabled' : ''}">
+      <input type="checkbox" ${on ? 'checked' : ''} ${dis ? 'disabled' : ''}
+        onchange="toggleParseField('${f.k}', this.checked)"> ${f.l}</label>`;
+  }).join('');
+}
+
+function renderParseFields() {
+  renderParseFieldGrid(PARSE_REGULAR, 'parse-regular-grid');
+  renderParseFieldGrid(PARSE_PERSONAL, 'parse-personal-grid');
+  updateSocialUI();
+}
+
+function toggleParseField(k, on) {
+  if (parseFields === null) parseFields = parseFieldsEnabled();  // разворачиваем значения по умолчанию
+  if (on) parseFields.add(k); else parseFields.delete(k);
+  // Выключили соцсети — VK-активность не может остаться (нет ссылки на профиль).
+  if (k === 'socials' && !on) parseFields.delete('vk_activity');
+  saveParseFields();
+  renderParseFields();
+  if (allResults.length) filterTable();
+}
+
+// ═══════════════════════════════════════════
+//  Гейтинг UI от выбора полей: соцсети / VK без ключа
+// ═══════════════════════════════════════════
+// Соцсети выключены → прячем фильтр по соцсетям, массовый обход; сбрасываем
+// режим соцсетей и обязательные сети, чтобы скрытый фильтр не оставался активным.
+function updateSocialUI() {
+  const socOn = socialsEnabled();
+  const smb = document.getElementById('social-mode-block');
+  if (smb) smb.hidden = !socOn;
+  // Массовый обход решает сам, виден ли он (соцсети выбраны И есть ссылки
+  // в таблице) — здесь лишь сбрасываем состояние, когда соцсети выключили.
+  const bulk = document.getElementById('bulk-panel');
+  if (bulk && !socOn) bulk.hidden = true;
+  if (socOn && typeof updateBulkStats === 'function') updateBulkStats();
+  // Строка фильтра по соцсетям над таблицей тоже бессмысленна без соцсетей.
+  const sfRow = document.getElementById('social-filter-row');
+  if (sfRow) sfRow.classList.toggle('socials-off', !socOn);
+  if (!socOn) {
+    if (typeof socialMode !== 'undefined' && socialMode !== 'all') setSocialMode('all');
+    if (typeof requiredSocials !== 'undefined' && requiredSocials.size) {
+      requiredSocials.clear();
+      document.querySelectorAll('#social-net-chk-grid .soc-tile.on').forEach(t => {
+        t.classList.remove('on');
+        const cb = t.querySelector('input[type=checkbox]');
+        if (cb) cb.checked = false;
+      });
+      updateSocialFilterHint();
+    }
+  }
+  updateVkGate();
+}
+
+// VK-функции (проверка активности) — только при наличии ключа И собранных соцсетей.
+function updateVkGate() {
+  const allowed = socialsEnabled() && vkTokenReady;
+  const group = document.getElementById('vk-activity-group');
+  if (group) group.classList.toggle('vk-gated', !allowed);
+  const cb = document.getElementById('f-vk-check');
+  if (cb) {
+    cb.disabled = !allowed;
+    if (!allowed) cb.checked = false;
+  }
+  if (!allowed) {
+    const blk = document.getElementById('vk-filter-block');
+    if (blk) blk.classList.remove('open');
+  }
+  updateVkCheckHint();
+}
+
+// ═══════════════════════════════════════════
+//  Хранение результатов: автоудаление через N дней (7/14/30/своё, макс. 30)
+// ═══════════════════════════════════════════
+let retentionDays = 30;
+
+function initRetention() {
+  const sel = document.getElementById('f-retention-days');
+  const custom = document.getElementById('f-retention-custom');
+  if (!sel) return;
+  fetch('/retention/status')
+    .then(r => r.json())
+    .then(j => {
+      const d = parseInt(j.days, 10);
+      retentionDays = (d >= 1 && d <= 30) ? d : 30;
+      const isPreset = [7, 14, 30].includes(retentionDays);
+      sel.value = isPreset ? String(retentionDays) : 'custom';
+      if (custom) custom.value = retentionDays;
+      onRetentionChange(true);
+    })
+    .catch(() => onRetentionChange(true));
+}
+
+function onRetentionChange(skipSave) {
+  const sel = document.getElementById('f-retention-days');
+  const customWrap = document.getElementById('retention-custom-wrap');
+  const custom = document.getElementById('f-retention-custom');
+  if (!sel) return;
+  const isCustom = sel.value === 'custom';
+  if (customWrap) customWrap.hidden = !isCustom;
+  let days;
+  if (isCustom) {
+    days = parseInt((custom || {}).value, 10);
+    if (isNaN(days) || days < 1) days = 1;
+    if (days > 30) days = 30;
+    if (custom) custom.value = days;
+  } else {
+    days = parseInt(sel.value, 10) || 30;
+  }
+  retentionDays = days;
+  if (!skipSave) saveRetention(days);
+}
+
+function saveRetention(days) {
+  const st = document.getElementById('retention-status');
+  fetch('/retention/set', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ days: days })
+  })
+    .then(r => r.json())
+    .then(j => {
+      if (j.ok && st) {
+        st.textContent = `Срок хранения сохранён: ${days} дн.`
+          + (j.removed != null ? ` · удалено устаревших файлов: ${j.removed}` : '');
+      } else if (st && j.error) {
+        st.textContent = 'Не удалось сохранить: ' + j.error;
+      }
+    })
+    .catch(() => { if (st) st.textContent = 'Не удалось сохранить срок — сервер недоступен.'; });
 }
 
 document.addEventListener('click', e => {
@@ -208,7 +546,7 @@ document.addEventListener('keydown', e => {
 });
 
 // ═════════════════════════════════════════
-//  API keys → .env (Yandex + 2GIS, one button)
+//  API keys → .env (VK token, one button)
 // ═════════════════════════════════════════
 
 // ── API-keys block (static section at the top of the sidebar) ──
@@ -223,31 +561,27 @@ function toggleApiKeys() {
   hdr.classList.toggle('open', !body.hidden);
 }
 
-// Badge states — the badge always carries the exact count:
-//   3/3 → ✅ Готово (green) · 1–2/3 → оранжевый с процентом · 0/3 → ❌.
-// All three keys count equally: VK drives the lead score (+20) and the
-// activity filter, so a missing VK token is worth seeing in the ratio.
-function updateApiKeysStatus(yandex, twogis, vk) {
+// Badge states: токен ВК нужен только для проверки активности сообществ и
+// оценки лида (+20). Ключей Яндекса в приложении нет — поиск и карточки
+// читает браузер.
+function updateApiKeysStatus(vk) {
   const badge = document.getElementById('api-status-badge');
   if (!badge) return;
-  const total = 3;
-  const have = [yandex, twogis, vk].filter(Boolean).length;
+  const total = 1;
+  const have = [vk].filter(Boolean).length;
   let cls, txt, title;
   if (have === total) {
     cls = 'ok'; txt = UI_ICONS.check + `Готово ${have}/${total}`;
-    title = 'Все API-ключи настроены: Яндекс, 2GIS, VK';
-  } else if (have > 0) {
-    cls = 'warn'; txt = UI_ICONS.warn + `${have}/${total} ключей`;
-    title = 'Настроены не все API-ключи — часть функций (соцсети, активность ВК, 2GIS) будет недоступна';
+    title = 'Токен ВКонтакте настроен';
   } else {
-    cls = 'err'; txt = UI_ICONS.x + `0/${total} ключей`;
-    title = 'API-ключи не найдены — поиск может не работать';
+    cls = 'warn'; txt = UI_ICONS.warn + `${have}/${total}`;
+    title = 'Токена ВКонтакте нет — проверка активности ВК будет пропущена';
   }
   badge.className = 'api-badge ' + cls;
   badge.innerHTML = txt;
   badge.title = title;
   // Per-key dots next to each field label (green = key is set).
-  const dots = { 'key-dot-yandex': yandex, 'key-dot-2gis': twogis, 'key-dot-vk': vk };
+  const dots = { 'key-dot-vk': vk };
   for (const [id, present] of Object.entries(dots)) {
     const dot = document.getElementById(id);
     if (dot) {
@@ -264,9 +598,13 @@ let vkTokenReady = false;
 function updateVkCheckHint() {
   const hint = document.getElementById('vk-check-hint');
   if (!hint) return;
-  hint.textContent = vkTokenReady
-    ? 'Проверяет подписчиков и дату последнего поста через VK API. Результат кэшируется на 7 дней.'
-    : 'Нужен VK-ключ в блоке «API-ключи» — без него шаг будет пропущен с предупреждением.';
+  if (!socialsEnabled()) {
+    hint.textContent = 'Соцсети не собираются — проверка активности недоступна. Включите «Соцсети» в разделе «Что парсить».';
+  } else if (!vkTokenReady) {
+    hint.textContent = 'Нужен VK-ключ в блоке «API-ключи» — без него проверка активности ВК отключена.';
+  } else {
+    hint.textContent = 'Проверяет подписчиков и дату последнего поста через VK API. Результат кэшируется на 7 дней.';
+  }
 }
 
 // ═══════════════════════════════════════════
@@ -327,19 +665,25 @@ function applyFiltersAndRender() {
 function refreshApiKeysStatus() {
   fetch('/api-keys/status')
     .then(r => r.json())
-    .then(j => { vkTokenReady = !!j.vk; updateApiKeysStatus(!!j.yandex, !!j.twogis, !!j.vk); updateVkCheckHint(); })
+    .then(j => {
+      vkTokenReady = !!j.vk;
+      updateApiKeysStatus(!!j.vk);
+      updateVkCheckHint();
+      // Ключ ВК влияет на доступность VK-поля в «Что парсить» и на гейтинг
+      // блока «Активность» — перерисовываем после загрузки статуса.
+      if (typeof renderParseFields === 'function') renderParseFields();
+      else updateVkGate();
+    })
     .catch(() => {});
 }
 
 function saveApiKeys() {
   const btn = document.getElementById('btn-save-key');
-  const yandexKey = document.getElementById('f-apikey').value.trim();
-  const twogisKey = (document.getElementById('f-2gis-key') || {}).value?.trim() || '';
   const vkToken = (document.getElementById('f-vk-token') || {}).value?.trim() || '';
   const status = document.getElementById('apikey-status');
 
-  if (!yandexKey && !twogisKey && !vkToken) {
-    showToast('Введите хотя бы один ключ', 'error');
+  if (!vkToken) {
+    showToast('Введите токен ВКонтакте', 'error');
     return;
   }
 
@@ -357,25 +701,16 @@ function saveApiKeys() {
   fetch('/save-api-keys', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({yandex_api_key: yandexKey, twogis_api_key: twogisKey, vk_token: vkToken})
+    body: JSON.stringify({vk_token: vkToken})
   })
   .then(r => r.json().then(d => ({ok: r.ok, data: d})))
   .then(({ok, data}) => {
     if (ok && data.ok) {
-      showToast(data.message || 'Ключи сохранены в .env', 'success');
-      show(true, data.message || 'Ключи сохранены в .env');
-      // Empty fields = «использовать сохранённое в .env» — reflect it
-      if (yandexKey) document.getElementById('f-apikey').value = '';
-      if (twogisKey) { document.getElementById('f-2gis-key').value = ''; refreshSourceKeyState(); }
+      showToast(data.message || 'Токен сохранён в .env', 'success');
+      show(true, data.message || 'Токен сохранён в .env');
+      // Пустое поле = «использовать сохранённое в .env» — отражаем это.
       if (vkToken) document.getElementById('f-vk-token').value = '';
       refreshApiKeysStatus();
-      // Новый ключ 2GIS — сервер обнулил месячный счётчик токенов: карточка
-      // квоты и лог должны показать это сразу, а не после перезапуска.
-      if (data.quota_reset) {
-        _twogisQuotaLive = 0;
-        renderQuotaCard();
-        appendLog('info', '  🔄 Новый ключ 2GIS — счётчик токенов сброшен');
-      }
     } else {
       showToast(data.error || 'Ошибка сохранения', 'error');
       show(false, data.error || 'Ошибка сохранения');
@@ -427,216 +762,6 @@ function toggleTheme() {
 // City combobox UI is implemented via initCitySelect/addCity/removeCity functions.
 
 // ═══════════════════════════════════════════
-//  SENDER
-// ═══════════════════════════════════════════
-let sendEvtSource = null;
-let senderRunning = false;
-const SENDER_CFG_KEY = 'yp_sender_v1';
-
-function toggleSenderLimit() {
-  const t = document.getElementById('s-limit-type').value;
-  document.getElementById('s-limit-n-wrap').style.display = t === 'n' ? '' : 'none';
-}
-
-function toggleSenderConfig() {
-  const body = document.getElementById('sender-cfg-body');
-  const btn  = document.getElementById('sender-cfg-tog');
-  const visible = body.style.display !== 'none';
-  body.style.display = visible ? 'none' : '';
-  btn.textContent = visible ? 'развернуть ▼' : 'свернуть ▲';
-}
-
-function appendSendLog(level, msg) {
-  const ph = document.getElementById('send-log-ph');
-  if (ph) ph.remove();
-  const el = document.getElementById('send-log-output');
-  const d = document.createElement('div');
-  d.className = 'll ' + (level || 'info');
-  d.textContent = msg.replace(/\x1b\[[0-9;]*m/g, '');
-  el.appendChild(d);
-  _trimLog(el);
-  el.scrollTop = el.scrollHeight;
-}
-
-function clearSendLog() {
-  document.getElementById('send-log-output').innerHTML = '';
-}
-
-function updateSenderStats(sent, skip, err) {
-  const bar = document.getElementById('sender-stats-bar');
-  bar.style.display = 'flex';
-  document.getElementById('ss-sent').textContent = sent;
-  document.getElementById('ss-skip').textContent = skip;
-  document.getElementById('ss-err').textContent  = err;
-}
-
-function loadSenderFiles() {
-  fetch('/send/files')
-    .then(r => r.json())
-    .then(data => {
-      const sel = document.getElementById('s-excel-file');
-      const cur = sel.value;
-      sel.innerHTML = '<option value="">— выберите файл —</option>';
-      (data.files || []).forEach(f => {
-        const opt = document.createElement('option');
-        opt.value = f; opt.textContent = f;
-        if (f === cur) opt.selected = true;
-        sel.appendChild(opt);
-      });
-    })
-    .catch(() => {});
-}
-
-function saveSenderConfig() {
-  const randomChk = document.getElementById('s-random-tpl');
-  const cfg = {
-    message:  document.getElementById('s-message').value,
-    delayMin: document.getElementById('s-delay-min').value,
-    delayMax: document.getElementById('s-delay-max').value,
-    limitType:document.getElementById('s-limit-type').value,
-    limitN:   document.getElementById('s-limit-n').value,
-    file:     document.getElementById('s-excel-file').value,
-    randomTpl: !!(randomChk && randomChk.checked),
-  };
-  localStorage.setItem(SENDER_CFG_KEY, JSON.stringify(cfg));
-}
-
-function restoreSenderConfig() {
-  try {
-    const cfg = JSON.parse(localStorage.getItem(SENDER_CFG_KEY));
-    if (!cfg) return;
-    // Tokens are intentionally never restored from browser storage.
-    // Remove a token left by older versions.
-    if (cfg.token != null) {
-      delete cfg.token;
-      localStorage.setItem(SENDER_CFG_KEY, JSON.stringify(cfg));
-    }
-    if (cfg.message  != null) document.getElementById('s-message').value    = cfg.message;
-    if (cfg.delayMin != null) document.getElementById('s-delay-min').value  = cfg.delayMin;
-    if (cfg.delayMax != null) document.getElementById('s-delay-max').value  = cfg.delayMax;
-    if (cfg.limitType!= null) {
-      document.getElementById('s-limit-type').value = cfg.limitType;
-      toggleSenderLimit();
-    }
-    if (cfg.limitN   != null) document.getElementById('s-limit-n').value    = cfg.limitN;
-    if (cfg.randomTpl != null) {
-      const _rc = document.getElementById('s-random-tpl');
-      if (_rc) _rc.checked = !!cfg.randomTpl;
-    }
-    // file restored after files load
-    window._senderPendingFile = cfg.file;
-  } catch {}
-}
-
-function startSend() {
-  const token   = document.getElementById('s-token').value.trim();
-  const message = document.getElementById('s-message').value.trim();
-  const file    = document.getElementById('s-excel-file').value;
-  const social  = document.getElementById('s-social').value;
-  const delMin  = parseFloat(document.getElementById('s-delay-min').value) || 1.5;
-  const delMax  = parseFloat(document.getElementById('s-delay-max').value) || 3.5;
-  const ltType  = document.getElementById('s-limit-type').value;
-  const limitN  = parseInt(document.getElementById('s-limit-n').value) || 10;
-  const randomChk = document.getElementById('s-random-tpl');
-  const senderRandom = !!(randomChk && randomChk.checked);
-  // Random-режим рассылки: набор для vk из настроек «🎲 Выбор шаблона».
-  const senderIds = (randomTemplateIds['vk'] || []).slice();
-  const senderRandomActive = senderRandom && senderIds.length > 0;
-
-  if (!file) {
-    showFieldError(document.getElementById('fw-send-file'), 'Выберите Excel-файл с результатами');
-    showToast('Выберите Excel-файл с результатами', 'error');
-    return;
-  }
-  if (!token) {
-    showFieldError(document.getElementById('fw-send-token'), 'Введите ключ доступа VK');
-    showToast('Введите VK access_token', 'error');
-    return;
-  }
-  if (!message && !senderRandomActive) {
-    showFieldError(document.getElementById('fw-send-msg'), 'Шаблон сообщения не может быть пустым');
-    showToast('Шаблон сообщения не может быть пустым', 'error');
-    return;
-  }
-
-  clearSendLog();
-  saveSenderConfig();
-
-  const params = {
-    social,
-    excel_file:   file,
-    access_token: token,
-    message_tpl:  message,
-    limit:        ltType === 'all' ? 0 : limitN,
-    delay_min:    delMin,
-    delay_max:    delMax,
-  };
-  if (senderRandomActive) {
-    params.message_tpl_ids = senderIds;
-    params.tpl_avoid_repeats = avoidRepeats;
-    params.message_tpl = '';
-  }
-
-  document.getElementById('btn-send-run').disabled = true;
-  document.getElementById('send-btn-icon').innerHTML = '<span class="spin"></span>';
-  document.getElementById('send-btn-txt').textContent = 'Рассылка…';
-  document.getElementById('btn-send-stop').style.display = 'inline-block';
-  document.getElementById('sender-stats-bar').style.display = 'none';
-  senderRunning = true;
-
-  fetch('/send/run', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(params)
-  })
-  .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); startSendSSE(); })
-  .catch(err => {
-    appendSendLog('warn', '  [!] ' + err.message);
-    resetSendBtn();
-  });
-}
-
-function stopSend() {
-  fetch('/send/stop', {method: 'POST'}).catch(() => {});
-  appendSendLog('warn', '  [!] Остановка запрошена…');
-}
-
-function startSendSSE() {
-  if (sendEvtSource) { sendEvtSource.close(); sendEvtSource = null; }
-  sendEvtSource = new EventSource('/send/logs');
-  let stats = {sent: 0, skipped: 0, errors: 0};
-
-  sendEvtSource.onmessage = e => {
-    const msg = JSON.parse(e.data);
-    if (msg.type === 'ping') return;
-    if (msg.type === 'log') {
-      appendSendLog(msg.level, msg.msg);
-    } else if (msg.type === 'done') {
-      stats = msg.stats || stats;
-      updateSenderStats(stats.sent || 0, stats.skipped || 0, stats.errors || 0);
-      const stopped = msg.stopped;
-      appendSendLog(stopped ? 'warn' : 'ok',
-        stopped ? '  [⏹] Рассылка остановлена.' : '  [✓] Рассылка завершена.');
-      resetSendBtn();
-      sendEvtSource.close(); sendEvtSource = null;
-    }
-  };
-  sendEvtSource.onerror = () => {
-    appendSendLog('warn', '  [!] Соединение прервано.');
-    resetSendBtn();
-    if (sendEvtSource) { sendEvtSource.close(); sendEvtSource = null; }
-  };
-}
-
-function resetSendBtn() {
-  senderRunning = false;
-  document.getElementById('btn-send-run').disabled = false;
-  document.getElementById('send-btn-icon').innerHTML = UI_ICONS.send;
-  document.getElementById('send-btn-txt').textContent = 'Запустить рассылку';
-  document.getElementById('btn-send-stop').style.display = 'none';
-}
-
-// ═══════════════════════════════════════════
 //  Logs modal
 // ═══════════════════════════════════════════
 function showLogsModal() {
@@ -684,10 +809,10 @@ function showLogsModal() {
 // ═══════════════════════════════════════════
 // Отвечает на «ничего не работает» без чтения логов: живые ли ключи, куда
 // пишем, готово ли окружение и понимает ли текущая версия старые сборы.
-// Живые проверки ключей стоят квоты 2ГИС и времени, поэтому запускаются
-// ТОЛЬКО по нажатию и разделены по кнопкам: «только ключи» / «без запросов
-// к API». Тексты приходят с сервера, поэтому любой из них пропускается
-// через escapeHtml.
+// Живая проверка одна — токен ВКонтакте, поэтому запускается ТОЛЬКО по
+// нажатию и отделена от локальных проверок: «только ключи» / «без запросов к
+// API». Тексты приходят с сервера, поэтому каждый из них пропускается через
+// escapeHtml.
 // Заголовки групп и значки статусов — из того же спрайта, что и кнопки: в
 // отчёте рядом стоят три состояния, и разнобой между ними читался как шум.
 const DIAG_GROUP_TITLES = {
@@ -712,14 +837,17 @@ function showDiagnostics() {
   overlay.innerHTML = `
     <div class="ui-modal diag-modal" role="dialog" aria-modal="true" aria-labelledby="diag-title">
       <h3 id="diag-title">${UI_ICONS.pulse}Диагностика</h3>
-      <div class="diag-lead">Проверю ключи API, права на папку результатов, окружение и данные прошлых
-        сборов — это четыре причины, из-за которых чаще всего «ничего не работает». Читать логи не нужно.</div>
-      <div class="diag-note">${UI_ICONS.key}Проверка ключей делает живые запросы: 2ГИС списывает 1–2 запроса из месячной
-        квоты, Яндекс — один пробный. Остальные проверки бесплатны и мгновенны.</div>
+      <div class="diag-lead">Проверю браузер и токен ВК, права на папку результатов, окружение и данные
+        прошлых сборов — это четыре причины, из-за которых чаще всего «ничего не работает». Читать логи не нужно.</div>
+      <div class="diag-note">${UI_ICONS.key}«Только ключи» делает один живой запрос к ВКонтакте (проверка токена).
+        «Проверить браузер» открывает настоящий Chrome и страницу выдачи: так видно, что браузер
+        работает и что список организаций действительно загружается. Остальные проверки
+        идут локально и выполняются мгновенно.</div>
       <div class="diag-actions">
         <button type="button" class="btn-sm diag-run" onclick="runDiagnostics(['keys','files','data','env'], this)">${UI_ICONS.checkSquare}Проверить всё</button>
         <button type="button" class="btn-sm diag-run" onclick="runDiagnostics(['keys'], this)">${UI_ICONS.key}Только ключи</button>
         <button type="button" class="btn-sm diag-run" onclick="runDiagnostics(['files','data','env'], this)">${UI_ICONS.folder}Без запросов к API</button>
+        <button type="button" class="btn-sm diag-run" onclick="runDiagnostics(['engines'], this, true)">${UI_ICONS.pulse}Проверить браузер</button>
       </div>
       <div class="diag-summary" id="diag-summary" role="status" aria-live="polite">Нажмите «Проверить всё» — покажу, что работает, а что нет.</div>
       <div class="diag-results" id="diag-results"></div>
@@ -744,10 +872,13 @@ function closeDiagnostics() {
   if (overlay) overlay.remove();
 }
 
-// Группы проверок: ['keys'] стоит квоту и сети, остальные — только локальные.
-function runDiagnostics(groups, btn) {
+// Группы проверок: ['keys'] — единственный сетевой запрос, остальные локальные.
+// deep=true — живая проба браузера: открывает Chrome и грузит страницу
+// выдачи, поэтому отдельная кнопка, а не часть «Проверить всё».
+function runDiagnostics(groups, btn, deep) {
   if (_diagBusy) return Promise.resolve();
   const list = Array.isArray(groups) && groups.length ? groups : ['keys', 'files', 'data', 'env'];
+  const probe = !!deep;
   _diagBusy = true;
   const buttons = [...document.querySelectorAll('.diag-run')];
   // innerHTML, а не textContent: подписи несут значок из спрайта, и возврат
@@ -757,11 +888,13 @@ function runDiagnostics(groups, btn) {
   const pressedLabel = pressed ? pressed.innerHTML : '';
   buttons.forEach(b => { b.disabled = true; });
   if (pressed) pressed.innerHTML = UI_ICONS.busy + 'Проверяю…';
-  setDiagSummary('⏳ Идут проверки…' + (list.includes('keys') ? ' Ключи проверяются живыми запросами.' : ''));
+  setDiagSummary('⏳ Идут проверки…'
+    + (probe ? ' Открываю настоящий браузер и страницу выдачи — это занимает до минуты.' : '')
+    + (!probe && list.includes('keys') ? ' Ключи проверяются живыми запросами.' : ''));
   return fetch('/diagnostics/run', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({groups: list}),
+    body: JSON.stringify({groups: list, deep: probe}),
   })
     .then(r => r.json())
     .then(data => {

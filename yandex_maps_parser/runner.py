@@ -19,9 +19,7 @@ from yandex_maps_parser.checkpoint import (
     load_global_seen, save_global_seen,
 )
 from yandex_maps_parser.enrichment import collect_candidates, enrich
-from yandex_maps_parser.twogis import collect_candidates_2gis, reset_field_fallback as _2gis_reset_fields
-from yandex_maps_parser.http_client import _worker_client, reset_stats, _init_client_pool
-from yandex_maps_parser.browser_client import init_browser as _init_browser, close_browser as _close_browser
+from yandex_maps_parser.http_client import reset_stats
 from yandex_maps_parser import cdp_client
 from yandex_maps_parser.exporters import (
     _resolve, load_existing_urls, load_jsonl, dedupe_records,
@@ -74,20 +72,11 @@ def run() -> None:
     state.syslog(f"  social_mode={state.SOCIAL_MODE}, fetch_detail={state.FETCH_DETAIL}")
     state.syslog(f"  source={state.SOURCE}")
 
-    if state.SOURCE == "2gis":
-        state.syslog(f"twogis key: {'set (' + str(len(state.TWOGIS_API_KEY)) + ' chars)' if state.TWOGIS_API_KEY else 'MISSING'}")
-    if state.SOURCE == "2gis" and not state.TWOGIS_API_KEY:
-        state.warn("TWOGIS_API_KEY не задан — используется источник «Яндекс.Карты». Добавьте ключ в .env (dev.2gis.ru).")
-        state.SOURCE = "yandex"
-
     # Web: minimal user-facing header (guarded — a broken Windows
     # console handle must never kill the run, see _console_print).
     _console_print()
     state.info(f"  🔍 Поиск в «{state.CITY}» — запросы: {', '.join(state.SEARCH_QUERIES)}")
-    if state.SOURCE == "2gis":
-        state.info("  🗺  Источник: 2GIS (официальный API — соцсети и сайты уже в ответе)")
-    else:
-        state.info("  🗺  Источник: Яндекс.Карты")
+    state.info("  🗺  Источник: Яндекс.Карты")
 
     state.info(f"  Геокодирую «{state.CITY}»…")
     coords = geocode_city(state.CITY)
@@ -123,7 +112,12 @@ def run() -> None:
     # Resetting city here would blank it right after the loop set it.
     state.update_pause_info(query="", point=0, points_total=0)
     reset_stats()
-    _init_client_pool()
+    # Счётчики кэша страниц — тоже на прогон (см. stats.print_limit_stats).
+    try:
+        from .cache import reset_stats as _reset_cache_stats
+        _reset_cache_stats()
+    except Exception:
+        pass
 
     # Every enriched record is appended to the JSONL sidecar as it is found
     # (see state._emit_result), so a hard kill loses nothing already fetched.
@@ -201,7 +195,6 @@ def run() -> None:
         # were new (not in the seen store).
         api_hits = 0
         new_candidates_total = 0
-        search_session = _worker_client()
 
         batch_results: dict = {}
         batch_key: tuple | None = None
@@ -310,18 +303,9 @@ def run() -> None:
 
             pbar_search.set_description(f"«{query}»")
 
-            candidates, found, new_candidates = (
-                collect_candidates_2gis(
-                    query, state.CITY, lat, lon, seen_urls,
-                    pbar_search, pbar_detail, seen_lock=seen_lock,
-                    search_session=search_session,
-                )
-                if state.SOURCE == "2gis"
-                else collect_candidates(
-                    query, state.CITY, lat, lon, seen_urls,
-                    pbar_search, pbar_detail, seen_lock=seen_lock,
-                    search_session=search_session,
-                )
+            candidates, found, new_candidates = collect_candidates(
+                query, state.CITY, lat, lon, seen_urls,
+                pbar_search, pbar_detail, seen_lock=seen_lock,
             )
             state.syslog(f"point result: api_found={found}, candidates={len(candidates)}, new={new_candidates}")
             try:
@@ -344,8 +328,11 @@ def run() -> None:
             prev_batch_thread = batch_thread
             prev_batch_key = batch_key
 
-        # Wait for the final batch
-        join_prev_batch(prev_batch_thread, prev_batch_key)
+        # Wait for the final batch. After the loop prev_batch_thread is the SAME
+        # thread as batch_thread (each iteration assigns prev = current), so
+        # drain_batch() already collects the last point — a separate
+        # join_prev_batch() would process it a second time (duplicate
+        # mark_progress → progress beyond 100 %).
         drain_batch()
 
         state.info(f"  ✅ «{query}»: {len(query_records)} записей")
@@ -407,12 +394,6 @@ def run() -> None:
         pbar_search.close()
         pbar_detail.close()
         state._RESULT_FILE = None
-        # Close HTTP client pool to free connections
-        try:
-            from yandex_maps_parser.http_client import close_client_pool
-            close_client_pool()
-        except Exception:
-            pass
         if state._RESULT_HANDLE is not None:
             try:
                 state._RESULT_HANDLE.close()
@@ -538,7 +519,16 @@ def run() -> None:
     except Exception:
         _api_requests = 0
     _found_ctx = f" (из {_api_requests} запросов)" if _api_requests else ""
-    state.ok(f"  Найдено записей: {len(all_results)}{_found_ctx}")
+    # «Найдено 0» при включённых фильтрах выглядит как сорвавшийся поиск, а не
+    # как работающий предфильтр: показываем, сколько записей сбор снял сам.
+    _skipped_ctx = ""
+    try:
+        _skipped_total = state.crawl_skip_summary()["total"]
+        if _skipped_total:
+            _skipped_ctx = f" · предфильтр сбора отбросил {_skipped_total}"
+    except Exception:
+        pass
+    state.ok(f"  Найдено записей: {len(all_results)}{_found_ctx}{_skipped_ctx}")
     if full_records:
         # Paths already announced as «📁 город: файл» are not repeated here —
         # each output path shows up once per run. _shown_file_paths only
@@ -587,9 +577,11 @@ def _apply_params(params: dict) -> None:
     state.OUTPUT_FILENAME = None
     state.APPEND_MODE     = False
     state.RESUME_MODE     = bool(params.get("resume", False))
-    # Two-stage pipeline: "raw" collects EVERYTHING unfiltered — stage-2
-    # filters (chain merge, no-website, rating, reviews) are applied after
-    # the crawl by processing.apply_filters(). Unset → legacy behaviour.
+    # Two-stage pipeline: "raw" — сбор применяет только те фильтры, которые
+    # известны по самой записи (чёрный список, «только без сайтов», соцсети:
+    # см. processing.crawl_skip_reason), а фильтры, которым нужен весь набор
+    # (объединение филиалов, «тип компании», оценка лида), ждут этапа 2.
+    # Unset → legacy behaviour.
     _pl = params.get("pipeline", "")
     state.PIPELINE = _pl if _pl in ("raw", "") else ""
     state.RAW_MODE = params.get("raw_mode", "keep") if state.PIPELINE == "raw" else "keep"
@@ -598,22 +590,10 @@ def _apply_params(params: dict) -> None:
     else:
         state.COLLAPSE_CHAINS = bool(params.get("collapse_chains", False))
     state.USE_GRID        = bool(params.get("use_grid", False))
-    # Data source must be assigned BEFORE any SOURCE-dependent logic below
-    # (the grid guard reads state.SOURCE — a stale value from the previous
-    # run would clamp/keep the wrong pair).
-    _src = params.get("source", "yandex")
-    state.SOURCE = _src if _src in ("yandex", "2gis") else "yandex"
+    # Data source: только Яндекс (источник 2GIS удалён по требованию правообладателя).
+    state.SOURCE = "yandex"
     state.GRID_RADIUS_KM  = int(params.get("grid_radius", 20))
     state.GRID_STEP_KM    = int(params.get("grid_step", 5))
-    # 2GIS coverage rule: Places API caps a point at page_size=10 × 5 pages =
-    # 50 orgs inside ~its per-point radius. We only guard the degenerate
-    # cell: a step > radius leaves genuinely uncovered gaps between cells
-    # (build_grid only places points up to GRID_RADIUS_KM from the center).
-    # Any sane user pair (step ≤ radius) passes through untouched — the UI
-    # already clamps step ≤ radius via the linked sliders.
-    if state.SOURCE == "2gis" and state.USE_GRID and state.GRID_STEP_KM > state.GRID_RADIUS_KM:
-        state.GRID_STEP_KM = state.GRID_RADIUS_KM
-        state.syslog(f"grid: 2GIS source → step {state.GRID_STEP_KM}km exceeded radius, clamped to {state.GRID_RADIUS_KM}km")
     state.MAX_WORKERS     = max(1, int(params.get("max_workers", 20)))
     state.SEARCH_WORKERS  = max(1, min(5, int(params.get("query_workers", 2))))
     state.MAX_PAGES       = max(1, int(params.get("max_pages", 1)))
@@ -630,22 +610,33 @@ def _apply_params(params: dict) -> None:
     except Exception:
         state.REQUIRED_SOCIALS = set()
     state.MAX_CANDIDATES_PER_CITY = max(0, int(params.get("max_candidates", 200)))
-    # Parse mode: "without_website" (only businesses without a website) | "all"
-    # Raw pipeline forces "all": the no-website choice is a stage-2 filter.
-    if state.PIPELINE == "raw":
-        state.PARSE_MODE = "all"
-    else:
-        _pm = params.get("parse_mode", "without_website")
-        state.PARSE_MODE = _pm if _pm in ("without_website", "all") else "without_website"
-    # 2GIS key: form value wins, otherwise the .env / config value.
-    # (state.TWOGIS_API_KEY defaults to "" — without this fallback a key
-    # stored only in .env would never reach the search module and every
-    # 2GIS run would silently fall back to Yandex.)
+    # Parse mode: "without_website" (only businesses without a website) | "all".
+    # Работает и на сборе (запись с сайтом не попадает ни в живую таблицу, ни
+    # в raw), и на этапе 2 — «Применить фильтры заново» считает так же.
+    _pm = params.get("parse_mode", "without_website")
+    state.PARSE_MODE = _pm if _pm in ("without_website", "all") else "without_website"
+    # Чёрный список нужен уже сбору: слово снимает запись ДО загрузки карточки.
+    # Нормализуем теми же правилами, что и этап 2 (лимиты, lowercase).
     try:
-        from config import TWOGIS_API_KEY as _TGK
+        from .processing import parse_blacklist_words
+        state.BLACKLIST_WORDS = parse_blacklist_words(params.get("blacklist_words") or [])
     except Exception:
-        _TGK = ""
-    state.TWOGIS_API_KEY = params.get("twogis_api_key", "").strip() or _TGK or ""
+        state.BLACKLIST_WORDS = []
+    state.reset_crawl_skips()
+    # Фильтры, которые сбор может решить по одной записи (см.
+    # processing.crawl_skip_reason): без них снятые этапом 2 записи появлялись
+    # бы в живой таблице и пропадали только в конце прогона.
+    try:
+        state.MIN_LEAD_SCORE = int(params.get("min_lead_score") or 0)
+    except (TypeError, ValueError):
+        state.MIN_LEAD_SCORE = 0
+    state.ONLY_SINGLE_BRANCH = bool(params.get("only_single_branch", False))
+    try:
+        from .processing import normalize_only_new_months
+        state.ONLY_NEW_MONTHS = normalize_only_new_months(params.get("only_new_months"))
+    except Exception:
+        state.ONLY_NEW_MONTHS = None
+    state.VK_CHECK = bool(params.get("vk_check", False))
     # Excel export columns: list of field keys from the form; None = all columns
     _ec = params.get("excel_columns")
     if isinstance(_ec, list) and _ec:
@@ -654,35 +645,17 @@ def _apply_params(params: dict) -> None:
         state.EXCEL_COLUMNS = {str(f) for f in _ec if str(f) in _valid}
     else:
         state.EXCEL_COLUMNS = None
+    # Страницы читает только настоящий браузер (Chrome/Chromium через CDP),
+    # поэтому выбор «способа парсинга» больше не нужен: HTTP-путь удалён.
     state.USE_BROWSER    = bool(params.get("use_browser", True))
-    # Способ загрузки карточек (detail-страниц): auto | cdp | playwright | httpx.
-    # Чужое значение молча откатывается к "auto" (лестница CDP → Playwright →
-    # httpx), как и до появления выбора. httpx отключает браузерные пулы
-    # целиком — карточки идут через троттленный HTTP.
-    _engine = str(params.get("fetch_engine", "auto") or "auto")
-    state.FETCH_ENGINE = _engine if _engine in ("auto", "cdp", "playwright", "httpx") else "auto"
-    if state.FETCH_ENGINE == "httpx":
-        state.USE_BROWSER = False
-    # Debug window: separate Chrome, visible, CDP only (no Playwright pool,
-    # no tab pool). Optional; off by default.
+    # Debug window: separate Chrome, visible, CDP only (no tab pool).
+    # Optional; off by default.
     state.DEBUG_CDP_WINDOW = bool(params.get("debug_cdp_window", False))
     # Socials are ALWAYS collected from business cards (the UI has no switch
     # for it any more): without them neither the social filters nor the lead
     # score can work. `fetch_detail=False` stays honored for API clients.
     if not params.get("fetch_detail", True):
         state.FETCH_DETAIL = False
-    if params.get("api_key", "").strip():
-        state.YANDEX_API_KEY = params["api_key"].strip()
-    else:
-        # Form field empty — fall back to the config value so a key saved
-        # via the website ("Save" in the API key field writes .env + config
-        # without a restart) is picked up by the very next run.
-        try:
-            from config import YANDEX_API_KEY as _YK
-        except Exception:
-            _YK = ""
-        if _YK:
-            state.YANDEX_API_KEY = _YK
     # Re-create semaphore to match the new MAX_WORKERS setting
     state._detail_semaphore = threading.Semaphore(state.MAX_WORKERS)
 
@@ -849,75 +822,28 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None, pause_event=
             )
     total_cities = len(cities)   # recount after expansion
 
-    # 2GIS Places quota: fresh counter per run (the 1,000-request demo cap
-    # is cumulative per key across runs, but the warning thresholds should
-    # fire within THIS run based on what THIS run has spent so far).
-    try:
-        from yandex_maps_parser.twogis import quota_reset
-        quota_reset()
-    except Exception:
-        pass
-
     # Log configuration — system traces to file only
     _syslog(f"Запуск run_web: run_id={run_id}, города={cities}, запросы={state.SEARCH_QUERIES}")
     _syslog(f"Конфиг: worker={state.MAX_WORKERS}, search_workers={state.SEARCH_WORKERS}, max_pages={state.MAX_PAGES}")
     _syslog(f"Фильтры: social_mode={state.SOCIAL_MODE}, retry={state.RETRY_COUNT}")
     _syslog(f"Вывод: excel={state.OUTPUT_EXCEL}, json={state.OUTPUT_JSON}, csv={state.OUTPUT_CSV}, map={state.OUTPUT_MAP}")
     _syslog(f"GRID: enabled={state.USE_GRID}, radius={state.GRID_RADIUS_KM}km, step={state.GRID_STEP_KM}km")
-    if state.SOURCE == "2gis":
-        _weblog("info", "  🧮 Источник 2GIS: Places API — 1 запрос ≈ 10 организаций, лимит демо-ключа 1000 запросов (предупредим при 850+)")
-        if state.USE_GRID:
-            # Rough token estimate: cells × queries × pages (clamped to API caps).
-            # Exact cell count is known only after geocoding; estimate from the
-            # radius/step ratio: (2r/step+1)² circle-approximation.
-            _est_cells = max(1, int(3.14 * (state.GRID_RADIUS_KM / max(1, state.GRID_STEP_KM)) ** 2 * 0.64) + 1)
-            _pages_per_point = min(max(1, state.MAX_PAGES), 5)
-            _est_tokens = _est_cells * len(state.SEARCH_QUERIES) * _pages_per_point
-            _weblog("info", f"  📐 Сетка: ~{_est_cells} ячеек × {len(state.SEARCH_QUERIES)} запросов × до {_pages_per_point} стр. ≈ ~{_est_tokens} токенов Places API (1 токен = 10 организаций, всего ~{_est_tokens * 10})")
 
-    # Initialize browser pool for detail-page fetching (if enabled)
-    # Priority: CDP (Chrome DevTools Protocol) > Playwright > httpx.
-    # CDP first: Playwright's Node.js driver segfaults on Python 3.14 (only
-    # when Chromium для playwright не установлен — тогда сабпроцесс-тест
-    # быстро вернёт False и время не тратится).
-    # 2GIS: only CDP is used — for the firm-page fallback when the key has
-    # no contacts permission (demo keys strip contact_groups from the API).
-    # fetch_engine=httpx отключает пул целиком (USE_BROWSER=False выше);
-    # fetch_engine=playwright — наоборот, сразу Playwright без попытки CDP.
-    if state.USE_BROWSER and state.FETCH_DETAIL and state.FETCH_ENGINE == "playwright":
-        browser_ok = _init_browser(pool_size=min(state.MAX_WORKERS, 10))
-        if browser_ok:
-            _syslog("Browser pool: Playwright initialized (fetch_engine=playwright)")
-            _weblog("info", "  🌐 Режим: встроенный браузер (Playwright) для карточек")
-        else:
-            _syslog("Browser pool: Playwright failed (fetch_engine=playwright), fallback to httpx")
-            _weblog("warn", "  ⚠ Playwright недоступен — карточки пойдут через HTTP (медленнее)")
-    elif state.USE_BROWSER and state.FETCH_DETAIL and state.SOURCE == "2gis":
-        cdp_ok = cdp_client.init_browser(pool_size=min(state.MAX_WORKERS, 10))
-        if cdp_ok:
-            _syslog("Browser pool: CDP initialized (2GIS firm-page fallback)")
-            _weblog("info", "  🌐 2GIS: резервный режим карточек через Chrome CDP")
-        else:
-            _syslog("Browser pool: CDP failed for 2GIS mode")
-            _weblog("warn", "  ⚠ Chrome CDP недоступен: если у ключа 2GIS нет доступа к контактам, соцсети найти не получится")
-    elif state.USE_BROWSER and state.FETCH_DETAIL:
+    # Initialize the browser pool. Единственный способ сбора данных —
+    # реальный Chrome/Chromium через CDP (см. cdp_client): он неотличим от
+    # обычного браузера пользователя, тогда как HTTP-запросы (httpx/curl_cffi)
+    # Яндекс режет антиботом, а сам аккаунт/IP попадает под подозрение.
+    # HTTP-фолбэк удалён — если браузер не запустился, честно говорим об этом,
+    # а не долбим сервис «серыми» запросами.
+    if state.USE_BROWSER:
         cdp_ok = cdp_client.init_browser(pool_size=min(state.MAX_WORKERS, 20))
         if cdp_ok:
-            _syslog("Browser pool: CDP initialized (Chrome DevTools Protocol)")
-            _weblog("info", "  🌐 Режим: браузер (Chrome CDP) для detail-страниц")
-        elif state.FETCH_ENGINE == "cdp":
-            # Пользователь выбрал Chrome явно — Playwright не подменяем.
-            _syslog("Browser pool: CDP failed (fetch_engine=cdp), fallback to httpx")
-            _weblog("warn", "  ⚠ Chrome не найден — карточки пойдут через HTTP (медленнее)")
+            _syslog("Browser pool: CDP initialized (real Chrome/Chromium)")
+            _weblog("info", "  🌐 Режим: браузер (Chrome/Chromium через CDP)")
         else:
-            # CDP failed — try Playwright (сабпроцесс-тест отсеет крэш)
-            browser_ok = _init_browser(pool_size=min(state.MAX_WORKERS, 10))
-            if browser_ok:
-                _syslog("Browser pool: Playwright initialized — detail pages via browser")
-                _weblog("info", "  🌐 Режим: браузер (Playwright) для detail-страниц")
-            else:
-                _syslog("Browser pool: all browser options failed, fallback to httpx")
-                _weblog("warn", "  ⚠ Chrome не запустился. Использую резервный режим.")
+            _syslog("Browser pool: CDP unavailable, no HTTP fallback (removed)")
+            _weblog("warn", "  ⚠ Браузер не найден — установите Chrome/Chromium "
+                            "(вкладка «🩺 Диагностика» подскажет, что делать)")
     # Debug window — separate visible Chrome (CDP only, no tab pool)
     if state.DEBUG_CDP_WINDOW:
         dp = cdp_client.open_debug_window()
@@ -948,16 +874,11 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None, pause_event=
             state.update_pause_info(city=city, city_idx=city_idx + 1, cities_total=total_cities)
             # Reset skip event and per-city record counter for each new city
             state.reset_skip_city()
-            # Reset anti-bot backoff counter for new city
+            # Reset the adaptive backoff counter for the new city
             try:
-                from yandex_maps_parser.http_client import _anti_bot_reset, _rps_reset
+                from yandex_maps_parser.rate_limit import _anti_bot_reset, _rps_reset
                 _anti_bot_reset()
                 _rps_reset()
-            except Exception:
-                pass
-            # 2GIS: re-enable the full field set for the new city
-            try:
-                _2gis_reset_fields()
             except Exception:
                 pass
             _syslog(f"--- Город {city_idx + 1}/{total_cities}: {city} ---")
@@ -1050,10 +971,6 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None, pause_event=
         except Exception:
             pass
         # Shut down browser pool (Playwright + CDP)
-        try:
-            _close_browser()
-        except Exception:
-            pass
         try:
             cdp_client.close_browser()
         except Exception:
@@ -1285,21 +1202,13 @@ def run_process(params: dict, mp_queue, stop_file: str | None = None,
         if params.get("output_excel"): fmts.append("xlsx")
         if params.get("output_map"):   fmts.append("map")
         skipped = getattr(state, '_SKIPPED_CITIES', [])
-        # Enrich the resume payload with the pause position + 2GIS quota.
+        # Enrich the resume payload with the pause position.
         # This code runs INSIDE the child process, whose state.py holds the
         # live position (city/query/point) — the parent cannot see it.
         try:
             _pos = state.pause_position()
         except Exception:
             _pos = {}
-        _quota = None
-        if (params.get("source") or "yandex") == "twogis":
-            try:
-                from . import twogis as _tg
-                _quota = {"used": _tg.quota_used(), "cap": _tg.quota_cap(),
-                          "spent_this_run": _tg.quota_spent_this_run()}
-            except Exception:
-                _quota = None
         mp_queue.put({"type": "done", "files": files, "count": count,
                       "stopped": stop_event.is_set() and not pause_event.is_set(),
                       "paused": pause_event.is_set(),
@@ -1311,7 +1220,6 @@ def run_process(params: dict, mp_queue, stop_file: str | None = None,
                           "all_cities": params.get("cities") or [],
                           "params": params,
                           "position": _pos,
-                          "quota": _quota,
                       },
                       "formats": fmts,
                       "skipped_cities": skipped})

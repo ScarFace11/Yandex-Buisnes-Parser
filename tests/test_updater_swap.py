@@ -29,6 +29,8 @@ from flask import Flask
 
 ROOT = Path(__file__).resolve().parent.parent
 
+REAL_SWAP = os.environ.get("YP_UPDATER_E2E") == "1"
+
 
 @pytest.fixture()
 def env(tmp_path, monkeypatch):
@@ -86,6 +88,10 @@ def _make_zip(tmp_path: Path, version: str) -> Path:
 
 @pytest.mark.skipif(not sys.platform.startswith("win"), reason="updater.bat is Windows-only")
 class TestRealSwap:
+    @pytest.mark.skipif(
+        not REAL_SWAP,
+        reason="реальный свап запускает updater.bat (консоль + ping-ожидания) "
+               "и стартует exe — включается вручную: YP_UPDATER_E2E=1")
     def test_swap_installs_the_new_version_and_keeps_user_data(self, env, tmp_path, monkeypatch):
         client, app_root, work = env["client"], env["app_root"], env["work"]
         zip_path = _make_zip(tmp_path, "9.9.9")
@@ -159,11 +165,15 @@ class TestRealSwap:
         monkeypatch.setattr(env["update"], "_state",
                             lambda: {"latest": "9.9.9",
                                      "download": {"file": str(zip_path)}})
+        spawned = {}
+        monkeypatch.setattr(env["update"].subprocess, "Popen",
+                            lambda cmd, **kw: spawned.setdefault("cmd", cmd))
         assert env["client"].post("/update/apply").status_code == 200
         raw = (env["work"] / "updater.bat").read_bytes()
         assert b"\r\r" not in raw, "CR CR LF ломает выполнение скрипта"
         assert raw.count(b"\n") == raw.count(b"\r\n"), "у каждой строки ровно один CR"
         assert raw.startswith(b"@echo off\r\n")
+        assert str(spawned["cmd"][-1]).endswith("updater.bat")
 
     def test_stale_zip_is_refused_and_deleted(self, env, tmp_path, monkeypatch):
         client = env["client"]

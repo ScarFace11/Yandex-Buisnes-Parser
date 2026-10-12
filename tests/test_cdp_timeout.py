@@ -25,7 +25,11 @@ if "websocket" not in sys.modules:
     _fake_ws_mod.create_connection = None  # patched per-test
     sys.modules["websocket"] = _fake_ws_mod
 
-from yandex_maps_parser.cdp_client import _cdp_navigate_and_get_html, _CDP_USER_AGENT
+from yandex_maps_parser.cdp_client import (
+    _cdp_eval,
+    _cdp_navigate_and_get_html,
+    _CDP_USER_AGENT,
+)
 
 _ORG_URL = "https://yandex.ru/maps/org/4312570888"
 
@@ -168,3 +172,106 @@ class TestCdpFetch:
         nav = next(m for m in fake._sent if m["method"] == "Page.navigate")
         assert nav["params"]["url"] == _ORG_URL
         assert any(m["method"] == "Runtime.evaluate" for m in fake._sent)
+        assert _focus_emulated(fake), "вкладка пула должна считаться активной"
+
+
+def _focus_emulated(fake) -> bool:
+    for msg in fake._sent:
+        if msg["method"] == "Emulation.setFocusEmulationEnabled":
+            return msg["params"].get("enabled") is True
+    return False
+
+
+class TestPoolTabIsMarkedActive:
+    """Вкладка из пула — фоновая: Chrome отдаёт visibilityState="hidden",
+    и страница Яндекс.Карт не догружает продолжение списка.
+
+    В живом замере это давало 5 карточек вместо 24 (список виртуализован,
+    продолжение подгружается только у активной страницы). Поэтому перед
+    навигацией вкладке включают эмуляцию активной страницы.
+    """
+
+    def test_eval_page_emulates_active_tab(self):
+        from yandex_maps_parser.cdp_client import _cdp_eval_page
+
+        ws_mod = _load_ws_module()
+        fake = FakeWebSocket(responses=[
+            _state("https://yandex.ru/maps/?text=x", "complete", 400000),
+            _eval('{"cards": []}'),
+        ])
+        with patch.object(ws_mod, "create_connection", return_value=fake):
+            _cdp_eval_page("ws://fake", "https://yandex.ru/maps/?text=x",
+                           "expr", "true", timeout_s=5)
+
+        assert _focus_emulated(fake)
+        methods = [m["method"] for m in fake._sent]
+        # Порядок важен: вкладка должна быть активной ДО навигации.
+        assert methods.index("Emulation.setFocusEmulationEnabled") \
+            < methods.index("Page.navigate")
+
+
+class _SilentThenAnswerWs(FakeWebSocket):
+    """Молчит N циклов чтения (таймауты), затем отдаёт готовый ответ."""
+
+    def __init__(self, silent_cycles: int, answer: str = "value", sleep: float = 0.01):
+        super().__init__(responses=None)
+        self._silent_left = silent_cycles
+        self._answer = answer
+        self._sleep = sleep
+        self.recv_calls = 0
+
+    def recv(self):
+        self.recv_calls += 1
+        if self._silent_left > 0:
+            self._silent_left -= 1
+            time.sleep(self._sleep)   # каждый таймаут занимает время, как настоящий
+            import websocket
+            raise websocket.WebSocketTimeoutException("silence")
+        return json.dumps(_eval(self._answer))
+
+
+class TestSlowPromiseIsNotDropped:
+    """Замер не должен обрываться на тишине в сокете.
+
+    Сбор выдачи Яндекс.Карт (прокрутка списка) выполняется как обещание
+    в странице и считается 6–10 секунд и дольше. Обрыв замера на первом
+    таймауте чтения возвращал None — поиск показывал «выдача не
+    открылась», хотя ни одна карточка ещё не была прочитана.
+    """
+
+    def test_late_answer_survives_socket_silence(self):
+        fake = _SilentThenAnswerWs(silent_cycles=3, answer='{"cards": 7}')
+        result = _cdp_eval(fake, "someLongPromise()", time.monotonic() + 20.0,
+                           await_promise=True)
+        assert result == '{"cards": 7}'
+        assert fake.recv_calls == 4
+
+    def test_returns_none_only_at_deadline(self):
+        fake = _SilentThenAnswerWs(silent_cycles=100)
+        t0 = time.monotonic()
+        result = _cdp_eval(fake, "neverResolves()", time.monotonic() + 1.0,
+                           await_promise=True)
+        elapsed = time.monotonic() - t0
+        assert result is None
+        assert elapsed < 4.0, f"deadline not honoured ({elapsed:.1f}s)"
+
+    def test_broken_socket_gives_up_immediately(self):
+        """Разрыв связи (не тишина) — ждать бессмысленно."""
+        class ClosedWs(FakeWebSocket):
+            def recv(self):
+                raise ConnectionResetError("closed")
+
+        t0 = time.monotonic()
+        result = _cdp_eval(ClosedWs(), "x()", time.monotonic() + 30.0)
+        assert result is None
+        assert time.monotonic() - t0 < 2.0
+
+    def test_stop_aborts_silent_wait(self):
+        from yandex_maps_parser import cdp_client
+
+        fake = _SilentThenAnswerWs(silent_cycles=100)
+        t0 = time.monotonic()
+        with patch.object(cdp_client, "_stop_requested", return_value=True):
+            result = _cdp_eval(fake, "x()", time.monotonic() + 30.0)
+        assert result is None
+        assert time.monotonic() - t0 < 2.0

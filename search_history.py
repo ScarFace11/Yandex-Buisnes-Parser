@@ -38,12 +38,19 @@ def _load() -> list[dict]:
 
 
 def _save() -> None:
-    """Save history to disk."""
+    """Save history to disk.
+
+    Atomic (tmp + os.replace), like paths.save_settings: a crash in the middle
+    of json.dump must never leave a truncated file that the next _load()
+    silently turns into an empty history.
+    """
     if _cache is None:
         return
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+    tmp = HISTORY_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(_cache, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, HISTORY_FILE)
 
 
 def add_entry(

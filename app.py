@@ -19,6 +19,9 @@ import os
 # land next to the .exe instead of the read-only extraction dir.
 import paths
 
+# Вывод в UTF-8 и без падений — одно место на все точки входа (см. console_io).
+from console_io import enable_utf8, say
+
 
 def _ensure_streams(max_log_bytes: int = 2 * 1024 * 1024) -> None:
     """Ставит stdout/stderr, если их нет (macOS .app запускается без консоли).
@@ -29,6 +32,10 @@ def _ensure_streams(max_log_bytes: int = 2 * 1024 * 1024) -> None:
     (output/, logs/) — там же, где всё остальное. Файл обрезается, чтобы
     не расти бесконечно.
     """
+    # Перенаправленный вывод (лог-файл, пайп) — в UTF-8: системная кодировка
+    # русской Windows (cp1251/cp866) роняла приложение на первом же сообщении.
+    enable_utf8()
+
     if sys.stdout is not None and sys.stderr is not None:
         return
     stream = None
@@ -57,7 +64,6 @@ if paths.is_frozen():
 from flask import Flask
 
 from routes.parser import bp as parser_bp
-from routes.sender import bp as sender_bp
 from routes.api   import bp as api_bp
 from routes.public_api import bp as public_api_bp
 from routes.update  import bp as update_bp
@@ -82,12 +88,32 @@ def create_app() -> Flask:
     app.jinja_env.globals["APP_VERSION"] = APP_VERSION
     app.jinja_env.globals["DEV_BUILD"] = bool(is_dev_build())
     app.register_blueprint(parser_bp)
-    app.register_blueprint(sender_bp)
     app.register_blueprint(api_bp)
     app.register_blueprint(public_api_bp)
     app.register_blueprint(update_bp)
     # «🩺 Диагностика» — самопроверка по кнопке (только localhost-интерфейс).
     app.register_blueprint(diagnostics_bp)
+
+    @app.after_request
+    def _no_stale_ui(resp):
+        """Интерфейс не должен отдаваться из кеша браузера.
+
+        Раньше HTML и статика уходили без Cache-Control, и браузер применял
+        эвристическое кеширование (по Last-Modified): после перезапуска в
+        вкладке оставался старый интерфейс, а старая вёрстка перекрывала
+        экран — исправление выглядело как «ничего не изменилось».
+
+        HTML — no-store (страница всегда свежая), CSS/JS — no-cache с
+        ревалидацией (304 вместо повторной загрузки). Локальный сервер,
+        так что кеш здесь нечего экономить.
+        """
+        ctype = (resp.headers.get("Content-Type") or "").lower()
+        if "text/html" in ctype:
+            resp.headers["Cache-Control"] = "no-store"
+        elif any(k in ctype for k in ("text/css", "javascript", "text/javascript")):
+            resp.headers.setdefault("Cache-Control", "no-cache, must-revalidate")
+        return resp
+
     return app
 
 
@@ -98,7 +124,7 @@ try:
     from run_logger import cleanup_old_logs
     deleted = cleanup_old_logs()
     if deleted:
-        print(f"  🧹 Удалено {deleted} старых лог-файлов")
+        say(f"  [cleanup] Удалено {deleted} старых лог-файлов")
 except Exception:
     pass
 
@@ -107,7 +133,17 @@ try:
     from yandex_maps_parser.cache import cleanup_expired as _cache_cleanup
     removed = _cache_cleanup()
     if removed:
-        print(f"  🧹 Удалено {removed} устаревших кэш-файлов")
+        say(f"  [cleanup] Удалено {removed} устаревших кэш-файлов")
+except Exception:
+    pass
+
+# Хранение результатов: автоудаление файлов старше N дней (7/14/30/своё).
+try:
+    import retention
+    _removed = retention.cleanup_old_results()
+    if _removed:
+        say(f"  [cleanup] Удалено {_removed} устаревших файлов результатов "
+            f"(хранение {retention.get_retention_days()} дн.)")
 except Exception:
     pass
 
@@ -237,25 +273,23 @@ def _open_browser_later(url: str, delay: float = 1.5) -> None:
 
 
 def _maybe_run_browser_probe() -> bool:
-    """Probe-режим для проверки Chromium внутри .exe (YP_BROWSER_PROBE=1).
+    """Probe-режим для проверки браузера внутри .exe (YP_BROWSER_PROBE=1).
 
     В frozen-сборке `sys.executable` — это сам exe, поэтому обычный
-    сабпроцесс-тест «python -c …» из browser_client там не работает.
-    Вместо него родитель запускает СВОЙ exe с YP_BROWSER_PROBE=1: процесс
-    молча стартует Playwright+Chromium и выходит с кодом 0/1 — так же,
-    как делал бы python -c. Позволяет отловить крэш 0xC0000005 и другие
-    проблемы запуска ДО боевого прогона.
+    сабпроцесс-тест «python -c …» не сработал бы. Вместо него родитель
+    запускает СВОЙ exe с YP_BROWSER_PROBE=1: процесс молча поднимает тот же
+    браузер через CDP, что и боевой прогон, и выходит с кодом 0/1.
+    Проверяет ровно тот движок, которым собираются данные.
 
     Returns True, если процесс работал в probe-режиме (и надо выйти).
     """
     if os.environ.get("YP_BROWSER_PROBE", "").strip().lower() not in ("1", "true", "yes", "on"):
         return False
     try:
-        from playwright.sync_api import sync_playwright
-        with sync_playwright() as p:
-            b = p.chromium.launch(headless=True)
-            b.close()
-        sys.exit(0)
+        from yandex_maps_parser import cdp_client
+        ok = cdp_client.init_browser(pool_size=1, visible=False)
+        cdp_client.close_browser()
+        sys.exit(0 if ok else 1)
     except SystemExit:
         raise
     except Exception:
@@ -317,7 +351,7 @@ if __name__ == "__main__":
         from config import APP_VERSION, is_dev_build
         if is_dev_build():
             print("═" * 62)
-            print(f"  ⚙ DEV-СБОРКА {APP_VERSION} — только для разработки")
+            print(f"  DEV-СБОРКА {APP_VERSION} — только для разработки")
             print("  Авто-обновление выключено, чтобы публичный релиз не затёр")
             print("  локальные изменения. Приложение: "
                   f"http://127.0.0.1:{_port}")

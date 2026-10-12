@@ -524,7 +524,7 @@ class TestFilterAccordionGroups:
         # Тексты объясняют, что именно фильтруется и что данные могут быть
         # неполными (даты добавления у Яндекса нет вовсе).
         assert "Компании с 1 филиалом" in group
-        assert "базе 2ГИС" in group and "даты нет" in group
+        assert "Дата появления карточки в каталоге" in group and "даты нет" in group
 
     def test_company_type_group_styles(self):
         """Период гаснет без своего чекбокса, счётчик читается в обеих темах."""
@@ -772,15 +772,17 @@ class TestMessageTemplates:
     """
 
     def _panel(self) -> str:
-        body = TEMPLATE[TEMPLATE.index('id="p-templates"'):]
-        return body[: body.index('id="p-excel"')]
+        return TEMPLATE[TEMPLATE.index('id="p-templates"'):]
 
-    def test_tab_sits_between_history_and_export(self):
+    def test_tab_sits_after_history(self):
         assert 'id="t-templates"' in TEMPLATE
         assert 'onclick="showTab(\'templates\')"' in TEMPLATE
-        assert TEMPLATE.index('id="t-history"') < TEMPLATE.index('id="t-templates"') \
-            < TEMPLATE.index('id="t-excel"')
+        assert TEMPLATE.index('id="t-history"') < TEMPLATE.index('id="t-templates"')
         assert 'id="p-templates"' in TEMPLATE
+        # Вкладка «Форматы вывода» удалена: выбор полей переехал в аккордеон
+        # «02 · Что парсить», а экспорт/импорт данных — в «05 · Форматы результата».
+        assert 'id="t-excel"' not in TEMPLATE
+        assert 'id="p-excel"' not in TEMPLATE
 
     def test_panel_has_every_control(self):
         sec = self._panel()
@@ -808,12 +810,54 @@ class TestMessageTemplates:
         for cat in ('all', 'vk', 'telegram', 'whatsapp', 'instagram'):
             assert 'data-cat="' + cat + '"' in sec, cat
 
-    def test_table_bulk_and_sender_pickers_exist(self):
+    def test_table_bulk_pickers_exist(self):
         assert 'id="tbl-template"' in TEMPLATE
         assert 'id="bulk-template"' in TEMPLATE
-        assert 'id="s-template"' in TEMPLATE
         assert 'id="bulk-queue"' in TEMPLATE
-        assert 'onclick="fillSenderFromTemplate()"' in TEMPLATE
+        # Автоматическая рассылка удалена (ст. 18 ФЗ «О рекламе»):
+        # ни панели, ни VK-токена для отправки в разметке быть не должно.
+        assert 'id="s-template"' not in TEMPLATE
+        assert 'p-sender' not in TEMPLATE
+
+    def test_terms_gate_blocks_first_entry(self):
+        """При входе показывается соглашение: модал скрыт по умолчанию,
+        кнопка «Продолжить» неактивна до чекбокса, отказ даёт заглушку."""
+        assert 'id="terms-overlay"' in TEMPLATE
+        tag = TEMPLATE[TEMPLATE.rindex('<div', 0, TEMPLATE.index('id="terms-overlay"')):
+                       TEMPLATE.index('>', TEMPLATE.index('id="terms-overlay"')) + 1]
+        assert 'hidden' in tag, "оверлей должен быть скрыт до проверки /terms/status"
+        assert 'id="terms-accept-chk"' in TEMPLATE
+        assert 'onchange="onTermsCheckbox()"' in TEMPLATE
+        assert 'id="terms-accept-btn"' in TEMPLATE
+        assert 'disabled' in TEMPLATE[TEMPLATE.index('id="terms-accept-btn"'):
+                                      TEMPLATE.index('</button>', TEMPLATE.index('id="terms-accept-btn"'))]
+        assert 'onclick="declineTerms()"' in TEMPLATE
+        assert 'id="terms-declined"' in TEMPLATE
+        # Юридические ориентиры в тексте соглашения.
+        assert '152-ФЗ' in TEMPLATE
+        assert '«О рекламе»' in TEMPLATE
+
+    def test_terms_spell_out_the_operator_duties(self):
+        """Соглашение должно называть обязанности, а не только законы."""
+        body = TEMPLATE[TEMPLATE.index('id="terms-title"'):TEMPLATE.index('id="terms-declined"')]
+        # Обязанности оператора персональных данных и запрет рассылок.
+        for needle in ('оператором персональных данных', 'согласие субъекта',
+                       'уведомление Роскомнадзора', 'ст. 272.1 УК РФ',
+                       'ч. 4.1 ст. 14.3 КоАП РФ', 'массовых рассылок',
+                       'третьим лицам', 'защит намеренно не обходит'):
+            assert needle in body, needle
+        # Данные остаются у пользователя, автору не уходят.
+        assert 'Автору эти данные не передаются' in body
+
+    def test_terms_version_bumped_for_the_new_edition(self):
+        """Новая редакция должна переспрашиваться у пользователей."""
+        assert 'TERMS_VERSION = "2.0"' in API_PY
+
+    def test_sender_removed_entirely(self):
+        """Массовая рассылка не должна остаться нигде в разметке."""
+        for needle in ('s-token', 's-message', 's-excel-file',
+                       'startSend', 'btn-send-run', 'sender-stats-bar'):
+            assert needle not in TEMPLATE, needle
 
     def test_client_wires_handlers_and_endpoints(self):
         for fn in ('loadTemplates', 'renderTemplates', 'openTemplateModal', 'saveTemplateFromModal',
@@ -977,8 +1021,10 @@ class TestDiagnosticsPanel:
                        "runDiagnostics(['files','data','env'], this)"):
             assert needle in APP_JS, needle
 
-    def test_quota_warning_is_shown_before_the_click(self):
-        assert "списывает 1–2 запроса" in APP_JS
+    def test_live_check_warning_is_shown_before_the_click(self):
+        # Живая проверка ровно одна (токен ВК) — предупреждение об этом стоит
+        # в панели до нажатия, а не после.
+        assert "один живой запрос к ВКонтакте" in APP_JS
         assert "onclick=\"closeDiagnostics()\"" in APP_JS
 
     def test_js_endpoint_matches_the_flask_route(self):
@@ -986,7 +1032,8 @@ class TestDiagnosticsPanel:
         assert '@bp.route("/diagnostics/run", methods=["POST"])' in self.ROUTES
 
     def test_only_the_app_itself_can_run_it(self):
-        """Проверка ключей тратит квоту 2ГИС: чужая страница нажать не может."""
+        """Живая проверка обращается к внешнему сервису от имени пользователя:
+        чужая страница нажать эту кнопку за него не может."""
         assert "def _only_from_our_ui(" in self.ROUTES
         assert '@bp.before_request' in self.ROUTES
         assert "request.is_json" in self.ROUTES
@@ -1181,8 +1228,10 @@ class TestResultsTableDesign:
         cell = self._rule("\n#results-table td{")
         assert "vertical-align:top" in cell and "border-bottom:1px solid var(--bdr-soft)" in cell
         # Бейджи строки выровнены по центру, а не по верхней кромке.
-        assert "#results-table td:nth-child(7),#results-table td:nth-child(8)" in STYLE
-        assert "#results-table td:nth-child(6){white-space:nowrap}" in STYLE
+        # Колонки адресуются по data-col, а не по номеру: их можно
+        # переставлять («Столбцы» → перетаскивание).
+        assert '#results-table td[data-col="score"],#results-table td[data-col="socials"]' in STYLE
+        assert '#results-table td[data-col="phone"]{white-space:nowrap}' in STYLE
 
     def test_one_scrim_for_every_modal(self):
         """Четыре модалки — одно затемнение: раньше у каждой был свой rgba."""
@@ -1465,8 +1514,8 @@ class TestDailyDynamics:
         горизонт. Соцсети наоборот — колонке задаём минимум."""
         assert "function phoneHTML(" in APP_JS
         assert 'class="tbl-phone"' in APP_JS
-        assert re.search(r"#results-table td:nth-child\(6\)\{max-width:\d+px\}", STYLE)
-        assert re.search(r"#results-table th:nth-child\(8\),#results-table td:nth-child\(8\)\{min-width:\d+px", STYLE)
+        assert re.search(r'#results-table td\[data-col="phone"\]\{max-width:\d+px\}', STYLE)
+        assert re.search(r'#results-table th\[data-col="socials"\],#results-table td\[data-col="socials"\]\{min-width:\d+px', STYLE)
         assert ".tbl-phone{" in STYLE and ".tbl-phone span{display:block" in STYLE
 
     def test_stats_breakdowns_use_donut_and_split(self):
@@ -1498,15 +1547,15 @@ class TestDailyDynamics:
             rule_d = rule_d[:rule_d.index("}")]
             assert "var(--grn)" not in rule_d, rule_d
 
-    def test_quota_card_is_compact_with_manual_input(self):
-        """Карточка 2GIS: цифры крупно, пояснение — в tooltip «ⓘ», ручной
-        ввод расхода — малозаметное поле у значения."""
-        assert 'class="quota-info"' in APP_JS and "ⓘ" in APP_JS
-        assert ".quota-sub" not in STYLE, "пояснение уехало в tooltip"
-        assert "quota-manual" in APP_JS and "setTwogisQuotaManual" in APP_JS
-        assert "/twogis/quota" in APP_JS and "twogis_quota_manual" in API_PY
-        assert ".quota-num{font-size:24px" in STYLE
-        assert ".quota-manual{" in STYLE
+    def test_no_quota_card_left_in_the_interface(self):
+        """Платных API в приложении нет — счётчика квоты и ручного ввода
+        расхода тоже быть не должно (ни разметки, ни стилей)."""
+        assert "quota-manual" not in APP_JS
+        assert "quota-card" not in APP_JS and ".quota-card{" not in STYLE
+        assert "setTwogisQuotaManual" not in APP_JS
+        # Классы «громких» строк лога остались: ими подсвечиваются лимиты
+        # внешних сервисов, если они когда-нибудь появятся.
+        assert ".ll.quota-warn{" in STYLE
 
     def test_social_badges_have_full_names(self):
         """VK/TG/WA в таблице расшифровываются при наведении."""
@@ -1527,15 +1576,27 @@ class TestDailyDynamics:
         чекбокс|подпись; фильтр соцсетей прячется вместе с колонкой."""
         assert "#btn-cols{\n  /* Кнопка заметнее" in STYLE
         assert ".col-item{\n  display:grid;grid-template-columns:14px 1fr" in STYLE
-        assert "col-hidden" in APP_JS and ".tbl-social-row.col-hidden{display:none}" in STYLE
+        assert "col-hidden" in APP_JS and ".tbl-social-row.col-hidden" in STYLE
+        # Фильтр соцсетей также исчезает, когда их не собирали (socials-off).
+        assert ".tbl-social-row.socials-off{display:none}" in STYLE
 
     def test_data_export_import_is_in_ui(self):
-        """Экспорт/импорт отметок и настроек — во вкладке «Форматы вывода»."""
+        """Экспорт/импорт отметок и настроек — в аккордеоне «Форматы результата»
+        (бывшая вкладка «Форматы вывода» удалена: выбор полей живёт в «Что парсить»)."""
         assert 'id="data-import-file"' in TEMPLATE
         assert "exportAppData" in APP_JS and "importAppData" in APP_JS
         assert '@bp.route("/data/export")' in API_PY
         assert '@bp.route("/data/import", methods=["POST"])' in API_PY
         assert "_backup_reviewed" in API_PY
+
+    def test_hidden_attribute_always_wins(self):
+        """Оверлеи задают display:flex — без глобального правила для [hidden]
+        скрытый экран оставался поверх интерфейса и перехватывал все клики:
+        приложение выглядело полностью заблокированным. Это правило —
+        фундамент для «работа невозможна» и гейта устаревшей версии."""
+        assert "[hidden]{display:none!important}" in STYLE
+        for overlay in ('id="terms-declined"', 'id="version-gate"'):
+            assert overlay in TEMPLATE
 
     def test_every_day_carries_its_own_numbers(self):
         """Колонка несёт данные для подсказки: иначе карточка при наведении
@@ -1544,3 +1605,46 @@ class TestDailyDynamics:
             assert attr in APP_JS, attr
         assert "const axis = dailyAxis(maxFound)" in APP_JS
         assert "function dailyAxis(" in APP_JS
+
+
+class TestParseFieldsAccordion:
+    """Аккордеон «02 · Что парсить»: обычные и персональные данные.
+
+    Выбор полей заменил вкладку «Форматы вывода» и управляет сбором соцсетей.
+    """
+
+    def test_accordion_numbering_is_sequential(self):
+        # 01 Основные → 02 Что парсить → 03 Глубина → 04 Фильтрация → 05 Форматы.
+        order = ['acc-basic', 'acc-parse', 'acc-tech', 'acc-filters', 'acc-formats']
+        pos = [TEMPLATE.index(f'id="{a}"') for a in order]
+        assert pos == sorted(pos), "аккордеоны идут не по порядку"
+        for a, num in zip(order, ['01', '02', '03', '04', '05']):
+            start = TEMPLATE.index(f'id="{a}-hdr"')
+            seg = TEMPLATE[start:start + 400]
+            assert f'>{num}</span>' in seg, f"{a} должен быть под номером {num}"
+
+    def test_parse_grid_has_both_groups(self):
+        assert 'id="acc-parse"' in TEMPLATE
+        assert 'id="parse-regular-grid"' in TEMPLATE
+        assert 'id="parse-personal-grid"' in TEMPLATE
+        assert 'Обычные данные' in TEMPLATE
+        assert 'Персональные данные' in TEMPLATE
+        # Персональные данные предупреждают про 152-ФЗ.
+        assert '152-ФЗ' in TEMPLATE
+
+    def test_gating_hooks_exist(self):
+        # Соцсети/массовый обход/статистика прячутся, когда соцсети не собираются.
+        for needle in ('id="social-mode-block"', 'id="vk-activity-group"',
+                       'id="bulk-panel"', 'id="retention-block"',
+                       'id="f-retention-days"'):
+            assert needle in TEMPLATE, needle
+        for fn in ('renderParseFields', 'toggleParseField', 'updateSocialUI',
+                   'updateVkGate', 'socialsEnabled', 'onRetentionChange',
+                   'initRetention', 'getExcelCols'):
+            assert f'function {fn}(' in APP_JS, fn
+        # fetch_detail теперь следует выбору соцсетей, а не всегда true.
+        assert 'fetch_detail:    socialsEnabled()' in APP_JS
+
+    def test_retention_routes_exist(self):
+        assert '@bp.route("/retention/status")' in API_PY
+        assert '@bp.route("/retention/set", methods=["POST"])' in API_PY

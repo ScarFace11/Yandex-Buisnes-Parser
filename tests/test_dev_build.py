@@ -173,17 +173,32 @@ class TestDevPipeline:
         assert 'os.environ.get("YP_DEV"' in spec
         assert '"YandexBusinessParserDev" if DEV_BUILD else "YandexBusinessParser"' in spec
 
-    def test_windows_spec_bundles_playwright(self):
-        """Playwright больше не исключён из Windows-сборки: карточки в .exe
-        идут через встроенный Chromium, fallback на CDP/httpx остаётся.
-        Probe-режим (YP_BROWSER_PROBE) заменяет `python -c` в сабпроцесс-тесте."""
+    def test_windows_spec_drops_browser_automation(self):
+        """Playwright и curl_cffi исключены из Windows-сборки: страницы читает
+        только настоящий Chrome по CDP, а встроенный Chromium (~300 МБ) и
+        подмена TLS-отпечатка вместе с прямыми HTTP-запросами убраны."""
         spec = (ROOT / "parser.spec").read_text(encoding="utf-8")
-        assert "'playwright'" not in spec, "playwright не должен быть в excludes"
+        for excluded in ("'playwright'", "'curl_cffi'", "'greenlet'"):
+            assert excluded in spec, excluded
+        # Модуля HTTP/Playwright-движка в проекте больше нет.
+        assert not (ROOT / "yandex_maps_parser" / "browser_client.py").exists()
         app = (ROOT / "app.py").read_text(encoding="utf-8")
-        assert "_maybe_run_browser_probe" in app
-        assert "YP_BROWSER_PROBE" in app
-        bc = (ROOT / "yandex_maps_parser" / "browser_client.py").read_text(encoding="utf-8")
-        assert "YP_BROWSER_PROBE" in bc, "frozen-тест запускает exe с probe-env"
+        assert "browser_client" not in app
+
+    def test_sender_removed_from_app(self):
+        """Массовая рассылка удалена по юридическим соображениям:
+        ни blueprint, ни модуля, ни упоминаний в спеках сборки."""
+        assert not (ROOT / "routes" / "sender.py").exists()
+        assert not (ROOT / "vk_sender").exists()
+        for spec in ("parser.spec", "parser-mac.spec"):
+            text = (ROOT / spec).read_text(encoding="utf-8")
+            assert "vk_sender" not in text, spec
+        app = (ROOT / "app.py").read_text(encoding="utf-8")
+        assert "sender_bp" not in app
+        # Соглашение при входе: серверная фиксация согласия в settings.json.
+        api = (ROOT / "routes" / "api.py").read_text(encoding="utf-8")
+        assert "terms/status" in api and "terms/accept" in api
+        assert "TERMS_VERSION" in api
 
     def test_ci_does_not_build_a_dev_exe(self):
         """Сборка dev-exe — только локально: в репозитории нет ни workflow,

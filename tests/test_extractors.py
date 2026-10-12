@@ -11,46 +11,38 @@ from yandex_maps_parser.extractors import (
     extract_socials,
     extract_phone,
     extract_rating_reviews,
+    extract_website,
     _extract_from_json_blob,
     _clean_social_url,
     _normalize_social_url,
     _is_aggregator,
-    unwrap_outbound,
 )
 from yandex_maps_parser.search import parse_feature
 
 
-# ── unwrap_outbound (2GIS outbound link wrappers) ──────────────
+# ── extract_website (карточка организации) ────────────────────
 
-class TestUnwrapOutbound:
-    WRAPPER = ("http://link.2gis.ru/1.2/44C9D33B/online/20260901/project4/"
-               "70000001038637938/null/tomig32986304dCI391881J3IH2H72lw54F004ded")
+class TestExtractWebsite:
+    def test_contact_block_link_wins(self):
+        html = '<a href="https://salon-example.ru/">Сайт</a>'
+        assert extract_website(html) == "https://salon-example.ru"
 
-    def test_unwraps_target(self):
-        assert unwrap_outbound(self.WRAPPER + "?https://vk.com/lakomkacafe") == \
-            "https://vk.com/lakomkacafe"
+    def test_social_link_is_not_a_website(self):
+        html = '<a href="https://vk.com/salon">Сайт</a>'
+        assert extract_website(html) == ""
 
-    def test_unwraps_url_encoded_target(self):
-        assert unwrap_outbound(self.WRAPPER + "?https%3A%2F%2Ft.me%2Fmybar") == \
-            "https://t.me/mybar"
+    def test_aggregator_is_not_a_website(self):
+        html = '<a href="https://taplink.cc/salon">Сайт</a>'
+        assert extract_website(html) == ""
 
-    def test_wrapper_without_target_dropped(self):
-        assert unwrap_outbound(self.WRAPPER) == ""
+    def test_page_data_url_field(self):
+        html = ('<script type="application/json">{"org":{"url":'
+                '"https://salon-example.ru"}}</script>')
+        assert extract_website(html) == "https://salon-example.ru"
 
-    def test_ordinary_url_untouched(self):
-        assert unwrap_outbound("https://vk.com/foo") == "https://vk.com/foo"
-        assert unwrap_outbound("") == ""
-
-    def test_extract_socials_unwraps_2gis_redirect(self):
-        html = f'<a href="{self.WRAPPER}?http://vk.com/zavarka_cafe">VK</a>'
-        result = extract_socials(html)
-        # …and http:// profiles are upgraded to https:// for the export.
-        assert result["vk"] == "https://vk.com/zavarka_cafe"
-        assert "link.2gis.ru" not in result["vk"]
-
-    def test_extract_socials_ignores_dead_wrapper(self):
-        html = f'<a href="{self.WRAPPER}">соцсеть</a>'
-        assert extract_socials(html) == {}
+    def test_empty_page_has_no_website(self):
+        assert extract_website("<html><body>нет контактов</body></html>") == ""
+        assert extract_website("") == ""
 
 
 # ── extract_socials ────────────────────────────────────────────
@@ -183,7 +175,7 @@ class TestExtractRatingReviews:
         assert extract_rating_reviews(html) == (4.9, 77)
 
 
-# ── extract_phone (2GIS/Yandex card fallback) ─────────────────
+# ── extract_phone (карточка организации) ──────────────────────
 
 class TestExtractPhone:
     def test_tel_link_wins(self):
@@ -211,8 +203,8 @@ class TestExtractPhone:
         ) == ""
 
     def test_phone_from_embedded_page_data(self):
-        # 2GIS hides the number behind «Показать телефон» but ships it in the
-        # page data — read it from there.
+        # Карточка прячет номер за кнопкой «Показать телефон», но отдаёт его
+        # в данных страницы — читаем оттуда, без лишнего клика.
         html = ('<script type="application/json">{"org":{"contacts":'
                 '[{"type":"phone","phone":"+7 812 555-11-22"}]}}</script>')
         assert extract_phone(html) == "+7 812 555-11-22"
@@ -336,7 +328,11 @@ class TestParseFeature:
         assert rec["name"] == "Тест"
 
     def test_website_filtered_in_without_website_mode(self):
-        """Parse mode «without_website» (default) drops businesses with a website."""
+        """Parse mode «without_website» (default) drops businesses with a website.
+
+        Выдача сайт не показывает, поэтому фильтр добивает его на карточке
+        (enrichment → extract_website) — здесь проверяется API-путь фильтра.
+        """
         import yandex_maps_parser.state as state
         state.SOCIAL_MODE = "all"
         state.PARSE_MODE = "without_website"

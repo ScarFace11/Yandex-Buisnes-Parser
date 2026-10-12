@@ -1,0 +1,148 @@
+name: Manual build (no release)
+
+# Ручная сборка «как есть» — по кнопке из вкладки Actions.
+# НИЧЕГО не публикует: ни релиза, ни тега, ни правки версии/version.json.
+# Просто собирает .exe (Windows) и .zip (.app для macOS) и кладёт их в
+# артефакты запуска — оттуда файл можно скачать.
+#
+# Версию НЕ трогаем: config.APP_VERSION берётся из репозитория как есть, даже
+# если она «-dev». Поэтому это не публичная сборка — для тестов и проверок.
+# Публичные релизы по-прежнему собирают build-exe.yml / build-macos.yml.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Что собрать'
+        type: choice
+        required: true
+        default: both
+        options:
+          - both
+          - windows
+          - macos
+      retention_days:
+        description: 'Сколько дней хранить артефакт'
+        type: string
+        required: false
+        default: '14'
+
+permissions:
+  contents: read   # только сборка — никаких релизов и записей в репозиторий
+
+jobs:
+  windows:
+    name: Windows .exe
+    if: ${{ inputs.target == 'both' || inputs.target == 'windows' }}
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build exe (parser.spec)
+        run: pyinstaller parser.spec --noconfirm
+
+      - name: Smoke test the build
+        shell: pwsh
+        run: |
+          $exe = 'dist/YandexBusinessParser/YandexBusinessParser.exe'
+          if (-not (Test-Path $exe)) { throw "exe not found: $exe" }
+          $work = Join-Path $env:RUNNER_TEMP 'smoke'
+          New-Item -ItemType Directory -Force -Path $work | Out-Null
+          Copy-Item -Recurse -Force dist/YandexBusinessParser "$work/app"
+          $proc = Start-Process -FilePath "$work/app/YandexBusinessParser.exe" -WorkingDirectory $work -PassThru -WindowStyle Hidden
+          try {
+            $ok = $false
+            foreach ($i in 1..30) {
+              Start-Sleep -Seconds 2
+              try {
+                $r = Invoke-WebRequest -Uri 'http://127.0.0.1:5000/' -UseBasicParsing -TimeoutSec 5
+                if ($r.StatusCode -eq 200 -and $r.Content -match 'Поиск клиентов') { $ok = $true; break }
+              } catch { }
+            }
+            if (-not $ok) { throw 'smoke test failed: no HTTP 200 from the bundled server' }
+            Write-Host 'Smoke test passed: server responded with the UI page.'
+          } finally {
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Zip the build
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/YandexBusinessParser/* `
+            -DestinationPath dist/YandexBusinessParser-windows-x64.zip
+
+      - name: Upload the .zip as a downloadable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: YandexBusinessParser-windows-x64
+          path: dist/YandexBusinessParser-windows-x64.zip
+          retention-days: ${{ fromJSON(inputs.retention_days) }}
+
+  macos:
+    name: macOS .app (${{ matrix.label }})
+    if: ${{ inputs.target == 'both' || inputs.target == 'macos' }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            label: arm64
+            arch: arm64
+          - runner: macos-15-intel
+            label: x64
+            arch: x86_64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build the .app bundle (parser-mac.spec)
+        env:
+          YP_ARCH: ${{ matrix.arch }}
+          MACOSX_DEPLOYMENT_TARGET: '11.0'
+        run: |
+          rm -rf build dist-mac
+          python -m PyInstaller parser-mac.spec --noconfirm --distpath dist-mac
+
+      # Manual/dev build: подпись не настраиваем (в секретах может не быть
+      # сертификата). ad-hoc подпись убирает часть предупреждений Gatekeeper;
+      # при первом запуске macOS всё равно попросит подтверждение.
+      - name: Ad-hoc sign (best effort)
+        run: |
+          codesign --force --deep --sign - "dist-mac/YandexBusinessParser.app" \
+            || echo "ad-hoc sign skipped"
+
+      - name: Package the .zip
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent \
+            "dist-mac/YandexBusinessParser.app" \
+            "dist-mac/YandexBusinessParser-macos-${{ matrix.label }}.zip"
+          ls -lh dist-mac/*.zip
+
+      - name: Upload the .zip as a downloadable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: YandexBusinessParser-macos-${{ matrix.label }}
+          path: dist-mac/*.zip
+          retention-days: ${{ fromJSON(inputs.retention_days) }}

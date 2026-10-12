@@ -14,7 +14,7 @@ Breakdown (each item is reported so the UI can explain the number):
     дорогая категория     +5   за сайт платят выше среднего
 
 Maximum is 90: «новый бизнес (< 6 мес)» из ТЗ is not counted because neither
-Yandex nor 2GIS exposes a registration date. Missing data never adds points
+Яндекс.Карты не показывают дату регистрации организации. Missing data never adds points
 and never subtracts them — it simply does not count.
 """
 from .constants import EXPENSIVE_CATEGORY_KEYWORDS

@@ -142,7 +142,6 @@ globalThis.updateQueriesCounter = () => {};
 globalThis.updateClearAllBtn = () => {};
 globalThis.updateBasicSummary = () => {};
 globalThis.updateRunBtnState = () => {};
-globalThis.updatePagesCapNote = () => {};
 globalThis.onContinueToggle = () => {};
 globalThis.onGridSlider = () => {};
 globalThis.setGridMode = mode => { globalThis._gridMode = mode; };
@@ -220,7 +219,7 @@ for (const name of ['BLACKLIST_MAX_WORDS', 'BLACKLIST_MAX_LEN']) {
 // ── 1. getCurrentSettings captures the full form ─────────────
 test('getCurrentSettings captures cities, source, socials, depth and formats', () => {
   globalThis.selectedCities = ['Уфа', 'Москва'];
-  globalThis.dataSource = '2gis';
+  globalThis.dataSource = 'yandex';
   globalThis._gridMode = 'manual';
   globalThis.socialMode = 'with_socials';
   globalThis.requiredSocials = new Set(['vk', 'tg']);
@@ -233,7 +232,8 @@ test('getCurrentSettings captures cities, source, socials, depth and formats', (
 
   const s = globalThis.getCurrentSettings();
   assert.deepEqual(s.cities, ['Уфа', 'Москва'], 'cities are saved in presets');
-  assert.equal(s.source, '2gis', 'data source is saved');
+  // Источник один, поэтому в пресет он не пишется — переключать нечего.
+  assert.ok(!('source' in s) || s.source === 'yandex', 'no source to switch');
   assert.equal(s.grid, true, 'grid mode saved');
   assert.equal(s.grad, '30');
   assert.equal(s.gstep, '8');
@@ -247,7 +247,8 @@ test('getCurrentSettings captures cities, source, socials, depth and formats', (
   assert.ok('vkCheck' in s && 'vkMode' in s && 'minScore' in s && 'sortScore' in s,
             'VK activity and lead-score settings are saved');
   // «Способ парсинга» тоже входит в пресет
-  assert.equal(s.fetchEngine, 'auto', 'fetch engine saved in presets');
+  // Способ загрузки страниц один (Chrome CDP) — в пресете его больше нет.
+  assert.ok(!('fetchEngine' in s), 'no engine to switch');
   // API keys never saved
   assert.ok(!('apikeys' in s) && !('yandex_key' in s));
 });
@@ -334,7 +335,7 @@ test('одиночки, новые и период переживают прес
 test('applySettings restores the full preset (round-trip)', () => {
   // Self-contained: earlier tests reset the form, so build the state here.
   globalThis.selectedCities = ['Уфа', 'Москва'];
-  globalThis.dataSource = '2gis';
+  globalThis.dataSource = 'yandex';
   globalThis._gridMode = 'manual';
   globalThis.socialMode = 'with_socials';
   globalThis.requiredSocials = new Set(['vk', 'tg']);
@@ -352,8 +353,7 @@ test('applySettings restores the full preset (round-trip)', () => {
 
   globalThis.applySettings(saved);
   assert.deepEqual(globalThis.selectedCities, ['Уфа', 'Москва'], 'cities restored');
-  assert.equal(globalThis.dataSource, '2gis', 'source restored');
-  assert.equal(globalThis.fetchEngine, 'cdp', 'fetch engine restored');
+  assert.equal(globalThis.dataSource, 'yandex', 'source restored');
   assert.equal(globalThis._gridMode, 'manual', 'grid restored');
   assert.deepEqual([...globalThis.requiredSocials].sort(), ['tg', 'vk'], 'social tiles restored');
   assert.equal(els['f-grad'].value, '30');
@@ -373,10 +373,10 @@ test('applySettings with cities:null does not touch selectedCities', () => {
 // ── 4. Reset restores defaults everywhere ────────────────────
 test('resetToDefaults returns the form to HTML defaults', () => {
   globalThis.applySettings({
-    queries: 'кафе', cities: ['Сочи'], source: '2gis', grid: true, grad: 45, gstep: 10,
+    queries: 'кафе', cities: ['Сочи'], source: 'yandex', grid: true, grad: 45, gstep: 10,
     socialMode: 'with_socials', requiredSocials: ['vk'], pages: 15, continueMode: true,
   });
-  assert.equal(globalThis.dataSource, '2gis');
+  assert.equal(globalThis.dataSource, 'yandex');
 
   globalThis.resetToDefaults();
   assert.equal(els['f-queries'].value, '', 'queries cleared');
@@ -394,11 +394,11 @@ test('resetToDefaults returns the form to HTML defaults', () => {
 
 // ── 5. loadPreset applies + marks ────────────────────────────
 test('loadPreset applies settings and shows the applied name', () => {
-  globalThis.__presets = [{ name: 'Кафе 2GIS', settings: {
-    queries: 'кафе', cities: ['Уфа'], source: '2gis', socialMode: 'all',
+  globalThis.__presets = [{ name: 'Кафе Яндекс', settings: {
+    queries: 'кафе', cities: ['Уфа'], source: 'yandex', socialMode: 'all',
   }}];
   globalThis.loadPreset(0);
   assert.deepEqual(globalThis.selectedCities, ['Уфа']);
-  assert.equal(globalThis.dataSource, '2gis');
-  assert.equal(globalThis.__appliedPreset, 'Кафе 2GIS');
+  assert.equal(globalThis.dataSource, 'yandex');
+  assert.equal(globalThis.__appliedPreset, 'Кафе Яндекс');
 });

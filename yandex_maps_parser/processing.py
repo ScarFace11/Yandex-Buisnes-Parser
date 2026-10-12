@@ -1,13 +1,16 @@
 """
 Two-stage pipeline: Сбор (Raw) → Фильтрация (Processed).
 
-Stage 1 (collection, run_web with PIPELINE="raw") parses WITHOUT stage-2
-filters and exports every record to output/raw/ as one xlsx per
-query × city. Stage 2 (this module) reads those raw files back, applies
-the user filters and writes output/processed/{format}/ files.
+Stage 1 (collection, run_web with PIPELINE="raw") exports records to
+output/raw/ as one xlsx per query × city. It applies only the per-record
+filters (`crawl_skip_reason`: чёрный список, «только без сайтов», соцсети) —
+so a record the filters would drop is never streamed to the live table and
+never written to raw. Stage 2 (this module) reads those raw files back,
+applies the full filter set and writes output/processed/{format}/ files.
 
-Benefits: filtering never slows the crawl, raw data survives for
-re-processing with different filters, processed output is reproducible.
+Benefits: filtering never slows the crawl, the filters that need the whole
+record set (объединение филиалов, «тип компании», оценка лида) stay
+re-runnable, processed output is reproducible.
 """
 import os
 import re
@@ -192,6 +195,91 @@ def blacklist_matcher(words):
     return _hit
 
 
+# ── Предфильтр сбора (этап 1) ─────────────────────────────────
+# Три фильтра известны ПО САМОЙ ЗАПИСИ: чёрный список, «только без сайтов»
+# и соцсети (режим + обязательные сети). Такую запись незачем ни показывать
+# в живой таблице, ни писать в output/raw/ — её всё равно снимет этап 2.
+# Остальные фильтры (объединение филиалов, «тип компании», оценка лида,
+# активность ВК) требуют всего набора записей и остаются только на этапе 2.
+
+_CRAWL_MATCHER: tuple[tuple[str, ...], object] | None = None
+
+
+def _cached_blacklist_matcher(words):
+    """`blacklist_matcher(words)` с кэшем: сборе зовёт его на каждой записи."""
+    global _CRAWL_MATCHER
+    parsed = tuple(parse_blacklist_words(words))
+    if _CRAWL_MATCHER is None or _CRAWL_MATCHER[0] != parsed:
+        _CRAWL_MATCHER = (parsed, blacklist_matcher(list(parsed)))
+    return _CRAWL_MATCHER[1]
+
+
+def crawl_skip_reason(rec: dict, *, words=(), parse_mode: str = "all",
+                      social_mode: str = "all", required_socials=(),
+                      min_lead_score=0, only_single_branch: bool = False,
+                      only_new_months=None, vk_check: bool = False) -> str:
+    """Почему запись не попадает в raw УЖЕ на сборе (``""`` — попадает).
+
+    Этап 1 и этап 2 обязаны решать одинаково: сбор отбрасывает ровно те
+    записи, которые снял бы `apply_filters` по тем же фильтрам. Иначе живая
+    таблица показывала бы записи, которых нет в результате, а «Применить
+    фильтры заново» — другие числа. Общий признак «агрегатор ≠ сайт»
+    (`_has_own_website`) намеренно один на оба этапа.
+
+    Кроме правил по самой записи из выдачи (чёрный список, «без сайта»,
+    соцсети) здесь же работают фильтры, которые тоже решаются по ОДНОЙ
+    готовой записи: «только новые», «только одиночки» (когда число филиалов
+    дал сам источник) и порог оценки лида. Оценка считается без проверки ВК:
+    при `vk_check` этап 2 добавит баллы за активность ВК, и сбор не должен
+    снять запись, которая на этапе 2 осталась бы. Объединение филиалов и сама
+    проверка ВК требуют всего набора/внешнего API — они остаются на этапе 2.
+
+    Возвращает причину: ``blacklist`` | ``website`` | ``no_socials`` |
+    ``has_socials`` | ``missing_socials`` | ``new`` | ``single`` | ``score`` |
+    ``""``.
+    """
+    hit = _cached_blacklist_matcher(words)
+    if hit and hit(rec):
+        return "blacklist"
+    if (parse_mode or "all") == "without_website" and _has_own_website(rec):
+        return "website"
+    mode = social_mode or "all"
+    required = {str(p) for p in (required_socials or ()) if str(p) in KNOWN_PLATFORMS}
+    has_any_social = any(rec.get(p) for p in KNOWN_PLATFORMS)
+    if mode == "with_socials" and not has_any_social:
+        return "no_socials"
+    if mode == "without_socials":
+        # Сети нельзя требовать от записи, у которой их не должно быть.
+        if has_any_social:
+            return "has_socials"
+    elif required and not all(rec.get(p) for p in required):
+        return "missing_socials"
+    # «🎯 Тип компании»: новые карточки (по дате) и сети, число филиалов
+    # которых назвал сам источник. Нет данных — запись НЕ снимаем: фильтр не
+    # выдумывает факты, а этап 2 может досчитать филиалы по набору.
+    months = normalize_only_new_months(only_new_months)
+    if months and not is_new_company(rec, months):
+        return "new"
+    if only_single_branch:
+        branch = _int_or_none(rec.get("branch_count"))
+        if branch is not None and branch >= 2:
+            return "single"
+    # Оценка лида — чистая функция доступных полей (сайт, соцсети, рейтинг,
+    # отзывы, телефон, категория). Заполняем её сразу: живая таблица покажет
+    # оценку, а не пустую ячейку до этапа 2.
+    min_score = _int_or_zero(min_lead_score)
+    if min_score and not vk_check:
+        try:
+            from .lead_score import compute_score
+            score, _ = compute_score(rec)
+            rec["lead_score"] = score
+            if score < min_score:
+                return "score"
+        except Exception:
+            pass
+    return ""
+
+
 # ── «🎯 Тип компании»: одиночки и новые ──────────────────────
 # Одиночки — сеть из одного филиала: решение принимает владелец.
 # Новые — карточка недавно появилась в 2ГИС: бюджет на запуск уже есть.
@@ -313,13 +401,29 @@ def company_type_breakdown(records: list[dict], only_new_months=None) -> dict:
             "with_date": with_date, "months": months}
 
 
+_AGGREGATOR_RE = re.compile(r"taplink|linktree|linktr\.ee|becons\.ai|illions\.app", re.I)
+
+
 def _has_own_website(rec: dict) -> bool:
-    # Aggregators (taplink/linktree) are link pages, not a website —
-    # same rule as the live PARSE_MODE filter during collection.
+    """True, если у записи есть СВОЙ сайт (ссылка-витрина сайтом не считается).
+
+    Один признак на оба этапа: сбор («только без сайтов» режет запись ещё до
+    карточки) и этап 2 обязаны видеть сайт одинаково. Список агрегаторов —
+    общий `LINK_AGGREGATORS` из constants: taplink/linktree ловились и раньше,
+    но vk.cc, bio.link, beacons.ai считались сайтом и в этом режиме терялись.
+    """
     site = (rec.get("website") or rec.get("aggregator_url") or "").strip()
     if not site:
         return False
-    return not re.search(r"taplink|linktree|linktr\.ee|becons\.ai|illions\.app", site, re.I)
+    if _AGGREGATOR_RE.search(site):
+        return False
+    try:
+        from .extractors import _is_aggregator
+        if _is_aggregator(site):
+            return False
+    except Exception:
+        pass
+    return True
 
 
 def apply_filters(raw_files: list[str], filters: dict, log_fn=None) -> dict:
@@ -352,9 +456,11 @@ def apply_filters(raw_files: list[str], filters: dict, log_fn=None) -> dict:
     если слово исключает компанию, она не вернётся ни соцсетями, ни оценкой
     лида — иначе «исключено» зависело бы от остальных галочек.
 
-    Socials live here (not at collection time) so that output/raw/ always
-    keeps every organization found and a different social slice can be
-    produced later with «Применить фильтры заново» — no re-crawling.
+    Blacklist / «только без сайтов» / соцсети срабатывают ещё и на сборе
+    (`crawl_skip_reason` — те же правила): запись не показывается в живой
+    таблице и не тратит загрузку карточки. Здесь они повторяются, потому что
+    raw-файлы бывают старыми и чужими (CLI, архив), а «Применить фильтры
+    заново» обязано считать так же, как считает сбор.
     """
     records: list[dict] = []
     for rf in raw_files:

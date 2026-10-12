@@ -132,7 +132,15 @@ def _wait_for_token() -> bool:
             return True
         if state.is_skip_city():
             return True
-        wait = max(_token_bucket.try_acquire(_get_rps()), _cooldown_remaining())
+        # Cooldown first: try_acquire() consumes a token whenever one is
+        # available, so during a (possibly long) cooldown the old max() burned
+        # a token on every pass and then discarded it.
+        cooldown = _cooldown_remaining()
+        if cooldown > 0:
+            if _interruptible_sleep(cooldown, quiet=True):
+                return True
+            continue
+        wait = _token_bucket.try_acquire(_get_rps())
         if wait <= 0:
             return False
         if _interruptible_sleep(wait, quiet=True):

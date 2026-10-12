@@ -8,23 +8,24 @@
 
 Правила, по которым она сделана:
 
-* **Ничего не трогает в рабочем состоянии.** Живые проверки ключей идут
-  отдельным клиентом httpx — без ретраев и общего rate-limiter, поэтому
-  диагностика не может ни ускорить, ни остановить идущий поиск (общий
-  `http_client._get` умеет `state.request_stop()`).
-* **Ключи наружу не отдаются.** В ответе только булевы признаки и словами
+* **Ничего не трогает в рабочем состоянии.** Живые проверки две: токен
+  ВКонтакте (отдельный клиент httpx, без ретраев и общего rate-limiter) и
+  проба браузера — она открывает свой Chrome приложением и закрывает его
+  сразу после проверки, поэтому идущий поиск не ускорить и не остановить.
+* **Секреты наружу не отдаются.** В ответе только булевы признаки и словами
   описанный результат; текст исключений целиком не пересказывается — в нём
-  мог бы оказаться ключ из URL запроса.
-* **Квота не тратится молча.** Проверка 2ГИС — это 1–2 запроса из месячного
-  лимита: кнопка про это предупреждает, а ответ говорит, сколько уже ушло.
+  мог бы оказаться токен из URL запроса.
+* **Токен проверяется только по нажатию.** Живая проверка — сетевой запрос,
+  поэтому она отделена от локальных и запускается осознанно.
 * **Ошибки не роняют панель.** Любое падение отдельной проверки становится
   строкой «ошибка» с человеческим объяснением, а не 500.
 
 Эндпоинт один: POST /diagnostics/run {"groups": ["keys", "files", "data", "env"]}.
 
-Запустить его может только сам интерфейс: проверка ключей тратит запросы
-2ГИС, а окно приложения слушает 127.0.0.1 — значит чужая страница в браузере
-не должна уметь нажать эту кнопку за пользователя (см. `_only_from_our_ui`).
+Запустить его может только сам интерфейс: проверка токена обращается к
+внешнему сервису от имени пользователя, а окно приложения слушает 127.0.0.1 —
+значит чужая страница в браузере не должна уметь нажать эту кнопку за него
+(см. `_only_from_our_ui`).
 """
 import os
 import re
@@ -66,22 +67,15 @@ def _res(cid: str, group: str, status: str, title: str,
 def effective_keys() -> dict:
     """Ключи, которыми реально пользуется запуск.
 
-    Порядок как у /api-keys/status: сначала config (.env), затем ручной ввод
-    в форме этого запуска (state) — иначе панель показывала бы «ключ не задан»
-    человеку, который только что вставил его в поле.
+    Единственный ключ — токен ВКонтакте (проверка активности сообществ).
+    Яндекс.Карты читаются браузером, поэтому ключа Яндекса в приложении нет:
+    и API организаций, и геокодер платные, а их бесплатные версии запрещают
+    сохранять данные.
     """
-    keys = {"yandex": "", "twogis": "", "vk": ""}
+    keys = {"vk": ""}
     try:
-        from config import TWOGIS_API_KEY, VK_TOKEN, YANDEX_API_KEY
-        keys = {"yandex": (YANDEX_API_KEY or "").strip(),
-                "twogis": (TWOGIS_API_KEY or "").strip(),
-                "vk": (VK_TOKEN or "").strip()}
-    except Exception:
-        pass
-    try:
-        from yandex_maps_parser import state as pstate
-        keys["yandex"] = keys["yandex"] or (getattr(pstate, "YANDEX_API_KEY", "") or "").strip()
-        keys["twogis"] = keys["twogis"] or (getattr(pstate, "TWOGIS_API_KEY", "") or "").strip()
+        from config import VK_TOKEN
+        keys = {"vk": (VK_TOKEN or "").strip()}
     except Exception:
         pass
     try:
@@ -106,7 +100,7 @@ def _http_get(url: str, params: dict) -> tuple[int, str, dict | None, str]:
     """GET → (код, тело, json|None, примечание).
 
     Свой клиент, без ретраев и общего лимитера: диагностика не должна
-    вмешиваться в идущий поиск (общий `http_client._get` умеет остановить прогон).
+    вмешиваться в идущий поиск.
     """
     try:
         import httpx
@@ -179,158 +173,11 @@ def _dir_size(path: str, suffix: str = "") -> tuple[int, int]:
 
 # ── Группа «keys»: живые проверки ─────────────────────────────
 
-def check_yandex_key(key: str) -> dict:
-    """Один пробный запрос к Яндекс.Картам: работает ли ключ."""
-    if not key:
-        return _res("yandex_key", "keys", "warn", "Ключ Яндекс.Карт не задан",
-                    "Без него поиск по Яндекс.Картам не запустится.",
-                    "Вставьте ключ в блоке «API-ключи» и сохраните.")
-    status, text, data, note = _http_get("https://search-maps.yandex.ru/v1/", {
-        "text": "кофе", "ll": "37.6173,55.7558", "type": "biz", "results": 1,
-        "lang": "ru_RU", "apikey": key,
-    })
-    if not status:
-        return _res("yandex_key", "keys", "error", "Яндекс.Карты не ответили",
-                    f"Сбой соединения ({note}).",
-                    "Проверьте интернет, VPN или прокси и повторите проверку.")
-    if status == 403:
-        # Яндекс сам говорит, что именно не так: «Invalid api key» — один
-        # случай, «Quota exceeded» — совсем другой, и советы у них разные.
-        message = _error_message(text, data)
-        low = message.lower()
-        if any(word in low for word in ("invalid", "not found", "unknown", "не найден")):
-            # «Invalid api key» ≠ ключ отозван: сервисы Яндекса у ключей
-            # разные — ключ Геокодера жив, а поиск организаций его не
-            # принимает. Пробуем ключ на Геокодере, чтобы дать точный совет.
-            g_status, _g_text, _g_data, _g_note = _http_get(
-                "https://geocode-maps.yandex.ru/1.x/",
-                {"geocode": "Москва", "format": "json", "results": 1, "apikey": key},
-            )
-            if g_status == 200:
-                return _res("yandex_key", "keys", "error",
-                            "Ключ выпущен для другого сервиса Яндекса",
-                            f"Ключ принят Геокодером, а поиск по организациям его "
-                            f"отклоняет — Яндекс ответил: {message}.",
-                            "В кабинете разработчика откройте этот ключ и включите ему "
-                            "сервис «Поиск по организациям» (yandex.ru/maps-api) — либо "
-                            "выпустите новый ключ именно для него. Геокодер продолжит "
-                            "работать.")
-            return _res("yandex_key", "keys", "error", "Ключ Яндекс.Карт недействителен",
-                        f"Яндекс ответил: {message}.",
-                        "Проверьте ключ в кабинете разработчика: он мог быть отозван "
-                        "или скопирован с лишними символами.")
-        if any(word in low for word in ("limit", "quota", "exceed", "лимит")):
-            return _res("yandex_key", "keys", "error", "Лимит запросов Яндекс.Карт исчерпан",
-                        f"Яндекс ответил: {message}.",
-                        "Суточный лимит Search API сбрасывается раз в сутки — "
-                        "подождите или подключите другой ключ.")
-        return _res("yandex_key", "keys", "error", "Ключ Яндекс.Карт отклонён",
-                    (f"Яндекс ответил: {message}." if message else "Яндекс вернул «доступ запрещён»."),
-                    "Проверьте ключ и квоты в кабинете разработчика Яндекса.")
-    if status != 200:
-        return _res("yandex_key", "keys", "error",
-                    f"Яндекс.Карты вернули код {status}",
-                    "Ответ получен, но запрос не выполнен.",
-                    "Повторите позже: чаще всего это временный сбой сервиса.")
-    found = None
-    try:
-        found = data["properties"]["responseMetaData"]["SearchResponse"]["found"]
-    except Exception:
-        found = None
-    detail = ("Ключ работает: API ответил на пробный запрос."
-              + (f" Рядом с Москвой нашлось {found} организаций." if found else ""))
-    return _res("yandex_key", "keys", "ok", "Ключ Яндекс.Карт работает", detail)
-
-
-def check_twogis_key(key: str) -> dict:
-    """Пробный запрос к каталогу 2ГИС: работает ли ключ и что он отдаёт.
-
-    Проверка отвечает не только «ключ жив», но и на самый частый вопрос по
-    2ГИС: отдаёт ли ключ контакты (соцсети/сайт) и новые поля — число
-    филиалов (`items.org`) и дату появления карточки (`items.dates`), на
-    которых держатся фильтры «только одиночки» и «только новые».
-    """
-    if not key:
-        return _res("twogis_key", "keys", "warn", "Ключ 2ГИС не задан",
-                    "Поиск по 2ГИС не запустится, а счётчик его квоты останется пустым.",
-                    "Получите бесплатный ключ на dev.2gis.ru и сохраните его в «API-ключи».")
-
-    from yandex_maps_parser import twogis
-
-    quota_left = ""
-    try:
-        used, cap = twogis.quota_used(), twogis.quota_cap()
-        quota_left = (f" В этом месяце израсходовано ~{used} из {cap} запросов "
-                      f"бесплатного тарифа.")
-    except Exception:
-        pass
-
-    def _probe(fields: str):
-        return _http_json(twogis._API_URL, {
-            "q": "кофе Уфа", "page": 1, "page_size": 1, "key": key,
-            "fields": fields, "locale": "ru_RU",
-        })
-
-    status, data, note = _probe(twogis._FIELDS_FULL)
-    fields_ok = True
-    if not status:
-        return _res("twogis_key", "keys", "error", "2ГИС не ответил",
-                    f"Сбой соединения ({note}).",
-                    "Проверьте интернет, VPN или прокси и повторите проверку.")
-    meta = (data or {}).get("meta") or {}
-    error = meta.get("error")
-    # Отказ именно по полям: повторяем с набором без новых полей — так мы
-    # узнаём не только «ключ живой», но и то, каких полей у него нет.
-    if error:
-        message = str(error.get("message") or error)
-        etype = str(error.get("type") or "")
-        if any(word in message.lower() for word in ("field", "permission")) or \
-                "forbidden" in etype.lower():
-            fields_ok = False
-            status, data, note = _probe(twogis._FIELDS_CONTACTS)
-            meta = (data or {}).get("meta") or {}
-            error = meta.get("error")
-    if error:
-        human = twogis._human_api_error(meta.get("code"), str(error.get("message") or error),
-                                        str(error.get("type") or ""), "кофе", "Уфа")
-        return _res("twogis_key", "keys", "error", "Ключ 2ГИС отклонён",
-                    human, "Проверьте ключ на dev.2gis.ru (Platform Manager).")
-
-    items = ((data or {}).get("result") or {}).get("items") or []
-    item = items[0] if items else {}
-    has_contacts = "contact_groups" in item
-    org = item.get("org") if isinstance(item.get("org"), dict) else {}
-    dates = item.get("dates") if isinstance(item.get("dates"), dict) else {}
-    branches = org.get("branch_count")
-    added = dates.get("created_at") or dates.get("added_at") or ""
-
-    parts = [f"контакты: {'да' if has_contacts else 'нет'}"]
-    parts.append(f"число филиалов: {branches}" if branches not in (None, "")
-                 else "число филиалов: нет")
-    parts.append(f"дата появления карточки: {str(added)[:10]}" if added
-                 else "дата появления карточки: нет")
-    detail = "Ключ работает. В ответе — " + ", ".join(parts) + "." + quota_left
-
-    advice = []
-    if not fields_ok:
-        advice.append("ключ не принимает items.org/items.dates: фильтр «только новые» "
-                      "не сможет отсеивать по дате (нужен ключ с этими полями)")
-    if not has_contacts:
-        advice.append("ключ без права contact_groups — соцсети будут докачиваться "
-                      "с карточек организации, это заметно медленнее")
-    if branches in (None, ""):
-        advice.append("число филиалов придёт только из нашего счёта по сбору")
-    status_word = "warn" if advice else "ok"
-    return _res("twogis_key", "keys", status_word,
-                "Ключ 2ГИС работает" + (" (с ограничениями)" if advice else ""),
-                detail, ". ".join(a.capitalize() for a in advice) + ("." if advice else ""))
-
-
 def check_vk_token(token: str) -> dict:
     """Пробный users.get: действителен ли токен ВКонтакте."""
     if not token:
         return _res("vk_token", "keys", "warn", "Токен ВКонтакте не задан",
-                    "Проверка активности ВК и рассылка сообщений работать не будут.",
+                    "Проверка активности сообществ ВК работать не будет.",
                     "Вставьте токен в блоке «API-ключи» и сохраните.")
     status, data, note = _http_json("https://api.vk.com/method/users.get", {
         "access_token": token, "v": "5.199",
@@ -464,7 +311,7 @@ def check_data() -> list[dict]:
         if has_branch and has_added:
             out.append(_res("raw_columns", "data", "ok", "Сбор понимает «тип компании»",
                             "В сырых файлах есть колонки «Филиалов» и «Добавлено» — "
-                            "фильтры одиночек и новых работают по данным 2ГИС."))
+                            "фильтры одиночек и новых работают по этим данным."))
         else:
             missing = [name for name, ok in (("Филиалов", has_branch),
                                              ("Добавлено", has_added)) if not ok]
@@ -488,11 +335,108 @@ def check_data() -> list[dict]:
 
 # ── Группа «env»: с чем работаем ──────────────────────────────
 
-def probe_engines(deep: bool = False) -> list[dict]:
-    """Проверка всех трёх способов загрузки карточек организаций.
+# Пробная страница выдачи: сколько карточек успел отрисовать список и
+# активна ли вкладка. Фоновая вкладка — частая причина «мало организаций»:
+# Chrome отдаёт ей visibilityState="hidden", и виртуализованный список
+# Яндекс.Карт не догружает продолжение (см. cdp_client.init_browser).
+_SEARCH_PROBE_JS = (
+    "JSON.stringify({cards: document.querySelectorAll('%s').length,"
+    " visibility: document.visibilityState, focus: document.hasFocus()})"
+)
 
-    deep=False — мгновенно (импорт/поиск бинарника): для панели «Диагностика».
-    deep=True  — пробная загрузка одной страницы каждым способом.
+
+def _search_page_probe(cdp_client, url: str, selector: str) -> dict:
+    """Живой замер страницы выдачи: карточки + состояние вкладки.
+
+    Пустой словарь — страница не ответила. Разбор вёрстки и чтение
+    состояния выдачи требуют активной вкладки, поэтому её состояние —
+    часть отчёта.
+    """
+    import json as _json
+    raw = cdp_client.eval_in_page(
+        url,
+        _SEARCH_PROBE_JS % selector,
+        wait_expr=f"document.querySelectorAll('{selector}').length > 0",
+        timeout_s=60.0,
+    )
+    if not raw:
+        return {}
+    try:
+        data = _json.loads(raw)
+    except (TypeError, ValueError):
+        data = None
+    if not isinstance(data, dict):
+        # Ответ не объект (например просто число карточек) — читаем как счётчик
+        # и оставляем строку о вкладке за кадром: врать о её состоянии нельзя.
+        try:
+            return {"cards": int(raw)}
+        except (TypeError, ValueError):
+            return {}
+    try:
+        cards = int(data.get("cards") or 0)
+    except (TypeError, ValueError):
+        cards = 0
+    return {"cards": cards,
+            "visibility": str(data.get("visibility") or ""),
+            "focus": bool(data.get("focus"))}
+
+
+# Пробный запрос живой выдачи: тот же путь, что у рабочего поиска
+# (состояние страницы → карточки), поэтому проверка ловит и «выдача пуста».
+_PROBE_QUERY = ("кофейня", "Уфа")
+
+
+def _live_search_rows() -> list[dict]:
+    """Строка «Поиск нашёл организации» — живой сбор на боевом пути.
+
+    Координаты не задаются: страницу поиска открывает сам Яндекс.Карты
+    и показывает ближайшие к городу организации. Проверяем главное —
+    выдача возвращается и парсится.
+    """
+    from yandex_maps_parser.browser_search import harvest_cards
+    try:
+        cards = harvest_cards(_PROBE_QUERY[0], _PROBE_QUERY[1], None, None, max_cards=25)
+    except Exception as exc:
+        return [_res("search_live", "engines", "error", "Поиск не выполнился",
+                     _exception_note(exc),
+                     "Проверьте доступ в интернет и запустите проверку ещё раз.")]
+    count = len(cards)
+    where = f"запрос «{_PROBE_QUERY[0]}», город {_PROBE_QUERY[1]}"
+    if count:
+        first = str(cards[0].get("name") or "")
+        return [_res("search_live", "engines", "ok", "Поиск находит организации",
+                     f"{where}: {count} организаций" + (f", первая — «{first}»" if first else "") + ".")]
+    return [_res("search_live", "engines", "warn", "Поиск вернул пустую выдачу",
+                 f"{where}: ни одной организации.",
+                 "Проверьте доступ в интернет и попробуйте ещё раз. Если пусто"
+                 " всегда — напишите автору: Яндекс мог изменить страницу выдачи.")]
+
+
+def _tab_activity_rows(probe: dict, cards: int) -> list[dict]:
+    """Строка о вкладке браузера: видна ли она и в фокусе ли.
+
+    Пустой список — состояние вкладки прочитать не удалось: тогда лучше
+    промолчать, чем показать выдуманное «всё хорошо».
+    """
+    visibility = str(probe.get("visibility") or "")
+    if not visibility:
+        return []
+    active = visibility == "visible" and bool(probe.get("focus"))
+    if active:
+        return [_res("tab_active", "engines", "ok", "Вкладка браузера активна",
+                     f"visibilityState={visibility}, фокус есть; карточек в выдаче: {cards}.")]
+    return [_res("tab_active", "engines", "warn", "Вкладка браузера считается фоновой",
+                 f"visibilityState={visibility}, фокуса нет; карточек в выдаче: {cards}.",
+                 "Список организаций в такой вкладке не догружается: Яндекс отдаёт"
+                 " только первые карточки. Обновите приложение — в текущей сборке"
+                 " вкладке включается эмуляция активной страницы.")]
+
+
+def probe_engines(deep: bool = False) -> list[dict]:
+    """Проверка браузера — единственного способа загрузки страниц в приложении.
+
+    deep=False — мгновенно (есть ли бинарник): для панели «Диагностика».
+    deep=True  — пробная загрузка карточки организации и страницы поиска.
 
     Отчёт — те же _res-строки: {id, status: ok|warn|error, title, detail}.
     """
@@ -500,94 +444,52 @@ def probe_engines(deep: bool = False) -> list[dict]:
     # Пробная страница: реальная карточка организации на Яндекс.Картах —
     # та же геометрия ответа, что у боевых fetch_detail.
     probe_url = "https://yandex.ru/maps/org/galateya/1025935617/"
+    search_url = "https://yandex.ru/maps/?text=%D0%BA%D0%BE%D1%84%D0%B5%20%D0%A3%D1%84%D0%B0"
+    from yandex_maps_parser.browser_search import CARD_SELECTOR
 
-    # -- 1. HTTP (extractors.fetch_html — тот же путь, что в бою) --
-    try:
-        from yandex_maps_parser.extractors import fetch_html
-        if deep:
-            html = fetch_html(probe_url)
-            low = (html or "")[:4000].lower()
-            ok = bool(html) and len(html) >= 800 and not any(
-                m in low for m in _ANTIBOT_MARKERS_FOR_PROBE)
-            out.append(_res(
-                "engine_httpx", "engines", "ok" if ok else "warn",
-                "HTTP-загрузка карточек: " + ("работает" if ok else "страница-заглушка"),
-                ("Пробная страница получена (" + str(len(html or "")) + " байт)."
-                 if ok else
-                 "Яндекс отдал заглушку анти-бота — в бою часть карточек будет"
-                 " без соцсетей; для 2GIS с бесплатным ключом способ почти"
-                 " бесполезен."),
-                "" if ok else
-                "Выберите «Авто» или «Chrome (CDP)»: карточки через браузер"
-                " надёжнее."))
-        else:
-            out.append(_res("engine_httpx", "engines", "ok",
-                            "HTTP-загрузка: доступна всегда",
-                            "Работает без браузера; скорость зависит от пауз."))
-    except Exception as exc:
-        out.append(_res("engine_httpx", "engines", "error",
-                        "HTTP-загрузка: сбой", _exception_note(exc)))
-
-    # -- 2. Chrome CDP: найден ли браузер (+ пробная загрузка) --
     try:
         from yandex_maps_parser import cdp_client
         chrome = cdp_client._find_chrome()
         if not chrome:
             out.append(_res(
-                "engine_cdp", "engines", "warn", "Chrome (CDP): не найден",
+                "engine_cdp", "engines", "error", "Браузер не найден",
                 "Chrome, Chromium и Edge не обнаружены на этой машине.",
-                "Установите Google Chrome — это рекомендуемый способ для"
-                " 2GIS с бесплатным ключом."))
+                "Установите Google Chrome: приложение работает только через"
+                " настоящий браузер — прямые HTTP-запросы к Яндекс.Картам"
+                " убраны из-за антибота."))
         elif deep:
+            # Идёт прогон — браузер уже поднят: свою пробу делаем в нём же,
+            # но чужой браузер не закрываем ни при каких условиях.
+            already_running = cdp_client.is_available()
             ok = cdp_client.init_browser(pool_size=1, visible=False)
-            html = cdp_client.fetch_page(probe_url) if ok else None
-            good = bool(html) and len(html) >= 800
-            cdp_client.close_browser()
-            out.append(_res(
-                "engine_cdp", "engines", "ok" if good else "warn",
-                "Chrome (CDP): " + ("работает" if good else "запустился, но страницу не загрузил"),
-                chrome + ("; пробная страница " + str(len(html or "")) + " байт." if good else ""),
-                "" if good else "Chrome есть, но карточку не отдал — попробуйте «Авто»."))
+            card = cdp_client.fetch_page(probe_url) if ok else None
+            card_ok = bool(card) and len(card) >= 800
+            probe = _search_page_probe(cdp_client, search_url, CARD_SELECTOR) if ok else {}
+            # Живой сбор идёт последним: он ходит на страницу выдачи сам.
+            live_rows = _live_search_rows() if ok else []
+            if not already_running:
+                cdp_client.close_browser()
+            cards = int(probe.get("cards") or 0)
+            status = "ok" if (card_ok and cards > 0) else "warn"
+            detail = (chrome + f"; карточка {len(card or '')} байт, карточек в выдаче: {cards}.")
+            if status == "warn":
+                hint = ("Браузер есть, но страницу не отдал: проверьте интернет и"
+                        " попробуйте ещё раз." if card_ok else
+                        "Браузер есть, но карточку не загрузил — проверьте доступ в интернет.")
+            else:
+                hint = ""
+            out.append(_res("engine_cdp", "engines", status,
+                            "Браузер (Chrome CDP): " + ("работает" if status == "ok" else "с проблемой"),
+                            detail, hint))
+            out.extend(_tab_activity_rows(probe, cards))
+            out.extend(live_rows)
         else:
             out.append(_res("engine_cdp", "engines", "ok",
-                            "Chrome (CDP): найден", chrome))
+                            "Браузер (Chrome CDP) найден", chrome))
     except Exception as exc:
         out.append(_res("engine_cdp", "engines", "error",
-                        "Chrome (CDP): сбой проверки", _exception_note(exc)))
-
-    # -- 3. Playwright: модуль + браузер (сабпроцесс-тест) --
-    try:
-        from yandex_maps_parser import browser_client
-        import sys as _sys
-        if not browser_client._try_import_playwright():
-            out.append(_res(
-                "engine_playwright", "engines", "warn", "Playwright: не установлен",
-                "Модуль playwright не найден.",
-                "pip install playwright && playwright install chromium"))
-        elif deep:
-            ok = browser_client.init_browser(pool_size=1)
-            html = browser_client.fetch_page(probe_url) if ok else None
-            good = bool(html) and len(html) >= 800
-            browser_client.close_browser()
-            out.append(_res(
-                "engine_playwright", "engines", "ok" if good else "warn",
-                "Playwright: " + ("работает" if good else "запустился, но страницу не загрузил"),
-                ("Встроенный Chromium; пробная страница " + str(len(html or "")) + " байт."
-                 if good else "Встроенный Chromium."),
-                "" if good else "Chromium есть, но карточку не отдал — попробуйте «Авто»."))
-        else:
-            out.append(_res("engine_playwright", "engines", "ok",
-                            "Playwright: установлен",
-                            "Встроенный Chromium готов к запуску."))
-    except Exception as exc:
-        out.append(_res("engine_playwright", "engines", "error",
-                        "Playwright: сбой проверки", _exception_note(exc)))
+                        "Браузер (Chrome CDP): сбой проверки", _exception_note(exc)))
     return out
-
-
-# Маркеры анти-бота для probe_engines: упрощённый набор — точные маркеры
-# лежат в extractors._ANTIBOT_MARKERS вместе с size-эвристикой.
-_ANTIBOT_MARKERS_FOR_PROBE = ("robot", "captcha", "access denied", "доступ ограничен")
 
 
 def check_environment() -> list[dict]:
@@ -607,8 +509,8 @@ def check_environment() -> list[dict]:
     out.append(_res("app_version", "env", "ok", f"Версия {version}",
                     f"{mode}, Python {sys.version.split()[0]}."))
 
-    # Браузер нужен там, где ключ 2ГИС не отдаёт контакты, и для карточек
-    # Яндекс.Карт: без него соцсети не докачиваются.
+    # Браузер — основной инструмент приложения: из него берутся и выдача
+    # поиска, и координаты города, и карточки организаций.
     browser = ""
     try:
         from yandex_maps_parser import cdp_client
@@ -619,28 +521,23 @@ def check_environment() -> list[dict]:
         out.append(_res("browser", "env", "ok", "Браузер для докачки соцсетей найден",
                         browser))
     else:
-        out.append(_res("browser", "env", "warn", "Браузер не найден",
+        out.append(_res("browser", "env", "error", "Браузер не найден",
                         "Chrome, Chromium и Edge не обнаружены на этой машине.",
-                        "Установите Google Chrome — иначе соцсети с карточек "
-                        "организаций собираться не будут."))
+                        "Установите Google Chrome: без него приложение не может"
+                        " читать Яндекс.Карты — других способов загрузки нет."))
 
-    # severity: core — приложение без этого не работает вообще;
-    # browser — работает, но хуже: карточки организаций придётся тянуть
-    # запасным способом (или соцсети вовсе не соберутся).
+    # severity: core — без этого приложение не работает вообще.
     for module, label, severity, hint, advice in (
-        ("httpx", "httpx", "error",
-         "Без него не работают запросы к API Яндекс.Карт и 2ГИС.",
-         "Переустановите приложение: зависимости ставятся вместе с ним."),
+        ("websocket", "websocket-client", "error",
+         "Без него не работает управление браузером (Chrome DevTools Protocol) —"
+         " значит, не работают ни поиск, ни карточки организаций.",
+         "Установите зависимость проекта: pip install -r requirements.txt"),
         ("openpyxl", "openpyxl", "error",
          "Без него не читаются и не сохраняются Excel-файлы, а этап 2 работает именно с ними.",
          "Переустановите приложение: зависимости ставятся вместе с ним."),
-        ("playwright", "Playwright", "warn",
-         "Без него карточки организаций читаются только запасным путём через Chrome DevTools.",
-         "Это часть установки приложения — переустановите его, если соцсети не собираются."),
-        ("websocket", "websocket-client", "warn",
-         "Без него не работает запасной путь через Chrome DevTools — а когда ключ 2ГИС "
-         "не отдаёт контакты, соцсети собираются именно с карточек.",
-         "Установите зависимость проекта: pip install -r requirements.txt"),
+        ("httpx", "httpx", "warn",
+         "Без него не работает панель «Диагностика» (проверка токена ВК).",
+         "Переустановите приложение: зависимости ставятся вместе с ним."),
     ):
         try:
             import importlib.util
@@ -671,10 +568,10 @@ def _only_from_our_ui():
 
     Приложение слушает 127.0.0.1, но привязкой к адресу ограничиться нельзя:
     любой сайт в браузере может отправить POST на localhost «простым»
-    запросом (обычная HTML-форма — без CORS-preflight) и молча израсходовать
-    бесплатную квоту 2ГИС. Поэтому требуем тело в JSON: такой запрос чужая
-    страница без preflight отправить не может, а preflight мы не разрешаем
-    (ответных CORS-заголовков у сервиса нет).
+    запросом (обычная HTML-форма — без CORS-preflight) и запустить проверку
+    или иные действия от имени пользователя. Поэтому требуем тело в JSON:
+    такой запрос чужая страница без preflight отправить не может, а preflight
+    мы не разрешаем (ответных CORS-заголовков у сервиса нет).
     """
     if request.method != "POST":
         return None
@@ -690,8 +587,13 @@ def _only_from_our_ui():
 
 # ── Сборка отчёта ─────────────────────────────────────────────
 
-def run_checks(groups=None) -> list[dict]:
-    """Отчёт по выбранным группам. Падение одной проверки — строка «ошибка»."""
+def run_checks(groups=None, deep: bool = False) -> list[dict]:
+    """Отчёт по выбранным группам. Падение одной проверки — строка «ошибка».
+
+    deep=True включает живую пробу браузера (группа «engines»): она открывает
+    настоящий Chrome и грузит страницу выдачи, поэтому запускается отдельной
+    кнопкой, а не вместе с мгновенными проверками.
+    """
     wanted = [g for g in (groups or GROUPS) if g in GROUPS] or list(GROUPS)
     results: list[dict] = []
 
@@ -706,8 +608,6 @@ def run_checks(groups=None) -> list[dict]:
 
     if "keys" in wanted:
         keys = effective_keys()
-        _safe("yandex_key", "keys", check_yandex_key, keys["yandex"])
-        _safe("twogis_key", "keys", check_twogis_key, keys["twogis"])
         _safe("vk_token", "keys", check_vk_token, keys["vk"])
     if "files" in wanted:
         _safe("storage", "files", check_storage)
@@ -716,7 +616,7 @@ def run_checks(groups=None) -> list[dict]:
     if "env" in wanted:
         _safe("env", "env", check_environment)
     if "engines" in wanted:
-        _safe("engines", "engines", probe_engines, False)
+        _safe("engines", "engines", probe_engines, bool(deep))
 
     order = {"error": 0, "warn": 1, "ok": 2}
     return sorted(results, key=lambda r: order.get(r["status"], 3))
@@ -724,11 +624,10 @@ def run_checks(groups=None) -> list[dict]:
 
 @bp.route("/engines/status", methods=["GET"])
 def engines_status():
-    """Мгновенная доступность способов парсинга для бейджа в форме.
+    """Мгновенная доступность браузера для бейджа в форме.
 
-    Без сетевых запросов: только поиск Chrome и импорт playwright.
-    Reply: {ok, chrome: bool, chrome_path: str, playwright: bool,
-            frozen: bool}
+    Без сетевых запросов: только поиск бинарника Chrome/Chromium.
+    Reply: {ok, chrome: bool, chrome_path: str, frozen: bool}
     """
     chrome_path = ""
     try:
@@ -736,22 +635,13 @@ def engines_status():
         chrome_path = cdp_client._find_chrome() or ""
     except Exception:
         chrome_path = ""
-    playwright_ok = False
-    try:
-        from yandex_maps_parser import browser_client
-        # Playwright bundлится в .exe (parser.spec) — проверяем по факту,
-        # frozen-флаг больше не подменяет результат.
-        playwright_ok = browser_client._try_import_playwright() is not None
-    except Exception:
-        playwright_ok = False
     try:
         import sys as _sys
         frozen = bool(getattr(_sys, "frozen", False))
     except Exception:
         frozen = False
     return jsonify({"ok": True, "chrome": bool(chrome_path),
-                    "chrome_path": chrome_path,
-                    "playwright": bool(playwright_ok), "frozen": frozen})
+                    "chrome_path": chrome_path, "frozen": frozen})
 
 
 @bp.route("/diagnostics/run", methods=["POST"])
@@ -759,6 +649,8 @@ def diagnostics_run():
     """Самопроверка по кнопке.
 
     Body: {"groups": ["keys", "files", "data", "env"]} — по умолчанию все.
+    "deep": true — живая проба браузера (открывает Chrome, грузит страницу
+    выдачи и проверяет, что вкладка активна и список организаций виден).
     Reply: {ok, results: [{id, group, status, title, detail, hint}], ts}
 
     Ответ не содержит ключей: только булевы признаки и объяснения словами.
@@ -769,8 +661,9 @@ def diagnostics_run():
         groups = [groups]
     if not isinstance(groups, list):
         groups = None
+    deep = bool(data.get("deep"))
     try:
-        results = run_checks(groups)
+        results = run_checks(groups, deep=deep)
     except Exception as exc:            # аварийный случай: панель всё равно отвечает
         return jsonify({"ok": False, "error": f"Диагностика не смогла выполниться: {_exception_note(exc)}",
                         "results": []}), 200

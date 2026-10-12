@@ -47,9 +47,7 @@ from config import (
     MAX_PAGES,
     FETCH_DETAIL,
     USE_BROWSER,
-    FETCH_ENGINE,
     MAX_CANDIDATES_PER_CITY,
-    YANDEX_API_KEY,
     PROXIES,
 )
 
@@ -78,12 +76,29 @@ COLLAPSE_CHAINS = False
 #   "without_website" (default) — only businesses WITHOUT their own website
 #       (link aggregators like taplink/linktree are NOT websites — kept).
 #   "all" — parse every organization regardless of website presence.
+# The choice also works at collection time: a business whose site is visible
+# in the search payload is skipped before the (expensive) detail page, and one
+# whose site is discovered on the card is dropped instead of written to raw.
 PARSE_MODE = "without_website"
 
-# Data source: "yandex" (default) | "2gis" — set by run_web() from the form.
+# «🚫 Исключить по словам» — те же слова, что уходят этапу 2, но нужны уже
+# на сборе: запись из чёрного списка не загружает карточку и не пишется в raw.
+# Нормализуется processing.parse_blacklist_words в runner._apply_params.
+BLACKLIST_WORDS: list[str] = []
+
+# Фильтры, решаемые по ОДНОЙ готовой записи: сбор снимает по ним запись сразу
+# (см. processing.crawl_skip_reason), иначе она появлялась бы в живой таблице
+# и исчезала только после этапа 2. `VK_CHECK` гасит порог оценки на сборе:
+# с включённой проверкой ВК этап 2 добавляет баллы за активность, и сбор не
+# должен снять запись, которая там осталась бы.
+MIN_LEAD_SCORE = 0
+ONLY_SINGLE_BRANCH = False
+ONLY_NEW_MONTHS = None
+VK_CHECK = False
+
+# Источник данных: только Яндекс.Карты (2ГИС удалён по требованию
+# правообладателя, платные API Яндекса не используются).
 SOURCE = "yandex"
-# 2GIS Catalog API key (free demo key: dev.2gis.ru → Platform Manager).
-TWOGIS_API_KEY = ""
 
 # Excel export columns: set of CSV_FIELDS keys to include in the .xlsx.
 # None (default) = all columns. Set from the web form per run; the choice
@@ -101,7 +116,7 @@ _SKIP_CITY_EVENT = None  # threading.Event; set to skip current city (not the wh
 def request_stop() -> None:
     """Request a graceful stop of the whole run (safe to call anytime).
 
-    Parser modules (e.g. twogis quota guard) use this to halt the run from
+    Parser modules (лимиты и отказ внешних сервисов) use this to halt the run from
     deep inside the pipeline without importing runner internals.
     """
     if _STOP_EVENT is not None:
@@ -112,6 +127,20 @@ def request_stop() -> None:
 _SKIPPED_CITIES: list[dict] = []  # [{"name": str, "records_found": int}]
 _CITY_RECORDS_FOUND = 0  # records found in current city (for skip confirmation)
 _city_records_lock = threading.Lock()
+
+# ── Предфильтр сбора ───────────────────────────────────────────
+# Сколько записей отброшено УЖЕ на сборе и почему (crawl_skip_reason).
+# Счётчики только читаются интерфейсом и логом: сами записи никуда не идут.
+_CRAWL_SKIPPED: dict[str, int] = {}
+_CRAWL_SKIPPED_LOGGED: dict[str, int] = {}
+_crawl_skipped_lock = threading.Lock()
+CRAWL_SKIP_LABELS = {
+    "blacklist":       "чёрный список",
+    "website":         "с сайтом",
+    "no_socials":      "без соцсетей",
+    "has_socials":     "с соцсетями",
+    "missing_socials": "без нужных сетей",
+}
 
 # Set by run() for the city that just finished: True when the search returned
 # organizations but every one of them was already parsed in an earlier run
@@ -296,17 +325,8 @@ def _progress(current: int, total: int, stage: str = "") -> None:
             count = _found_count
             work_done = current + _work_candidates_done
             work_total = total + _work_candidates_total
-        # 5th segment: 2GIS Places quota used (the counter lives in the child
-        # process, so the UI can only get it through the progress channel).
-        # Deferred import — twogis imports state, so a top-level import would
-        # create a cycle.
-        _quota = 0
-        try:
-            from .twogis import quota_used as _quota_used_fn
-            _quota = _quota_used_fn()
-        except Exception:
-            pass
-        _LOG_FN("progress", f"{work_done}/{work_total}/{stage}/{count}/{_quota}")
+        # 5th segment removed: quota tracking belonged to the deleted 2GIS source.
+        _LOG_FN("progress", f"{work_done}/{work_total}/{stage}/{count}")
 
 
 def _add_candidates(n: int) -> None:
@@ -343,15 +363,8 @@ def _inc_found() -> None:
             with _found_lock:
                 work_done = _prog_cur + _work_candidates_done
                 work_total = _prog_tot + _work_candidates_total
-            # 5th segment: 2GIS Places quota used (child-process counter →
-            # progress channel, same as in _progress()).
-            _quota = 0
-            try:
-                from .twogis import quota_used as _quota_used_fn
-                _quota = _quota_used_fn()
-            except Exception:
-                pass
-            _LOG_FN("progress", f"{work_done}/{work_total}/{_prog_stage}/{count}/{_quota}")
+            # 5th segment removed: quota tracking belonged to the deleted 2GIS source.
+            _LOG_FN("progress", f"{work_done}/{work_total}/{_prog_stage}/{count}")
             # Emit analytics every 5 seconds
             _emit_analytics_throttled(now)
 
@@ -471,3 +484,46 @@ def inc_city_record():
     global _CITY_RECORDS_FOUND
     with _city_records_lock:
         _CITY_RECORDS_FOUND += 1
+
+
+# ── Предфильтр сбора: счётчики ─────────────────────────────────
+
+def reset_crawl_skips() -> None:
+    """Обнулить счётчики предфильтра (вызывается на старте прогона)."""
+    global _CRAWL_SKIPPED, _CRAWL_SKIPPED_LOGGED
+    with _crawl_skipped_lock:
+        _CRAWL_SKIPPED = {}
+        _CRAWL_SKIPPED_LOGGED = {}
+
+
+def inc_crawl_skip(reason: str) -> None:
+    """Отметить запись, отброшенную на сборе (вызывают рабочие потоки)."""
+    global _CRAWL_SKIPPED
+    with _crawl_skipped_lock:
+        _CRAWL_SKIPPED = {**_CRAWL_SKIPPED, reason: _CRAWL_SKIPPED.get(reason, 0) + 1}
+
+
+def crawl_skip_summary() -> dict:
+    """Итог предфильтра за прогон: {"total": N, причина: N, ...}."""
+    with _crawl_skipped_lock:
+        counts = dict(_CRAWL_SKIPPED)
+    return {"total": sum(counts.values()), **counts}
+
+
+def crawl_skip_take_delta() -> dict:
+    """Счётчики с прошлого вызова — чтобы лог отчитывался по городам."""
+    global _CRAWL_SKIPPED_LOGGED
+    with _crawl_skipped_lock:
+        counts = dict(_CRAWL_SKIPPED)
+        prev = dict(_CRAWL_SKIPPED_LOGGED)
+        _CRAWL_SKIPPED_LOGGED = counts
+    delta = {k: v - prev.get(k, 0) for k, v in counts.items() if v - prev.get(k, 0) > 0}
+    return {"total": sum(delta.values()), **delta}
+
+
+def crawl_skip_text(counts: dict | None = None) -> str:
+    """Расшифровка счётчиков для лога: «чёрный список 3, с сайтом 5»."""
+    data = crawl_skip_summary() if counts is None else counts
+    parts = [f"{CRAWL_SKIP_LABELS.get(k, k)} {v}" for k, v in data.items()
+             if k != "total" and v]
+    return ", ".join(parts)

@@ -26,28 +26,18 @@ from .constants import (
 from . import state
 from .social_normalize import normalize_record
 
-# 2GIS source adds a twogis_url column; keep CSV_FIELDS stable for the
-# Yandex path by appending dynamically when a 2GIS record is present.
-if "twogis_url" not in CSV_FIELDS:
-    CSV_FIELDS.append("twogis_url")
-    HEADER_LABELS["twogis_url"] = "2ГИС"
-    COL_WIDTHS["twogis_url"] = 36
-
-# Map-link columns: a run only ever fills the one that belongs to its
-# source, so the other one showed up as an empty column in every export
-# (a 2GIS run had a blank «Яндекс.Карты» and vice versa). Only the column
-# matching state.SOURCE is exported now — the map link is always there,
-# without the empty twin.
-_MAP_FIELDS = ("yandex_maps_url", "twogis_url")
+# Ссылка на карточку организации: единственный источник — Яндекс.Карты,
+# поэтому в выгрузке всегда ровно одна колонка со ссылкой.
+_MAP_FIELDS = ("yandex_maps_url",)
 
 # Extra columns that files need but reports don't show (raw files keep the
 # website so stage 2 can re-apply «только без сайтов» without re-crawling).
 INTERNAL_FIELDS = ("website",)
 
 
-# Column-name lookup for record_key(): first non-empty map URL wins.
+# Column-name lookup for record_key(): the map URL of the card.
 def _map_url_of(rec: dict) -> str:
-    return str(rec.get("yandex_maps_url") or rec.get("twogis_url") or "").strip()
+    return str(rec.get("yandex_maps_url") or "").strip()
 
 
 # ── Path resolution ───────────────────────────────────────────
@@ -84,7 +74,7 @@ def load_jsonl(path: str) -> list[dict]:
 def record_key(rec: dict) -> str:
     """
     Stable dedup key for a business record.
-    Priority: yandex/2gis map URL -> phone digits -> normalized name+address.
+    Priority: map URL -> phone digits -> normalized name+address.
     """
     url = _map_url_of(rec)
     if url:
@@ -421,6 +411,9 @@ def save_json(records: list[dict], path: str, append: bool) -> None:
 
 # Reverse map: Russian Excel header label -> english CSV_FIELDS key
 _LABEL_TO_FIELD = {label: field for field, label in HEADER_LABELS.items()}
+# Колонка aggregator_url раньше называлась «Taplink / Linktree» — старые
+# выгрузки по этому заголовку всё ещё читаются.
+_LABEL_TO_FIELD.setdefault("Taplink / Linktree", "aggregator_url")
 
 
 def _records_from_xlsx(path: str) -> list[dict]:
@@ -479,9 +472,7 @@ def _records_from_csv(path: str) -> list[dict]:
             reader = csv.DictReader(fh, delimiter=delim)
             if not reader.fieldnames:
                 return out
-            fields = [(_LABEL_TO_FIELD.get(str(h).strip(), str(h).strip())
-                       if str(h).strip() not in _LABEL_TO_FIELD
-                       else _LABEL_TO_FIELD[str(h).strip()])
+            fields = [_LABEL_TO_FIELD.get(str(h).strip(), str(h).strip())
                       for h in reader.fieldnames]
             for row in reader:
                 rec: dict = {}
@@ -493,7 +484,7 @@ def _records_from_csv(path: str) -> list[dict]:
                         rec[f] = str(v).strip().lower() in ("1", "true", "да", "✓")
                     else:
                         rec[f] = v
-                if rec.get("name") or rec.get("yandex_maps_url") or rec.get("twogis_url"):
+                if rec.get("name") or rec.get("yandex_maps_url"):
                     out.append(rec)
     except Exception:
         pass
@@ -521,7 +512,7 @@ def write_frontend_json(files: list[str], out_dir: str, cities: list[str] | None
         """
         if not isinstance(data, list):
             return []
-        return [r for r in data if isinstance(r, dict) and (r.get("name") or r.get("yandex_maps_url") or r.get("twogis_url"))]
+        return [r for r in data if isinstance(r, dict) and (r.get("name") or r.get("yandex_maps_url"))]
 
     if json_files:
         for name in json_files:
@@ -598,20 +589,8 @@ _EXCEL_LOCK = threading.Lock()  # guards _Excel state below
 
 
 def _map_field(records: list[dict] | None = None) -> str:
-    """Which of the two map columns this file gets.
-
-    A run only fills the column of its own source, so exporting both left an
-    empty «2ГИС» column in every Yandex export (and vice versa). Prefer the
-    column that actually carries data in `records` — the review-mark store
-    keys records by card URL, so a file without the right column could not be
-    matched back — and fall back to the run's source when there is no data
-    yet (incremental writes write headers before the first record).
-    """
-    src = "twogis_url" if getattr(state, "SOURCE", "yandex") == "2gis" else "yandex_maps_url"
-    if records:
-        have = [f for f in _MAP_FIELDS if any(str((r or {}).get(f) or "").strip() for r in records)]
-        return src if src in have else (have[0] if have else src)
-    return src
+    """Колонка со ссылкой на карточку организации (всегда Яндекс.Карты)."""
+    return "yandex_maps_url"
 
 
 def _enabled_fields(extra: tuple[str, ...] = (), records: list[dict] | None = None) -> list[str]:
@@ -636,8 +615,8 @@ def _enabled_fields(extra: tuple[str, ...] = (), records: list[dict] | None = No
     if not cols:
         return fields
     sel = set(cols)
-    # Either card-link column stands for «the map link» — a selection made on
-    # a 2GIS run must still export the Yandex column of a Yandex file.
+    # «Ссылка» в выборе колонок — это и есть карточка организации: даже если
+    # сохранённый набор пришёл из старой версии приложения, колонка попадёт в файл.
     if sel & set(_MAP_FIELDS):
         sel.add(keep_map)
     out = [f for f in fields if f in sel or f in extra]
@@ -661,7 +640,7 @@ def _write_row(ws, ri: int, record: dict, fields: list[str] | None = None) -> No
             cell.font      = Font(color="1155CC", underline="single", size=10)
         elif field in SOCIAL_COLORS and not val:
             cell.value = ""
-        if field in ("aggregator_url", "yandex_maps_url", "twogis_url") and isinstance(val, str) and URL_RE.match(val):
+        if field in ("aggregator_url", "yandex_maps_url") and isinstance(val, str) and URL_RE.match(val):
             cell.hyperlink = val
             cell.value     = val
             cell.font      = Font(color="1155CC", underline="single", size=10)
@@ -942,7 +921,7 @@ def _fill_stats_sheet(ws, records, hfill, hfont, border, alt_fill) -> None:
     row += 1
     for label, val in [
         ("\u0412\u0441\u0435\u0433\u043e \u043d\u0430\u0439\u0434\u0435\u043d\u043e",            len(records)),
-        ("\u0427\u0435\u0440\u0435\u0437 taplink/linktree",   sum(1 for r in records if r.get("aggregator_url"))),
+        ("\u0421 \u0441\u0430\u0439\u0442\u043e\u043c / \u0442\u0430\u043f\u043b\u0438\u043d\u043a\u043e\u043c", sum(1 for r in records if r.get("aggregator_url"))),
         ("\u0421 \u043e\u0446\u0441\u0435\u0442\u044f\u043c\u0438",                 sum(1 for r in records if any(r.get(p) for p in KNOWN_PLATFORMS))),
     ]:
         cell(row, 1, label, row % 2 == 0)
@@ -1020,7 +999,7 @@ def _popup_html(r: dict, idx: int) -> str:
     if agg_url:
         rows += (
             f'<div style="margin:4px 0;font-size:12px">'
-            f'\U0001f517 <a href="{agg_url}" target="_blank" style="color:#FF6B35">Taplink / Linktree</a></div>'
+            f'\U0001f517 <a href="{agg_url}" target="_blank" style="color:#FF6B35">Сайт / Таплинк</a></div>'
         )
     if badges:    rows += f'<div style="margin:6px 0">{badges}</div>'
     if maps_url:

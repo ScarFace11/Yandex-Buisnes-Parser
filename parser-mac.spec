@@ -64,11 +64,11 @@ a = Analysis(
         collect_submodules('yandex_maps_parser')
         + collect_submodules('routes')
         + [
-            'vk_sender',
             'run_manager',
             'run_logger',
             'search_history',
             'paths',
+            'console_io',
             # multiprocessing children re-import the entry module. On macOS
             # the default start method is spawn, so this import is mandatory.
             '__main__',

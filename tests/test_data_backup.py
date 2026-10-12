@@ -1,11 +1,9 @@
-"""Экспорт/импорт данных, автокопия отметок и ручная квота 2GIS.
+"""Экспорт/импорт данных и автокопия отметок «просмотрено».
 
 Пользовательские данные (`_reviewed.json` — вся работа по разбору, плюс
 настройки) переживают переезд между машинами через zip из /data/export.
 Автокопия пишется в `output/_backup/` при каждой записи отметок, держит
-последние 7 дней и не может отменить саму отметку при сбое. Ручная квота
-2GIS замещает автосчёт: платформа показывает точный расход, приложение —
-только свои запросы.
+последние 7 дней и не может отменить саму отметку при сбое.
 """
 import io
 import json
@@ -156,26 +154,6 @@ class TestDataTransfer:
         res = client.post("/data/import", data={"file": (buf, "x.zip")},
                           content_type="multipart/form-data")
         assert res.status_code == 400
-
-
-# ── Ручная квота 2GIS ─────────────────────────────────────────
-
-class TestQuotaManual:
-    def _post(self, client, used):
-        return client.post("/twogis/quota", json={"used": used})
-
-    def test_manual_value_is_applied(self, client):
-        res = self._post(client, 521)
-        data = res.get_json()
-        assert data["ok"] is True and data["used"] == 521
-
-    def test_garbage_is_rejected(self, client):
-        assert self._post(client, "abc").status_code == 400
-        assert self._post(client, -5).status_code == 400
-        assert self._post(client, None).status_code == 400
-
-    def test_value_exceeding_any_plausible_limit_is_rejected(self, client):
-        assert self._post(client, 999999).status_code == 400
 
 
 # ── Короткие пути в логе ──────────────────────────────────────

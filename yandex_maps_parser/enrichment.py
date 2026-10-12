@@ -15,14 +15,15 @@ from .constants import KNOWN_PLATFORMS
 from .extractors import (
     extract_rating_reviews,
     extract_phone,
+    extract_website,
     fetch_html,
     extract_socials,
     _extract_from_json_blob,
     _ANTIBOT_MARKERS,
 )
 from .exporters import record_key
+from .processing import crawl_skip_reason
 from . import state
-from . import browser_client
 from . import cdp_client
 
 def _looks_like_antiblock(html) -> bool:
@@ -133,12 +134,26 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
         biz_id  = record.pop("_biz_id", "")
         raw     = record.pop("_raw_feature", {})
         agg_url = record.pop("_aggregator_url", "")
-        detail_url_override = record.pop("_detail_url", "")  # 2GIS: 2gis.ru/firm/<id>
+        detail_url_override = record.pop("_detail_url", "")
+        # Выдача Яндекс.Карт не показывает сайт организации (в API он был),
+        # поэтому «только без сайтов» добивает запись уже после карточки.
+        record.pop("_site_unknown", None)
         biz_name = record.get("name", "?")
 
         if state._STOP_EVENT and state._STOP_EVENT.is_set():
             return None
         if state.is_skip_city():
+            return None
+
+        # Чёрный список известен уже из выдачи (название/категория, иногда
+        # описание) — такую запись не показываем и НЕ грузим ей карточку.
+        # Пустые parse_mode/social_mode по умолчанию — здесь может сработать
+        # только чёрный список: сайта и соцсетей в записи ещё нет.
+        if crawl_skip_reason(record, words=state.BLACKLIST_WORDS) == "blacklist":
+            state.inc_crawl_skip("blacklist")
+            state.syslog(f"skip_prefilter[blacklist]: {biz_name}")
+            with _pbar_lock:
+                pbar.update(1)
             return None
 
         socials: dict[str, str] = {}
@@ -238,92 +253,81 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
             html = None
             _fetch_source = "none"
             _fetch_t0 = time.monotonic()
-            # Способ загрузки карточки выбирает пользователь («Способ
-            # парсинга» в форме): auto — лестница CDP → Playwright; cdp /
-            # playwright — только выбранный движок (без подмены другим
-            # браузером); httpx — сразу HTTP (USE_BROWSER уже False).
-            # Выбранный движок недоступен → html остаётся None → проверка
-            # anti-block ниже уводит в HTTP-фолбэк, карточка не теряется.
-            _engine = getattr(state, "FETCH_ENGINE", "auto") or "auto"
-            if state.USE_BROWSER and _engine != "httpx":
-                if _engine in ("cdp", "auto") and cdp_client.is_available():
-                    html = cdp_client.fetch_page(detail_url, biz_id=biz_id)
-                    _fetch_source = "cdp"
-                elif _engine in ("playwright", "auto") and browser_client.is_available():
-                    html = browser_client.fetch_page(detail_url, biz_id=biz_id)
-                    _fetch_source = "playwright"
-
-            # Anti-bot stub from the browser? Yandex serves an empty/"robot"
-            # page to some requests — retry once via CDP on a fresh tab before
-            # giving up and falling back to the slow throttled httpx path.
-            # NOTE: html may be None because stop/skip aborted the CDP fetch
-            # (fetch_page returns None on stop) — in that case DON'T waste a
-            # retry or a throttled httpx round-trip on a page we're about to
-            # abandon anyway.
-            # Повтор через CDP при заглушке — для auto и явного выбора CDP
-            # (при выбранном Playwright повторять чужим движком нечестно —
-            # сразу HTTP-фолбэк).
-            if (not _stop_requested() and _looks_like_antiblock(html) and state.USE_BROWSER
-                    and _engine in ("cdp", "auto") and cdp_client.is_available()):
-                state.syslog(f"fetch_detail: anti-bot stub for {biz_name}, retrying via CDP fresh tab...")
-                html = cdp_client.fetch_page(detail_url, biz_id=biz_id)
+            # Единственный способ — реальный браузер (Chrome/Chromium через
+            # CDP). HTTP-фолбэка нет: прямые запросы к Яндекс.Картам ловит
+            # антибот, и они заметно «светят» IP и аккаунт.
+            # Через fetch_html, а не cdp_client.fetch_page: только так
+            # работает дисковый кэш страниц (повторный прогон берёт готовую
+            # карточку и не ждёт браузер на каждой организации).
+            if state.USE_BROWSER and cdp_client.is_available():
+                html = fetch_html(detail_url, biz_id=biz_id)
                 _fetch_source = "cdp"
 
-            if not _stop_requested() and _looks_like_antiblock(html):
+            # Anti-bot stub from the browser? Yandex serves an empty/"robot"
+            # page to some requests — retry once on a fresh tab.
+            # NOTE: html may be None because stop/skip aborted the CDP fetch
+            # (fetch_page returns None on stop) — in that case DON'T waste a
+            # retry on a page we're about to abandon anyway.
+            if (not _stop_requested() and _looks_like_antiblock(html)
+                    and state.USE_BROWSER and cdp_client.is_available()):
+                state.syslog(f"fetch_detail: anti-bot stub for {biz_name}, retrying on a fresh tab...")
                 html = fetch_html(detail_url, biz_id=biz_id)
-                _fetch_source = "httpx"
+                _fetch_source = "cdp"
+
+            # Резервный путь без браузера больше не используется: если пул
+            # вкладок не поднялся, запись уходит без соцсетей — это честнее,
+            # чем долбить Яндекс HTTP-запросами.
             _fetch_elapsed = time.monotonic() - _fetch_t0
-            if html:
-                for k, v in _extract_from_json_blob(html).items():
-                    socials.setdefault(k, v)
-                for k, v in extract_socials(html).items():
-                    socials.setdefault(k, v)
-                # Rating/reviews live in the same blob as the socials, so this
-                # is free. Values already present (2GIS API payload) win.
-                if not record.get("rating") or not record.get("reviews_count"):
-                    _rating, _reviews = extract_rating_reviews(html)
-                    if _rating and not record.get("rating"):
-                        record["rating"] = _rating
-                    if _reviews and not record.get("reviews_count"):
-                        record["reviews_count"] = _reviews
-                # Phone: the 2GIS Search API returns it only inside
-                # contact_groups (needs a permission demo keys don't have) and
-                # the Yandex Search API sometimes omits it — the card page has
-                # it as a tel: link, and we already downloaded the page.
-                if not str(record.get("phone") or "").strip():
-                    _phone = extract_phone(html)
-                    if _phone:
-                        record["phone"] = _phone
-                        state.syslog(f"phone_from_page: {biz_name} → {_phone}")
-                # NOTE: 2GIS firm pages used to be scraped for "the first
-                # https URL" as the org's website. That picked the analytics
-                # script shared by every page (st.top100.ru/top100/top100.js),
-                # so 100% of rows got the same fake site and the
-                # «только без сайтов» filter dropped everything. The site is
-                # only trustworthy when the API returns it as a contact
-                # (see twogis._website_from_contacts) — no HTML guessing.
-            state.syslog(f"fetch_detail done: {biz_name}, socials_after={list(socials.keys())}, source={_fetch_source}, time={_fetch_elapsed:.1f}s")
-            # Release concurrency slot (only if acquired)
-            if _sem_acquired and _concurrency_semaphore:
-                try:
-                    _concurrency_semaphore.release()
-                except Exception:
-                    pass
+            # Extractors run on a complex JSON blob / HTML and can raise; if
+            # they did, the slot was never released and the pool silently lost
+            # a worker for the rest of the batch. Release in a finally.
+            try:
+                if html:
+                    for k, v in _extract_from_json_blob(html).items():
+                        socials.setdefault(k, v)
+                    for k, v in extract_socials(html).items():
+                        socials.setdefault(k, v)
+                    # Rating/reviews live in the same blob as the socials, so this
+                    # is free. Values already present (из выдачи Яндекс.Карт) win.
+                    if not record.get("rating") or not record.get("reviews_count"):
+                        _rating, _reviews = extract_rating_reviews(html)
+                        if _rating and not record.get("rating"):
+                            record["rating"] = _rating
+                        if _reviews and not record.get("reviews_count"):
+                            record["reviews_count"] = _reviews
+                    # Телефон: выдача Яндекс.Карт его не показывает — на карточке
+                    # организации он есть как ссылка tel:, а страница уже загружена.
+                    if not str(record.get("phone") or "").strip():
+                        _phone = extract_phone(html)
+                        if _phone:
+                            record["phone"] = _phone
+                            state.syslog(f"phone_from_page: {biz_name} → {_phone}")
+                    # Сайт организации: раньше его отдавал API вместе с выдачей,
+                    # теперь — блок контактов карточки (см. extract_website).
+                    site = ""
+                    if not str(record.get("website") or "").strip():
+                        site = extract_website(html)
+                        if site:
+                            record["website"] = site
+                            state.syslog(f"website_from_page: {biz_name} → {site[:80]}")
+                state.syslog(f"fetch_detail done: {biz_name}, socials_after={list(socials.keys())}, source={_fetch_source}, time={_fetch_elapsed:.1f}s")
+            finally:
+                # Release concurrency slot (only if acquired)
+                if _sem_acquired and _concurrency_semaphore:
+                    try:
+                        _concurrency_semaphore.release()
+                    except Exception:
+                        pass
 
         # Fallback: try aggregator page (with shorter timeout)
         if not _stop_requested() and agg_url and len(socials) < 2:
             state.syslog(f"fetch_aggregator: {biz_name}, url={agg_url}")
             try:
-                from .http_client import _worker_client as _agg_client
-                from .extractors import _get as _agg_get
-                agg_r = _agg_get(
-                    agg_url,
-                    session=_agg_client(),
-                    timeout=(5, 10),  # shorter timeout for third-party aggregators
-                    allow_redirects=True,
-                )
-                if agg_r and agg_r.status_code == 200:
-                    for k, v in extract_socials(agg_r.text).items():
+                # Страница-агрегатор открывается тем же браузером — прямые
+                # HTTP-запросы к чужим сайтам приложение больше не делает.
+                agg_html = cdp_client.fetch_page(agg_url)
+                if agg_html:
+                    for k, v in extract_socials(agg_html).items():
                         socials.setdefault(k, v)
             except Exception:
                 pass  # aggregator is best-effort, don't block
@@ -339,27 +343,38 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
         if state.is_skip_city():
             return None
 
-        # NOTE: socials are NOT used to drop records here any more. The
-        # «с/без соцсетей» choice and the required-network tiles are stage-2
-        # filters (processing.apply_filters): dropping records during the
-        # crawl lost them before they ever reached output/raw/, so a
-        # different social slice required a full re-crawl.
+        # Соцсети переносим в запись ДО решения о фильтрах: и режим
+        # «с/без соцсетей», и обязательные сети читаются по самой записи.
+        for platform in KNOWN_PLATFORMS:
+            record[platform] = socials.get(platform, "")
 
-        # 2GIS fallback: the demo key returns no contacts, so the firm-page
-        # fetch is where the website first becomes visible. Enforce
-        # «только без сайтов» here — at search time the website was unknown.
-        if detail_url_override and state.PARSE_MODE == "without_website":
-            site = (record.get("website") or "").strip()
-            if site:
-                state.syslog(f"skip_has_website(2gis): {biz_name} — {site[:60]}")
-                return None
+        # Предфильтр сбора: запись, которую всё равно снимут фильтры (чёрный
+        # список, «только без сайтов», соцсети), не попадает ни в живой поток —
+        # им наполняется таблица результатов, — ни в output/raw/. Правила
+        # общие с этапом 2 (processing.crawl_skip_reason), иначе «Применить
+        # фильтры заново» находило бы расхождения.
+        _reason = crawl_skip_reason(
+            record,
+            words=state.BLACKLIST_WORDS,
+            parse_mode=state.PARSE_MODE,
+            social_mode=state.SOCIAL_MODE,
+            required_socials=state.REQUIRED_SOCIALS,
+            min_lead_score=getattr(state, "MIN_LEAD_SCORE", 0),
+            only_single_branch=getattr(state, "ONLY_SINGLE_BRANCH", False),
+            only_new_months=getattr(state, "ONLY_NEW_MONTHS", None),
+            vk_check=getattr(state, "VK_CHECK", False),
+        )
+        if _reason:
+            state.inc_crawl_skip(_reason)
+            _site = (record.get("website") or record.get("aggregator_url") or "").strip()
+            state.syslog(f"skip_prefilter[{_reason}]: {biz_name}"
+                         + (f" — {_site[:60]}" if _site else ""))
+            return None
 
         state._inc_found()
         social_list = [f"{p}:{socials[p][:30]}" for p in KNOWN_PLATFORMS if socials.get(p)]
         # File-only: detailed trace per business
         state.syslog(f"enrich_ok: {biz_name} | socials={social_list or ['none']}")
-        for platform in KNOWN_PLATFORMS:
-            record[platform] = socials.get(platform, "")
 
         record["parsed_at"]     = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         state._emit_result(record)

@@ -116,7 +116,7 @@ function openPresetModal() {
     <div class="ui-modal preset-modal">
       <h3>Сохранить пресет</h3>
       <p>В текущий пресет войдут запросы, города, источник, форматы и все параметры сбора.</p>
-      <input type="text" id="preset-name-input" maxlength="40" placeholder="Например: Кафе Уфа, 2GIS" autocomplete="off">
+      <input type="text" id="preset-name-input" maxlength="40" placeholder="Например: Шиномонтаж Уфа" autocomplete="off">
       <div class="preset-modal-meta">Сохранённых пресетов: ${existing.length} из 10</div>
       <div class="ui-modal-btns">
         <button type="button" class="m-cancel">Отмена</button>
@@ -196,7 +196,7 @@ function deletePreset(i) {
 // Mirrors the HTML defaults: opposite of applySettings. Also clears the
 // «applied preset» highlight — after a reset no preset is active.
 const FORM_DEFAULTS = {
-  queries: '', source: 'yandex', fetchEngine: 'auto', excel: true, json: true, csv: false, map: false,
+  queries: '', excel: true, json: true, csv: false, map: false,
   pages: 1, workers: 20, queryWorkers: 2, maxCandidates: 200,
   grid: false, grad: 20, gstep: 5,
   validate: false, resume: false, collapseChains: false, rawMode: 'keep', chainKey: 'name_city',

@@ -8,21 +8,19 @@ from . import state
 
 
 def print_limit_stats() -> None:
-    """Print request/rate-limit usage from the shared HTTP counters."""
+    """Print browser usage from the shared counters (сколько страниц открыто)."""
+    _print_prefilter_stats()
     from .http_client import get_stats
     s = get_stats()
     if not s["requests"]:
         return
-    # «Запросов к API» — без слова API строка читалась как количество запросов
-    # поиска (которых может быть 3, а HTTP-запросов — 43).
-    state.ok(f"\n  Запросов к API: {s['requests']}")
-    # Human-readable request kinds — raw kinds go to the developer file only.
+    state.ok(f"\n  Открыто страниц: {s['requests']}")
+    # Human-readable page kinds — raw kinds go to the developer file only.
     kind_labels = {
-        "search":   "Поисковые запросы",
-        "geocode":  "Геокодирование",
-        "detail":   "Загрузка карточек",
-        "validate": "Проверка соцсетей",
-        "other":    "Прочие запросы",
+        "search":   "Выдачи поиска",
+        "geocode":  "Координаты городов",
+        "detail":   "Карточки организаций",
+        "other":    "Прочие страницы",
     }
     for kind, label in kind_labels.items():
         n = s["by_kind"].get(kind, 0)
@@ -38,15 +36,42 @@ def print_limit_stats() -> None:
         )
     if s["retries"]:
         state.info(f"    сетевых ретраев: {s['retries']}")
-    # Browser stats
+    # Browser stats (та же воронка, что в бою: один браузер на прогон)
     try:
-        from .browser_client import get_stats as _bs
-        bs = _bs()
-        total_browser = bs["pages_fetched"] + bs["cache_hits"]
-        if total_browser > 0:
-            state.info(f"    браузер: {bs['pages_fetched']} стр. ({bs['avg_time']:.1f}с/стр.) кэш: {bs['cache_hits']} ошибок: {bs['pages_error']} рестартов: {bs['restarts']}")
+        from .http_client import browser_stats
+        from .cache import cache_stats
+        bs = browser_stats()
+        total_browser = int(bs.get("pages_fetched") or 0)
+        # Попадания в кэш страниц: при повторном прогоне браузер не открывает
+        # карточку вообще, так что без этой цифры выигрыш не видно.
+        try:
+            hits = int(cache_stats().get("hits") or 0)
+        except Exception:
+            hits = 0
+        if total_browser > 0 or hits:
+            state.info(f"    браузер: {bs.get('pages_fetched', 0)} стр. "
+                       f"кэш: {hits} ошибок: {bs.get('pages_error', 0)}")
     except Exception:
         pass
+
+
+def _print_prefilter_stats() -> None:
+    """Сколько записей отбросил предфильтр сбора и почему.
+
+    Сбор выкидывает то, что всё равно сняли бы фильтры (чёрный список,
+    «только без сайтов», соцсети), поэтому эти записи не появляются в живой
+    таблице и не попадают в raw. Печатаем дельту с прошлого вызова — строка
+    попадает в лог конца каждого города, а не только в итог за прогон.
+    """
+    try:
+        delta = state.crawl_skip_take_delta()
+    except Exception:
+        return
+    if not delta.get("total"):
+        return
+    state.info(f"    🚫 предфильтр: пропущено {delta['total']} ({state.crawl_skip_text(delta)})")
+    state.syslog(f"  crawl_skip: total={delta['total']} "
+                 f"({state.crawl_skip_text(state.crawl_skip_summary())})")
 
 
 _PLATFORM_LABELS = {

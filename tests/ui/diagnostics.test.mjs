@@ -300,7 +300,8 @@ test('showDiagnostics: три кнопки запуска и предупреж�
   assert.match(overlay.innerHTML, /runDiagnostics\(\['keys','files','data','env'\]/);
   assert.match(overlay.innerHTML, /runDiagnostics\(\['keys'\]/);
   assert.match(overlay.innerHTML, /runDiagnostics\(\['files','data','env'\]/);
-  assert.match(overlay.innerHTML, /квоты/, 'человек должен знать, что проверка ключей стоит запросов');
+  assert.match(overlay.innerHTML, /живой запрос к ВКонтакте/,
+    'человек должен знать, что проверка ключей делает внешний запрос');
   assert.match(overlay.innerHTML, /id="diag-summary"/);
   assert.match(overlay.innerHTML, /id="diag-results"/);
 });
@@ -346,6 +347,34 @@ test('closeDiagnostics безопасен без открытой модалки
   reset();
   delete els['diag-overlay'];
   assert.doesNotThrow(() => globalThis.closeDiagnostics());
+});
+
+// ── Живая проба браузера (глубокий режим) ────────────────────
+
+test('showDiagnostics: отдельная кнопка живой пробы браузера', () => {
+  reset();
+  globalThis.showDiagnostics();
+  const html = appended[0].innerHTML;
+  assert.match(html, /runDiagnostics\(\['engines'\], this, true\)/,
+    'проверка вкладки и выдачи — отдельная кнопка');
+  assert.match(html, /Проверить браузер/);
+  assert.match(html, /страницу выдачи/,
+    'человек должен знать, что кнопка открывает настоящий браузер');
+});
+
+test('глубокая проба уезжает на сервер флагом deep', async () => {
+  reset();
+  await globalThis.runDiagnostics(['engines'], runButtons[0], true);
+  assert.equal(requests.length, 1);
+  assert.deepEqual(requests[0].body.groups, ['engines']);
+  assert.equal(requests[0].body.deep, true);
+});
+
+test('обычные проверки просят быстрый режим', async () => {
+  reset();
+  await globalThis.runDiagnostics(['keys'], runButtons[1]);
+  assert.equal(requests[0].body.deep, false,
+    'без явного флага сервер не открывает браузер');
 });
 
 test('неключевые проверки не запускаются на загрузке страницы', () => {

@@ -497,10 +497,11 @@ class TestReviewedBatch:
 # ── Review key ────────────────────────────────────────────────
 
 class TestReviewKey:
-    def test_prefers_yandex_then_twogis(self):
+    def test_prefers_the_yandex_card_link(self):
         from routes.api import _review_key
-        assert _review_key({"yandex_maps_url": "y", "twogis_url": "t"}) == "y"
-        assert _review_key({"yandex_maps_url": "", "twogis_url": "t"}) == "t"
+        assert _review_key({"yandex_maps_url": "y"}) == "y"
+        # Без ссылки на карточку — составной ключ, а не пустая строка.
+        assert _review_key({"yandex_maps_url": "", "name": "Бар"}) == "n:Бар||"
 
     def test_fallback_composite_key(self):
         from routes.api import _review_key

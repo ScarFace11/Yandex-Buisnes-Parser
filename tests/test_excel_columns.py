@@ -37,20 +37,19 @@ def _xlsx_headers(records, columns, extra=()):
 
 
 def test_enabled_fields_all_by_default():
-    # The map column of the OTHER source is dropped (it would be empty).
     state.SOURCE = "yandex"
-    assert _enabled_fields() == [f for f in CSV_FIELDS if f != "twogis_url"]
+    assert _enabled_fields() == list(CSV_FIELDS)
 
 
-def test_map_column_follows_source():
+def test_map_column_is_always_the_yandex_card():
+    """Источник один — Яндекс.Карты: колонка со ссылкой одна и та же."""
     old = state.SOURCE
     try:
-        state.SOURCE = "yandex"
-        assert "yandex_maps_url" in _enabled_fields()
-        assert "twogis_url" not in _enabled_fields()
-        state.SOURCE = "2gis"
-        assert "twogis_url" in _enabled_fields()
-        assert "yandex_maps_url" not in _enabled_fields()
+        for source in ("yandex", "2gis", ""):
+            state.SOURCE = source
+            fields = _enabled_fields()
+            assert "yandex_maps_url" in fields, source
+            assert "twogis_url" not in fields, source
     finally:
         state.SOURCE = old
 
@@ -68,14 +67,28 @@ def test_raw_export_keeps_website_column():
 
 
 def test_map_column_aliased_in_user_selection():
-    # Picked «2ГИС» on a Yandex run → the file must still carry a card link.
+    """Старое имя колонки («2ГИС») из сохранённого набора колонок не должно
+    ломать файл и не должно тянуть за собой несуществующую колонку."""
+    state.SOURCE = "yandex"
+    state.EXCEL_COLUMNS = {"name", "yandex_maps_url"}
+    try:
+        fields = _enabled_fields()
+    finally:
+        state.EXCEL_COLUMNS = None
+    assert fields == ["name", "yandex_maps_url"]
+
+
+def test_obsolete_map_alias_is_ignored_but_selection_survives():
+    """Набор колонок из старой версии с псевдонимом «2ГИС»: остальные
+    выбранные колонки остаются, а пустой колонки-двойника в файле нет."""
     state.SOURCE = "yandex"
     state.EXCEL_COLUMNS = {"name", "twogis_url"}
     try:
         fields = _enabled_fields()
     finally:
         state.EXCEL_COLUMNS = None
-    assert fields == ["name", "yandex_maps_url"]
+    assert fields == ["name"]
+    assert "twogis_url" not in fields
 
 
 def test_selection_never_yields_empty_sheet():
@@ -86,15 +99,15 @@ def test_selection_never_yields_empty_sheet():
         state.EXCEL_COLUMNS = None
 
 
-def test_map_column_follows_records_not_stale_source():
-    # A 2GIS file written while state.SOURCE still says "yandex" keeps its
-    # «2ГИС» column — the review-mark store keys rows by that card URL.
+def test_map_column_does_not_depend_on_stale_records():
+    # Сбор прежней версии принёс twogis_url: колонка со ссылкой всё равно одна —
+    # карточка Яндекс.Карт, а не пустой столбец чужого источника.
     state.SOURCE = "yandex"
-    recs = [dict(RECORDS[0], twogis_url="https://2gis.ru/firm/123")]
-    assert _map_fields_for_records(recs) == "twogis_url"
-    headers, row = _xlsx_headers(recs, None)
-    assert "2ГИС" in headers and "Яндекс.Карты" not in headers
-    assert row[headers.index("2ГИС")] == "https://2gis.ru/firm/123"
+    recs = [dict(RECORDS[0], twogis_url="https://2gis.ru/firm/123",
+                 yandex_maps_url="https://yandex.ru/maps/org/1")]
+    assert _map_fields_for_records(recs) == "yandex_maps_url"
+    headers, _row = _xlsx_headers(recs, None)
+    assert "Яндекс.Карты" in headers and "2ГИС" not in headers
 
 
 def test_enabled_fields_subset_keeps_csv_order():

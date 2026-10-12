@@ -1,5 +1,12 @@
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 
+/* [hidden] обязан побеждать ЛЮБОЙ display из авторских правил. Оверлеи и
+   модалки задают display:flex, а этот стиль сильнее, чем UA-правило для
+   атрибута hidden: скрытый экран («работа невозможна», гейт версии) иначе
+   оставался висеть поверх интерфейса и перехватывал все клики — приложение
+   выглядело полностью заблокированным. */
+[hidden]{display:none!important}
+
 /* ── Шрифт ────────────────────────────────────────────────────────────────
    Manrope лежит рядом с приложением и не скачивается из интернета. Раньше
    шрифт брался у Google Fonts, поэтому в сети с закрытым доступом интерфейс
@@ -43,6 +50,11 @@
   --cta-from:#33404f;--cta-to:#243040;
   --cta:#33404f;               /* сплошной акцент: градиент выглядел накладочно */
   --cta-shadow:0 1px 2px rgba(51,64,79,.16),0 6px 16px rgba(51,64,79,.20);
+  /* Красочный CTA кнопки поиска: прежний графитовый --cta в тёмной теме
+     читался как выключенная кнопка. Градиент живёт в токене, чтобы цвет
+     переключался вместе с темой (без hex-литералов в правилах). */
+  --run-grad:linear-gradient(135deg,#0EA5A4 0%,#1C7ED0 55%,#2A63E8 100%);
+  --run-shadow:0 6px 18px rgba(28,126,208,.38);
   --red:#c0392b;--red-btn:#c44040;--red-btn-2:#a83232;
   --yel:#b07525;--grn:#1f7a52;--blu:#3568a0;
   --bg:#f4f5f7;  --card:#ffffff; --bdr:#e4e6eb;
@@ -220,7 +232,7 @@ header h1{font-size:14px;font-weight:700;letter-spacing:-.015em}
 #city-progress-list::-webkit-scrollbar-thumb{background:var(--bdr);border-radius:4px}
 #city-progress-list::-webkit-scrollbar-thumb:hover{background:var(--bdr-h)}
 
-/* ── «Страниц» cap note (2GIS never serves more than 5 pages/point) ── */
+/* ── Сноска про ограничение числа «страниц» на точку ── */
 .pages-cap-note{
   margin-top:4px;font-size:11px;line-height:1.45;color:var(--warn-strong);
   background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.35);
@@ -329,8 +341,8 @@ header h1{font-size:14px;font-weight:700;letter-spacing:-.015em}
 }
 
 /* ── Progress ── */
-#prog-wrap{height:3px;background:rgba(255,255,255,.2);overflow:hidden;display:none}
-#prog-bar{height:100%;background:var(--card);width:0%;transition:width .35s ease;opacity:.7}
+#prog-wrap{height:4px;background:var(--track);overflow:hidden;display:none}
+#prog-bar{height:100%;background:var(--c);width:0%;transition:width .35s ease}
 #prog-label{
   font-size:11px;font-weight:600;color:var(--sub);padding:5px 24px;
   background:var(--cl);border-bottom:1px solid var(--bdr);display:none;
@@ -486,13 +498,18 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
 .btn-sm:hover{border-color:var(--c);color:var(--c)}
 
 /* ── Run button ── */
+/* Единственный источник правды для #btn-run: база, hover, disabled и
+   состояния run-ready/run-active/run-paused. Раньше блок дублировался ниже
+   («CTA button»), и цвета/тени зависели от порядка правил в файле. */
 #btn-run{
-  width:100%;padding:14px 18px;border:none;border-radius:var(--r-md);
-  background:var(--cta);
-  color:var(--on-accent);font-size:15px;font-weight:700;letter-spacing:-.01em;
+  width:100%;padding:15px 18px;border:none;border-radius:var(--r-md);
+  /* Красочный CTA (токены темы — см. --run-grad): прежний графитовый
+     --cta в тёмной теме читался как выключенная кнопка. */
+  background:var(--run-grad);
+  color:var(--on-accent);font-size:15.5px;font-weight:700;letter-spacing:-.01em;
   cursor:pointer;font-family:inherit;
   display:flex;align-items:center;justify-content:center;gap:8px;
-  box-shadow:var(--cta-shadow);
+  box-shadow:var(--run-shadow);
   transition:transform .14s,box-shadow .14s,filter .14s;
 }
 /* The [hidden] attribute must beat the display:flex above — without this
@@ -511,7 +528,7 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
 [data-theme="dark"] #btn-stop{background:var(--red);box-shadow:0 4px 14px var(--glow-red)}
 #btn-run:hover:not(:disabled){
   transform:translateY(-1px);
-  box-shadow:var(--cta-shadow);
+  box-shadow:var(--sh-lg);
   filter:brightness(1.07);
 }
 #btn-run:active:not(:disabled){transform:translateY(0)}
@@ -674,7 +691,7 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
 .ll.info{color:var(--c);background:var(--c-soft);border-left-color:var(--glow)}
 .ll.warn{color:var(--yel);background:rgba(176,117,40,.08);border-left-color:var(--yel)}
 .ll.error{color:var(--red);background:rgba(196,64,64,.08);border-left-color:var(--red)}
-/* quota warnings — visually louder than ordinary warns (2GIS Places / лимиты) */
+/* Лимиты внешних сервисов: визуально громче обычных предупреждений */
 .ll.quota-warn{
   color:var(--yel);background:rgba(176,117,40,.16);border-left-color:var(--yel);
   border-left-width:4px;font-weight:700;
@@ -704,7 +721,10 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
   padding:10px 15px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;
   border-bottom:1px solid var(--bdr);background:var(--panel);
 }
-.tbl-toolbar input{flex:1;min-width:160px;max-width:250px}
+/* Только поле поиска по таблице: раньше селектор без типа задевал чекбоксы
+   в списке «Столбцы» и растягивал их до 160px — подписи столбцов не
+   помещались и оставались невидимыми. */
+.tbl-toolbar input[type="text"]{flex:1;min-width:160px;max-width:250px}
 .tbl-count{font-size:12px;color:var(--muted);font-weight:600;margin-left:auto}
 /* Таблица результатов. Плотность подобрана так, чтобы строка читалась
    одной строкой текста (высота ~36px): адрес и название переносятся, а не
@@ -737,9 +757,11 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
    сквозь липкую шапку. z-index держит её над бейджами и чипами, а
    тень-линия снизу (вместо рамки, которая при border-collapse уезжает
    вместе с содержимым) отделяет строки. */
-/* «#» и «Оценка» — числовые колонки: центр и одинаковая ширина разрядов. */
-#results-table th:nth-child(2),#results-table td:nth-child(2),
-#results-table th:nth-child(7),#results-table td:nth-child(7){text-align:center}
+/* «#» и «Оценка» — числовые колонки: центр и одинаковая ширина разрядов.
+   Выборка по data-col, а не по позиции: столбцы можно переставлять
+   («Столбцы» → перетаскивание), а оформление должно оставаться при колонке. */
+#results-table th[data-col="num"],#results-table td[data-col="num"],
+#results-table th[data-col="score"],#results-table td[data-col="score"]{text-align:center}
 #results-table th:hover{background:var(--row-hover);color:var(--txt)}
 #results-table th.asc::after{content:" ↑"}
 #results-table th.desc::after{content:" ↓"}
@@ -753,22 +775,24 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
    в верхней кромке высокой строки. Телефон не переносится: разрыв по
    «+7 (495)» ломает ритм колонки. */
 #results-table td{padding:8px 12px;line-height:1.45;border-bottom:1px solid var(--bdr-soft);vertical-align:top}
-#results-table td:nth-child(1),#results-table td:nth-child(2),
-#results-table td:nth-child(7),#results-table td:nth-child(8){vertical-align:middle}
-#results-table td:nth-child(6){white-space:nowrap}
+#results-table td[data-col="rev"],#results-table td[data-col="num"],
+#results-table td[data-col="score"],#results-table td[data-col="socials"]{vertical-align:middle}
+#results-table td[data-col="phone"]{white-space:nowrap}
 /* Телефоны: у организаций бывает десяток номеров, и comma-joined строка
    растягивала таблицу за горизонт — остальные колонки уезжали за экран.
    Один номер на строку, колонка ограничена, излишек — под прокрутку
    внутри ячейки (в Excel/CSV попадают все номера без изменений). */
-#results-table td:nth-child(6){max-width:230px}
+#results-table td[data-col="phone"]{max-width:230px}
 .tbl-phone{
-  max-height:3.2em;overflow-y:auto;font-variant-numeric:tabular-nums;
+  max-height:3.2em;overflow-y:auto;overflow-x:hidden;font-variant-numeric:tabular-nums;
   scrollbar-width:thin;
 }
-.tbl-phone span{display:block;white-space:nowrap}
+/* Один длинный номер обрезался без эллипсиса — теперь он усекается «…»,
+   а полное значение остаётся в title. */
+.tbl-phone span{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 /* Соцсети наоборот: бейджи собираются в колонку, и места им всегда
    не хватало — колонке задаём минимум, а не максимум. */
-#results-table th:nth-child(8),#results-table td:nth-child(8){min-width:120px;width:120px}
+#results-table th[data-col="socials"],#results-table td[data-col="socials"]{min-width:120px;width:120px}
 /* Зебра тоном тише, чем наведение: подсветка курсора должна читаться поверх
    полос. Порядок и вес правил это обеспечивают — `even:hover` выше по
    специфичности, чем `even`, и потому выигрывает. */
@@ -833,8 +857,17 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
    собственный фон ячейки — строка выбивала дыру в зебре и в наведении. */
 #results-table tr.is-reviewed td{color:var(--sub)}
 #results-table tr.is-reviewed .tbl-link{color:var(--sub)}
-#results-table tr.is-reviewed .score-badge,
-#results-table tr.is-reviewed .social-badge{opacity:.5}
+/* Отметка «просмотрено» гасит ВСЕ поля строки, а не только соцсети и
+   оценку: ссылка, бейджи, рейтинг и телефон теряют насыщенность вместе. */
+#results-table tr.is-reviewed td .tbl-link,
+#results-table tr.is-reviewed td .score-badge,
+#results-table tr.is-reviewed td .social-badge,
+#results-table tr.is-reviewed td .rate-val,
+#results-table tr.is-reviewed td .rate-rev,
+#results-table tr.is-reviewed td .tbl-phone{opacity:.5}
+/* Отдельно открытая соцсеть гаснет сама по себе: клик по бейджу отмечает
+   именно эту сеть, а не всю организацию. */
+#results-table .social-badge.social-opened{opacity:.45;filter:grayscale(.35)}
 
 /* ── Social filter row ── */
 .tbl-social-row{
@@ -843,7 +876,7 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
 }
 /* Строка спрятана: данных нет (empty) или колонка соцсетей скрыта
    (col-hidden — фильтр без объекта только путает). */
-.tbl-social-row.empty,.tbl-social-row.col-hidden{display:none}
+.tbl-social-row.empty,.tbl-social-row.col-hidden,.tbl-social-row.socials-off{display:none}
 .social-filter-lbl{font-size:11px;color:var(--muted);font-weight:700;white-space:nowrap;margin-right:2px}
 .sf-tag{
   display:inline-flex;align-items:center;padding:3px 9px;border-radius:20px;
@@ -887,9 +920,12 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
   position:absolute;top:calc(100% + 5px);right:0;
   background:var(--card);border:1px solid var(--bdr);border-radius:var(--r-md);
   box-shadow:var(--sh-lg);padding:6px 4px;z-index:400;
-  min-width:168px;display:none;
+  min-width:232px;display:none;
 }
 #col-dropdown.open{display:block}
+/* Три колонки: ручка перетаскивания │ чекбокс+подпись │ стрелки сдвига.
+   Раньше их было две (чекбокс │ подпись), и стрелки уезжали на вторую
+   строку — список выглядел двухъярусным. */
 .col-item{
   display:grid;grid-template-columns:14px 1fr;align-items:center;column-gap:9px;
   padding:7px 12px;
@@ -897,7 +933,7 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
   transition:background .1s;user-select:none;
 }
 .col-item:hover{background:var(--row-hover)}
-.col-item input{grid-column:1;width:14px;height:14px;accent-color:var(--c);cursor:pointer;flex-shrink:0}
+.col-item input{width:14px;height:14px;accent-color:var(--c);cursor:pointer;flex-shrink:0}
 .col-sep{height:1px;background:var(--bdr);margin:4px 10px}
 .col-all-btn{
   width:100%;padding:5px 12px;border:none;background:none;
@@ -905,15 +941,27 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
   text-align:left;border-radius:5px;font-family:inherit;transition:background .1s;
 }
 .col-all-btn:hover{background:var(--cl);color:var(--c)}
-/* column hide classes */
-#results-table.col-hide-1 th:nth-child(1),#results-table.col-hide-1 td:nth-child(1){display:none}
-#results-table.col-hide-2 th:nth-child(2),#results-table.col-hide-2 td:nth-child(2){display:none}
-#results-table.col-hide-3 th:nth-child(3),#results-table.col-hide-3 td:nth-child(3){display:none}
-#results-table.col-hide-4 th:nth-child(4),#results-table.col-hide-4 td:nth-child(4){display:none}
-#results-table.col-hide-5 th:nth-child(5),#results-table.col-hide-5 td:nth-child(5){display:none}
-#results-table.col-hide-6 th:nth-child(6),#results-table.col-hide-6 td:nth-child(6){display:none}
-#results-table.col-hide-7 th:nth-child(7),#results-table.col-hide-7 td:nth-child(7){display:none}
-#results-table.col-hide-8 th:nth-child(8),#results-table.col-hide-8 td:nth-child(8){display:none}
+/* Скрытый столбец: класс на самих ячейках (th и td). Позиционных правил
+   больше нет — они прятали бы не тот столбец после перестановки. */
+#results-table .col-hidden{display:none}
+/* Перетаскивание столбцов в списке «Столбцы»: ручка-грип и стрелки
+   (стрелки — доступная замена мыши с перетаскиванием). */
+.col-item .col-grip{cursor:grab;color:var(--muted);font-size:13px;line-height:1;text-align:center}
+.col-item:hover .col-grip{color:var(--c)}
+.col-item.dragging{opacity:.55}
+#col-items.dragging .col-item{cursor:grabbing}
+.col-lbl{
+  display:flex;align-items:center;gap:9px;min-width:0;cursor:pointer;
+}
+/* Подпись обрезается многоточием у самого текста, а не у flex-контейнера:
+   `overflow:hidden` на flex-контейнере схлопывал анонимный текстовый
+   флекс-элемент в ноль — список столбцов показывал пустые строки. */
+.col-lbl-txt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.col-hint{padding:2px 12px 6px;color:var(--muted);font-size:10.5px;line-height:1.35}
+/* Рейтинг: звезда + число отзывов; пустая ячейка — прочерк из JS. */
+.rate-val{font-weight:700;white-space:nowrap}
+.rate-rev{color:var(--muted);margin-left:5px;font-size:11px;font-variant-numeric:tabular-nums}
+.rate-rev::after{content:' отз.'}
 
 /* Кнопка импорта — label, оборачивающий скрытый file input: стилизация
    нативного поля невозможна, а выглядеть должна как соседняя кнопка. */
@@ -971,9 +1019,9 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
 .num-row input[type="number"]{width:78px;flex:0 0 auto}
 .num-unit{font-size:11.5px;color:var(--sub)}
 
-/* ── Data source toggle: Яндекс.Карты / 2GIS ──
-   Segmented control with brand-colored active states so the chosen
-   source is obvious at a glance (red = Yandex, green = 2GIS). */
+/* ── Переключатель источника данных ──
+   Один источник — Яндекс.Карты; вёрстка оставлена переключателем, чтобы
+   интерфейс не переделывался, если источник вернётся. */
 .source-mode-bar{display:flex;gap:0;border:1px solid var(--bdr);border-radius:8px;overflow:hidden; flex-wrap:wrap;}
 .source-mode-opt{position:relative;flex:1;padding:8px 6px;text-align:center;font-size:12px;font-weight:700;cursor:pointer;color:var(--sub);background:var(--card);transition:all .13s;border-right:1px solid var(--bdr);margin:0;display:flex;align-items:center;justify-content:center;gap:5px;}
 .source-mode-opt input[type="radio"]{position:absolute;width:1px;height:1px;margin:0;opacity:0;pointer-events:none;clip-path:inset(50%)}
@@ -983,11 +1031,9 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
 .source-mode-opt.active{color:var(--on-accent);border-color:var(--c)}
 .source-mode-opt.active .src-dot{opacity:1;background:var(--card)}
 .source-mode-opt.active[data-src="yandex"]{background:var(--red-btn);border-color:var(--red)}
-.source-mode-opt.active[data-src="2gis"]{background:var(--ok-strong);border-color:var(--ok-strong)}
 [data-theme="dark"] .source-mode-opt{background:var(--panel)}
 [data-theme="dark"] .source-mode-opt:hover{background:var(--row-hover)}
 [data-theme="dark"] .source-mode-opt.active[data-src="yandex"]{background:var(--red-btn);border-color:var(--red);color:var(--on-accent)}
-[data-theme="dark"] .source-mode-opt.active[data-src="2gis"]{background:var(--ok-strong);border-color:var(--ok-strong);color:var(--on-accent)}
 .source-hint-key{color:var(--sub);font-weight:600}
 .source-hint-key.missing{color:var(--red)}
 /* «Способ парсинга» (engine-mode-bar): переиспользует .source-mode-*,
@@ -1013,7 +1059,7 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
 /* ── Grid coverage: radio modes + range sliders ──
    Replaces the old checkbox+steppers block: «Весь город» keeps everything
    hidden; «Настроить вручную» reveals two range sliders with live values,
-   a plain-language ratio hint and a 2GIS token estimate. */
+   a plain-language ratio hint and a per-run page estimate. */
 .grid-mode-row{display:flex;gap:0;border:1px solid var(--bdr);border-radius:8px;overflow:hidden;margin-bottom:8px}
 .grid-mode-opt{position:relative;flex:1;padding:8px 8px;display:flex;flex-direction:column;align-items:center;gap:2px;cursor:pointer;background:var(--card);transition:all .13s;border-right:1px solid var(--bdr)}
 .grid-mode-opt:last-child{border-right:none}
@@ -1080,33 +1126,6 @@ input[type="range"]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;b
 .grid-wand:hover{transform:scale(1.15);filter:none;opacity:1;background:var(--cl);box-shadow:0 0 0 3px var(--glow)}
 .grid-wand:active{transform:scale(1.1)}
 
-/* Stats tab: 2GIS Places quota card */
-.quota-card{border-left:3px solid var(--c);max-width:420px}
-.quota-card.warn{border-left-color:var(--yel)}
-.quota-card.crit{border-left-color:var(--red)}
-/* Крупные цифры — суть карточки: «521 / 1000» читается до подписей. */
-.quota-big{display:flex;align-items:baseline;gap:5px;justify-content:flex-end;margin:2px 0 0}
-.quota-num{font-size:24px;font-weight:800;color:var(--txt);font-variant-numeric:tabular-nums;line-height:1.1}
-.quota-cap{font-size:13px;font-weight:700;color:var(--muted);font-variant-numeric:tabular-nums}
-.quota-left{font-size:12.5px;color:var(--sub)}
-.quota-left b{color:var(--txt)}
-/* Пояснение переехало в tooltip: ⓘ вместо абзаца на карточке. */
-.quota-info{margin-left:auto;color:var(--muted);cursor:help;font-size:12px;font-style:normal}
-.quota-info:hover,.quota-info:focus{color:var(--txt)}
-/* Малозаметное поле ручной коррекции: как значение, вводимое изредка.
-   Специфичность выше глобального input[type=number], который даёт
-   width:100%/13px и перебил бы компактный вид. */
-.quota-card input.quota-manual{
-  width:90px;margin-top:7px;padding:2px 7px;font-size:11px;font-family:inherit;
-  border:1px dashed var(--bdr);border-radius:6px;background:transparent;
-  color:var(--txt);font-variant-numeric:tabular-nums;
-}
-.quota-card input.quota-manual:hover{border-color:var(--bdr-h)}
-.quota-card input.quota-manual:focus{outline:none;border-style:solid;border-color:var(--c);box-shadow:0 0 0 3px var(--focus-ring)}
-.quota-track{height:8px;border-radius:4px;background:var(--bdr);overflow:hidden;margin:6px 0 4px}
-.quota-fill{height:100%;border-radius:4px;background:var(--grn);transition:width .3s}
-.quota-card.warn .quota-fill{background:var(--yel)}
-.quota-card.crit .quota-fill{background:var(--red)}
 
 .apikey-row{display:flex;gap:6px;align-items:flex-start}
 .apikey-row input{flex:1}
@@ -1512,7 +1531,9 @@ details[open].sender-advanced summary::before{content:"▼  "}
 .sender-log{flex:1;display:flex;flex-direction:column;min-height:180px;border-top:1px solid var(--bdr)}
 #send-log-output{
   flex:1;overflow-y:auto;padding:14px 18px;
-  background:var(--term);font-family:inherit;font-size:13px;line-height:1.65;
+  /* Лог — моноширинный, как и #log-output: столбцы времени/уровня
+     выравниваются, а не «пляшут» пропорциональным шрифтом. */
+  background:var(--term);font-family:var(--font-mono);font-size:13px;line-height:1.65;
   scrollbar-width:thin;scrollbar-color:var(--bdr) transparent;
 }
 #send-log-output::-webkit-scrollbar{width:5px}
@@ -1651,7 +1672,7 @@ details[open].sender-advanced summary::before{content:"▼  "}
 .donut-legend-row b{margin-left:auto;color:var(--txt);font-variant-numeric:tabular-nums}
 .donut-swatch{display:inline-block;width:9px;height:9px;border-radius:3px;flex:0 0 auto}
 .stat-city-card h4{font-size:13px;font-weight:700;color:var(--c);margin:0 0 9px}
-/* Заголовок с ⓘ-подсказкой (карточка 2GIS): иконка уезжает вправо. */
+/* Заголовок с ⓘ-подсказкой: иконка уезжает вправо. */
 .stat-city-card h4{display:flex;align-items:center;gap:5px}
 .stat-city-card .stat-mini-row{display:flex;justify-content:space-between;align-items:baseline;font-size:12px;color:var(--muted);padding:4px 0}
 .stat-city-card .stat-mini-row span:last-child{font-weight:800;font-size:14.5px;color:var(--txt)}
@@ -1848,6 +1869,9 @@ input:focus-visible,textarea:focus-visible,select:focus-visible{
   --cta-from:#3A4759;--cta-to:#2E394A;
   --cta:#3A4759;         /* сплошной акцент, как в светлой теме */
   --cta-shadow:0 6px 18px rgba(0,0,0,.45);
+  /* Тот же красочный градиент кнопки поиска — светлее на тёмном фоне. */
+  --run-grad:linear-gradient(135deg,#0EA5A4 0%,#1C7ED0 55%,#2A63E8 100%);
+  --run-shadow:0 6px 18px rgba(42,99,232,.45);
   --red:#D9736F;--red-btn:#A8453F;--red-btn-2:#8E3630;
   --yel:#D3A24C;--grn:#5FB88C;--blu:#7FA8CE;
   --acc-soft:rgba(155,174,196,.12);
@@ -2001,15 +2025,6 @@ html.theme-anim #log-output{
 /* ── Header ── */
 .hdr-sep{opacity:.45;font-weight:400;margin:0 2px}
 .hdr-src{font-weight:600;font-size:12.5px;opacity:.85}
-
-/* ── CTA button (primary action) ── */
-#btn-run{
-  background:var(--cta);
-  box-shadow:var(--cta-shadow);
-  padding:15px 18px;border-radius:var(--r-md);font-size:15.5px;
-}
-#btn-run:hover:not(:disabled){box-shadow:var(--sh-lg)}
-#btn-run:disabled{background:var(--track);color:var(--sub);box-shadow:none}
 
 /* ══════════════════════════════════════════════════════════
    1. ACCORDION SECTIONS (sidebar)
@@ -2327,7 +2342,7 @@ html.theme-anim #log-output{
 .es-pin-a{fill:var(--c);opacity:.5}
 .es-pin-b{fill:var(--c);opacity:.75}
 .es-pin-c{fill:var(--c)}
-.es-lens{fill:rgba(255,255,255,.85);stroke:var(--c);stroke-width:2.6}
+.es-lens{fill:var(--card);stroke:var(--c);stroke-width:2.6}
 .es-lens-handle{stroke:var(--c);stroke-width:3;stroke-linecap:round}
 .es-star{fill:var(--warn-txt)}
 .onboarding h2{font-size:24px}
@@ -2519,6 +2534,9 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 .ui-modal .m-ok{background:var(--grn);color:var(--on-accent)}
 .ui-modal .m-ok.neutral{background:var(--c)}
 .ui-modal .m-ok.danger{background:var(--red)}
+/* Выключенная кнопка должна выглядеть выключенной: «Продолжить» в окне
+   соглашения активна только после галочки, и без приглушения это неочевидно. */
+.ui-modal .m-ok:disabled,.ui-modal .m-cancel:disabled{filter:grayscale(.55);opacity:.55;cursor:not-allowed}
 [data-theme="dark"] .ui-modal .m-cancel{background:var(--track);color:var(--txt)}
 [data-theme="dark"] .hist-dl{background:var(--panel)}
 
@@ -2731,7 +2749,7 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
    • running: red «⏸ Остановить поиск» (button is disabled while the run is
      live — the class repaints it so it reads as an active control) */
 #btn-run.run-ready{
-  background:var(--cta);
+  background:var(--run-grad);
   cursor:pointer;
 }
 
@@ -2774,8 +2792,6 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 }
 #btn-run.run-paused:hover{filter:brightness(1.06)}
 
-/* Status badge: paused (orange) */
-#status-badge.paused{background:rgba(240,158,11,.92)}
 /* Dark theme: deep teal fill + white text (was too light to read) */
 [data-theme="dark"] #btn-run:disabled{background:var(--bdr);color:var(--sub);cursor:not-allowed}
 /* ══════════════════════════════════════════════════════════
@@ -2930,7 +2946,7 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 [data-theme="dark"] #status-badge.error{background:var(--red);color:var(--on-accent);border-color:var(--err-bdr)}
 [data-theme="dark"] #city-dropdown{background:var(--card);border-color:var(--c);box-shadow:0 10px 32px rgba(0,0,0,.5)}
 [data-theme="dark"] .city-option:hover{background:var(--field)}
-[data-theme="dark"] .soc-tile{border-color:var(--bdr);background:var(--card);color:var(--sub)}
+[data-theme="dark"] .soc-tile{border-color:var(--bdr-h);background:var(--card);color:var(--sub)}
 [data-theme="dark"] .tech-box{background:var(--tip-bg);border-color:var(--bdr)}
 [data-theme="dark"] .rt-btn{color:var(--sub)}
 
@@ -3494,8 +3510,10 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 [data-theme="dark"] .term-progress-bar{background:var(--bdr)}
 
 /* Pulsing dot on the «Ход поиска» tab while a run is active */
+/* display:inline-block обязателен: <span> инлайновый, и без него width/
+   height игнорируются — точка оставалась нулевой. */
 .tab-dot{
-  width:8px;height:8px;border-radius:50%;background:var(--yel);
+  display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--yel);
   margin-right:6px;flex:0 0 auto;animation:tabPulse 1.5s ease-in-out infinite;
 }
 @keyframes tabPulse{0%,100%{opacity:1}50%{opacity:.25}}
@@ -3889,14 +3907,17 @@ input[type=number],
   font-variant-numeric:tabular-nums;
 }
 
-/* ── Хедер: тонкая тень вместо жёсткой границы ── */
+/* ── Хедер: мягкий переход в фон вместо жёсткой линии ──
+   Одной 1px-тени не хватало: тёмная полоса шапки обрывалась в светлый фон
+   резким краем. Широкая рассеянная тень делает переход плавным в обеих
+   темах. */
 header{
   border-bottom:1px solid rgba(255,255,255,.06);
-  box-shadow:0 1px 0 rgba(0,0,0,.04);
+  box-shadow:0 8px 20px rgba(16,24,40,.10),0 2px 6px rgba(16,24,40,.06);
 }
 [data-theme="dark"] header{
   border-bottom-color:rgba(255,255,255,.04);
-  box-shadow:0 1px 0 rgba(0,0,0,.4);
+  box-shadow:0 10px 26px rgba(0,0,0,.55),0 2px 8px rgba(0,0,0,.45);
 }
 
 /* ── Кнопки шапки: мягче hover ── */
@@ -3948,4 +3969,68 @@ header{
   .hist-body{
     transition-duration:0s;
   }
-}
+}
+/* ══════════════════════════════════════════════════════════
+   Пользовательское соглашение (первый вход)
+   ══════════════════════════════════════════════════════════ */
+.terms-body{
+  max-height:46vh;overflow-y:auto;font-size:12.5px;line-height:1.6;color:var(--sub);
+  border:1px solid var(--bdr);border-radius:var(--r,8px);padding:12px 14px;margin-bottom:12px;
+}
+.terms-body b{color:var(--txt)}
+.terms-body ol{margin:6px 0 0;padding-left:18px;display:flex;flex-direction:column;gap:8px}
+.terms-accept-row{margin-bottom:10px}
+/* Версия редакции: мелкая строка над чекбоксом — видно, что именно
+   принимаешь и что уже принято. */
+.terms-meta{font-size:11.5px;color:var(--muted);line-height:1.5;margin:0 0 8px}
+.terms-body .terms-meta{margin-top:8px}
+#terms-declined{position:fixed;inset:0;background:var(--term);z-index:10000;
+  display:flex;align-items:center;justify-content:center}
+.terms-declined-box{max-width:440px;text-align:center;padding:32px;color:var(--txt)}
+.terms-declined-box h2{font-size:16px;margin-bottom:10px}
+.terms-declined-box p{font-size:13px;color:var(--sub);line-height:1.6}
+/* Выход с экрана отказа: соглашение можно перечитать и принять, а закрыть
+   приложение — только осознанным нажатием, а не единственным вариантом. */
+.terms-declined-btns{display:flex;flex-direction:column;gap:8px;margin-top:18px}
+.terms-declined-btns button{
+  display:inline-flex;align-items:center;justify-content:center;gap:6px;
+  padding:10px 14px;border-radius:var(--r,8px);font:inherit;font-size:13px;
+  font-weight:700;cursor:pointer;border:1px solid transparent;
+}
+.terms-declined-btns .m-ok{background:var(--c);color:var(--on-accent)}
+.terms-declined-btns .m-cancel{background:transparent;border-color:var(--bdr);color:var(--sub)}
+.terms-declined-btns .m-cancel:hover{border-color:var(--bdr-h);color:var(--txt)}
+
+/* ══════════════════════════════════════════════════════════
+   Соглашение (полный текст): заголовки разделов и лид
+   ══════════════════════════════════════════════════════════ */
+.terms-lead{font-size:12.5px;color:var(--sub);line-height:1.6;
+  border-left:3px solid var(--c);padding-left:12px;margin:0 0 14px}
+.terms-body h4{font-size:13px;margin:18px 0 6px;color:var(--txt);letter-spacing:-.01em}
+.terms-body h4:first-of-type{margin-top:4px}
+.terms-body p{font-size:12px;color:var(--sub);line-height:1.6;margin:6px 0}
+
+/* ══════════════════════════════════════════════════════════
+   02 · Что парсить: обычные/персональные поля + гейтинг
+   ══════════════════════════════════════════════════════════ */
+.parse-intro{font-size:12px;color:var(--sub);line-height:1.55;margin:0 0 12px}
+.pd-warn{color:var(--warn-txt);font-weight:700}
+.parse-pd-note{margin-bottom:10px}
+.parse-pd-note b{color:var(--warn-txt)}
+/* Заблокированное поле (мастер соцсетей выключен / нет ключа ВК) */
+.chk.disabled{opacity:.5;cursor:not-allowed}
+.chk.disabled input{cursor:not-allowed}
+.flt-group.vk-gated{opacity:.55}
+.flt-group.vk-gated .chk input{cursor:not-allowed}
+.flt-group.vk-gated .chk{cursor:not-allowed}
+/* Панель массового обхода скрывается целиком, когда соцсети не собираются */
+.bulk-panel[hidden]{display:none}
+
+/* ══════════════════════════════════════════════════════════
+   Хранение результатов (срок автоудаления) + блок «Данные»
+   ══════════════════════════════════════════════════════════ */
+.retention-block,.data-block{margin-top:16px;padding-top:14px;border-top:1px solid var(--bdr)}
+.retention-row{display:flex;align-items:center;gap:10px;margin:6px 0;flex-wrap:wrap}
+.retention-custom{display:inline-flex;align-items:center;gap:6px}
+.retention-custom input{width:84px}
+#retention-status:empty{display:none}

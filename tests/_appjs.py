@@ -20,7 +20,7 @@ JS_MODULES = [
     "08-presets-notify.js",
     "09-ui-extras.js",
     "10-templates.js",
-    "11-bulk-sender-init.js",
+    "11-app-init.js",
 ]
 
 

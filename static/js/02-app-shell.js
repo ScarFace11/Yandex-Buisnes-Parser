@@ -163,9 +163,8 @@ async function stopPausedRun() {
 function enterPausedState(resume) {
   _pausedRun = resume || null;
   const btn = document.getElementById('btn-run');
-  // Where the search stopped + quota spent so far (2GIS) → tooltip + toast.
+  // Where the search stopped → tooltip + toast.
   const pos = (resume && resume.position) || {};
-  const quota = (resume && resume.quota) || null;
   let posTxt = '';
   if (pos.city) {
     posTxt = 'Остановились: ' + pos.city;
@@ -174,13 +173,8 @@ function enterPausedState(resume) {
     if (pos.points_total) posTxt += ' • точка ' + (pos.point || '?') + '/' + pos.points_total;
     if (pos.records) posTxt += ' • найдено ' + pos.records;
   }
-  let quotaTxt = '';
-  if (quota && quota.cap) {
-    const left = Math.max(0, quota.cap - (quota.used || 0));
-    quotaTxt = ' • осталось запросов к 2GIS: ' + left;
-  }
   const title = posTxt
-    ? 'Продолжить поиск с места паузы. ' + posTxt + quotaTxt
+    ? 'Продолжить поиск с места паузы. ' + posTxt
     : 'Продолжить поиск с сохранённого места';
   if (btn) {
     btn.hidden = false;
@@ -201,9 +195,9 @@ function enterPausedState(resume) {
   setRunIndicator(false);
   setStatus('paused', 'Пауза');
   if (posTxt) {
-    appendLog('info', '  📍 ' + posTxt + quotaTxt);
+    appendLog('info', '  📍 ' + posTxt);
   }
-  showToast(posTxt ? '⏸ ' + posTxt + quotaTxt : 'Поиск на паузе — прогресс сохранён', 'info');
+  showToast(posTxt ? '⏸ ' + posTxt : 'Поиск на паузе — прогресс сохранён', 'info');
 }
 
 // ▶ Resume: relaunch the paused run with the SAME params + resume=true.
@@ -277,7 +271,7 @@ function clearAllInputs() {
 }
 
 // Queries summary line for the collapsed «Основные параметры» accordion:
-// «Кого ищем: кафе, ресторан, парикмахерская • Городов: 3 • Источник: 2GIS».
+// «Кого ищем: кафе, ресторан, парикмахерская • Городов: 3».
 // Long query lists are trimmed to the first 3 words + «…»; empty → placeholder.
 function updateBasicSummary() {
   const el = document.getElementById('acc-basic-summary');
@@ -294,8 +288,7 @@ function updateBasicSummary() {
     qPart = `Кого ищем: ${text}`;
   }
   const cPart = selectedCities.length ? `Городов: ${selectedCities.length}` : 'Городов: не выбрано';
-  const sPart = `Источник: ${dataSource === '2gis' ? '2GIS' : 'Яндекс'}`;
-  el.textContent = `${qPart} • ${cPart} • ${sPart}`;
+  el.textContent = `${qPart} • ${cPart}`;
 }
 
 function getFilteredCities() {

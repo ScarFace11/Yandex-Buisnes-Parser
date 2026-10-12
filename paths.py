@@ -6,7 +6,7 @@ Three kinds of locations:
   In a PyInstaller bundle this is the extraction dir (sys._MEIPASS); in a
   source checkout it is the project root.
 - USER_DIR — writable location for user data (output/, logs/, .env,
-  sender_config.json). When frozen this is the folder containing the .exe
+  settings.json). When frozen this is the folder containing the .exe
   so data survives between launches; on macOS the .app bundle itself may sit
   in a read-only /Applications, so data moves to
   ~/Library/Application Support/<App> (macOS convention); in a source
@@ -243,11 +243,11 @@ def check_dir(path: str) -> str:
 def refresh_output_dirs() -> dict:
     """Перечитать settings.json и раздать новые папки всем модулям.
 
-    config/state/api/run_manager/sender запоминают папки при импорте, а
+    config/state/api/run_manager запоминают папки при импорте, а
     настройку можно поменять уже во время поиска — поэтому после сохранения
     (в UI) и на границе каждого города (в парсере) вызывается этот метод.
     """
-    import importlib
+    import sys
 
     dirs = output_dirs()
     targets = {
@@ -257,12 +257,14 @@ def refresh_output_dirs() -> dict:
                                     "PROCESSED_DIR": dirs["processed"]},
         "routes.api": {"RESULTS_DIR": dirs["root"]},
         "run_manager": {"RESULTS_DIR": dirs["root"]},
-        "routes.sender": {"RESULTS_DIR": dirs["root"]},
     }
     for mod_name, attrs in targets.items():
-        try:
-            mod = importlib.import_module(mod_name)
-        except Exception:
+        # sys.modules.get, НЕ import_module: в дочернем процессе парсера
+        # routes.api ещё не загружен, и import_module тянул бы в child весь
+        # Flask-стек ради одного RESULT_DIR. Обновляем только уже загруженные
+        # модули — у незагруженного обновлять нечего.
+        mod = sys.modules.get(mod_name)
+        if mod is None:
             continue
         for attr, value in attrs.items():
             if hasattr(mod, attr):
@@ -279,7 +281,3 @@ def logs_dir() -> str:
 def env_path() -> Path:
     """Location of the .env file (created on demand by the key-save route)."""
     return user_dir() / ".env"
-
-
-def sender_config_path() -> Path:
-    return user_dir() / "sender_config.json"

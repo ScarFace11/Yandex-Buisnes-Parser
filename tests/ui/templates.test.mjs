@@ -92,7 +92,7 @@ const els = {};
 const IDS = ['tpl-list', 'tpl-var-list', 'tpl-show-missing', 'tpl-modal', 'tpl-modal-title',
              'tpl-name', 'tpl-category', 'tpl-text', 'tpl-var-insert', 'tpl-preview-body',
              'tpl-preview-title', 'tpl-preview-note', 'tpl-modal-err', 'tbl-template',
-             'bulk-template', 'bulk-social', 's-template', 's-message', 'bulk-queue',
+             'bulk-template', 'bulk-social', 'bulk-queue',
              'tpl-import-file', 'tpl-search', 'tpl-search-count', 'tpl-empty-box', 'btn-tpl-add',
              'tpl-pick-box', 'tpl-pick-cat', 'tpl-pick-body', 'tpl-pick-count', 'tpl-pick-single',
              'tpl-pick-modal', 'tpl-pick-modal-cat', 'tpl-pick-modal-list', 'tpl-pick-modal-count',
@@ -218,7 +218,6 @@ for (const name of Object.keys(INIT_VALUES)) {
   grab('renderTemplatePickers'),
   grab('onTableTemplateChange'),
   grab('onBulkTemplateChange'),
-  grab('onSenderTemplateChange'),
   grab('openTemplateModal'),
   grab('closeTemplateModal'),
   grab('insertTemplateVariable'),
@@ -238,7 +237,6 @@ for (const name of Object.keys(INIT_VALUES)) {
   grab('renderBulkQueue'),
   grab('bulkCopyOne'),
   grab('bulkCopyNext'),
-  grab('fillSenderFromTemplate'),
   grab('firstCompanyForPreview'),
   grab('_fmtTemplateDate'),
   grab('onTemplateSearch'),
@@ -696,7 +694,6 @@ test('renderTemplatePickers наполняет селекты и ставит а
   assert.match(els['tbl-template'].innerHTML, /value="vk1"/);
   assert.equal(els['tbl-template'].value, 'vk1');
   assert.equal(els['bulk-template'].value, 'vk1');
-  assert.equal(els['s-template'].value, 'vk1');
 });
 
 test('опции селектов — только имя шаблона, категории через optgroup', () => {
@@ -710,13 +707,6 @@ test('опции селектов — только имя шаблона, кат
   assert.ok(!/ · Telegram/.test(html));
   // Пустые категории не рисуются.
   assert.ok(!/WhatsApp/.test(html));
-});
-
-test('fillSenderFromTemplate кладёт текст шаблона в поле рассылки', () => {
-  reset({ active: { vk: 'vk1' } });
-  globalThis.renderTemplatePickers();
-  globalThis.fillSenderFromTemplate();
-  assert.equal(els['s-message'].value, 'Привет, {name}!');
 });
 
 test('exportTemplates формирует JSON с версией и шаблонами', () => {

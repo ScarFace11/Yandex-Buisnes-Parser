@@ -4,10 +4,9 @@ Tests for «🩺 Диагностика» (routes/diagnostics.py) — offline, n
 Панель — это ответ на «ничего не работает» без чтения логов, поэтому тесты
 проверяют три вещи:
 
-1. Диагноз точный: «Invalid api key» — это недействительный ключ, а не лимит;
-   отказ по полям 2ГИС показывается как «ключ работает, но новых полей нет»,
-   а не как общий сбой.
-2. Панель не может показать ключи: ни в одном ответе нет строки ключа.
+1. Диагноз точный: код ошибки ВКонтакте объясняется словами, а не сырым
+   сообщением сервиса.
+2. Панель не может показать секреты: ни в одном ответе нет строки токена.
 3. Панель не может ничего сломать: любое падение проверки становится строкой
    «ошибка», а эндпоинт отвечает 200 с человеческим текстом.
 
@@ -56,139 +55,6 @@ def _row(results, cid):
         if r["id"] == cid:
             return r
     raise AssertionError(f"нет строки {cid}: {[r['id'] for r in results]}")
-
-
-# ── Ключ Яндекс.Карт ─────────────────────────────────────────
-
-class TestYandexKey:
-    def test_missing_key_is_a_warning(self):
-        row = diag.check_yandex_key("")
-        assert row["status"] == "warn"
-        assert "не задан" in row["title"]
-        assert row["hint"], "нужен совет, что делать"
-
-    def test_invalid_key_is_named_as_invalid(self, monkeypatch):
-        """Яндекс отдаёт XML-ошибку — «Invalid api key» должно читаться словами."""
-        _fake_httpx(monkeypatch, _Resp(
-            403, text='<?xml version="1.0"?><error><statusCode>403</statusCode>'
-                      '<error>Forbidden</error><message>Invalid api key</message></error>'))
-        row = diag.check_yandex_key("sec-ret-key")
-        assert row["status"] == "error"
-        assert "недействителен" in row["title"]
-        assert "Invalid api key" in row["detail"]
-
-    def test_key_valid_for_geocoder_only_is_named_precisely(self, monkeypatch):
-        """Ключ жив в Геокодере, но Search API его отклоняет — это РАЗНЫЕ
-        сервисы Яндекса: диагностика обязана назвать причину точно, а не
-        советовать «проверьте ключ» человеку с рабочим ключом."""
-        import httpx
-
-        def _get(url, params=None, timeout=None, headers=None):
-            if "geocode-maps" in url:
-                return _Resp(200, payload={"response": {}})
-            return _Resp(
-                403, text='<?xml version="1.0"?><error><statusCode>403</statusCode>'
-                          '<error>Forbidden</error><message>Invalid api key</message></error>')
-
-        monkeypatch.setattr(httpx, "get", _get)
-        row = diag.check_yandex_key("sec-ret-key")
-        assert row["status"] == "error", "без сервиса «Поиск по организациям» поиск не работает"
-        assert "другого сервиса" in row["title"]
-        assert "Геокодер" in row["detail"] and "Invalid api key" in row["detail"]
-        assert "Поиск по организациям" in row["hint"], "нужен точный совет по кабинету"
-
-    def test_quota_exceeded_is_not_confused_with_an_invalid_key(self, monkeypatch):
-        _fake_httpx(monkeypatch, _Resp(
-            403, text='<error><message>Quota exceeded</message></error>'))
-        row = diag.check_yandex_key("sec-ret-key")
-        assert row["status"] == "error"
-        assert "Лимит" in row["title"]
-        assert "недействителен" not in row["title"]
-
-    def test_working_key_reports_what_it_found(self, monkeypatch):
-        _fake_httpx(monkeypatch, _Resp(200, payload={
-            "properties": {"responseMetaData": {"SearchResponse": {"found": 12345}}}}))
-        row = diag.check_yandex_key("sec-ret-key")
-        assert row["status"] == "ok"
-        assert "12345" in row["detail"]
-
-    def test_network_failure_explains_itself(self, monkeypatch):
-        import httpx
-        monkeypatch.setattr(httpx, "get", lambda *a, **kw: (_ for _ in ()).throw(
-            httpx.ConnectError("failed")))
-        row = diag.check_yandex_key("sec-ret-key")
-        assert row["status"] == "error"
-        assert "не ответили" in row["title"]
-        assert "интернет" in row["hint"]
-
-
-# ── Ключ 2ГИС ────────────────────────────────────────────────
-
-class TestTwogisKey:
-    def _payload(self, fields_present=True, contacts=False, meta_error=None, code=200):
-        item = {"id": "1", "name": "Кофе"}
-        if contacts:
-            item["contact_groups"] = [{"contacts": [
-                {"type": "social_network", "url": "https://vk.com/x"}]}]
-        if fields_present:
-            item["org"] = {"branch_count": 7}
-            item["dates"] = {"created_at": "2026-05-04T10:00:00+05:00"}
-        return {"meta": {"code": code, **({"error": meta_error} if meta_error else {})},
-                "result": {"items": [item]}}
-
-    def test_missing_key_is_a_warning(self):
-        row = diag.check_twogis_key("")
-        assert row["status"] == "warn"
-        assert "2ГИС" in row["title"]
-
-    def test_working_key_reports_capabilities(self, monkeypatch):
-        """Полноценный ключ: контакты, число филиалов и дата — всё на месте."""
-        _fake_httpx(monkeypatch, _Resp(200, payload=self._payload(contacts=True)))
-        row = diag.check_twogis_key("key")
-        assert row["status"] == "ok"
-        assert "число филиалов: 7" in row["detail"]
-        assert "2026-05-04" in row["detail"]
-
-    def test_key_without_contacts_is_a_warning_with_a_reason(self, monkeypatch):
-        """Демо-ключ не отдаёт контакты: соцсети тянутся с карточек — это важнее, чем «ключ жив»."""
-        _fake_httpx(monkeypatch, _Resp(200, payload=self._payload()))
-        row = diag.check_twogis_key("key")
-        assert row["status"] == "warn"
-        assert "contact_groups" in row["hint"]
-
-    def test_field_rejection_retries_without_the_new_fields(self, monkeypatch):
-        """Ключ не знает items.org/items.dates: панель должна сказать именно это."""
-        calls = []
-
-        def _get(url, params=None, timeout=None, headers=None):
-            calls.append(params["fields"])
-            if "items.org" in params["fields"]:
-                return _Resp(200, payload={
-                    "meta": {"code": 400, "error": {"message": "Unknown field: items.org",
-                                                    "type": "forbidden"}},
-                    "result": {"items": []}})
-            return _Resp(200, payload={"meta": {"code": 200},
-                                       "result": {"items": [{"id": "1", "contact_groups": []}]}})
-
-        import httpx
-        monkeypatch.setattr(httpx, "get", _get)
-        row = diag.check_twogis_key("key")
-        assert len(calls) == 2, "после отказа по полям должен быть повтор без них"
-        assert row["status"] == "warn"
-        assert "items.org/items.dates" in row["hint"]
-
-    def test_api_error_uses_the_shared_human_message(self, monkeypatch):
-        _fake_httpx(monkeypatch, _Resp(200, payload=self._payload(
-            meta_error={"message": "invalid key", "type": "auth"}, code=403)))
-        row = diag.check_twogis_key("key")
-        assert row["status"] == "error"
-        assert "2ГИС" in row["title"]
-        assert "dev.2gis.ru" in row["hint"]
-
-    def test_quota_is_reported_in_words(self, monkeypatch):
-        _fake_httpx(monkeypatch, _Resp(200, payload=self._payload()))
-        row = diag.check_twogis_key("key")
-        assert "квоты" in row["detail"] or "месяц" in row["detail"]
 
 
 # ── Токен ВКонтакте ──────────────────────────────────────────
@@ -304,19 +170,7 @@ class TestEnvironment:
             assert "Chrome" in browser["hint"], "в предупреждении должен быть совет"
 
     def test_missing_core_module_is_an_error(self, monkeypatch):
-        import importlib.util
-        real = importlib.util.find_spec
-
-        def _spec(name, *a, **kw):
-            return None if name == "httpx" else real(name, *a, **kw)
-
-        monkeypatch.setattr(importlib.util, "find_spec", _spec)
-        rows = diag.check_environment()
-        row = _row(rows, "dep_httpx")
-        assert row["status"] == "error"
-        assert "Переустановите" in row["hint"]
-
-    def test_missing_optional_module_is_only_a_warning(self, monkeypatch):
+        """Без websocket-client не работает ни поиск, ни карточки — это ошибка."""
         import importlib.util
         real = importlib.util.find_spec
 
@@ -325,7 +179,26 @@ class TestEnvironment:
 
         monkeypatch.setattr(importlib.util, "find_spec", _spec)
         rows = diag.check_environment()
-        assert _row(rows, "dep_websocket")["status"] == "warn"
+        row = _row(rows, "dep_websocket")
+        assert row["status"] == "error"
+        assert "requirements.txt" in row["hint"], "нужен рабочий совет по установке"
+
+    def test_missing_optional_module_is_only_a_warning(self, monkeypatch):
+        """httpx нужен только панели «Диагностика» — это предупреждение."""
+        import importlib.util
+        real = importlib.util.find_spec
+
+        def _spec(name, *a, **kw):
+            return None if name == "httpx" else real(name, *a, **kw)
+
+        monkeypatch.setattr(importlib.util, "find_spec", _spec)
+        rows = diag.check_environment()
+        assert _row(rows, "dep_httpx")["status"] == "warn"
+
+    def test_playwright_is_not_reported_at_all(self):
+        """Playwright убран из приложения: страницы читает только Chrome."""
+        ids = {r["id"] for r in diag.check_environment()}
+        assert "dep_playwright" not in ids
 
 
 # ── run_checks: сборка отчёта ─────────────────────────────────
@@ -335,8 +208,6 @@ class TestRunChecks:
         def _boom(*_a, **_kw):
             raise AssertionError("сеть в тестах запрещена")
 
-        monkeypatch.setattr(diag, "check_yandex_key", _boom)
-        monkeypatch.setattr(diag, "check_twogis_key", _boom)
         monkeypatch.setattr(diag, "check_vk_token", _boom)
         results = diag.run_checks(["files"])
         assert results, "локальные проверки должны вернуться"
@@ -374,7 +245,7 @@ def client():
 
 class TestEndpoints:
     def test_local_checks_only(self, client, monkeypatch):
-        monkeypatch.setattr(diag, "check_yandex_key",
+        monkeypatch.setattr(diag, "check_vk_token",
                             lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("сеть!")))
         data = client.post("/diagnostics/run", json={"groups": ["files", "env"]}).get_json()
         assert data["ok"] is True
@@ -384,17 +255,16 @@ class TestEndpoints:
 
     def test_thin_body_runs_everything(self, client, monkeypatch):
         groups = []
-        monkeypatch.setattr(diag, "check_yandex_key", lambda k: (groups.append("yandex"), diag._res("yandex_key", "keys", "ok", "г"))[1])
-        monkeypatch.setattr(diag, "check_twogis_key", lambda k: (groups.append("twogis"), diag._res("twogis_key", "keys", "ok", "г"))[1])
         monkeypatch.setattr(diag, "check_vk_token", lambda t: (groups.append("vk"), diag._res("vk_token", "keys", "ok", "г"))[1])
         data = client.post("/diagnostics/run", json={}).get_json()
         assert data["ok"] is True
-        assert groups == ["yandex", "twogis", "vk"]
+        assert groups == ["vk"], "живая проверка ровно одна — токен ВК"
+        assert {r["group"] for r in data["results"]} == {"keys", "files", "data", "env", "engines"}
 
     def test_string_group_is_accepted(self, client, monkeypatch):
         seen = []
-        monkeypatch.setattr(diag, "check_yandex_key",
-                            lambda k: (seen.append(k), diag._res("yandex_key", "keys", "ok", "г"))[1])
+        monkeypatch.setattr(diag, "check_vk_token",
+                            lambda k: (seen.append(k), diag._res("vk_token", "keys", "ok", "г"))[1])
         client.post("/diagnostics/run", json={"groups": "keys"})
         assert len(seen) == 1, "строка вместо массива не должна ломать панель"
 
@@ -415,14 +285,14 @@ class TestEndpoints:
         assert resp.status_code == 200 and resp.get_json()["ok"] is True
 
     def test_foreign_site_cannot_spend_quota(self, client, monkeypatch):
-        """Чужая страница не может запустить проверку ключей за пользователя."""
+        """Чужая страница не может запустить проверку токена за пользователя."""
         called = []
-        monkeypatch.setattr(diag, "check_twogis_key",
-                            lambda k: (called.append(k), diag._res("twogis_key", "keys", "ok", "г"))[1])
+        monkeypatch.setattr(diag, "check_vk_token",
+                            lambda k: (called.append(k), diag._res("vk_token", "keys", "ok", "г"))[1])
         resp = client.post("/diagnostics/run", json={"groups": ["keys"]},
                            headers={"Origin": "https://evil.example"})
         assert resp.status_code == 403
-        assert called == [], "ключи не должны проверяться по запросу с чужого сайта"
+        assert called == [], "токен не должен проверяться по запросу с чужого сайта"
         assert resp.get_json()["ok"] is False
 
     def test_non_local_origin_variants_are_rejected(self):
@@ -435,12 +305,12 @@ class TestEndpoints:
     def test_form_post_without_json_is_refused(self, client, monkeypatch):
         """Обычная HTML-форма (её может отправить любой сайт) — без эффекта."""
         called = []
-        monkeypatch.setattr(diag, "check_twogis_key",
-                            lambda k: (called.append(k), diag._res("twogis_key", "keys", "ok", "г"))[1])
+        monkeypatch.setattr(diag, "check_vk_token",
+                            lambda k: (called.append(k), diag._res("vk_token", "keys", "ok", "г"))[1])
         resp = client.post("/diagnostics/run", data="groups=keys",
                            content_type="application/x-www-form-urlencoded")
         assert resp.status_code == 415
-        assert called == [], "форма без JSON не должна тратить квоту"
+        assert called == [], "форма без JSON не должна дёргать внешний сервис"
 
     def test_response_never_contains_keys(self, client, monkeypatch):
         """Главное обещание панели: ключи наружу не уходят."""

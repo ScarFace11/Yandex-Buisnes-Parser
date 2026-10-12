@@ -1,7 +1,7 @@
 // ═══════════════════════════════════════════════════════════════
 // Хранятся на сервере (settings.json) — общие для команды. Подстановка
 // переменных зеркалит yandex_maps_parser/message_templates.py: держать их
-// надо синхронно, иначе текст в таблице разойдётся с рассылкой.
+// надо синхронно, иначе текст в таблице разойдётся с копированием.
 const TEMPLATE_CATEGORIES = ['vk', 'telegram', 'whatsapp', 'instagram'];
 const TEMPLATE_CAT_LABELS = {vk: 'ВКонтакте', telegram: 'Telegram', whatsapp: 'WhatsApp', instagram: 'Instagram'};
 const TEMPLATE_MAX_TEXT = 4096;
@@ -284,7 +284,7 @@ function pickRandomTemplate(social) {
   return picked;
 }
 
-// Шаблон для клика/обхода/рассылки: random-режим — случайный из набора,
+// Шаблон для клика и массового обхода: random-режим — случайный из набора,
 // иначе активный. Набор пуст или шаблоны удалены — fallback на активный.
 function getTemplateFor(social) {
   if (templateModes[social] === 'random') {
@@ -601,7 +601,7 @@ function showTplSubtab(which) {
 
 // Селекты выбора шаблона: опция — только название (категория и так видна
 // по контексту: селект таблицы показывает активную соцсеть, у обхода и
-// рассылки она своя), шаблоны сгруппированы по категориям через optgroup.
+// копирования она своя), шаблоны сгруппированы по категориям через optgroup.
 function fillTemplateSelect(sel, includeEmpty) {
   if (!sel) return;
   const prev = sel.value;
@@ -654,18 +654,12 @@ function syncTemplateSelects() {
       tplNote.hidden = true;
     }
   }
-  const senderSel = document.getElementById('s-template');
-  if (senderSel) {
-    const t = getActiveTemplateFor('vk');
-    senderSel.value = t ? t.id : '';
-  }
   syncTableTemplatePicker();
 }
 
 function renderTemplatePickers() {
   fillTemplateSelect(document.getElementById('tbl-template'), false);
   fillTemplateSelect(document.getElementById('bulk-template'), true);
-  fillTemplateSelect(document.getElementById('s-template'), true);
   syncTemplateSelects();
   renderTemplatePickPanel();
 }
@@ -840,11 +834,6 @@ function onBulkTemplateChange() {
   const sel = document.getElementById('bulk-template');
   const social = (document.getElementById('bulk-social') || {}).value || 'vk';
   if (sel) { bulkTemplateIds[social] = sel.value || null; saveTemplatesState(); }
-}
-
-function onSenderTemplateChange() {
-  const sel = document.getElementById('s-template');
-  if (sel) setActiveTemplate('vk', sel.value || null);
 }
 
 // ── Редактор вариантов составного шаблона ──────────────────

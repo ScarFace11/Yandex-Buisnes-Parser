@@ -24,7 +24,6 @@ _REBIND = {
     "yandex_maps_parser.state": ("RESULTS_DIR", "RAW_DIR", "PROCESSED_DIR"),
     "routes.api": ("RESULTS_DIR",),
     "run_manager": ("RESULTS_DIR",),
-    "routes.sender": ("RESULTS_DIR",),
 }
 
 

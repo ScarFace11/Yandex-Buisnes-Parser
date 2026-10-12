@@ -5,8 +5,15 @@
 import os
 import sys
 
-# Версия приложения. Для публичного релиза — без суффиксов: "2.3.3".
-APP_VERSION = "2.3.3"
+# Вывод в UTF-8 и без падений: конфиг импортируется первым в любом
+# запуске, а перенаправленный stdout на русской Windows — это cp1251,
+# где любое сообщение с эмодзи роняло старт (см. console_io).
+from console_io import enable_utf8, say
+
+enable_utf8()
+
+# Версия приложения. Для публичного релиза — без суффиксов: "2.3.4".
+APP_VERSION = "2.3.4"
 
 
 def is_dev_build() -> bool:
@@ -118,19 +125,16 @@ PROXIES: list[str] = [
 ]
 
 # ── Поиск ────────────────────────────────────────────────────
-USE_BROWSER  = True   # True = Playwright для detail-страниц (быстро, без throttling)
-                       # False = httpx (требует прокси для скорости)
-MAX_PAGES    = 1    # страниц результатов (50 позиций каждая)
+USE_BROWSER  = True   # True = реальный Chrome/Chromium через CDP — единственный
+                       # способ загрузки страниц (HTTP-путь удалён: антибот
+                       # режет не-браузерные запросы и светит IP/аккаунт)
+MAX_PAGES    = 1    # страниц результатов (до 50 организаций каждая)
 FETCH_DETAIL = True  # загружать карточку бизнеса для извлечения соцсетей
-# Способ загрузки карточек (detail-страниц). "auto" — первый доступный:
-# Chrome CDP → Playwright → httpx. Иные значения выбираются в интерфейсе:
-# "cdp" | "playwright" | "httpx" (валидация в runner._apply_params).
-FETCH_ENGINE = "auto"
 MAX_CANDIDATES_PER_CITY = 200  # максимум кандидатов на город (0 = без лимита)
 
-# Ключ API Яндекс (для геокодинга и поиска)
-# Берётся из переменной окружения YANDEX_API_KEY.
-# Задайте её в Replit Secrets или в файле .env (для локальной разработки).
+# Ключей API Яндекса в приложении нет и не требуется: и поиск организаций,
+# и геокодер — платные сервисы, а их бесплатные версии запрещают сохранять
+# полученные данные. Страницы читает браузер (см. browser_search.py).
 from pathlib import Path
 
 # ── Загрузка .env ─────────────────────────────────────────────
@@ -144,7 +148,7 @@ def load_env(file_path=".env"):
     if not env_path.exists():
         env_path = Path(__file__).parent / "yandex_maps_parser" / ".env"
     if not env_path.exists():
-        print(f"⚠️  Файл {file_path} не найден, используются системные переменные")
+        say(f"[!] Файл {file_path} не найден, используются системные переменные")
         return False
 
     try:
@@ -166,7 +170,7 @@ def load_env(file_path=".env"):
                     os.environ[key] = value
         return True
     except Exception as e:
-        print(f"❌ Ошибка загрузки .env: {e}")
+        say(f"[x] Ошибка загрузки .env: {e}")
         return False
 
 # Загружаем .env сразу при импорте конфига
@@ -178,24 +182,8 @@ try:
 except Exception:
     load_env()
 
-# ── Получение переменной из .env ─────────────────────────────
-# Теперь можно получать переменную через os.getenv()
-YANDEX_API_KEY: str = os.getenv("YANDEX_API_KEY", "")
-
-# ── 2GIS (альтернативный источник данных) ────────────────────
-# Бесплатный демо-ключ: https://dev.2gis.ru → Platform Manager → создать ключ.
-# Ключ должен иметь разрешение на Places API (поиск организаций).
-TWOGIS_API_KEY: str = os.getenv("TWOGIS_API_KEY", "")
-
 # ── ВКонтакте (проверка активности сообществ, этап 2) ────────
 # Пользовательский токен с правами wall,groups,offline (vkhost.github.io).
 # Не задан → фильтр по активности ВК пропускается с предупреждением.
+# Токен только читает данные сообществ — отправки сообщений в приложении нет.
 VK_TOKEN: str = os.getenv("VK_TOKEN", "")
-
-if not YANDEX_API_KEY:
-    import warnings
-    warnings.warn(
-        "YANDEX_API_KEY не задан — задайте переменную окружения YANDEX_API_KEY "
-        "в файле .env или в системных переменных.",
-        stacklevel=2,
-    )

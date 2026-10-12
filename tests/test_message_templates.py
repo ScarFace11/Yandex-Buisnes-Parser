@@ -677,39 +677,3 @@ class TestApi:
             "template_ids": ["нет-такого"],
         }).get_json()
         assert "text" not in data["urls"][0]
-
-
-# ── Рассылка VK ────────────────────────────────────────────
-
-
-# ── Рассылка VK ──────────────────────────────────────────────
-class TestSenderIntegration:
-    def test_runner_uses_the_shared_substitute(self):
-        src = (ROOT / "vk_sender" / "runner.py").read_text(encoding="utf-8")
-        assert "from yandex_maps_parser.message_templates import" in src
-        assert "substitute" in src
-        assert "substitute(message_tpl" in src
-        assert '.replace("{название_бизнеса}", name)' not in src
-
-    def test_runner_supports_random_ids(self):
-        src = (ROOT / "vk_sender" / "runner.py").read_text(encoding="utf-8")
-        assert "message_tpl_ids" in src
-        assert "pick_random_text" in src
-        assert "Использовано шаблонов" in src
-
-    def test_record_cols_maps_known_headers(self):
-        from vk_sender import excel_manager as xm
-
-        class _Cell:
-            def __init__(self, value, column):
-                self.value = value
-                self.column = column
-
-        class _Ws:
-            def __getitem__(self, key):
-                return [_Cell("Название", 1), _Cell("Город", 2),
-                        _Cell("ВКонтакте", 3), _Cell("Отправлено", 4)]
-
-        cols = xm._record_cols(_Ws())
-        assert cols["name"] == 1 and cols["city"] == 2 and cols["vk"] == 3
-        assert "reviewed" not in cols and len(cols) == 3

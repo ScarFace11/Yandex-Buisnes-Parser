@@ -158,6 +158,18 @@ globalThis.FILE_TYPE_ICONS = {
   dir: '<svg data-icon="dir"/>',
 };
 globalThis.reviewedState = {};
+globalThis.socialViewedState = {};
+// Порядок столбцов и скрытые колонки — модульное состояние 09-ui-extras.
+globalThis.COLS = [
+  { idx: 1, key: 'rev', label: '✓ Просмотрено' }, { idx: 2, key: 'num', label: '# Номер' },
+  { idx: 3, key: 'name', label: 'Название' }, { idx: 4, key: 'category', label: 'Категория' },
+  { idx: 5, key: 'address', label: 'Адрес' }, { idx: 6, key: 'phone', label: 'Телефон' },
+  { idx: 7, key: 'score', label: 'Оценка' }, { idx: 8, key: 'socials', label: 'Соцсети' },
+  { idx: 9, key: 'rating', label: 'Рейтинг' },
+];
+globalThis.COL_ORDER_DEFAULT = ['rev', 'num', 'name', 'category', 'address', 'phone', 'score', 'rating', 'socials'];
+globalThis.colOrder = globalThis.COL_ORDER_DEFAULT.slice();
+globalThis.hiddenCols = new Set();
 globalThis.allResults = [];
 globalThis.filteredRows = [];
 globalThis.curPage = 1;
@@ -242,7 +254,9 @@ globalThis.clearTimeout = () => {};
 const fns = [
   'pluralNum', 'pluralRecords', 'pluralProfiles', 'pluralFiles', 'fmtBytes', 'basenameOf',
   'clampInt', 'safeSocialUrl', 'cityOf', 'reviewKey', 'isReviewed', 'escapeHtml', 'safeUrl',
-  'socialsHTML', 'phoneHTML', 'renderPage', 'filterTable', 'refreshReviewedUI',
+  'socialsHTML', 'phoneHTML', 'ratingHTML', 'renderPage', 'filterTable', 'refreshReviewedUI',
+  // Живая перерисовка делит с filterTable общие фильтры и порядок
+  '_applyRowFilters', '_orderFilteredRows', 'collapseChainsClient',
   'bulkScopeRows', 'bulkScopeStats', 'bulkOpenable', 'bulkWillOpen', 'renderCityTabs', 'setCityTab',
   'updateBulkStats', 'renderBulkProgress', 'resetBulkProgress', 'setBulkCount',
   'toggleUnviewedOnly', 'fileCardHTML', 'renderFiles', 'bulkParams',
@@ -257,8 +271,10 @@ const fns = [
   'onlySingleChecked', 'newMonthsValue', 'newMonthsPeriod', 'companyTypeOn',
   'showBulkWarn', 'hideBulkWarn', 'postJSON', 'openBlankTabs', 'fillTab', 'closeTab',
   'markReviewedBatch', 'bulkOpenBatch',
-  // Клик по соцсети в таблице ставит отметку «просмотрено»
+  // Клик по соцсети в таблице гасит только эту сеть (отдельная отметка)
   'toggleViewed', 'onSocialBadgeClick',
+  'loadSocialViewed', 'socialViewedKey', 'isSocialViewed', 'markSocialViewed',
+  'colHasData', 'syncAutoHiddenCols',
   // Автосохранение отметок «Просмотрено»
   'markReviewedDirty', 'updateReviewedSaveStatus', 'autoPersistReviewed', 'persistReviewedOnLeave',
   'setResultsSubTab', 'exportFiltered', 'persistReviewedMarks',
@@ -266,6 +282,8 @@ const fns = [
   // renderPage renders the «Оценка» cell, scoreHTML explains it per record.
   'minScoreThreshold', 'scoreHTML', 'scoreBreakdown', 'scoreWhyText', 'scoreNum',
   'scoreOwnWebsite', 'scoreRating',
+  // renderPage переставляет ячейки по пользовательскому порядку столбцов.
+  'applyColOrder', 'applyColClasses', 'normalizeColOrder', 'moveCol',
 ];
 (0, eval)(fns.map(grab).join('\n'));
 // Module-level bulk-selection state closed over by fileCardHTML/renderFiles.
@@ -287,6 +305,7 @@ function resetState(rows = ROWS) {
   globalThis.allResults = rows.map(r => ({ ...r }));
   globalThis.filteredRows = [];
   globalThis.reviewedState = {};
+  globalThis.socialViewedState = {};
   globalThis.activeCity = '';
   globalThis.unviewedOnly = false;
   globalThis.currentFileNote = '';
@@ -346,6 +365,32 @@ test('basenameOf takes the last path segment', () => {
   assert.equal(globalThis.basenameOf('raw.xlsx'), 'raw.xlsx');
 });
 
+// Рейтинг и отзывы с Яндекс.Карт: звезда + число, и «—» когда данных нет.
+test('ratingHTML renders the star with reviews and «—» when empty', () => {
+  const both = globalThis.ratingHTML({ rating: '4,8', reviews_count: '327' });
+  assert.match(both, /★ 4,8/);
+  assert.match(both, /327/);
+  assert.match(both, /class="rate-val"/);
+  assert.match(both, /class="rate-rev"/);
+
+  // Частичные данные: только рейтинг или только отзывы.
+  const ratingOnly = globalThis.ratingHTML({ rating: 5 });
+  assert.match(ratingOnly, /★ 5/);
+  assert.doesNotMatch(ratingOnly, /rate-rev/);
+  const reviewsOnly = globalThis.ratingHTML({ reviews_count: 7 });
+  assert.doesNotMatch(reviewsOnly, /★/);
+  assert.match(reviewsOnly, /rate-rev/);
+  assert.match(reviewsOnly, /7/);
+
+  // Нет данных (пусто / null / пробелы) — прочерк, а не пустая ячейка.
+  assert.equal(globalThis.ratingHTML({}), '—');
+  assert.equal(globalThis.ratingHTML({ rating: '', reviews_count: '  ' }), '—');
+  assert.equal(globalThis.ratingHTML({ rating: null, reviews_count: null }), '—');
+
+  // Ноль — это значение, а не «нет данных».
+  assert.match(globalThis.ratingHTML({ rating: 0, reviews_count: 0 }), /★ 0/);
+});
+
 // ── 2. Reviewed key / social URL safety ───────────────────────
 test('safeSocialUrl accepts http(s) and rejects everything else', () => {
   assert.equal(globalThis.safeSocialUrl('https://vk.com/x'), 'https://vk.com/x');
@@ -356,8 +401,9 @@ test('safeSocialUrl accepts http(s) and rejects everything else', () => {
 });
 
 test('reviewKey prefers the card URL, then falls back to name|city|address', () => {
-  assert.equal(globalThis.reviewKey({ yandex_maps_url: 'y', twogis_url: 't' }), 'y');
-  assert.equal(globalThis.reviewKey({ yandex_maps_url: '', twogis_url: 't' }), 't');
+  assert.equal(globalThis.reviewKey({ yandex_maps_url: 'y' }), 'y');
+  // Ссылки на карточку нет — работает составной ключ, а не пустая строка.
+  assert.equal(globalThis.reviewKey({ yandex_maps_url: '', name: 'Бар' }), 'n:Бар||');
   assert.equal(globalThis.reviewKey({ name: 'Бар', city: 'Уфа', address: 'ул. Мира, 1' }),
     'n:Бар|Уфа|ул. Мира, 1');
   assert.equal(globalThis.reviewKey({}), '');
@@ -692,33 +738,42 @@ test('refreshReviewedUI re-applies the unviewed filter after a bulk run', () => 
 });
 
 
-test('клик по соцсети в таблице помечает организацию просмотренной', async () => {
-  // Клик по бейджу VK ставит ту же отметку, что и чекбокс строки, —
-  // и шлёт её на /reviewed, чтобы отметка пережила перезагрузку.
+test('клик по соцсети гасит только эту сеть, организацию не помечает', async () => {
+  // Раньше клик по бейджу помечал всю организацию «просмотренной». Теперь
+  // открытая сеть гаснет сама, а строка остаётся нетронутой.
   resetState();
   globalThis.filterTable();
   fetchCalls = [];
   const key = globalThis.reviewKey(ROWS[0]);
-  const el = { dataset: { social: 'vk', key }, getAttribute: () => 'https://vk.com/a' };
+  const el = {
+    dataset: { social: 'vk', key }, _cls: [],
+    classList: { add: c => el._cls.push(c) },
+    getAttribute: () => 'https://vk.com/a',
+  };
   await globalThis.onSocialBadgeClick({ preventDefault: () => {} }, el);
-  assert.ok(globalThis.reviewedState[key], 'запись помечена просмотренной');
-  const post = fetchCalls.find(c => c.url === '/reviewed');
-  assert.ok(post, 'отметка ушла на сервер');
-  assert.deepEqual(post.body, { url: key, reviewed: true });
+  assert.ok(globalThis.isSocialViewed(ROWS[0], 'vk'), 'открытая сеть помечена');
+  assert.ok(!globalThis.isSocialViewed(ROWS[0], 'telegram'), 'другая сеть строки не тронута');
+  assert.ok(!globalThis.reviewedState[key], 'вся организация НЕ помечена просмотренной');
+  assert.ok(!fetchCalls.some(c => c.url === '/reviewed'), 'отметка строки на сервер не ушла');
+  assert.ok(el._cls.includes('social-opened'), 'бейдж сети погашен');
 });
 
 
-test('повторный клик по соцсети снимает отметку', async () => {
+test('повторный клик по той же сети не дублирует отметку', async () => {
   resetState();
   globalThis.filterTable();
-  fetchCalls = [];
   const key = globalThis.reviewKey(ROWS[0]);
-  globalThis.reviewedState[key] = true;
-  const el = { dataset: { social: 'vk', key }, getAttribute: () => 'https://vk.com/a' };
+  const mk = () => ({
+    dataset: { social: 'vk', key }, _cls: [],
+    classList: { add: c => el._cls.push(c) },
+    getAttribute: () => 'https://vk.com/a',
+  });
+  let el = mk();
   await globalThis.onSocialBadgeClick({ preventDefault: () => {} }, el);
-  assert.equal(globalThis.reviewedState[key], undefined, 'отметка снята');
-  const post = fetchCalls.find(c => c.url === '/reviewed');
-  assert.deepEqual(post.body, { url: key, reviewed: false });
+  assert.deepEqual(el._cls, ['social-opened'], 'первый клик гасит бейдж');
+  el = mk();
+  await globalThis.onSocialBadgeClick({ preventDefault: () => {} }, el);
+  assert.deepEqual(el._cls, [], 'повторный клик уже открытую сеть не меняет');
 });
 
 test('currentFileNote is appended to the table counter', () => {

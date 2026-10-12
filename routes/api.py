@@ -150,6 +150,61 @@ def index():
     return __import__("flask").render_template("index.html")
 
 
+# ── Пользовательское соглашение ──────────────────────────────
+# 2.0: полный текст пользовательского соглашения (21 раздел + FAQ) вместо
+# краткого изложения — новая редакция, поэтому она спрашивается заново.
+TERMS_VERSION = "2.0"
+
+
+@bp.route("/terms/status")
+def terms_status():
+    """Принято ли пользовательское соглашение текущей версии.
+
+    Хранится в settings.json (ключ terms) — переживает смену браузера,
+    в отличие от localStorage.
+    Reply: {accepted: bool, version: str}
+    """
+    import paths as _paths
+    terms = (_paths.load_settings().get("terms") or {})
+    accepted = (terms.get("accepted") is True
+                and terms.get("version") == TERMS_VERSION)
+    return jsonify({"accepted": bool(accepted), "version": TERMS_VERSION})
+
+
+@bp.route("/terms/accept", methods=["POST"])
+def terms_accept():
+    """Фиксация принятия соглашения текущей версии (в settings.json)."""
+    import paths as _paths
+    _paths.save_settings({"terms": {"accepted": True,
+                                    "version": TERMS_VERSION}})
+    return jsonify({"ok": True, "accepted": True, "version": TERMS_VERSION})
+
+
+# ── Хранение результатов: автоудаление через N дней ───────────
+@bp.route("/retention/status")
+def retention_status():
+    """Текущий срок хранения результатов (дни) и допустимые пресеты."""
+    import retention
+    return jsonify({"days": retention.get_retention_days(),
+                    "presets": list(retention.PRESET_DAYS),
+                    "max": retention.MAX_DAYS,
+                    "default": retention.DEFAULT_DAYS})
+
+
+@bp.route("/retention/set", methods=["POST"])
+def retention_set():
+    """Сохранить срок хранения и сразу удалить устаревшие файлы."""
+    import retention
+    data = _json_body()
+    try:
+        days = int((data or {}).get("days"))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "Укажите число дней (1–30)"}), 400
+    saved = retention.set_retention_days(days)
+    removed = retention.cleanup_old_results(saved)
+    return jsonify({"ok": True, "days": saved, "removed": removed})
+
+
 @bp.route("/check-version")
 def check_version():
     """Check if a newer version is available on GitHub."""
@@ -352,24 +407,15 @@ def download_zip():
                      download_name=f"parser_results_{stamp}.zip")
 
 
-@bp.route("/save-api-key", methods=["POST"])
-def save_api_key():
-    """Save YANDEX_API_KEY to .env file and reload it (legacy single-key form)."""
-    data = request.get_json(force=True) or {}
-    return _write_env_keys({"YANDEX_API_KEY": data.get("api_key", "")})
-
-
 @bp.route("/save-api-keys", methods=["POST"])
 def save_api_keys():
-    """Save YANDEX_API_KEY and/or TWOGIS_API_KEY to .env and hot-reload them.
+    """Save VK_TOKEN to .env and hot-reload it.
 
-    One button for both key fields: each non-empty field overwrites its key,
-    empty fields are left untouched (the .env value keeps working).
+    Ключа Яндекса в приложении больше нет: поиск, координаты города и
+    карточки организаций читает браузер, платные API не используются.
     """
     data = request.get_json(force=True) or {}
     return _write_env_keys({
-        "YANDEX_API_KEY": data.get("yandex_api_key", ""),
-        "TWOGIS_API_KEY": data.get("twogis_api_key", ""),
         "VK_TOKEN": data.get("vk_token", ""),
     })
 
@@ -394,13 +440,6 @@ def _write_env_keys(keys: dict):
         clean[env_name] = val
     if not clean:
         return jsonify({"ok": False, "error": "Введите хотя бы один ключ"}), 400
-
-    # Прежний ключ 2GIS — чтобы отличить «ввели новый» от «пересохранили тот же».
-    try:
-        import config as _cfg
-        old_twogis_key = (_cfg.TWOGIS_API_KEY or "").strip()
-    except Exception:
-        old_twogis_key = os.environ.get("TWOGIS_API_KEY", "").strip()
 
     # .env location: next to the .exe when frozen, project root from source
     try:
@@ -440,66 +479,24 @@ def _write_env_keys(keys: dict):
             os.environ[env_name] = val
         try:
             import config
-            if "YANDEX_API_KEY" in clean:
-                config.YANDEX_API_KEY = clean["YANDEX_API_KEY"]
-            if "TWOGIS_API_KEY" in clean:
-                config.TWOGIS_API_KEY = clean["TWOGIS_API_KEY"]
             if "VK_TOKEN" in clean:
                 config.VK_TOKEN = clean["VK_TOKEN"]
         except Exception:
             pass
         try:
-            from yandex_maps_parser import state as pstate
-            if "TWOGIS_API_KEY" in clean:
-                pstate.TWOGIS_API_KEY = clean["TWOGIS_API_KEY"]
-            if "YANDEX_API_KEY" in clean:
-                # state — снапшот config при импорте; без этой строки
-                # геокодер/поиск до старта следующего запуска читали бы
-                # старый ключ (симметрия с TWOGIS_API_KEY выше).
-                pstate.YANDEX_API_KEY = clean["YANDEX_API_KEY"]
+            from yandex_maps_parser import vk_stats
+            if "VK_TOKEN" in clean:
+                # Токен уже прочитан модулем при импорте — без этого он
+                # вступит в силу только после перезапуска приложения.
+                vk_stats.reload_token()
         except Exception:
             pass
 
-        # Новый ключ 2GIS = новая месячная квота: счётчик потраченных токенов
-        # относится к СТАРОМУ ключу и без сброса показывал бы новый как
-        # исчерпанный. Один и тот же ключ счётчик не трогает.
-        quota_reset = False
-        if "TWOGIS_API_KEY" in clean and clean["TWOGIS_API_KEY"] != old_twogis_key:
-            try:
-                from yandex_maps_parser import twogis as _tg
-                _tg.quota_reset_for_new_key()
-                quota_reset = True
-            except Exception:
-                pass
-
         saved = ", ".join(sorted(clean))
         return jsonify({"ok": True, "message": f"Сохранено в {env_path.name}: {saved}",
-                        "path": str(env_path), "quota_reset": quota_reset})
+                        "path": str(env_path)})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
-
-
-@bp.route("/twogis/quota", methods=["POST"])
-def twogis_quota_manual():
-    """Ручная коррекция счётчика токенов 2GIS Places API.
-
-    Body: {"used": <int>} — фактический расход за месяц (виден в Platform
-    Manager). Автосчёт видит только запросы из этого приложения, ручное
-    значение его замещает. Reply: {ok, used} — применённое значение.
-    """
-    data = request.get_json(silent=True) or {}
-    try:
-        value = int(data.get("used"))
-    except (TypeError, ValueError):
-        return jsonify({"ok": False, "error": "used must be an integer"}), 400
-    if value < 0 or value > 100000:
-        return jsonify({"ok": False, "error": "used out of range"}), 400
-    try:
-        from yandex_maps_parser.twogis import quota_set_manual
-        applied = quota_set_manual(value)
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
-    return jsonify({"ok": True, "used": applied})
 
 
 @bp.route("/export-filtered", methods=["POST"])
@@ -514,10 +511,16 @@ def export_filtered():
     rows = [normalize_record(r) for r in data.get("rows", [])]
     fmt  = data.get("format", "csv")
 
+    # Колонки повторяют таблицу результатов: тот же порядок, те же названия.
+    # «Сайт / Таплинк» — это ключ aggregator_url (обычный сайт и taplink
+    # сливаются в одну колонку нормализацией выше), «Рейтинг»/«Отзывов» —
+    # данные карточки Яндекс.Карт.
     HEADERS = ["#", "✓ Просмотрено", "Название", "Категория", "Адрес", "Телефон",
+               "Рейтинг", "Отзывов",
                "VK", "Instagram", "Telegram", "WhatsApp",
-               "Агрегатор", "Ссылка", "Запрос"]
+               "Сайт / Таплинк", "Ссылка", "Запрос"]
     FIELDS = ["_idx", "_reviewed", "name", "category", "address", "phone",
+              "rating", "reviews_count",
               "vk", "instagram", "telegram", "whatsapp",
               "aggregator_url", "yandex_maps_url", "query"]
 
@@ -530,9 +533,8 @@ def export_filtered():
             key = _review_key(row)
             return bool(key and _rev.get(key))
         if f == "yandex_maps_url":
-            # «Ссылка» в выгрузке выборки: карточка Яндекса, а для 2GIS-записей
-            # — карточка 2ГИС (раньше столбец был пустым на 2GIS-запусках).
-            return row.get("yandex_maps_url") or row.get("twogis_url") or ""
+            # «Ссылка» в выгрузке выборки: карточка организации на Яндекс.Картах.
+            return row.get("yandex_maps_url") or ""
         return row.get(f, "")
 
     if fmt == "csv":
@@ -615,43 +617,21 @@ def download_log(filename):
     return send_from_directory(LOGS_DIR, safe, as_attachment=True)
 
 
-@bp.route("/twogis/key-status")
-def twogis_key_status():
-    """Whether a 2GIS API key is configured (.env / config or state)."""
-    key = ""
-    try:
-        from yandex_maps_parser import state as pstate
-        key = pstate.TWOGIS_API_KEY or ""
-    except Exception:
-        pass
-    if not key:
-        try:
-            from config import TWOGIS_API_KEY
-            key = TWOGIS_API_KEY or ""
-        except Exception:
-            pass
-    return jsonify({"present": bool(key.strip())})
-
-
 @bp.route("/api-keys/status")
 def api_keys_status():
     """Which API keys are configured (.env / config) — for the sidebar badge.
 
+    Единственный ключ — токен ВКонтакте (проверка активности сообществ).
     Returns booleans only, never the keys themselves.
     """
-    from config import YANDEX_API_KEY, TWOGIS_API_KEY
     from config import VK_TOKEN
-    yk = (YANDEX_API_KEY or "").strip()
-    gk = (TWOGIS_API_KEY or "").strip()
     vk = (VK_TOKEN or "").strip()
-    # Runtime overrides (state) may carry keys the UI typed for this run.
     try:
-        from yandex_maps_parser import state as pstate
-        yk = yk or (pstate.YANDEX_API_KEY or "").strip()
-        gk = gk or (pstate.TWOGIS_API_KEY or "").strip()
+        from yandex_maps_parser.vk_stats import _token as _vk_token
+        vk = vk or (_vk_token() or "").strip()
     except Exception:
         pass
-    return jsonify({"yandex": bool(yk), "twogis": bool(gk), "vk": bool(vk)})
+    return jsonify({"vk": bool(vk)})
 
 
 @bp.route("/cache/stats")
@@ -876,11 +856,10 @@ def _rel_output(path: str) -> str:
 def _review_key(rec: dict) -> str:
     """Stable identity of a record for the «просмотрено» mark.
 
-    Card URL first (yandex → 2gis), then a name|city|address composite for
-    rows without a card. Mirrored by reviewKey() in static/js/05-results-bulk.js
-    — keep in sync.
+    Card URL first, then a name|city|address composite for rows without a
+    card. Mirrored by reviewKey() in static/js/05-results-bulk.js — keep in sync.
     """
-    for field in ("yandex_maps_url", "twogis_url"):
+    for field in ("yandex_maps_url",):
         val = str(rec.get(field) or "").strip()
         if val:
             return val
@@ -1557,7 +1536,7 @@ def preview_blacklist():
 #  Шаблоны сообщений («📝 Шаблоны»)
 #  Хранятся в settings.json — общие для всей команды, а не в браузере:
 #  цель — единый tone of voice. Подстановка переменных живёт в
-#  yandex_maps_parser.message_templates и переиспользуется рассылкой VK
+#  yandex_maps_parser.message_templates и переиспользуется массовым копированием
 #  и /bulk/urls, чтобы текст не расходился.
 # ═══════════════════════════════════════════════════════════════
 
@@ -1652,7 +1631,7 @@ def bulk_urls():
     Порядок выдачи повторяет порядок строк в таблице: клиент присылает
     колонку и направление своей сортировки (sort_col = 6 — оценка лида).
     Если передан `template`, каждая запись получает `text` — сообщение с
-    подставленными переменными (подстановка та же, что в рассылке VK).
+    подставленными переменными (та же подстановка, что в таблице результатов).
     """
     data = request.get_json(silent=True) or {}
     view = str(data.get("view") or "raw").lower()
@@ -1818,7 +1797,7 @@ def _persist_reviewed_column(path: str, rev: dict) -> int | None:
         if label not in header:
             return None
         cols = {}
-        for field in ("name", "city", "address", "yandex_maps_url", "twogis_url"):
+        for field in ("name", "city", "address", "yandex_maps_url"):
             lab = HEADER_LABELS.get(field)
             if lab in header:
                 cols[field] = header.index(lab) + 1

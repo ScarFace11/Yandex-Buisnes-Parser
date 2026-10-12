@@ -48,6 +48,9 @@ _update/
 build-dev.bat
 release_notes.md
 
+# Локальный дневник разработки: не поставляется и не коммитится
+CHANGES-DEV.md
+
 # Archives
 *.zip
 *.tar.gz

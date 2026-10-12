@@ -578,8 +578,6 @@ function getCurrentSettings() {
     queries:  document.getElementById('f-queries').value,
     // Полный пресет: города и всё, что видно в форме.
     cities:   [...selectedCities],
-    source:   dataSource,
-    fetchEngine: fetchEngine,
     excel:    document.getElementById('f-excel').checked,
     json:     document.getElementById('f-json').checked,
     csv:      document.getElementById('f-csv').checked,
@@ -633,15 +631,11 @@ function applySettings(s) {
     selectedCities = s.cities.filter(c => typeof c === 'string' && c.trim()).slice(0, 50);
     renderCityTags();
   }
-  if (s.source === 'yandex' || s.source === '2gis') setDataSource(s.source);
-  // Способ парсинга карточек: чужое/старое значение молча оставляет «Авто».
-  if (typeof s.fetchEngine === 'string' && ['auto', 'cdp', 'playwright', 'httpx'].includes(s.fetchEngine)) setFetchEngine(s.fetchEngine);
   if (s.excel    != null) { document.getElementById('f-excel').checked = s.excel;   document.getElementById('f-excel').closest('.chk').classList.toggle('on', s.excel); }
   if (s.json     != null) { document.getElementById('f-json').checked  = s.json;    document.getElementById('f-json').closest('.chk').classList.toggle('on', s.json); }
   if (s.csv      != null) { document.getElementById('f-csv').checked   = s.csv;     document.getElementById('f-csv').closest('.chk').classList.toggle('on', s.csv); }
   if (s.map      != null) { document.getElementById('f-map').checked   = s.map;     document.getElementById('f-map').closest('.chk').classList.toggle('on', s.map); }
   if (s.pages    != null) document.getElementById('f-pages').value    = s.pages;
-  updatePagesCapNote();
   if (s.workers  != null) document.getElementById('f-workers').value  = s.workers;
   if (s.queryWorkers != null) document.getElementById('f-query-workers').value = s.queryWorkers;
   if (s.maxCandidates != null) document.getElementById('f-max-candidates').value = s.maxCandidates;

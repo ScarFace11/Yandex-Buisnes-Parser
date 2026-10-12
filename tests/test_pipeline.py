@@ -337,20 +337,34 @@ class TestCleanupRaw:
 # ── run_web raw-mode wiring ───────────────────────────────────
 
 class TestRawPipelineMode:
-    def test_filters_neutralized_in_raw_mode(self):
+    def test_only_whole_set_filters_wait_for_stage2(self):
+        """Сбор применяет фильтры, известные по самой записи («без сайта»,
+        чёрный список, соцсети), а фильтры, которым нужен весь набор
+        (объединение филиалов), остаются этапу 2."""
         params = {
             "queries": ["кафе"], "cities": ["Уфа"], "source": "yandex",
             "pipeline": "raw", "parse_mode": "without_website",
             "collapse_chains": True,
+            "blacklist_words": ["Франшиза", "vip"],
         }
         runner._apply_params(params)
         try:
             assert state.PIPELINE == "raw"
-            assert state.PARSE_MODE == "all"      # collection sees everything
-            assert state.COLLAPSE_CHAINS is False
+            assert state.PARSE_MODE == "without_website"   # работает уже на сборе
+            assert state.BLACKLIST_WORDS == ["франшиза", "vip"]
+            assert state.COLLAPSE_CHAINS is False          # нужен весь набор
         finally:
             state.PIPELINE = ""
             state.PARSE_MODE = "without_website"
+            state.BLACKLIST_WORDS = []
+
+    def test_crawl_skip_counters_start_from_zero(self):
+        """Счётчики предфильтра — на прогон, а не на жизнь процесса."""
+        from yandex_maps_parser import state as _state
+        _state.inc_crawl_skip("blacklist")
+        runner._apply_params({"pipeline": "raw"})
+        assert _state.crawl_skip_summary() == {"total": 0}
+        state.PIPELINE = ""
 
     def test_legacy_mode_untouched(self):
         params = {

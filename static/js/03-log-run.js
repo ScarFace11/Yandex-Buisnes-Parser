@@ -29,7 +29,11 @@ function showTab(name) {
   if (name === 'table') {
     // Первое открытие: грузим срез результатов (raw/processed по _resultsView).
     // Повторные открытия не перезапрашивают — таблица уже содержит данные.
-    if (!_resultsLoadedOnce) setResultsView(_resultsView);
+    // ВО ВРЕМЯ ПРОГОНА не грузим: живой поток SSE уже наполняет таблицу, а
+    // подгрузка с диска заменяла накопленные записи пустым/частичным срезом
+    // (таблица «пропадала» до следующих результатов) и смешивала
+    // отфильтрованный срез с нефильтрованными live-записями.
+    if (!_resultsLoadedOnce && !isRunActive()) setResultsView(_resultsView);
     if (allResults.length) renderCityTabs(_lastCities);
     updateBulkStats();
   }
@@ -74,8 +78,10 @@ function setProgress(pct, label) {
   const pw = document.getElementById('prog-wrap');
   const pb = document.getElementById('prog-bar');
   const pl = document.getElementById('prog-label');
-  pw.style.display = pct >= 0 ? '' : 'none';
-  pl.style.display = pct >= 0 ? '' : 'none';
+  // '' не годится: в CSS у обоих display:none, а снятие инлайна лишь
+  // возвращает к нему — прогресс-бар так и не показывался.
+  pw.style.display = pct >= 0 ? 'block' : 'none';
+  pl.style.display = pct >= 0 ? 'block' : 'none';
   if (pct >= 0) { pb.style.width = pct + '%'; pl.textContent = label || ''; }
 }
 function hideProgress() {
@@ -300,8 +306,7 @@ function appendLog(level, msg) {
   const err = lvl === 'error' || lvl === 'warn';
   const sum = _logIsSummary(lvl, clean);
   const isCity = _logIsCity(clean);
-  // Quota warnings (2GIS Places и др.) get louder visual treatment:
-  // 🚨 → red banner, ⚠ + «израсходовано» → amber banner.
+  // «🚨» → красная плашка, «⚠» + «израсходовано/лимит» → янтарная.
   let extraCls = '';
   if (/🚨/.test(clean) || (/⚠/.test(clean) && /израсходовано|квота|лимит .*запросов/i.test(clean))) {
     extraCls = /🚨/.test(clean) ? 'quota-critical' : 'quota-warn';
@@ -648,12 +653,6 @@ function handleProgress(raw) {
     const cur = parseInt(parts[0]), tot = parseInt(parts[1]);
     const stage = parts[2] || '';
     const found = parts.length >= 4 ? parseInt(parts[3]) : 0;
-    // 5th segment (optional): 2GIS Places quota used this run (child process
-    // streams it via progress events because /status can't see the child).
-    if (parts.length >= 5) {
-      const q = parseInt(parts[4]);
-      if (!isNaN(q) && q > 0) { _twogisQuotaLive = q; renderQuotaCard(); }
-    }
     const pct = tot > 0 ? Math.round(cur / tot * 100) : 0;
     const elapsedSec = (Date.now() - startTime) / 1000;
 
@@ -702,15 +701,10 @@ function getParams() {
     query_workers:   +document.getElementById('f-query-workers').value || 2,
     max_candidates:  getMaxCandidates(),
     parse_mode:      parseMode,
-    source:          dataSource,
-    fetch_engine:    fetchEngine,
     excel_columns:   getExcelCols(),
     use_grid:        _gridMode === 'manual',
     grid_radius:     +document.getElementById('f-grad').value  || 20,
-    grid_step:       +document.getElementById('f-gstep').value || 5,
-    // Соцсети с карточек собираются всегда: без них не работают ни фильтр
-    // по соцсетям, ни оценка лида (шаг 03).
-    fetch_detail:    true,
+    grid_step:       +document.getElementById('f-gstep').value || 5,    // Соцсети собираются только если отмечены в «Что парсить»: без них не    // работают ни фильтр по соцсетям, ни массовый обход, ни оценка лида.    fetch_detail:    socialsEnabled(),
     collapse_chains: document.getElementById('f-collapse-chains').checked,
     chain_key:       (document.getElementById('f-chain-key') || {}).value || 'name_city',
     // Two-stage pipeline: the web app always collects raw (stage 1);
@@ -718,13 +712,9 @@ function getParams() {
     pipeline:        'raw',
     raw_mode:        (document.getElementById('f-raw-mode') || {}).value || 'keep',
     continue_cities: document.getElementById('f-continue')?.checked || false,
-    continue_limit:  parseInt((document.getElementById('f-continue-limit')||{}).value, 10) || 0,
-    api_key:         document.getElementById('f-apikey').value.trim(),
-    twogis_api_key:  (document.getElementById('f-2gis-key') || {}).value?.trim() || '',
-    social_mode:     socialMode,
-    required_socials: [...requiredSocials],
+    continue_limit:  parseInt((document.getElementById('f-continue-limit')||{}).value, 10) || 0,    // Соцсети выключены — фильтр по соцсетям и обязательные сети бессмысленны.    social_mode:     socialsEnabled() ? socialMode : 'all',    required_socials: socialsEnabled() ? [...requiredSocials] : [],
     // Stage-2 lead scoring / VK activity (accordion «Фильтрация результата»).
-    vk_check:         !!(document.getElementById('f-vk-check')||{}).checked,
+    vk_check:         socialsEnabled() && vkTokenReady && !!(document.getElementById('f-vk-check')||{}).checked,
     vk_mode:          vkMode,
     vk_max_post_days: parseInt((document.getElementById('f-vk-max-days')||{}).value, 10) || 0,
     vk_min_followers: parseInt((document.getElementById('f-vk-min-followers')||{}).value, 10) || 0,
@@ -785,13 +775,8 @@ function startRun() {
   clearFieldError(document.getElementById('fw-city'));
   const queriesBox = document.getElementById('f-queries').closest('div');
   clearFieldError(queriesBox);
-  // Live-clear: errors disappear as soon as the user edits the field again
-  document.getElementById('f-queries').addEventListener('input', e => {
-    clearFieldError(queriesBox);
-    updateQueriesCounter();   // keeps the «Будет выполнено N запросов» counter live
-  });
-  const _cityInput = document.getElementById('f-city-input');
-  if (_cityInput) _cityInput.addEventListener('input', () => clearFieldError(document.getElementById('fw-city')), { once: true });
+  // Live-clear ошибок навешено один раз в init() — здесь только сбрасываем
+  // прежнюю рамку. Раньше слушатели добавлялись на каждый запуск и копились.
   if (!params.queries.length) {
     document.getElementById('f-queries').classList.add('field-invalid');
     showFieldError(queriesBox, 'Введите хотя бы один запрос');
@@ -895,14 +880,19 @@ function _startRunWithParams(params) {
             return;
           }
           fetch('/status').then(r => r.json()).then(s => {
-            if (s.active_run === _queuedRunId || !s.queued) {
+            if (s.active_run === _queuedRunId) {
+              // Our run is now active — connect SSE
               clearInterval(_pollInterval);
-              if (s.active_run === _queuedRunId) {
-                // Our run is now active — connect SSE
-                startTime = Date.now();
-                _runEnd = null;
-                startSSE();
-              }
+              startTime = Date.now();
+              _runEnd = null;
+              startSSE();
+            } else if (!s.queued) {
+              // Очередь сняли/отменили, но наш запрос так и не стал активным:
+              // без этой ветки UI навсегда застревал в «В очереди…».
+              clearInterval(_pollInterval);
+              appendLog('warn', '  [!] Поиск убран из очереди, не дождавшись запуска. Запустите его снова.');
+              resetBtn(); setStatus('stopped', 'Снят с очереди'); hideProgress();
+              showToast('Поиск убран из очереди — запустите заново', 'warning');
             }
           }).catch(() => {});
         }, 2000);

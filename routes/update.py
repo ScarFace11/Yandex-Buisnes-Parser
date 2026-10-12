@@ -79,6 +79,9 @@ EXE_NAME = "YandexBusinessParser.exe"
 ZIP_ASSET_NAME = "YandexBusinessParser-windows-x64.zip"
 STATE_FILE = "_update_state.json"         # progress for /update/status polling
 ASSET_CACHE_TTL = 10 * 60                 # секунд: кэш проверки релиза по API
+# Кэш минимально допустимой версии: она меняется раз в несколько релизов,
+# а проверка идёт на каждом открытии окна.
+MIN_VERSION_TTL = 60 * 60
 EXIT_MARKER = "app.exit"                  # the app writes this right before exiting
 LOG_FILE = "update.log"                   # updater.bat trace, for diagnostics
 
@@ -270,9 +273,75 @@ def _download_target(latest: str, stamped_url: str = "") -> tuple:
                  "появится здесь сразу после публикации релиза.")
 
 
-@staticmethod
 def _ver_tuple(v: str):
     return tuple(int(x) for x in str(v).split(".") if x.isdigit())
+
+
+def _versions_below(current: str, minimum: str) -> bool:
+    """Версия `current` старше `minimum` (учитывая разную длину чисел).
+
+    Сравниваются только числовые части: «2.3.10» > «2.3.9», а отсутствующие
+    хвосты трактуются как нули («2.3» == «2.3.0»)."""
+    a = _ver_tuple(current or "0")
+    b = _ver_tuple(minimum or "0")
+    if not b:
+        return False                       # порог не задан — не блокируем
+    a = a + (0,) * (len(b) - len(a))
+    b = b + (0,) * (len(a) - len(b))
+    return a < b
+
+
+@bp.route("/version/minimum")
+def version_minimum():
+    """Минимально допустимая версия приложения — «ниже не работаем».
+
+    Порог публикуется вместе с релизом в static/version.json (`min_version`)
+    и нужен, когда старые сборки перестают быть совместимыми: формат данных,
+    маршруты API, требования площадок. В ответе только версии и ссылка на
+    страницу релизов.
+
+    Осторожность важнее строгости:
+      * DEV-сборка не блокируется никогда (это рабочая ветка);
+      * если GitHub недоступен, ответ уходит БЕЗ блокировки и с пояснением —
+        пропавшая сеть не должна «кирпить» приложение, установленное у
+        пользователя;
+      * если порог не задан в метаданных, блокировки нет.
+    """
+    from config import APP_VERSION
+    out = {"current": APP_VERSION, "minimum": "", "blocked": False,
+           "download_url": _releases_page(),
+           "auto_apply": _is_frozen() and _self_update_supported(),
+           "dev": _is_dev(), "notice": ""}
+    if out["dev"]:
+        return jsonify(out)
+
+    cache = _state().get("min_version") or {}
+    cached = cache.get("payload") or {}
+    fresh = (cache and time.time() - float(cache.get("at") or 0) < MIN_VERSION_TTL)
+    if not (fresh and cached):
+        try:
+            meta = _remote_meta()
+        except Exception:
+            # Нет сети/репозиторий недоступен: работаем, но честно говорим,
+            # что проверить не смогли.
+            cached = dict(cached) if cached else {}
+            out["notice"] = ("Не удалось проверить минимальную версию "
+                             "(GitHub недоступен) — обновление проверьте вручную.")
+            out["minimum"] = str(cached.get("min_version") or "")
+            out["blocked"] = _versions_below(APP_VERSION, out["minimum"])
+            return jsonify(out)
+        cached = {"min_version": str(meta.get("min_version") or ""),
+                  "version": str(meta.get("version") or "")}
+        _save_state(min_version={"payload": cached, "at": time.time()})
+
+    out["minimum"] = str(cached.get("min_version") or "")
+    latest = str(cached.get("version") or "")
+    out["latest"] = latest
+    out["blocked"] = _versions_below(APP_VERSION, out["minimum"])
+    if out["blocked"]:
+        out["notice"] = ("Эта версия больше не поддерживается: обновитесь до "
+                         f"v{latest or out['minimum']} или новее.")
+    return jsonify(out)
 
 
 @bp.route("/update/status")

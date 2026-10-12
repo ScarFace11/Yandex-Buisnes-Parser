@@ -73,11 +73,10 @@ CSV_FIELDS = [
     "query", "parsed_at",
     # Two-stage pipeline: raw files must carry the city so stage 2 can group
     # by «Название + Город» without a new crawl.
-    # NOTE: "website" is deliberately NOT a report column any more — for 2GIS
-    # runs it never held a real site (the scraper picked a page-wide analytics
-    # script, see enrichment.py) and the user asked for a map link instead.
-    # Raw files still carry it (exporters.save_excel(extra_fields=("website",)))
-    # so the «только без сайтов» filter keeps working in stage 2.
+    # NOTE: "website" is deliberately NOT a report column — the user asked for
+    # a map link instead. Raw files still carry it (save_excel with
+    # INTERNAL_FIELDS) so «только без сайтов» works in stage 2 without a
+    # re-crawl.
     "city",
 ]
 
@@ -119,14 +118,18 @@ HEADER_LABELS = {
     "vk_last_post_days": "Последний пост (дней)",
     "vk":            "ВКонтакте",
     "instagram":     "Instagram",
-    "facebook":      "Facebook",
     "telegram":      "Telegram",
+    "whatsapp":      "WhatsApp",
+    # Соцсети ниже больше НЕ собираются (клиентские — только vk/ig/tg/wa), но
+    # подписи оставлены нарочно: _LABEL_TO_FIELD строится из этого словаря и
+    # по нему читаются СТАРЫЕ CSV/XLSX, где колонки Facebook/YouTube/… ещё есть.
+    # Удалять их — значит ломать повторный импорт прошлых выгрузок.
+    "facebook":      "Facebook",
     "youtube":       "YouTube",
     "tiktok":        "TikTok",
     "ok":            "Одноклассники",
     "twitter":       "Twitter / X",
-    "whatsapp":      "WhatsApp",
-    "aggregator_url": "Taplink / Linktree",
+    "aggregator_url": "Сайт / Таплинк",
     "yandex_maps_url": "Яндекс.Карты",
     "query":         "Запрос",
     "parsed_at":     "Дата сбора",
@@ -137,9 +140,8 @@ HEADER_LABELS = {
     # (обратная карта «русский заголовок → ключ» ищет подписи именно здесь).
     "branch_count":  "Филиалов",
     "added_at":      "Добавлено",
-    # 2GIS URL column is appended to CSV_FIELDS by exporters; the label lives
-    # here so older files with a «2ГИС» header still load back correctly.
-    "twogis_url":    "2ГИС",
+    # Ссылка на карточку организации в Яндекс.Картах — в CSV_FIELDS.
+
 }
 
 COL_WIDTHS = {

@@ -17,8 +17,6 @@ let _runEnd     = null;
 let activeSocialFilters = new Set();
 let socialMode = 'all';  // 'all' | 'with_socials' | 'without_socials'
 let parseMode = 'without_website';  // 'without_website' | 'all' — тип организаций
-let dataSource = 'yandex';  // 'yandex' | '2gis' — источник данных
-let fetchEngine = 'auto';   // 'auto' | 'cdp' | 'playwright' | 'httpx' — способ парсинга карточек
 let notificationsEnabled = false;  // производный мастер-флаг (совместимость)
 // ── Настройки уведомлений: что именно присылать (localStorage + попап) ──
 const NOTIFY_KEY = 'notifications_settings';
@@ -39,6 +37,51 @@ let notifySettings = Object.assign({}, NOTIFY_DEFAULTS);  // сохранённ�
 let notifyDraft    = Object.assign({}, NOTIFY_DEFAULTS);  // черновик попапа
 let _notifyHintShown = false;   // подсказку про разрешение — раз за прогон
 let requiredSocials = new Set();   // AND filter: must have ALL selected socials
+
+// ═══════════════════════════════════════════
+//  Что парсить: какие поля собирать (аккордеон 02)
+// ═══════════════════════════════════════════
+// Каждое поле разворачивается в столбцы отчёта (excel_columns). Соцсети —
+// «мастер»: без них не работают ни фильтр по соцсетям, ни массовый обход,
+// ни статистика по соцсетям, ни активность ВКонтакте.
+const PARSE_FIELD_COLS = {
+  name:           ['name'],
+  category:       ['category'],
+  address:        ['address'],
+  rating:         ['rating', 'reviews_count'],
+  yandex_maps_url:['yandex_maps_url'],
+  aggregator_url: ['aggregator_url'],
+  socials:        ['vk', 'instagram', 'telegram', 'whatsapp'],
+  phone:          ['phone'],
+  vk_activity:    ['vk_activity', 'vk_followers', 'vk_last_post_days'],
+};
+// Служебные столбцы выгружаются всегда (не пользовательские данные).
+const PARSE_SERVICE_COLS = ['reviewed', 'lead_score', 'query', 'parsed_at', 'city'];
+const PARSE_REGULAR = [
+  { k: 'name',            l: 'Название',              locked: true },
+  { k: 'category',        l: 'Категория' },
+  { k: 'address',         l: 'Адрес' },
+  { k: 'rating',          l: 'Рейтинг и отзывы' },
+  { k: 'yandex_maps_url', l: 'Ссылка на карточку' },
+  { k: 'aggregator_url',  l: 'Сайт / Таплинк' },
+  { k: 'socials',         l: 'Соцсети (ВК, TG, IG, WA)', master: true },
+];
+const PARSE_PERSONAL = [
+  { k: 'phone',       l: 'Телефон организации' },
+  { k: 'vk_activity', l: 'Активность ВКонтакте (подписчики, последний пост)', needsKey: true },
+];
+// null = значения по умолчанию (все обычные + телефон); иначе — Set ключей.
+let parseFields = null;
+function parseFieldsEnabled() {
+  if (parseFields === null) {
+    const s = new Set(PARSE_REGULAR.map(f => f.k));
+    s.add('phone');   // телефон по умолчанию включён (основной контакт)
+    return s;
+  }
+  return parseFields;
+}
+// Собираются ли соцсети вообще (мастер-переключатель «Соцсети»).
+function socialsEnabled() { return parseFieldsEnabled().has('socials'); }
 let vkMode = 'all';                 // 'all' | 'active_semi' | 'active' — VK activity filter
 let _lastCompletedCityIdx = 0;     // track last completed city for notification
 let _cityProgressData = {};        // {cityName: {total, found, status, pct}}
@@ -282,164 +325,28 @@ function setParseMode(mode) {
   }
 }
 
-// ═══════════════════════════════════════════
-//  Data-source toggle: Яндекс.Карты / 2GIS
-// ═══════════════════════════════════════════
-let _twogisKeyPresent = null;  // null = not yet checked; else bool
-function setDataSource(src) {
-  dataSource = src;
-  document.querySelectorAll('.source-mode-opt').forEach(el => {
-    const radio = el.querySelector('input[type=radio]');
-    const isActive = radio.value === src;
-    el.classList.toggle('active', isActive);
-    radio.checked = isActive;
-  });
-  const hint = document.getElementById('source-hint');
-  if (hint) {
-    const keySpan = '<span class="source-hint-key" id="source-key-state"></span>';
-    hint.innerHTML = src === '2gis'
-      ? `<b>Быстрее.</b> Контакты и соцсети — только через Chrome. <b>Ключ</b> автоматически подтягивается из .env.<br>${keySpan}`
-      : '<b>Медленнее.</b> Соцсети собираются с карточек организаций. <b>Требует</b> API-ключ Яндекса.';
-  }
-  if (src === '2gis') refreshSourceKeyState();
-  updateBasicSummary();
-  updatePagesCapNote();
-  // 2GIS has a 50-orgs-per-point cap → the default coverage should be the
-  // overlap-friendly 4×1 ratio; refresh the hint (it embeds token estimates
-  // only for 2GIS) and, on first switch to 2GIS, nudge sliders to it.
-  onGridSlider();
-  if (src === '2gis' && !_grid2gisNudged) {
-    _grid2gisNudged = true;
-    if (_gridMode === 'manual') {
-      const grad = document.getElementById('f-grad'), gstep = document.getElementById('f-gstep');
-      if (grad && gstep && (+gstep.value > +grad.value / 4 + 1)) {
-        gstep.value = Math.max(1, Math.round(+grad.value / 4));
-        onGridSlider();
-      }
-    }
-  }
-}
-let _grid2gisNudged = false;
-
-// ═══════════════════════════════════════════
-//  Fetch-engine toggle: как открывать карточки организаций
-//  (auto — лестница CDP → Playwright → HTTP; иначе выбранный способ).
-//  Особенности каждого варианта — в подсказке под переключателем.
-// ═══════════════════════════════════════════
-const FETCH_ENGINES = ['auto', 'cdp', 'playwright', 'httpx'];
-function setFetchEngine(engine) {
-  if (!FETCH_ENGINES.includes(engine)) engine = 'auto';
-  fetchEngine = engine;
-  document.querySelectorAll('#engine-mode-bar .source-mode-opt').forEach(el => {
-    const radio = el.querySelector('input[type=radio]');
-    const isActive = radio.value === engine;
-    el.classList.toggle('active', isActive);
-    radio.checked = isActive;
-  });
-  const hint = document.getElementById('fetch-engine-hint');
-  if (hint) {
-    hint.innerHTML = engine === 'cdp'
-      ? '<b>Быстро и надёжно.</b> Карточки открывает ваш Chrome — Яндекс и 2GIS отдают их без анти-бота; соцсети 2GIS с бесплатным ключом собираются только так. Нет Chrome — карточки пойдут через HTTP (медленнее).'
-      : engine === 'playwright'
-        ? '<b>Резервный браузер.</b> Встроенный Chromium — вариант, когда Chrome не найден. Работает для Яндекса и 2GIS, но в .exe-сборке недоступен (там карточки пойдут через HTTP).'
-        : engine === 'httpx'
-          ? '<b>Без браузера — работает всегда.</b> Но медленнее (паузы между запросами): Яндекс может отдавать страницу-заглушку — часть соцсетей потеряется, а у 2GIS с бесплатным ключом соцсети и сайты почти не соберутся.'
-          : '<b>Рекомендуется.</b> Сам выбирает первый доступный способ: Chrome (CDP) → Playwright → HTTP. Лучший баланс скорости и надёжности для Яндекса и 2GIS.';
-  }
-}
-
-// Доступность движков на этой машине: бейджи под селектором
-// («✔ Chrome найден» / «✖ Playwright не установлен»). Запрос лёгкий,
-// без сетевых проб — только поиск Chrome и импорт playwright.
+// Grid coverage mode ('whole' | 'manual') — single source of truth for
+// use_grid: the old f-grid checkbox no longer exists in the markup.
+let _gridMode = 'whole';
+// Браузер — единственный способ загрузки страниц: показываем бейдж
+// «Chrome найден / не найден» (лёгкий запрос, без сетевых проб).
 // Сеть отвалилась — бейдж просто не показываем, форме это не вредит.
-function refreshEngineAvailability() {
+function refreshBrowserAvailability() {
   const box = document.getElementById('engine-availability');
   if (!box) return;
   fetch('/engines/status').then(r => r.ok ? r.json() : null).then(s => {
     if (!s || !s.ok) return;
-    const parts = [];
-    parts.push(s.chrome
-      ? '<span class="engine-badge ok">✔ Chrome найден</span>'
-      : '<span class="engine-badge miss">✖ Chrome не найден</span>');
-    if (s.frozen) {
-      parts.push('<span class="engine-badge miss">✖ Playwright не установлен</span>');
-    } else {
-      parts.push(s.playwright
-        ? '<span class="engine-badge ok">✔ Playwright готов</span>'
-        : '<span class="engine-badge miss">✖ Playwright не установлен</span>');
-    }
-    box.innerHTML = parts.join(' ');
+    // Это браузер ДЛЯ СБОРА (CDP), а не браузер по умолчанию: интерфейс
+    // может открываться в другом, а страницы Яндекс.Карт грузит этот.
+    // Подходят только Chromium-браузеры (Chrome/Chromium/Edge); Safari и
+    // Firefox CDP-автоматизацию не поддерживают.
+    box.innerHTML = s.chrome
+      ? '<span class="engine-badge ok" title="Этим браузером программа открывает страницы для сбора — он не обязан совпадать с вашим браузером по умолчанию">'
+        + '✔ Для сбора найден: ' + (s.chrome_path || 'Chromium-браузер').split(/[\\/]/).pop() + '</span>'
+      : '<span class="engine-badge miss" title="Сбор идёт через Chrome DevTools Protocol: нужен Chrome, Chromium или Edge">'
+        + '✖ Chromium-браузер не найден — установите Google Chrome, Chromium или Edge (Safari и Firefox не подходят)</span>';
     box.style.display = '';
   }).catch(() => {});
-}
-
-// Окно «?»: полное сравнение способов парсинга карточек.
-function showEngineHelp() {
-  const overlay = document.createElement('div');
-  overlay.className = 'ui-modal-overlay';
-  overlay.innerHTML = `
-    <div class="ui-modal engine-help-modal">
-      <h3>Способы парсинга карточек: что выбрать</h3>
-      <p>Карточка организации — страница с соцсетями, сайтом и телефонами. Способ определяет, как она открывается:</p>
-      <div class="engine-help-grid">
-        <div><b>Авто</b> — <b>рекомендуется</b>. Сам берёт первый доступный способ: Chrome (CDP) → Playwright → HTTP. Лучший выбор, если не хочется думать.</div>
-        <div><b>Chrome (CDP)</b> — быстро и надёжно. Ваш Chrome открывает карточки невидимо: Яндекс и 2GIS отдают их без анти-бота. Для 2GIS с бесплатным ключом это <b>единственный способ собрать соцсети</b> — бесплатный API их не отдаёт. Нужен установленный Chrome/Edge.</div>
-        <div><b>Playwright</b> — резервный браузер. Встроенный Chromium: работает, когда Chrome не установлен, — так же быстро, как CDP. В .exe-сборке недоступен (экономия ~300 МБ): там Chrome есть почти у всех, а без него — HTTP.</div>
-        <div><b>Без браузера (HTTP)</b> — работает всегда и ничего не требует. Запросы идут с паузами, Яндекс может отдавать заглушки — часть соцсетей теряется. Для 2GIS с бесплатным ключом соцсети и сайты почти не соберутся. Выбирайте, если ни Chrome, ни Playwright недоступны или нужна минимальная нагрузка на систему.</div>
-      </div>
-      <p class="hint">Не уверены, что доступно на вашей машине? Вкладка «Диагностика» → группа «Способы парсинга» — там можно пробно загрузить одну страницу каждым способом.</p>
-      <div class="ui-modal-btns"><button type="button" class="m-ok">Понятно</button></div>
-    </div>`;
-  const done = () => { overlay.remove(); document.removeEventListener('keydown', onKey, true); };
-  const onKey = e => { if (e.key === 'Escape' || e.key === 'Enter') { e.stopPropagation(); done(); } };
-  overlay.querySelector('.m-ok').onclick = done;
-  overlay.addEventListener('click', e => { if (e.target === overlay) done(); });
-  document.addEventListener('keydown', onKey, true);
-  document.body.appendChild(overlay);
-}
-
-// 2GIS never returns more than 5 pages per search point (5 × 10 = 50 orgs).
-// The «Страниц» stepper still allows 1–20, so when 2GIS is active and the
-// value exceeds the cap we say so right under the stepper instead of
-// silently wasting the user's setting.
-function updatePagesCapNote() {
-  const note = document.getElementById('pages-cap-note');
-  if (!note) return;
-  const pages = +document.getElementById('f-pages')?.value || 1;
-  const capped = dataSource === '2gis' && pages > 5;
-  note.hidden = !capped;
-  if (capped) note.textContent = `2GIS отдаёт максимум 5 страниц (50 организаций с точки) — значение будет ограничено с ${pages} до 5`;
-}
-
-// Grid coverage mode ('whole' | 'manual') — single source of truth for
-// use_grid: the old f-grid checkbox no longer exists in the markup.
-let _gridMode = 'whole';
-// Live 2GIS Places quota (tokens spent this run), streamed via progress events.
-let _twogisQuotaLive = 0;
-
-// Show whether a 2GIS key is available (.env or the advanced-settings field)
-function refreshSourceKeyState() {
-  const el = document.getElementById('source-key-state');
-  if (!el) return;
-  const local = ((document.getElementById('f-2gis-key') || {}).value || '').trim();
-  if (local) {
-    el.textContent = 'Ключ указан в настройках — будет использован он';
-    el.classList.remove('missing');
-    return;
-  }
-  const firstTime = _twogisKeyPresent === null;
-  fetch('/twogis/key-status')
-    .then(r => r.json())
-    .then(j => {
-      _twogisKeyPresent = !!j.present;
-      el.textContent = _twogisKeyPresent
-        ? 'Ключ найден в .env — можно запускать'
-        : 'Ключ не найден: добавьте TWOGIS_API_KEY в .env или поле ниже, иначе поиск пойдёт через Яндекс';
-      el.classList.toggle('missing', !_twogisKeyPresent);
-    })
-    .catch(() => {
-      if (firstTime) el.textContent = '';
-    });
 }
 
 // ═══════════════════════════════════════════
@@ -500,7 +407,7 @@ function setGridMode(mode) {
   if (manual) onGridSlider();
 }
 
-// Slider UI: values out, live ratio hint, 2GIS token estimate, sync into
+// Slider UI: values out, live ratio hint, forecast, sync into
 // the hidden inputs (f-grad/f-gstep are the values getParams() reads).
 // Step is hard-linked to Radius: max(Шаг) = Радиус (ideal ceiling R/2), so a
 // sparse layout is impossible to configure — the slider simply won't go there.
@@ -532,22 +439,17 @@ function onGridSlider() {
   paint(grad); paint(gstep);
   if (!hint) return;
 
-  const is2gis = dataSource === '2gis';
   const nQueries = (document.getElementById('f-queries')?.value || '').split('\n').map(x=>x.trim()).filter(Boolean).length || 1;
   const pages = Math.min(5, Math.max(1, +document.getElementById('f-pages')?.value || 1));
 
   // ── 1) Coverage state — three bands around the 1:4 ratio ──────────
-  // 2GIS circles each point at ~1.5×step (twogis.py), so neighbours always
-  // overlap; its real risk is the 50-orgs-per-point cap in dense districts.
-  // Yandex has no per-point radius: step > R/2 can leave "holes" between
-  // search areas — parts of the city go unsearched. 1:4 keeps overlap
-  // generous for both sources.
+  // Яндекс не имеет радиуса точки: при шаг > R/2 между областями поиска
+  // остаются «дыры», и часть города не просматривается. 1:4 держит
+  // перекрытие достаточно щедрым.
   const ratio4 = s / Math.max(1, r);            // step : radius, 0.25 = ideal
   let stateTxt, tone;
   if (s > r / 2) {
-    stateTxt = is2gis
-      ? 'Слишком редко — в плотных районах упрётесь в лимит 50 организаций на точку'
-      : 'Слишком редко — между точками будут «дыры». Вы пропустите часть компаний. Уменьшите шаг';
+    stateTxt = 'Слишком редко — между точками будут «дыры». Вы пропустите часть компаний. Уменьшите шаг';
     tone = 'sparse';
   } else if (ratio4 < 0.125) {
     if (ratio4 < 0.0625) {
@@ -562,12 +464,9 @@ function onGridSlider() {
     tone = 'ok';
   }
 
-  // ── 2) Token forecast (backend formula: π(R/шаг)²·0.64 + 1) ──────
-  // Corrected: radius-based, not diameter (was overestimating ~3.5×).
+  // ── 2) Forecast: сколько точек и страниц откроет браузер ────────
   const cells = Math.max(1, Math.round(Math.PI * Math.pow(r / Math.max(1, s), 2) * 0.64) + 1);
   const tokens = cells * nQueries * pages;
-  const tokenPct = Math.round(tokens / 10);     // % of the 1000-request free tier
-  const tokCls = tokenPct > 100 ? 'tok-crit' : tokenPct > 50 ? 'tok-warn' : 'tok-ok';
   const tokFmt = n => n >= 10000 ? Math.round(n / 1000) + ' тыс.' : n.toLocaleString('ru-RU');
   const tokWord = n => (n % 10 === 1 && n % 100 !== 11) ? 'точка'
     : ([2,3,4].includes(n % 10) && ![12,13,14].includes(n % 100)) ? 'точки' : 'точек';
@@ -579,11 +478,8 @@ function onGridSlider() {
   const toneIcon = tone === 'ok' ? UI_ICONS.check : tone === 'sparse' ? UI_ICONS.warn : UI_ICONS.info;
   const line1 = `<span class="hint-state">${toneIcon}${stateTxt}</span>`
     + ` <span class="hint-rec">${recTxt}</span>`;
-  const forecast = `Прогноз: ~${tokFmt(cells)} ${tokWord(cells)}, ~${tokFmt(tokens)} запросов к API`
-    + ` (~${tokFmt(tokens * 10)} организаций, ${tokenPct}% бесплатного тарифа)`;
-  const line2 = is2gis
-    ? `<span class="hint-tok ${tokCls}">${forecast}</span>`
-    : `<span class="hint-tok tok-src">Прогноз: ~${tokFmt(cells)} ${tokWord(cells)}, ~${tokFmt(tokens)} запросов · без лимита тарифа</span>`;
+  const line2 = `<span class="hint-tok tok-src">Прогноз: ~${tokFmt(cells)} ${tokWord(cells)}, `
+    + `~${tokFmt(tokens)} страниц поиска · ограничений тарифа нет</span>`;
   hint.innerHTML = `<div class="hint-line">${line1}</div><div class="hint-line">${line2}</div>`;
 }
 
@@ -834,7 +730,7 @@ function renderCityTags() {
   updateRunBtnState();
 }
 
-refreshEngineAvailability();   // бейдж «Chrome найден/не найден» под селектором
+refreshBrowserAvailability();   // бейдж «Chrome найден/не найден» в форме
 
 // ═══════════════════════════════════════════
 //  Sidebar counters / clear-all / accordion summary (01 · Основные параметры)

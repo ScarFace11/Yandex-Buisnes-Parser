@@ -1,7 +1,12 @@
 // ═══════════════════════════════════════════
 function isRunActive() {
+  // Во время прогона кнопка НЕ disabled: она превращается в «⏸ Пауза»
+  // (класс run-active), а на время graceful-паузы — run-paused. Опираться на
+  // disabled нельзя: иначе бейдж статистики и ветка showTab('stats') не
+  // срабатывали бы, пока идёт поиск.
   const btn = document.getElementById('btn-run');
-  return btn ? btn.disabled : false;
+  return !!btn && (btn.classList.contains('run-active') ||
+                   btn.classList.contains('run-paused'));
 }
 
 // Records belonging to cities whose search already finished (done/skipped).
@@ -27,8 +32,11 @@ function refreshLiveStats() {
     if (!recs.length) return;
     renderStats(recs, _runElapsed(), _lastSkippedCities);
   };
+  // Снять ранее запланированный отложенный проход ДО первого рендера:
+  // doRender() обнуляет _liveStatsTimer, поэтому clearTimeout после него уже
+  // не срабатывал и при частых city_done «осиротевшие» таймеры копились.
+  if (_liveStatsTimer) { clearTimeout(_liveStatsTimer); _liveStatsTimer = null; }
   doRender();
-  if (_liveStatsTimer) clearTimeout(_liveStatsTimer);
   _liveStatsTimer = setTimeout(doRender, 1500);
 }
 
@@ -103,31 +111,14 @@ function scheduleLiveRender() {
   if (_liveRenderTimer) return;
   _liveRenderTimer = setTimeout(() => {
     _liveRenderTimer = null;
-    // Re-apply current filter (respects search box + social filters + social mode)
-    const q = document.getElementById('tbl-search').value.trim().toLocaleLowerCase('ru-RU');
-    const SOCIAL_KEYS = Object.keys(SOCIALS);
-    filteredRows = allResults.filter(r => {
-      const searchable = Object.values(r).some(value =>
-        String(value ?? '').toLocaleLowerCase('ru-RU').includes(q)
-      );
-      if (q && !searchable) return false;
-      // Social mode filter
-      if (socialMode === 'with_socials') {
-        const hasAny = SOCIAL_KEYS.some(k => r[k]);
-        if (!hasAny) return false;
-      } else if (socialMode === 'without_socials') {
-        const hasAny = SOCIAL_KEYS.some(k => r[k]);
-        if (hasAny) return false;
-      }
-      // Required socials AND filter
-      if (requiredSocials.size > 0) {
-        if (![...requiredSocials].every(key => r[key])) return false;
-      }
-      if (activeSocialFilters.size > 0) {
-        if (![...activeSocialFilters].some(key => r[key])) return false;
-      }
-      return true;
-    });
+    // Тот же набор фильтров, что и в filterTable(): иначе во время живого
+    // прогона смена вкладки города, «Только непросмотренные», порог оценки и
+    // объединение сетей молча откатывались бы к общему списку.
+    let source = allResults;
+    const collapseChains = document.getElementById('f-collapse-chains');
+    if (collapseChains && collapseChains.checked) source = collapseChainsClient(source);
+    filteredRows = _applyRowFilters(source);
+    _orderFilteredRows();   // сохраняем выбранный пользователем порядок
 
     // Always re-render (even while the results tab is hidden): the table then
     // already shows the latest partial rows whenever the user opens it mid-run.
@@ -214,8 +205,8 @@ function onRunDone(msg) {
       if (!r || typeof r !== 'object') return false;
       // Only business-shaped records belong in the table (guards against
       // stray entries like search-history items with no name/url).
-      if (!r.name && !r.yandex_maps_url && !r.twogis_url) return false;
-      const k = r.yandex_maps_url || r.twogis_url || (r.name + '|' + r.address);
+      if (!r.name && !r.yandex_maps_url) return false;
+      const k = r.yandex_maps_url || (r.name + '|' + r.address);
       if (!k || seen.has(k)) return false;
       seen.add(k);
       return true;
@@ -617,27 +608,39 @@ function phoneHTML(row) {
   const raw = String(row.phone || '').trim();
   if (!raw) return '—';
   const list = raw.split(',').map(s => s.trim()).filter(Boolean);
-  if (list.length <= 1) return escapeHtml(raw);
+  // Даже один номер оборачиваем в .tbl-phone: голый текст в ячейке с
+  // nowrap+max-width обрезался без эллипсиса (см. style.css).
   return `<div class="tbl-phone" title="${escapeHtml(raw)}">`
     + list.map(p => `<span>${escapeHtml(p)}</span>`).join('')
     + '</div>';
 }
 
+// Рейтинг и число отзывов с Яндекс.Карт (собираются на карточке организации).
+// Пустые значения показываем прочерком, а не «0» — данных просто нет.
+function ratingHTML(row) {
+  const hasR = row.rating !== undefined && row.rating !== null && String(row.rating).trim() !== '';
+  const hasC = row.reviews_count !== undefined && row.reviews_count !== null && String(row.reviews_count).trim() !== '';
+  if (!hasR && !hasC) return '—';
+  let h = '';
+  if (hasR) h += `<span class="rate-val" title="Рейтинг Яндекс.Карт">★ ${escapeHtml(String(row.rating))}</span>`;
+  if (hasC) h += `<span class="rate-rev" title="Отзывов на Яндекс.Картах">${escapeHtml(String(row.reviews_count))}</span>`;
+  return h;
+}
+
+// Бейджи соцсетей строки. Каждая сеть может быть открыта отдельно —
+// просмотренная гаснет (`social-opened`), не помечая всю организацию.
+// Метки-галочки «просмотрено» рядом с бейджами убраны: они дублировали
+// затемнение и читались как лишние символы в ячейке.
 function socialsHTML(row, rowKey, rowIsRev) {
   let h = '';
   const key = escapeHtml(reviewKey(row));
+  const checkOpened = typeof isSocialViewed === 'function';
   for (const [p, color] of Object.entries(SOCIALS)) {
     const url = row[p];
     if (!url) continue;
-    const viewed = isReviewed(row);
-    h += `<a class="social-badge" style="background:${color}" href="${escapeHtml(safeUrl(url))}" target="_blank" rel="noopener noreferrer"`
+    const opened = checkOpened && isSocialViewed(row, p);
+    h += `<a class="social-badge${opened ? ' social-opened' : ''}" style="background:${color}" href="${escapeHtml(safeUrl(url))}" target="_blank" rel="noopener noreferrer"`
       + ` title="${escapeHtml(SNAMES[p] || SLABELS[p])}" data-social="${p}" data-key="${key}" onclick="onSocialBadgeClick(event, this)">${SLABELS[p]}</a>`;
-    // Метка «просмотрено» напротив организации: вынесена из класса строки
-    // (который уже управляется checkbox/таблицей), чтобы стояла рядом со
-    // соцсетью — и не зависит от того, сортируются/фильтруются строки.
-    if (rowIsRev) {
-      h += `<span class="viewed-mark" title="${escapeHtml(SNAMES[p] || SLABELS[p])} — просмотрено">✓</span>`;
-    }
   }
   return h || '—';
 }
@@ -745,6 +748,10 @@ function renderTable(data) {
   curPage = 1; sortCol = -1;
   document.getElementById('tbl-search').value = '';
   resetSortHeaders();
+  // Столбцы, спрятанные кнопкой «Скрыть пустые», возвращаем, если новый
+  // набор данных их заполнил — иначе таблица после нового поиска оставалась
+  // без столбцов до нажатия «Показать все».
+  if (typeof syncAutoHiddenCols === 'function') syncAutoHiddenCols(filteredRows);
   // Show the social filter row only when there are results
   // Показ строки и видимость колонки соцсетей — независимы: классы, а не
   // inline display, иначе перебивали бы друг друга.
@@ -804,14 +811,14 @@ function collapseChainsClient(rows) {
   return out;
 }
 
-function filterTable() {
+// Единый предикат строки: и filterTable(), и живой scheduleLiveRender() обязаны
+// применять ОДНИ И ТЕ ЖЕ фильтры — иначе во время прогона смена вкладки города,
+// «Только непросмотренные», порог оценки и объединение сетей молча откатывалась
+// бы к общему списку.
+function _applyRowFilters(source) {
   const q = document.getElementById('tbl-search').value.trim().toLocaleLowerCase('ru-RU');
   const SOCIAL_KEYS = Object.keys(SOCIALS);
-  let source = allResults;
-  // Optional quality filters (mirror of the server-side ones)
-  const collapseChains = document.getElementById('f-collapse-chains');
-  if (collapseChains && collapseChains.checked) source = collapseChainsClient(source);
-  filteredRows = source.filter(r => {
+  return source.filter(r => {
     // City tab ('' = все города)
     if (activeCity && cityOf(r) !== activeCity) return false;
     // «Только непросмотренные»
@@ -823,26 +830,51 @@ function filterTable() {
     if (q && !searchable) return false;
     // Social mode filter (form-level toggle)
     if (socialMode === 'with_socials') {
-      const hasAny = SOCIAL_KEYS.some(k => r[k]);
-      if (!hasAny) return false;
+      if (!SOCIAL_KEYS.some(k => r[k])) return false;
     } else if (socialMode === 'without_socials') {
-      const hasAny = SOCIAL_KEYS.some(k => r[k]);
-      if (hasAny) return false;
+      if (SOCIAL_KEYS.some(k => r[k])) return false;
     }
     // Required socials (AND filter): must have ALL checked socials
-    if (requiredSocials.size > 0) {
-      const hasAll = [...requiredSocials].every(key => r[key]);
-      if (!hasAll) return false;
-    }
+    if (requiredSocials.size > 0 && ![...requiredSocials].every(key => r[key])) return false;
     // Social filter buttons in table — OR logic: row must have at least one
-    if (activeSocialFilters.size > 0) {
-      const hasSocial = [...activeSocialFilters].some(key => r[key]);
-      if (!hasSocial) return false;
-    }
+    if (activeSocialFilters.size > 0 && ![...activeSocialFilters].some(key => r[key])) return false;
     // Lead-score threshold (mirror of the server-side stage-2 filter)
     if (minScoreThreshold() && (+r.lead_score || 0) < minScoreThreshold()) return false;
     return true;
   });
+}
+
+// Порядок строк: клик по колонке важнее чекбокса «Сначала горячие», иначе —
+// порядок файла. Живой рендер вызывает это после перефильтрации, чтобы
+// сортировка по заголовку не пропадала во время прогона.
+function _orderFilteredRows() {
+  if (sortCol === 6) {
+    filteredRows.sort((a, b) => {
+      const va = +a.lead_score || 0, vb = +b.lead_score || 0;
+      return sortAsc ? va - vb : vb - va;
+    });
+    return;
+  }
+  if (sortCol >= 2) {
+    const key = ['', '', 'name', 'category', 'address', 'phone', 'lead_score'][sortCol];
+    filteredRows.sort((a, b) => {
+      const va = a[key] || '', vb = b[key] || '';
+      return sortAsc ? (va < vb ? -1 : va > vb ? 1 : 0) : (va < vb ? 1 : va > vb ? -1 : 0);
+    });
+    return;
+  }
+  const sortCb = document.getElementById('f-sort-score');
+  if (sortCb && sortCb.checked && filteredRows.some(r => r.lead_score != null && r.lead_score !== '')) {
+    filteredRows = filteredRows.slice().sort((a, b) => (+b.lead_score || 0) - (+a.lead_score || 0));
+  }
+}
+
+function filterTable() {
+  let source = allResults;
+  // Optional quality filters (mirror of the server-side ones)
+  const collapseChains = document.getElementById('f-collapse-chains');
+  if (collapseChains && collapseChains.checked) source = collapseChainsClient(source);
+  filteredRows = _applyRowFilters(source);
   // «Сначала горячие» — same ordering the processed files get.
   const sortCb = document.getElementById('f-sort-score');
   if (sortCb && sortCb.checked && filteredRows.some(r => r.lead_score != null && r.lead_score !== '')) {
@@ -869,23 +901,46 @@ function minScoreThreshold() {
 // колонка не кликабельна и стрелку не показывает.
 const NOSORT_COLS = new Set([0, 1]);
 
+// Ключ колонки → старый числовой индекс сортировки (2..6). Числа — часть
+// контракта: те же индексы уходят на сервер (`sort_col`) для «Массового
+// обхода», поэтому визуальный порядок столбцов на них не влияет.
+const COL_SORT_INDEX = { rev: null, num: null, name: 2, category: 3, address: 4, phone: 5, score: 6, socials: null, rating: null };
+const SORT_INDEX_COL = { 2: 'name', 3: 'category', 4: 'address', 5: 'phone', 6: 'score' };
+
+// Заголовок берём по data-col, а не по позиции в строке: столбцы можно
+// переставлять («Столбцы» → перетаскивание), а сортировка должна оставаться
+// привязанной к самому столбцу.
+function _thByCol(key) {
+  return document.querySelector(`#results-table th[data-col="${key}"]`);
+}
+
+function sortTableByKey(key) {
+  const idx = COL_SORT_INDEX[key];
+  if (!idx) return;                 // «Просмотрено», «#», «Соцсети», «Рейтинг» не сортируются
+  sortTable(idx);
+}
+
 // Перерисовка стирает классы заголовков — «#» должен остаться без стрелок.
+// Скрытые столбцы (col-hidden) и nosort не трогаем: их ставит не сортировка.
 function resetSortHeaders() {
-  const ths = document.querySelectorAll('#results-table th');
-  ths.forEach(t => t.className = '');
-  if (ths[1]) ths[1].className = 'nosort';
+  document.querySelectorAll('#results-table th').forEach(t => {
+    t.classList.remove('asc');
+    t.classList.remove('desc');
+  });
+  const num = _thByCol('num');
+  if (num) num.classList.add('nosort');
 }
 
 function sortTable(col) {
   if (NOSORT_COLS.has(col)) return;
-  const th = document.querySelectorAll('#results-table th')[col];
+  const th = _thByCol(SORT_INDEX_COL[col]);
   if (!th) return;
   if (sortCol === col) { sortAsc = !sortAsc; }
   else { sortCol = col; sortAsc = true; }
   // Score is a number — compare it as one, not as a string.
   if (col === 6) {
     resetSortHeaders();
-    document.querySelectorAll('#results-table th')[col].className = sortAsc ? 'asc' : 'desc';
+    th.classList.add(sortAsc ? 'asc' : 'desc');
     filteredRows.sort((a, b) => {
       const va = +a.lead_score || 0, vb = +b.lead_score || 0;
       return sortAsc ? va - vb : vb - va;
@@ -894,7 +949,7 @@ function sortTable(col) {
     return;
   }
   resetSortHeaders();
-  th.className = sortAsc ? 'asc' : 'desc';
+  th.classList.add(sortAsc ? 'asc' : 'desc');
   // col 0 = ✓ и col 1 = # — не сортируются, col 2 = name, ...
   const keys = ['', '', 'name', 'category', 'address', 'phone', 'lead_score'];
   const key = keys[col];
@@ -917,7 +972,8 @@ function renderPage() {
 
   const tbody = document.getElementById('tbl-body');
   if (!total) {
-    tbody.innerHTML = '<tr><td colspan="9" class="no-data">Ничего не найдено</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9" class="no-data">Ничего не найдено</td></tr>';   // плейсхолдер: столбцов у него нет
+
     document.getElementById('pager').style.display = 'none';
     return;
   }
@@ -931,21 +987,28 @@ function renderPage() {
     // чтобы метка напротив соцсети и свой checkbox синхронизировались.
     const rowKey = reviewKey(r);
     const rowIsRev = isRev;
+    // data-col у каждой ячейки: по нему применяется пользовательский порядок
+    // столбцов и скрытие («Столбцы» → перетаскивание) — позиция в разметке
+    // больше ничего не значит.
     return `
     <tr class="${rowIsRev ? 'is-reviewed' : ''}">
-      <td style="text-align:center"><input type="checkbox" class="rev-cb"
+      <td data-col="rev" style="text-align:center"><input type="checkbox" class="rev-cb"
         ${rowIsRev ? 'checked' : ''} ${!rawReviewUrl ? 'disabled' : ''}
         data-review-url="${reviewUrl}"
         onchange="toggleReviewed(this.dataset.reviewUrl, this)"></td>
-      <td>${i + 1}</td>
-      <td><a class="tbl-link" href="${escapeHtml(safeUrl(r.yandex_maps_url || r.twogis_url))}" target="_blank" rel="noopener noreferrer">${escapeHtml(r.name || '—')}</a></td>
-      <td class="tbl-cat">${escapeHtml(r.category || '—')}</td>
-      <td>${escapeHtml(r.address || '—')}</td>
-      <td>${phoneHTML(r)}</td>
-      <td>${scoreHTML(r)}</td>
-      <td>${socialsHTML(r, rowKey, rowIsRev)}</td>
+      <td data-col="num">${i + 1}</td>
+      <td data-col="name"><a class="tbl-link" href="${escapeHtml(safeUrl(r.yandex_maps_url))}" target="_blank" rel="noopener noreferrer">${escapeHtml(r.name || '—')}</a></td>
+      <td data-col="category" class="tbl-cat">${escapeHtml(r.category || '—')}</td>
+      <td data-col="address">${escapeHtml(r.address || '—')}</td>
+      <td data-col="phone">${phoneHTML(r)}</td>
+      <td data-col="score">${scoreHTML(r)}</td>
+      <td data-col="socials">${socialsHTML(r, rowKey, rowIsRev)}</td>
+      <td data-col="rating">${ratingHTML(r)}</td>
     </tr>`;
   }).join('');
+
+  // Новые строки — в пользовательском порядке столбцов (если он задан).
+  applyColOrder();
 
   // Пагинация больше не нужна — таблицы нет. Счётчик записей остаётся.
   const pager = document.getElementById('pager');

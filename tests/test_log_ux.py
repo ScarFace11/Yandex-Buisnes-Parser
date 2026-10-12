@@ -1,110 +1,72 @@
 """
-Tests for the log/UX fixes: humanized API errors, city-list prefill,
-continuation mode, and request-kind labeling.
+Tests for the log/UX fixes: humanized browser-search failures, city-list
+prefill, continuation mode, and stats labels.
 """
 import sys
 import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from yandex_maps_parser import state, twogis, search, runner, city_data
+from yandex_maps_parser import state, search, runner, city_data
+from yandex_maps_parser import browser_search
 
 
-# ── 1. Humanized 2GIS errors ──────────────────────────────────
+# ── 1. Empty browser results read as a human explanation ──────
 
-class TestHuman2gisError:
-    def test_404_becomes_friendly(self):
-        msg = twogis._human_api_error(404, "Results not found", "notfound", "Клуб", "Душанбе")
-        assert "Душанбе" in msg and "«Клуб»" in msg
-        assert "404" not in msg and "API ошибка" not in msg
-
-    def test_403_key_problem(self):
-        msg = twogis._human_api_error(403, "Forbidden", "forbidden", "кафе", "Уфа")
-        assert "ключ" in msg.lower()
-
-    def test_429_quota(self):
-        msg = twogis._human_api_error(429, "Limit exceeded", "limit", "кафе", "Уфа")
-        assert "лимит" in msg.lower()
-
-    def test_unknown_code_falls_back(self):
-        msg = twogis._human_api_error(500, "Internal", "", "кафе", "Уфа")
-        assert "продолжатся" in msg or "пропущен" in msg
-
-    def test_search_items_warns_human_and_tech(self, monkeypatch):
+class TestBrowserSearchFailure:
+    def test_empty_harvest_warns_once_and_says_what_to_do(self, monkeypatch):
+        """Страница не открылась (нет браузера, нет сети) — пользователь
+        должен увидеть, что проверить, а не пустую выдачу."""
         calls = []
-
-        class FakeResp:
-            status_code = 200
-            def json(self):
-                return {"meta": {"code": 404, "error": {"type": "notFound",
-                        "message": "Results not found"}}}
-
-        monkeypatch.setattr(twogis, "_get", lambda *a, **kw: FakeResp())
+        monkeypatch.setattr(search, "harvest_cards", lambda *a, **kw: [])
+        monkeypatch.setattr(search, "_harvest_cache", {})
         monkeypatch.setattr(state, "warn", lambda m: calls.append(("warn", m)))
         monkeypatch.setattr(state, "tech", lambda m: calls.append(("tech", m)))
-        items, total = twogis.search_items("Клуб", "Душанбе", 38.5, 68.7, 0)
-        assert items == [] and total is None
-        warns = [m for lv, m in calls if lv == "warn"]
-        techs = [m for lv, m in calls if lv == "tech"]
-        assert len(warns) == 1 and "«Клуб»" in warns[0] and "Душанбе" in warns[0]
-        assert any("code=404" in t for t in techs)   # raw details preserved
 
-    def test_404_not_billed(self, monkeypatch, tmp_path):
-        class FakeResp:
-            status_code = 200
-            def json(self):
-                return {"meta": {"code": 404, "error": {"type": "notFound",
-                        "message": "Results not found"}}}
-
-        monkeypatch.setattr(twogis, "_get", lambda *a, **kw: FakeResp())
-        # Isolate the persisted monthly counter so the assertion reflects
-        # only what this request billed.
-        monkeypatch.setattr(twogis, "_quota_file", lambda: tmp_path / ".2gis_quota.json")
-        monkeypatch.setattr(twogis, "_quota_base", 0)
-        monkeypatch.setattr(twogis, "_quota_used", 0)
-        monkeypatch.setattr(twogis, "_quota_file_loaded", False)
-        twogis.quota_reset()
-        twogis.search_items("Клуб", "Душанбе", 38.5, 68.7, 0)
-        assert twogis.quota_used() == 0
-
-
-# ── 2. Humanized Yandex search errors ─────────────────────────
-
-class TestHumanSearchError:
-    def test_403_key(self):
-        msg = search._human_search_error(403, "кафе", "Уфа")
-        assert "ключ" in msg.lower() and "403" not in msg
-
-    def test_404_nothing_found(self):
-        msg = search._human_search_error(404, "кафе", "Сочи")
-        assert "Сочи" in msg and "«кафе»" in msg
-
-    def test_other_status(self):
-        msg = search._human_search_error(502, "кафе", "Уфа")
-        assert "временно" in msg
-
-    def test_search_page_403(self, monkeypatch):
-        calls = []
-
-        class FakeResp:
-            status_code = 403
-            text = '{"error": "forbidden"}'
-            def json(self):
-                raise ValueError("not json")
-
-        monkeypatch.setattr(search, "_get", lambda *a, **kw: FakeResp())
-        monkeypatch.setattr(state, "warn", lambda m: calls.append(("warn", m)))
-        monkeypatch.setattr(state, "tech", lambda m: calls.append(("tech", m)))
         feats, found = search.search_page("кафе", "Уфа", 54.7, 55.9, 0)
         assert feats == [] and found is None
         warns = [m for lv, m in calls if lv == "warn"]
-        assert len(warns) == 1 and "ключ" in warns[0].lower()
+        assert len(warns) == 1 and warns[0] == search.search_failure_hint()
+        assert "Диагностика" in warns[0] and "интернет" in warns[0]
+        assert any(lv == "tech" for lv, _ in calls), "техническая причина — в файл прогона"
+
+    def test_cards_are_chunked_into_pages(self, monkeypatch):
+        """Одна прокрутка выдаёт все карточки: search_page отдаёт их
+        порциями по _PAGE_SIZE и повторно страницу не открывает."""
+        calls = []
+
+        def _harvest(query, city, lat, lon, max_cards=50):
+            calls.append((query, city))
+            return [{"_biz_id": f"{i}", "name": f"Организация {i}",
+                     "lat": "54.7", "lon": "55.9"} for i in range(60)]
+
+        monkeypatch.setattr(search, "harvest_cards", _harvest)
+        monkeypatch.setattr(search, "_harvest_cache", {})
+        monkeypatch.setattr(state, "warn", lambda m: None)
+
+        first, total = search.search_page("кафе", "Уфа", 54.7, 55.9, 0)
+        second, _ = search.search_page("кафе", "Уфа", 54.7, 55.9, search._PAGE_SIZE)
+        assert len(first) == search._PAGE_SIZE and len(second) == 60 - search._PAGE_SIZE
+        assert total == 60
+        assert len(calls) == 1, "выдача кэшируется: страница открывается один раз"
+        assert first[0]["properties"]["CompanyMetaData"]["id"] == "0"
+
+    def test_out_of_range_center_is_dropped(self):
+        assert browser_search._parse_center("https://yandex.ru/maps/?ll=55.9%2C54.7") == (54.7, 55.9)
+        assert browser_search._parse_center("https://yandex.ru/maps/") is None
+        assert browser_search._parse_center("https://yandex.ru/maps/?ll=999%2C999") is None
+
+    def test_rating_and_reviews_are_normalised_from_the_card(self):
+        assert browser_search._num("4,9") == "4.9"
+        assert browser_search._num("Нет оценок") == ""
+        assert browser_search._reviews("(1 490 оценок)") == "1490"
+        assert browser_search._reviews("") == ""
 
 
 # ── 3. Stats labels in Russian ────────────────────────────────
 
 class TestStatsLabels:
-    def test_other_renamed(self, monkeypatch):
+    def test_kinds_are_named_in_russian(self, monkeypatch):
         lines = []
         monkeypatch.setattr(state, "ok", lambda m: lines.append(m))
         monkeypatch.setattr(state, "info", lambda m: lines.append(m))
@@ -112,10 +74,13 @@ class TestStatsLabels:
         monkeypatch.setattr(hc, "get_stats", lambda: {
             "requests": 45, "by_kind": {"search": 30, "other": 15},
             "rate_limits": 0, "retries": 0, "cooldown_seconds": 0})
+        monkeypatch.setattr(hc, "browser_stats", lambda: {})
         from yandex_maps_parser.stats import print_limit_stats
         print_limit_stats()
         joined = "\n".join(lines)
-        assert "Прочие запросы: 15" in joined
+        assert "Открыто страниц: 45" in joined
+        assert "Выдачи поиска: 30" in joined
+        assert "Прочие страницы: 15" in joined
         assert "\n    other:" not in joined
 
 

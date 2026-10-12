@@ -165,6 +165,26 @@ class TestNormalizeRecord:
         normalize_record(src)
         assert src == DIRTY
 
+    # Отдельного столбца website в отчёте нет (CSV_FIELDS): обычный сайт
+    # организации уезжает в единую колонку «Сайт / Таплинк» — ключ
+    # aggregator_url. Сам website остаётся в записи: по нему этап 2 ищет
+    # контакты и считает «без сайта».
+    def test_website_fills_the_single_site_column(self):
+        out = normalize_record({"website": "http://taplink.cc/cafe"})
+        assert out["aggregator_url"] == "https://taplink.cc/cafe"
+        assert out["website"] == "https://taplink.cc/cafe"
+
+    def test_existing_aggregator_url_wins_over_the_website(self):
+        out = normalize_record({"website": "http://firma.ru",
+                                "aggregator_url": "https://taplink.cc/x"})
+        assert out["aggregator_url"] == "https://taplink.cc/x"
+        assert out["website"] == "https://firma.ru"
+
+    def test_blank_website_creates_no_site_column(self):
+        out = normalize_record({"website": ""})
+        assert "aggregator_url" not in out
+        assert normalize_record({}).get("aggregator_url") is None
+
 
 # ── Интеграция: писатели файлов ───────────────────────────────
 

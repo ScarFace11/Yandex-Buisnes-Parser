@@ -57,30 +57,31 @@ def test_pause_position_update_and_snapshot():
     assert pos["city"] == "Уфа"
 
 
-def test_resume_payload_contains_position_and_quota():
+def test_resume_payload_contains_position_and_remaining_cities():
     state.update_pause_info(city="Казань", city_idx=1, cities_total=3,
                             query="отель", point=3, points_total=9)
     entry = {
         "id": "deadbeef",
         "params": {"queries": ["отель"], "cities": ["Казань", "Уфа"],
-                   "source": "twogis"},
+                   "source": "yandex"},
     }
     payload = _pause_resume_payload(entry)
     assert payload["run_id"] == "deadbeef"
     assert payload["queries"] == ["отель"]
     assert payload["all_cities"] == ["Казань", "Уфа"]
     assert payload["position"]["city"] == "Казань"
-    assert payload["quota"] is not None
-    assert payload["quota"]["cap"] > 0
-    assert payload["quota"]["used"] <= payload["quota"]["cap"]
+    # Завершённые города не перепрогоняются: срез начинается с текущего.
+    assert payload["remaining_cities"] == ["Казань", "Уфа"]
 
 
-def test_resume_payload_yandex_has_no_quota():
-    entry = {"id": "x", "params": {"queries": ["a"], "cities": ["Барнаул"],
-                                   "source": "yandex"}}
+def test_resume_payload_skips_finished_cities():
+    state.update_pause_info(city="Уфа", city_idx=2, cities_total=3,
+                            query="кафе", point=1, points_total=4)
+    entry = {"id": "x", "params": {"queries": ["кафе"],
+                                   "cities": ["Казань", "Самара", "Уфа"]}}
     payload = _pause_resume_payload(entry)
-    assert payload["quota"] is None
-    assert payload["position"]["city"] == ""  # not set for this fake run
+    assert payload["all_cities"] == ["Казань", "Самара", "Уфа"]
+    assert payload["remaining_cities"] == ["Уфа"]
 
 
 def test_resume_payload_tolerates_broken_state(monkeypatch):
@@ -90,7 +91,7 @@ def test_resume_payload_tolerates_broken_state(monkeypatch):
     entry = {"id": "x", "params": {"queries": [], "cities": []}}
     payload = _pause_resume_payload(entry)
     assert payload["position"] == {}
-    assert payload["quota"] is None
+    assert payload["remaining_cities"] == []
 
 
 # ── Pause really stops the run ───────────────────────────────

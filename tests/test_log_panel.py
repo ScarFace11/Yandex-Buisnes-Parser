@@ -10,7 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 TEMPLATE = (ROOT / "templates" / "index.html").read_text(encoding="utf-8")
-from tests._appjs import read_app_js
+from tests._appjs import JS_MODULES, read_app_js
 APP_JS = read_app_js()
 STYLE = (ROOT / "static" / "css" / "style.css").read_text(encoding="utf-8")
 RUNNER = (ROOT / "yandex_maps_parser" / "runner.py").read_text(encoding="utf-8")
@@ -131,7 +131,9 @@ class TestCountersCarryContext:
     """«43» без контекста ничего не объясняет — цифры получают подпись."""
 
     def test_requests_are_named(self):
-        assert "Запросов к API:" in STATS
+        # Страницы открывает браузер, поэтому и счётчик называется страницами,
+        # а не «запросами к API» (ключей платных API в приложении нет).
+        assert "Открыто страниц:" in STATS
 
     def test_found_count_explains_its_source(self):
         assert "_found_ctx" in RUNNER
@@ -195,11 +197,7 @@ class TestJournalFilterRegexIsIntact:
             assert "\x00" not in line, f"{name}: NUL в шаблоне"
 
     def test_no_control_characters_anywhere_in_frontend_sources(self):
-        for path in ["static/js/" + m for m in (
-                    "01-core-state.js", "02-app-shell.js", "03-log-run.js",
-                    "04-results-table.js", "05-results-bulk.js", "06-map-stats.js",
-                    "07-stats-daily.js", "08-presets-notify.js", "09-ui-extras.js",
-                    "10-templates.js", "11-bulk-sender-init.js")] + [
+        for path in ["static/js/" + m for m in JS_MODULES] + [
                 "static/css/style.css", "templates/index.html"]:
             text = (ROOT / path).read_text(encoding="utf-8")
             bad = {c: text.count(c) for c in ("\x08", "\x07", "\x00") if c in text}

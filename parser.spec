@@ -5,11 +5,10 @@
 # Result: dist/YandexBusinessParser/YandexBusinessParser.exe  (onedir —
 # starts fast and trips fewer antivirus false positives than onefile).
 #
-# Playwright IS bundled (since 2.3.1): the python package (+ driver ~100 МБ)
-# кладётся в сборку, а сам Chromium пользователь докачивает один раз через
-# `playwright install chromium` (кнопка «Диагностика» подскажет). Fallback
-# на Chrome CDP / httpx остаётся: если Chromium не докачан или запуск падает,
-# exe полностью функционален и без него.
+# Playwright НЕ bundles: приложение работает через Chrome DevTools Protocol
+# с Google Chrome, установленным в системе. Встроенный Chromium (~300 МБ)
+# и его автоматизация оставляли узнаваемый след, поэтому Playwright и
+# curl_cffi исключены из сборки — как и любые прямые HTTP-запросы к Картам.
 
 import os
 from PyInstaller.utils.hooks import collect_submodules
@@ -35,11 +34,11 @@ a = Analysis(
         collect_submodules('yandex_maps_parser')
         + collect_submodules('routes')
         + [
-            'vk_sender',
             'run_manager',
             'run_logger',
             'search_history',
             'paths',
+            'console_io',
             # multiprocessing children re-import the entry module
             '__main__',
         ]
@@ -56,6 +55,10 @@ a = Analysis(
         'PIL',
         'IPython',
         'jedi',
+        # Убрано из приложения: страницы читает только настоящий Chrome.
+        'playwright',
+        'greenlet',
+        'curl_cffi',
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,

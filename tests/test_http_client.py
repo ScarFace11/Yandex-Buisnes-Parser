@@ -19,11 +19,13 @@ from yandex_maps_parser.http_client import (
 
 
 class TestRequestKind:
-    def test_search_maps(self):
-        assert _request_kind("https://search-maps.yandex.ru/v1/?text=test") == "search"
+    """Страницы открывает браузер: видов всего три — выдача, карточка, прочее.
 
-    def test_geocode(self):
-        assert _request_kind("https://geocode-maps.yandex.ru/1.x/?geocode=test") == "geocode"
+    Запросов к API Карт (search-maps / geocode-maps) в приложении больше нет,
+    поэтому и распознавать их незачем."""
+
+    def test_search_page(self):
+        assert _request_kind("https://yandex.ru/maps/?text=%D0%BA%D0%B0%D1%84%D0%B5") == "search"
 
     def test_detail_page(self):
         assert _request_kind("https://yandex.ru/maps/org/12345") == "detail"
@@ -102,8 +104,8 @@ class TestStatsCounting:
 
     def test_request_counting(self):
         """Requests should be counted by kind."""
-        _stats_count_request("https://search-maps.yandex.ru/v1/")
-        _stats_count_request("https://search-maps.yandex.ru/v1/")
+        _stats_count_request("https://yandex.ru/maps/?text=%D0%BA%D0%B0%D1%84%D0%B5")
+        _stats_count_request("https://yandex.ru/maps/?text=%D0%BA%D0%B0%D1%84%D0%B5&page=2")
         _stats_count_request("https://yandex.ru/maps/org/123")
         stats = get_stats()
         assert stats["requests"] == 3

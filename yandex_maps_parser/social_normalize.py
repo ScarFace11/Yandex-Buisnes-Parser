@@ -169,4 +169,9 @@ def normalize_record(rec: dict) -> dict:
         out["vk"] = normalize_vk_url(vk) or vk
     if out.get("website"):
         out["website"] = ensure_https(out["website"])
+    # Единая колонка «Сайт / Таплинк»: обычный сайт организации показываем
+    # там же, где раньше был только taplink/linktree. Отдельного столбца
+    # website в отчёте нет (CSV_FIELDS), а ключ отчёта остаётся aggregator_url.
+    if out.get("website") and not out.get("aggregator_url"):
+        out["aggregator_url"] = out["website"]
     return out

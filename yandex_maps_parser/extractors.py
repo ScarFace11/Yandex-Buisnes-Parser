@@ -9,7 +9,6 @@ from .constants import (
     SOCIAL_DOMAINS,
     EXCLUDE_URLS,
 )
-from .http_client import _worker_client, _get
 from . import state
 
 # ── Compiled patterns ─────────────────────────────────────────
@@ -74,37 +73,6 @@ _ANTIBOT_MARKERS = (
 # Fast pre-check: does this string look like it could contain social URLs?
 _HTTP_LIKE = re.compile(r'https?://[^\s"\'<>\\\\,}{]+', re.I)
 
-# 2GIS wraps every outbound link in its own redirect:
-#     http://link.2gis.ru/1.2/<token>/…/null/<hash>?https://vk.com/club1
-# The wrapper URL matches no social pattern, but its TARGET does — and the
-# normalized result used to be the wrapper itself (a dead 2GIS link shown
-# in the ВКонтакте/Telegram columns). The host list also covers the mirror
-# domains (2gis.by/2gis.kz) seen in exported files.
-_OUTBOUND_WRAPPER = re.compile(
-    r"^https?://(?:[\w.-]+\.)?(?:link\.)?2gis\.(?:ru|com|kz|by|uz)/", re.I
-)
-
-
-def unwrap_outbound(url: str, _depth: int = 0) -> str:
-    """Return the real target behind a 2GIS outbound link wrapper.
-
-    `link.2gis.ru/…?https://vk.com/profile` → `https://vk.com/profile`.
-    Anything else (including a wrapper without a target, which leads
-    nowhere) is returned unchanged; a wrapper that can't be resolved
-    resolves to "" so it never lands in a social column.
-    """
-    u = (url or "").strip()
-    if not u or not _OUTBOUND_WRAPPER.match(u) or _depth > 3:
-        return u
-    _, sep, tail = u.partition("?")
-    if not sep:
-        return ""                      # wrapper with no target — dead link
-    from urllib.parse import unquote
-    tail = unquote(tail).strip()
-    if not tail.lower().startswith("http"):
-        return ""
-    return unwrap_outbound(tail, _depth + 1)
-
 
 # ── URL helpers ───────────────────────────────────────────────
 
@@ -130,8 +98,7 @@ def _normalize_social_url(platform: str, url: str) -> str | None:
     try:
         parsed = urlparse(url)
         # Social pages are served over https; pages hand out plain http://
-        # links (2GIS firm pages do) and the exported column then looks
-        # untrustworthy/broken in Excel.
+        # links and the exported column then looks untrustworthy/broken in Excel.
         if parsed.scheme == "http":
             parsed = parsed._replace(scheme="https")
         if platform == "vk":
@@ -166,21 +133,27 @@ def _normalize_social_url(platform: str, url: str) -> str | None:
             return urlunparse(parsed._replace(query="", fragment=""))
         return urlunparse(parsed._replace(fragment=""))
     except Exception:
-        return url
-
-
-# ── Fetch ─────────────────────────────────────────────────────
-# NOTE: No sleep here — the token bucket in http_client._get() already
-# paces requests globally. The old per-thread sleep was redundant and
-# doubled the wall-clock time of the detail-fetch phase.
+        return url# ── Fetch ─────────────────────────────────────────────────────
 
 def fetch_html(url: str, session=None, biz_id: str = "") -> str:
-    """Fetch a detail page, with disk cache support.
+    """Загрузить страницу карточки реальным браузером (CDP), с дисковым кэшем.
 
-    If biz_id is provided, checks the disk cache first.  On cache hit,
-    returns the cached HTML without making an HTTP request.
+    HTTP-пути больше нет: прямые запросы к Яндекс.Картам ловит антибот
+    (p95 до 325 с на страницу, частые заглушки), а сам IP/аккаунт после
+    серии таких обращений выглядит подозрительно. Браузер отдаёт ту же
+    страницу за секунды и ничем не отличается от обычного пользователя.
+
+    Единственный путь загрузки карточек: и сюда, и в `enrichment.enrich`
+    приходят только эти вызовы — значит, кэш здесь работает для всего
+    прогона. Кэшируются только здоровые страницы (см. `cache.set_cached`):
+    антибот-заглушка на диск не попадает, иначе она пережила бы повторный
+    прогон и организация осталась бы без деталей.
+
+    Аргумент `session` оставлен для совместимости вызовов — браузерная
+    загрузка сессии не требует. Пустая строка — страницу получить не
+    удалось (нет браузера, остановка, ошибка навигации, антибот).
     """
-    # Try cache first
+    # Кэш страниц: повторный прогон не ждёт браузер на каждой карточке.
     if biz_id:
         try:
             from .cache import get_cached
@@ -191,28 +164,23 @@ def fetch_html(url: str, session=None, biz_id: str = "") -> str:
         except Exception:
             pass
 
-    # (connect, read, total): the read timeout is per-chunk, so a page that
-    # drips bytes can stay under it for minutes. The 60s TOTAL is a hard
-    # wall-clock deadline — Yandex throttles plain HTTP hard (p95 was
-    # 187-325s per page), and we'd rather skip a page than burn 5 minutes.
-    # retries=2 (not the global 3): a second 60s-deadline attempt rarely
-    # beats the first, and the third costs another minute per throttled page.
-    with state._detail_semaphore:
-        r = _get(url, session=session or _worker_client(), timeout=(8, 15, 60), retries=2)
-    if not r or r.status_code != 200:
+    from . import cdp_client
+    text = ""
+    try:
+        text = cdp_client.fetch_page(url, biz_id=biz_id) or ""
+    except Exception as exc:
+        state.syslog(f"fetch_html: browser error: {type(exc).__name__}: {exc}")
         return ""
-    text = r.text
+
+    if not text:
+        state.warn("Карточка не открылась в браузере — детали этой организации пропущены.")
+        return ""
+
     lower = text[:4000].lower()
     if any(m in lower for m in _ANTIBOT_MARKERS):
         state.warn("Яндекс вернул anti-bot страницу — детали этой карточки пропущены.")
-        # Trigger adaptive backoff in http_client
-        try:
-            from .http_client import _anti_bot_detected
-            _anti_bot_detected()
-        except Exception:
-            pass
         return ""
-    # Store in cache
+
     if biz_id:
         try:
             from .cache import set_cached
@@ -263,7 +231,7 @@ def _extract_from_json_blob(html: str) -> dict[str, str]:
         except (ValueError, json.JSONDecodeError):
             continue
         for url in _collect_url_strings(obj):
-            url = _clean_social_url(unwrap_outbound(url))
+            url = _clean_social_url(url)
             if not url or EXCLUDE_URLS.search(url):
                 continue
             for platform, pat in SOCIAL_DOMAINS.items():
@@ -369,7 +337,7 @@ def extract_socials(text: str) -> dict[str, str]:
     phone numbers or @mentions in arbitrary text)."""
     result: dict[str, str] = {}
     for url in _HTTP_LIKE.findall(text):
-        url = _clean_social_url(unwrap_outbound(url))
+        url = _clean_social_url(url)
         if not url or EXCLUDE_URLS.search(url):
             continue
         for platform, pat in SOCIAL_DOMAINS.items():
@@ -383,7 +351,8 @@ def extract_socials(text: str) -> dict[str, str]:
 
 # ── Телефон из карточки ──────────────────────────────────
 # Used as a fallback when the source did not hand out a phone in its API
-# response (2GIS strips contact_groups for demo keys; the Yandex Search API
+# response (мешает только ручной разбор контактов); карточка организации
+# в Яндекс.Картах отдаёт контакты в том же JSON внутри страницы.
 # does not always include Phones). Card pages render the contact phone as a
 # `tel:` link, so that link is by far the most reliable signal.
 _TEL_LINK_RE = re.compile(r'href=["\']tel:([+\d\s()\-]{7,25})["\']', re.I)
@@ -423,7 +392,7 @@ _PHONE_KEYS = ("phone", "phonenumber", "phone_number", "telephone", "contactphon
 def _phone_from_json(value, depth: int = 0) -> str:
     """First phone-shaped value stored under a phone-ish key in embedded data.
 
-    Yandex and 2GIS both ship the business card as JSON inside the page; a
+    Yandex ships the business card as JSON inside the page; a
     phone that the UI hides behind «Показать телефон» is usually already in
     that data. Only explicitly phone-named keys count — this never scrapes a
     random number out of unrelated state.
@@ -454,6 +423,83 @@ def _phone_from_json(value, depth: int = 0) -> str:
             phone = _phone_from_json(sub, depth + 1)
             if phone:
                 return phone
+    return ""
+
+
+# ── Сайт организации ─────────────────────────────────────────
+# Раньше сайт приходил из API организации вместе с выдачей. Браузерная
+# выдача его не показывает, поэтому сайт читается с карточки организации:
+# ссылка в блоке контактов («Сайт») или поле url/site/website в данных
+# страницы. Так фильтр «только без сайтов» продолжает работать.
+_WEBSITE_KEYS = ("url", "site", "website", "siteurl", "domain")
+_WEBSITE_LINK_RE = re.compile(
+    r'href=["\'](https?://[^"\']+)["\'][^>]*>\s*(?:<[^>]+>)*[^<]{0,40}?Сайт',
+    re.I,
+)
+
+
+def _is_own_website(url: str) -> bool:
+    """True для сайта самой организации (не соцсеть, не агрегатор, не Яндекс)."""
+    if not url or not url.lower().startswith("http"):
+        return False
+    low = url.lower()
+    if EXCLUDE_URLS.search(low) or _is_aggregator(low):
+        return False
+    for pat in SOCIAL_DOMAINS.values():
+        if pat.search(low):
+            return False
+    return True
+
+
+def extract_website(html: str) -> str:
+    """Сайт организации со страницы карточки — или "" (если сайта нет)."""
+    if not html:
+        return ""
+    text = html[:200_000]
+
+    # 1. Блок контактов: ссылка рядом со словом «Сайт» — самый надёжный сигнал.
+    for m in _WEBSITE_LINK_RE.finditer(text):
+        cand = m.group(1).strip()
+        if _is_own_website(cand):
+            return _clean_social_url(cand)
+
+    # 2. Данные страницы: url/site/website с настоящим адресом организации.
+    decoder = json.JSONDecoder()
+    for m in _JSON_BLOB_RE.finditer(text):
+        try:
+            obj, _ = decoder.raw_decode(text, m.start(1))
+        except (ValueError, json.JSONDecodeError):
+            continue
+        found = _website_from_json(obj)
+        if found:
+            return found
+    return ""
+
+
+def _website_from_json(value, depth: int = 0) -> str:
+    """Первый настоящий сайт под ключом url/site/website в данных страницы."""
+    if depth > 12 or value is None:
+        return ""
+    if isinstance(value, dict):
+        for key, sub in value.items():
+            if str(key).lower() not in _WEBSITE_KEYS:
+                continue
+            cand = sub
+            if isinstance(cand, dict):
+                cand = cand.get("value") or cand.get("text") or cand.get("url") or ""
+            if isinstance(cand, (list, tuple)):
+                cand = next((x for x in cand if isinstance(x, str)), "")
+            if isinstance(cand, str) and _is_own_website(cand.strip()):
+                return _clean_social_url(cand.strip())
+        for sub in value.values():
+            found = _website_from_json(sub, depth + 1)
+            if found:
+                return found
+    elif isinstance(value, (list, tuple)):
+        for sub in value:
+            found = _website_from_json(sub, depth + 1)
+            if found:
+                return found
     return ""
 
 

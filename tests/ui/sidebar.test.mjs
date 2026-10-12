@@ -69,7 +69,7 @@ for (const id of ['f-queries', 'queries-count', 'city-count', 'clear-all-btn',
   'btn-stop', 'tab-log-dot',
   'status-badge',
   'api-status-badge', 'api-keys-body', 'api-keys-toggle',
-  'key-dot-yandex', 'key-dot-2gis', 'key-dot-vk',
+  'key-dot-vk',
   'preset-block', 'preset-dd-wrap', 'preset-dd-btn', 'preset-dd-list',
   'preset-dd-current', 'preset-block-hint', 'preset-new-btn']) {
   els[id] = mkEl(id);
@@ -84,12 +84,12 @@ const pendingTimers = [];
 globalThis.setTimeout = (fn, _ms) => { pendingTimers.push(fn); return pendingTimers.length; };
 globalThis.selectedCities = [];
 globalThis.citySearchText = '';
-globalThis.dataSource = '2gis';
+globalThis.dataSource = 'yandex';
 
 const fns = ['_pluralRu', '_countQueries', 'updateQueriesCounter', 'updateCityCount',
   'updateClearAllBtn', 'clearAllInputs', 'updateBasicSummary', 'renderCityTags',
   'isRunReady', 'updateRunBtnState', 'setRunBtnActive', 'resetBtn',
-  'updateApiKeysStatus', 'updatePagesCapNote', 'setGridMode', 'onGridSlider',
+  'updateApiKeysStatus', 'setGridMode', 'onGridSlider',
   'pauseRun', 'enterPausedState', 'resumeRun', 'togglePresetDropdown',
   'setRunIndicator', '_logNorm', '_isDup'];
 // stopRunWithConfirm is `async function` — grab() strips the modifier, so
@@ -247,30 +247,29 @@ test('clearAllInputs clears cities + city input, but PRESERVES the queries', () 
 });
 
 // ── 6. Accordion summary ─────────────────────────────────────
-test('summary: full format with 2GIS source', () => {
+test('summary: full format', () => {
   globalThis.selectedCities = ['Уфа', 'Казань', 'Сочи'];
   els['f-queries'].value = 'кафе\nресторан\nпарикмахерская';
-  globalThis.dataSource = '2gis';
   globalThis.updateBasicSummary();
   assert.equal(els['acc-basic-summary'].textContent,
-    'Кого ищем: кафе, ресторан, парикмахерская • Городов: 3 • Источник: 2GIS');
+    'Кого ищем: кафе, ресторан, парикмахерская • Городов: 3');
   assert.notEqual(els['acc-basic-summary'].style.display, 'none');
 });
 
-test('summary reflects the data source switch', () => {
+test('summary does not mention a data source any more', () => {
   globalThis.selectedCities = ['Уфа'];
   els['f-queries'].value = 'кафе';
   globalThis.dataSource = 'yandex';
   globalThis.updateBasicSummary();
   assert.equal(els['acc-basic-summary'].textContent,
-    'Кого ищем: кафе • Городов: 1 • Источник: Яндекс');
+    'Кого ищем: кафе • Городов: 1');
 });
 
 test('summary truncates long query lists to 3 words + ellipsis', () => {
   els['f-queries'].value = 'кафе круглосуточное самообслуживание\nресторан';
   globalThis.updateBasicSummary();
   assert.equal(els['acc-basic-summary'].textContent,
-    'Кого ищем: кафе, круглосуточное, самообслуживание, … • Городов: 1 • Источник: Яндекс');
+    'Кого ищем: кафе, круглосуточное, самообслуживание, … • Городов: 1');
 });
 
 test('summary shows «не задано» for missing queries, hides when nothing set', () => {
@@ -278,7 +277,7 @@ test('summary shows «не задано» for missing queries, hides when nothin
   globalThis.selectedCities = ['Уфа'];
   globalThis.updateBasicSummary();
   assert.equal(els['acc-basic-summary'].textContent,
-    'Кого ищем: не задано • Городов: 1 • Источник: Яндекс');
+    'Кого ищем: не задано • Городов: 1');
 
   globalThis.selectedCities = [];
   globalThis.updateBasicSummary();
@@ -426,7 +425,7 @@ test('stopPausedRun: dropping the resume point needs a confirmation', async () =
   globalThis.showToast = prevToast;
 });
 
-test('enterPausedState: tooltip/toast carry pause position + 2GIS quota', () => {
+test('enterPausedState: tooltip/toast carry the pause position', () => {
   let toastMsg = null;
   const prevToast = globalThis.showToast;
   globalThis.showToast = (msg, type) => { toastMsg = {msg, type}; };
@@ -435,7 +434,6 @@ test('enterPausedState: tooltip/toast carry pause position + 2GIS quota', () => 
     params: {queries: ['кафе'], cities: ['Уфа', 'Москва']},
     position: {city: 'Уфа', city_idx: 1, cities_total: 2, query: 'кафе',
                point: 7, points_total: 12, records: 45},
-    quota: {used: 320, cap: 1000, spent_this_run: 45},
   };
   globalThis.enterPausedState(resume);
   const title = els['btn-run'].title;
@@ -443,12 +441,12 @@ test('enterPausedState: tooltip/toast carry pause position + 2GIS quota', () => 
   assert.ok(title.includes('«кафе»'), 'query in tooltip');
   assert.ok(title.includes('точка 7/12'), 'point in tooltip');
   assert.ok(title.includes('найдено 45'), 'records in tooltip');
-  assert.ok(title.includes('осталось запросов к 2GIS: 680'), 'quota left in tooltip');
+  assert.ok(!/2GIS|квот/i.test(title), 'в подсказке нет упоминаний квоты: ' + title);
   assert.ok(toastMsg && toastMsg.msg.includes('Уфа'), 'toast mentions pause city');
   globalThis.showToast = prevToast;
 });
 
-test('enterPausedState: no position → generic title, no quota line', () => {
+test('enterPausedState: no position → generic title', () => {
   const resume = {queries: [], all_cities: [], params: {}};
   globalThis.enterPausedState(resume);
   assert.equal(els['btn-run'].title, 'Продолжить поиск с сохранённого места');
@@ -549,29 +547,11 @@ test('resetBtn rewires the dock button back to startRun', () => {
   btn.onclick = saved;
 });
 
-// ── N2. 2GIS pages-cap note ──────────────────────────────────
-test('updatePagesCapNote: amber note only for 2GIS with pages > 5', () => {
-  const note = els['pages-cap-note'];
-  const pages = els['f-pages'];
-  // Yandex: never capped
-  globalThis.dataSource = 'yandex';
-  pages.value = 15;
-  globalThis.updatePagesCapNote();
-  assert.equal(note.hidden, true, 'Yandex has no 5-page cap');
-
-  // 2GIS: capped above 5
-  globalThis.dataSource = '2gis';
-  pages.value = 15;
-  globalThis.updatePagesCapNote();
-  assert.equal(note.hidden, false, 'visible for 2GIS with 15 pages');
-  assert.match(note.textContent, /15 до 5/);
-  pages.value = 5;
-  globalThis.updatePagesCapNote();
-  assert.equal(note.hidden, true, 'hidden at exactly 5 pages');
-  pages.value = 3;
-  globalThis.updatePagesCapNote();
-  assert.equal(note.hidden, true, 'hidden below the cap');
-  pages.value = 1;
+// ── N2. Сноски про лимит страниц больше нет ──────────────────
+test('pages-cap note and its updater are gone', () => {
+  assert.ok(!src.includes('updatePagesCapNote'),
+    'сноска про 5-страничный лимит 2GIS удалена вместе с источником');
+  assert.ok(!src.includes('pages-cap-note'), 'и элемент сноски тоже');
 });
 
 // ── N3. Wand / grid null-safety (run inside the stub DOM) ────
@@ -582,33 +562,23 @@ test('grid functions are null-safe in a stub DOM (wand regression guard)', () =>
 });
 
 // ── N. API-keys badge states ─────────────────────────────────
-test('updateApiKeysStatus: all 3 keys → «Готово 3/3»', () => {
-  globalThis.updateApiKeysStatus(true, true, true);
+test('updateApiKeysStatus: единственный ключ есть → «Готово 1/1»', () => {
+  globalThis.updateApiKeysStatus(true);
   const b = els['api-status-badge'];
   assert.ok(b._classes.has('ok'));
   assert.match(b.innerHTML, /#i-check/);
-  assert.match(b.innerHTML, /Готово 3\/3/);
+  assert.match(b.innerHTML, /Готово 1\/1/);
 });
-test('updateApiKeysStatus: partial → orange badge with the exact ratio', () => {
-  globalThis.updateApiKeysStatus(true, true, false);
+test('updateApiKeysStatus: ключа нет → «0/1» + предупреждение', () => {
+  globalThis.updateApiKeysStatus(false);
   const b = els['api-status-badge'];
-  assert.ok(b._classes.has('warn'), 'orange warn class');
-  assert.match(b.innerHTML, /2\/3/, 'exact count shown');
+  assert.ok(b._classes.has('warn'));
+  assert.match(b.innerHTML, /0\/1/);
   assert.match(b.innerHTML, /#i-warn/);
-  globalThis.updateApiKeysStatus(true, false, false);
-  assert.ok(els['api-status-badge']._classes.has('warn'));
-  assert.match(els['api-status-badge'].innerHTML, /1\/3/);
 });
-test('updateApiKeysStatus: no keys → «0/3» + err', () => {
-  globalThis.updateApiKeysStatus(false, false, false);
-  const b = els['api-status-badge'];
-  assert.ok(b._classes.has('err'));
-  assert.match(b.innerHTML, /0\/3/);
-  assert.match(b.innerHTML, /#i-x/);
-});
-test('updateApiKeysStatus: per-key dots follow each key', () => {
-  globalThis.updateApiKeysStatus(true, false, true);
-  assert.ok(els['key-dot-yandex']._classes.has('on'), 'yandex dot on');
-  assert.ok(!els['key-dot-2gis']._classes.has('on'), '2gis dot off');
+test('updateApiKeysStatus: точка у поля следует за токеном', () => {
+  globalThis.updateApiKeysStatus(true);
   assert.ok(els['key-dot-vk']._classes.has('on'), 'vk dot on');
+  globalThis.updateApiKeysStatus(false);
+  assert.ok(!els['key-dot-vk']._classes.has('on'), 'vk dot off');
 });

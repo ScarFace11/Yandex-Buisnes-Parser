@@ -29,13 +29,17 @@ except Exception:
 # the live table (and into «Массовый обход», which follows the same view).
 _CURRENT_SEARCH_FILE = ".current_search.json"
 
-# Max time a process can run before we force-kill it (seconds)
-_PROCESS_TIMEOUT = 600  # 10 minutes
+# Silence before a process is presumed hung and force-killed (seconds).
+# Not a wall-clock limit: the bridge refreshes entry["_last_msg"] on every
+# forwarded message. But state.syslog/tech go to the FILE log, not the queue —
+# a long stretch of points that find nothing can look silent — so the window
+# is generous (15 min) to avoid killing a healthy crawl.
+_PROCESS_TIMEOUT = 900  # 15 minutes
 
 # Delay before calling finish_run() after bridge exits.
 # Gives the frontend time to receive the done message and close the
 # SSE connection before a new queued run starts writing to the same queue.
-_FINISH_DELAY = 3  # seconds
+_FINISH_DELAY = 6  # seconds: enough for a slow client to read done and close SSE
 
 # Grace period for a graceful stop: after the stop file/event is set, the
 # child is allowed this long to unwind (abort fetches, save checkpoint,
@@ -55,10 +59,9 @@ def _pause_resume_payload(entry: dict) -> dict | None:
     """Data the frontend needs to continue a paused run later.
 
     Returned inside the done message: queries + the cities that were NOT
-    finished yet + WHERE the search stopped (city/query/point) + how much of
-    the free-tier quota this run already spent. The global seen-URL cache and
-    the per-run checkpoint make the resumed pass skip everything already
-    parsed, so no duplicates.
+    finished yet + WHERE the search stopped (city/query/point). The global
+    seen-URL cache and the per-run checkpoint make the resumed pass skip
+    everything already parsed, so no duplicates.
     """
     params = entry.get("params") or {}
     cities = params.get("cities") or []
@@ -66,23 +69,25 @@ def _pause_resume_payload(entry: dict) -> dict | None:
     # не должны перепрогоняться при «Продолжить», а недобранный город
     # стартует заново без дублей (seen-cache пропускает уже спарсенное).
     remaining_cities: list = list(cities)
+    pos = {}
     try:
-        import yandex_maps_parser.state as _state
-        pos = _state.pause_position()
+        # The child owns the live position — the parent's state.py copy never
+        # sees update_pause_info(), so prefer the position cached from the
+        # child's own done message (set in _bridge_reader) and only fall back
+        # to the parent copy for the crash path.
+        cached = entry.get("_position")
+        if isinstance(cached, dict) and cached:
+            pos = cached
+        else:
+            import yandex_maps_parser.state as _state
+            pos = _state.pause_position()
         if cities and pos.get("city"):
             cur = pos.get("city")
             idx = next((i for i, c in enumerate(cities) if c == cur), None)
             if idx is not None:
                 remaining_cities = cities[idx:]
-        quota = None
-        if (params.get("source") or "yandex") == "twogis":
-            from yandex_maps_parser import twogis as _tg
-            used = _tg.quota_used()
-            quota = {"used": used, "cap": _tg.quota_cap(),
-                     "spent_this_run": _tg.quota_spent_this_run()}
     except Exception:
         pos = {}
-        quota = None
     return {
         "queries": params.get("queries") or [],
         "all_cities": cities,
@@ -91,7 +96,6 @@ def _pause_resume_payload(entry: dict) -> dict | None:
         "params": params,
         "run_id": entry.get("id"),
         "position": pos,
-        "quota": quota,
     }
 
 
@@ -204,11 +208,13 @@ class RunManager:
                         r["active"] = True
                         next_entry = r
                         break
-            # Cleanup old finished runs (> 1 hour)
+            # Cleanup old finished runs. Generous (12 h): a PAUSED run kept its
+            # params so the user could step away and still press «Продолжить» —
+            # a 1-hour sweep threw them away.
             now = time.time()
             to_remove = [rid for rid, r in self._runs.items()
                          if not r["active"] and not r.get("queued")
-                         and now - r.get("started_at", 0) > 3600]
+                         and now - r.get("started_at", 0) > 43200]
             for rid in to_remove:
                 del self._runs[rid]
         if next_entry:
@@ -605,13 +611,24 @@ def _bridge_reader(mp_queue, reg_queue, entry):
     thread = entry.get("_thread")
     empty_count = 0  # consecutive empty polls
 
+    def _forward(m) -> None:
+        """Forward one message; record a real done so the bridge never
+        synthesises a second one (which used to arrive with stopped=False and
+        empty files/formats and could report «Готово» for a real stop)."""
+        if isinstance(m, dict) and m.get("type") == "done":
+            entry["_done"] = True
+            _res = m.get("resume")
+            if isinstance(_res, dict) and isinstance(_res.get("position"), dict):
+                entry["_position"] = _res["position"]   # for status() after reload
+        reg_queue.put(m)
+
     while True:
         try:
             msg = mp_queue.get(timeout=2.0)
             if msg is None:
                 break  # sentinel — child is done
             entry["_last_msg"] = time.time()   # activity marker for the watchdog
-            reg_queue.put(msg)
+            _forward(msg)
             empty_count = 0
         except queue.Empty:
             empty_count += 1
@@ -631,7 +648,7 @@ def _bridge_reader(mp_queue, reg_queue, entry):
                     try:
                         msg = mp_queue.get_nowait()
                         if msg is not None:
-                            reg_queue.put(msg)
+                            _forward(msg)
                     except queue.Empty:
                         break
                 break
@@ -643,7 +660,7 @@ def _bridge_reader(mp_queue, reg_queue, entry):
                     try:
                         msg = mp_queue.get_nowait()
                         if msg is not None:
-                            reg_queue.put(msg)
+                            _forward(msg)
                     except queue.Empty:
                         break
                 break
@@ -657,7 +674,12 @@ def _bridge_reader(mp_queue, reg_queue, entry):
     # never sent its own "done", and without this the user would see a plain
     # «завершено» and lose the «Продолжить» button after waiting for a pause.
     if not entry.get("_done"):
-        was_paused = bool(entry.get("paused"))
+        pause_ev = entry.get("pause_event")
+        stop_ev = entry.get("stop_event")
+        was_paused = bool(entry.get("paused") or (pause_ev and pause_ev.is_set()))
+        # Mirror runner.run_process: a user-requested stop must not be reported
+        # as a clean «Готово» on the crash path.
+        stopped = bool(stop_ev and stop_ev.is_set() and not was_paused)
         # The payload is built in its own try: a failure inside it must not
         # cost the frontend the done message (and with it «Продолжить»).
         resume = None
@@ -669,7 +691,7 @@ def _bridge_reader(mp_queue, reg_queue, entry):
         try:
             reg_queue.put({"type": "done", "files": entry.get("files", []),
                            "count": entry.get("count", 0),
-                           "stopped": False, "paused": was_paused,
+                           "stopped": stopped, "paused": was_paused,
                            "resume": resume,
                            "formats": [], "skipped_cities": []})
         except Exception:

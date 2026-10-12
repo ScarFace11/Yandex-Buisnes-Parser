@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════
 // ── Экспорт/импорт данных приложения (отметки + настройки) ──
-// Кнопки во вкладке «Форматы вывода». Экспорт — обычная ссылка на zip;
+// Кнопки в аккордеоне «Форматы результата» (секция «Данные»). Экспорт — обычная ссылка на zip;
 // импорт показывает сводку и перезагружает отметки, чтобы таблица и
 // динамика увидели их сразу.
 function exportAppData() {
@@ -135,7 +135,6 @@ function initMap() {
         ${r.phone ? `<div class="map-pop-row">${escapeHtml(r.phone)}</div>` : ''}
         ${socials ? `<div class="map-pop-soc">${socials}</div>` : ''}
         <div class="map-pop-links">
-          ${r.twogis_url ? `<a href="${escapeHtml(safeUrl(r.twogis_url))}" target="_blank" rel="noopener noreferrer">Открыть в 2ГИС ↗</a>` : ''}
           ${r.yandex_maps_url ? `<a href="${escapeHtml(safeUrl(r.yandex_maps_url))}" target="_blank" rel="noopener noreferrer">Открыть на Я.Картах ↗</a>` : ''}
         </div>
       </div>`;
@@ -165,7 +164,6 @@ function renderDefaultStats() {
       <div class="stat-card"><div class="num">0</div><div class="lbl">С соцсетями</div></div>
       <div class="stat-card"><div class="num">—</div><div class="lbl">Время</div></div>
     </div>
-    <div id="quota-slot"></div>
     <div class="stat-section">
       <h3>По соцсетям</h3>
       <div class="no-data" style="padding:18px 12px">Данные появятся после запуска поиска</div>
@@ -174,73 +172,6 @@ function renderDefaultStats() {
       <h3>Топ категорий</h3>
       <div class="no-data" style="padding:18px 12px">Данные появятся после запуска поиска</div>
     </div>`;
-  // 2GIS quota card (if tokens were spent in this process) — idempotent.
-  renderQuotaCard();
-}
-
-// ── 2GIS Places API quota card ─────────────────────────────
-// Free-tier cap = 1000 billed requests per CALENDAR MONTH per key.
-// 2GIS has no live-balance endpoint, so "spent" is our own persistent
-// counter (output/.2gis_quota.json + this run); "left" = cap − spent.
-// The counter survives app restarts and resets each month.
-function quotaCardHtml() {
-  const tq = _twogisQuotaLive;
-  if (tq <= 0) return '';
-  const cap = 1000, pct = Math.min(100, Math.round(tq / cap * 100));
-  const cls = pct >= 95 ? 'crit' : pct >= 85 ? 'warn' : '';
-  const left = Math.max(0, cap - tq);
-  // Пояснение — в tooltip (ⓘ): раньше текст на карточке занимал больше места,
-  // чем сами цифры. Читается при наведении на «ⓘ».
-  const tip = 'Счётчик приложения: ≈ ' + (tq * 10).toLocaleString('ru-RU')
-    + ' организаций · 1 запрос ≈ 10 организаций. 2GIS не показывает точный '
-    + 'остаток — платный лимит видно только в Platform Manager (dev.2gis.ru) '
-    + 'с задержкой ~1 день. Цифру израсходованных запросов можно ввести вручную.';
-  return `
-  <div class="stat-section">
-    <div class="stat-city-card quota-card ${cls}">
-      <h4>🧮 Токены 2GIS Places API
-        <span class="quota-info" tabindex="0" title="${escapeHtml(tip)}" aria-label="Пояснение к счётчику">ⓘ</span></h4>
-      <div class="quota-big"><span class="quota-num">${_fmtCount(tq)}</span><span class="quota-cap">/ ${cap}</span></div>
-      <div class="quota-track"><div class="quota-fill" style="width:${pct}%"></div></div>
-      <div class="quota-left">Осталось: <b>${_fmtCount(left)} запросов</b> (≈ ${_fmtCount(left * 10)} организаций)</div>
-      <input type="number" class="quota-manual" min="0" max="100000" placeholder="${tq}"
-             aria-label="Израсходовано за месяц — вручную"
-             title="Знаете точный расход из Platform Manager? Введите его — счётчик замещается. Пустое поле оставляет текущее значение."
-             onchange="setTwogisQuotaManual(this)">
-    </div>
-  </div>`;
-}
-
-// Ручная коррекция счётчика: точный расход виден в Platform Manager, автосчёт
-// покрывает только запросы из этого приложения. Пустое значение — ничего.
-async function setTwogisQuotaManual(input) {
-  const raw = String(input.value || '').trim();
-  if (!raw) { input.value = ''; return; }
-  const value = parseInt(raw, 10);
-  if (!isFinite(value) || value < 0) { input.value = ''; return; }
-  try {
-    const r = await fetch('/twogis/quota', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ used: value }),
-    });
-    const d = await r.json();
-    if (d.ok) {
-      _twogisQuotaLive = d.used;
-      input.value = '';
-      renderQuotaCard();
-      showToast('Счётчик 2GIS обновлён: ' + _fmtCount(d.used), 'success');
-    } else {
-      showToast(d.error || 'Не удалось обновить счётчик', 'error');
-    }
-  } catch (e) {
-    showToast('Не удалось обновить счётчик', 'error');
-  }
-}
-
-function renderQuotaCard() {
-  const slot = document.getElementById('quota-slot');
-  if (!slot) return;              // stats tab not rendered yet — renderStats will pick it up
-  slot.innerHTML = quotaCardHtml();
 }
 
 // Shared bar renderer for the stats sections. Bars are normalized against
@@ -307,14 +238,17 @@ function donutHTML(rows, centerLabel) {
 function renderStats(data, elapsed, skippedCities) {
   if (!data.length) return;
   const total  = data.length;
+  // Соцсети могли не собираться вовсе («Что парсить») — тогда и статистики
+  // по соцсетям быть не должно.
+  const socOn  = (typeof socialsEnabled === 'function') ? socialsEnabled() : true;
   const withSo = data.filter(r => Object.keys(SOCIALS).some(p => r[p])).length;
   const dur    = elapsed ? (elapsed < 60 ? elapsed.toFixed(0)+'с' : (elapsed/60).toFixed(1)+'м') : '—';
 
   const cards = [
     {num: total,   lbl: 'Всего найдено'},
-    {num: withSo,  lbl: 'С соцсетями'},
     {num: dur,     lbl: 'Время'},
   ];
+  if (socOn) cards.splice(1, 0, {num: withSo, lbl: 'С соцсетями'});
 
   const socialKeys = Object.keys(SOCIALS);
   const hasSocial = r => socialKeys.some(p => r[p]);
@@ -356,9 +290,9 @@ function renderStats(data, elapsed, skippedCities) {
       return `<div class="stat-city-card">
         <h4>${escapeHtml(name)}</h4>
         <div class="stat-mini-row"><span>Всего</span><span>${cityTotal}</span></div>
-        <div class="stat-mini-row"><span>С соцсетями</span><span>${cityWithSo}</span></div>
+        ${socOn ? `<div class="stat-mini-row"><span>С соцсетями</span><span>${cityWithSo}</span></div>
         <div class="stat-mini-row"><span>Без соцсетей</span><span>${cityTotal - cityWithSo}</span></div>
-        ${chips}
+        ${chips}` : ''}
       </div>`;
     }).join('') + `</div></div>` : '';
 
@@ -378,16 +312,12 @@ function renderStats(data, elapsed, skippedCities) {
   }
 
   const body = document.getElementById('stats-body');
-  // Fetch live analytics + cache stats + 2GIS Places quota
+  // Fetch live analytics + cache stats
   Promise.all([
     fetch('/analytics').then(r=>r.json()).catch(()=>({})),
     fetch('/cache/stats').then(r=>r.json()).catch(()=>({})),
     fetch('/status').then(r=>r.json()).catch(()=>({}))
   ]).then(([a, c, st]) => {
-    // Prefer the live value streamed from the child process (progress events);
-    // /status is the fallback (thread mode + past runs in this process).
-    if ((st && st.twogis_quota_used) > _twogisQuotaLive) _twogisQuotaLive = st.twogis_quota_used;
-    const quotaHtml = quotaCardHtml();
     const analyticsHtml = (a && a.total_requests) || (c && c.total) ? `
     <div class="stat-section">
       <h3>${UI_ICONS.bolt}Аналитика</h3>
@@ -403,8 +333,11 @@ function renderStats(data, elapsed, skippedCities) {
         <div class="stat-card"><div class="num">${a.rate_limits}</div><div class="lbl">429</div></div>
         ` : ''}
         ${c.valid ? `
-        <div class="stat-card" title="Свежие записи кэша — повторные запросы берутся из кэша мгновенно и не тратят лимит API"><div class="num">${c.valid}</div><div class="lbl">Кэш (активных)</div></div>
-        <div class="stat-card" title="Устаревшие записи кэша — данные старше 7 дней, будут перезапрошены"><div class="num">${c.expired}</div><div class="lbl">Кэш (устаревших)</div></div>
+        <div class="stat-card" title="Свежие страницы карточек в кэше — повторная загрузка берётся с диска мгновенно и не тратит лимит API"><div class="num">${c.valid}</div><div class="lbl">Кэш (активных)</div></div>
+        <div class="stat-card" title="Устаревшие страницы кэша — данные старше ${c.ttl_hours || 24} ч, будут перезапрошены"><div class="num">${c.expired}</div><div class="lbl">Кэш (устаревших)</div></div>
+        ${c.hits ? `
+        <div class="stat-card" title="Столько раз карточка взята из кэша вместо повторной загрузки браузером (один прогон)"><div class="num">${c.hits}</div><div class="lbl">Из кэша</div></div>
+        ` : ''}
         ` : ''}
       </div>
     </div>` : '';
@@ -413,31 +346,30 @@ function renderStats(data, elapsed, skippedCities) {
       `<div class="stat-card"${c.tip ? ` title="${escapeHtml(c.tip)}"` : ''}><div class="num">${c.num}</div><div class="lbl">${c.lbl}</div></div>`
     ).join('')}</div>
 
-    ${quotaHtml}
-
     ${analyticsHtml}
 
     ${cityCardsHtml}
 
     ${skippedHtml}
 
-    ${(socialCounts.length || cats.length) ? `
     <div class="stat-split">
       <div class="stat-split-main">
-        ${cats.length ? `
         <div class="stat-section">
           <h3>Топ категорий</h3>
-          ${barRows(cats.map(([name, cnt], i) => ({label: name, count: cnt, color: CAT_COLORS[i%CAT_COLORS.length]})))}
-        </div>` : ''}
+          ${cats.length
+            ? barRows(cats.map(([name, cnt], i) => ({label: name, count: cnt, color: CAT_COLORS[i%CAT_COLORS.length]})))
+            : '<div class="no-data" style="padding:16px 12px">В этих записях категории не заполнены</div>'}
+        </div>
       </div>
       <div class="stat-split-side">
-        ${socialCounts.length ? `
         <div class="stat-section">
           <h3>По соцсетям</h3>
-          ${donutHTML(socialCounts.map(s => ({label: s.name, count: s.count, color: s.color})), 'записей')}
-        </div>` : ''}
+          ${(socOn && socialCounts.length)
+            ? donutHTML(socialCounts.map(s => ({label: s.name, count: s.count, color: s.color})), 'записей')
+            : '<div class="no-data" style="padding:16px 12px">' + (socOn ? 'В этих записях соцсети не найдены' : 'Соцсети отключены в «Что парсить»') + '</div>'}
+        </div>
       </div>
-    </div>` : ''}
+    </div>
   `;
     // Свежие файлы и отметки могли появиться только что — обновляем динамику,
     // но не во время прогона: там renderStats зовётся каждые 1.5 с, а обход

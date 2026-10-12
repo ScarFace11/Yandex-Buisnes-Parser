@@ -1,6 +1,38 @@
 // ═══════════════════════════════════════════
 let reviewedState = {};
 
+// ── Отдельно «открытые» соцсети ──────────────────────────────────────────
+// Клик по бейджу сети гасит именно этот бейдж, а не всю строку: у одной
+// организации может быть несколько сетей, и каждая просматривается отдельно.
+// Состояние живёт в localStorage (в таблицу идёт только визуальная метка).
+const SOCIAL_VIEWED_KEY = 'yp_social_viewed_v1';
+let socialViewedState = {};
+
+function loadSocialViewed() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SOCIAL_VIEWED_KEY));
+    socialViewedState = (saved && typeof saved === 'object') ? saved : {};
+  } catch (e) { socialViewedState = {}; }
+}
+
+function socialViewedKey(row, platform) {
+  const k = reviewKey(row);
+  return k ? k + '|' + platform : '';
+}
+
+function isSocialViewed(row, platform) {
+  const k = socialViewedKey(row, platform);
+  return !!(k && socialViewedState[k]);
+}
+
+function markSocialViewed(row, platform) {
+  const k = socialViewedKey(row, platform);
+  if (!k || socialViewedState[k]) return false;
+  socialViewedState[k] = true;
+  try { localStorage.setItem(SOCIAL_VIEWED_KEY, JSON.stringify(socialViewedState)); } catch (e) {}
+  return true;
+}
+
 function loadReviewed() {
   fetch('/reviewed').then(r => r.json()).then(data => {
     reviewedState = data || {};
@@ -52,8 +84,6 @@ function reviewKey(r) {
   if (!r) return '';
   const y = String(r.yandex_maps_url || '').trim();
   if (y) return y;
-  const t = String(r.twogis_url || '').trim();
-  if (t) return t;
   const name = String(r.name || '').trim();
   const addr = String(r.address || '').trim();
   if (!name && !addr) return '';
@@ -286,6 +316,12 @@ function bulkWillOpen(requested) {
 function updateBulkStats() {
   const panel = document.getElementById('bulk-panel');
   if (!panel) return;
+  // Обходить нечего — соцсети выключены в «Что парсить» или в текущей
+  // выборке нет ни одной ссылки на профиль. Панель видна только когда
+  // в таблице реально есть соцсети (единый писатель panel.hidden).
+  const socOn = (typeof socialsEnabled === 'function') ? socialsEnabled() : true;
+  panel.hidden = !socOn || !bulkScopeRows().some(
+    r => BULK_SOCIALS.some(s => safeSocialUrl(r[s])));
   const stats = bulkScopeStats();
   const sel = document.getElementById('bulk-social');
   const social = (sel && sel.value) || 'vk';
@@ -299,11 +335,20 @@ function updateBulkStats() {
   if (order) order.textContent = bulkOrderLabel();
 
   if (sel) {
+    let firstAvailable = null;
     [...sel.options].forEach(o => {
-      const base = o.dataset.base || o.textContent;
+      const base = o.dataset.base || o.textContent.replace(/\s*—\s*\d+\s*$/, '');
       o.dataset.base = base;
-      o.textContent = `${base} — ${stats.by_social[o.value] || 0}`;
+      const n = stats.by_social[o.value] || 0;
+      o.textContent = `${base} — ${n}`;
+      // Сеть без непросмотренных профилей не предложим — обходить нечего.
+      o.disabled = n <= 0;
+      if (n > 0 && firstAvailable === null) firstAvailable = o.value;
     });
+    const cur = sel.selectedOptions && sel.selectedOptions[0];
+    if (cur && cur.disabled && firstAvailable) {
+      sel.value = firstAvailable;
+    }
   }
 
   const inp = document.getElementById('bulk-count');
@@ -730,7 +775,7 @@ async function loadFilesPanel(force) {
 // Показать ошибку «файла нет», не превратив таблицу в автомата, и обновить список файлов.
 function showFileNotFound(view) {
   const body = document.getElementById('tbl-body');
-  if (body) body.innerHTML = '<tr><td colspan="7" class="no-data">Файл не найден в этой папке. Проверьте Историю файлов (Обновить) и откройте его снова.</td></tr>';
+  if (body) body.innerHTML = '<tr><td colspan="9" class="no-data">Файл не найден в этой папке. Проверьте Историю файлов (Обновить) и откройте его снова.</td></tr>';
   showToast('Файл не найден в этой папке. Проверьте Историю файлов (Обновить) и откройте его снова.', 'warn');
   loadFilesPanel(true);
 }
@@ -925,7 +970,7 @@ function openFileInTable(rel) {
   if (!rel) return;
   setResultsSubTab('current');
   const body = document.getElementById('tbl-body');
-  if (body) body.innerHTML = '<tr><td colspan="7" class="no-data">Загрузка…</td></tr>';
+  if (body) body.innerHTML = '<tr><td colspan="9" class="no-data">Загрузка…</td></tr>';
   const seq = ++_resultsReqSeq;      // перебивает незавершённую загрузку общего вида
   fetch('/results-view?view=' + encodeURIComponent(_resultsView) + '&file=' + encodeURIComponent(rel))
     .then(r => r.json())
@@ -940,7 +985,7 @@ function openFileInTable(rel) {
       const recs = d.records || [];
       if (!recs.length) {
         // Сервер вернул пустой список — нет данных этого поиска, либо запрос не тот.
-        body.innerHTML = '<tr><td colspan="7" class="no-data">Нет данных. Запустите сбор данных, затем откройте файл в Истории файлов.</td></tr>';
+        body.innerHTML = '<tr><td colspan="9" class="no-data">Нет данных. Запустите сбор данных, затем откройте файл в Истории файлов.</td></tr>';
         showToast('Нет данных. Запустите сбор данных, затем откройте файл в Истории файлов.', 'info');
         return;
       }
@@ -959,7 +1004,7 @@ function openFileInTable(rel) {
     .catch(() => {
       currentFileNote = '';
       currentFile = '';
-      if (body) body.innerHTML = '<tr><td colspan="7" class="no-data">Не удалось загрузить данные файла.</td></tr>';
+      if (body) body.innerHTML = '<tr><td colspan="9" class="no-data">Не удалось загрузить данные файла.</td></tr>';
       showToast('Не удалось загрузить данные файла. Проверьте соединение и попробуйте снова.', 'error');
     });
 }
@@ -1031,7 +1076,12 @@ function initResultsPanel() {
   } catch (e) {}
 
   const sel = document.getElementById('bulk-social');
-  if (sel) [...sel.options].forEach(o => { o.dataset.base = o.textContent; });
+  // Базовое имя опции фиксируем один раз и без счётчика: первый проход
+  // updateStats уже дописал « — N», и захват текущего текста закреплял бы
+  // счётчик в базе («ВКонтакте — 0 — 37» после второго прохода).
+  if (sel) [...sel.options].forEach(o => {
+    if (!o.dataset.base) o.dataset.base = o.textContent.replace(/\s*—\s*\d+\s*$/, '');
+  });
 
   // File actions via delegation — paths are never interpolated into JS code.
   const hist = document.getElementById('rs-history');

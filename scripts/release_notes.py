@@ -5,7 +5,7 @@
 Используется job'ом `release-draft` в .github/workflows/build-exe.yml при пуше
 тега v*:
 
-    title=$(python3 scripts/release_notes.py --tag v2.3.0 \
+    title=$(python3 scripts/release_notes.py --tag v2.3.4 \
             --changelog CHANGELOG.md --out release_notes.md)
     gh release create "$TAG" --draft --title "$title" \
         --notes-file release_notes.md
@@ -13,13 +13,14 @@
 Поведение:
   * находит секцию «## [VERSION] — Подзаголовок» (VERSION — тег без «v»),
     берёт всё до следующего «## » как тело; подзаголовок идёт в заголовок
-    релиза («v2.3.0 — Подзаголовок»);
-  * добавляет свёрнутый блок «Для разработчиков» с разделом той же версии из
-    CHANGES-DEV.md (--dev-changelog) и ссылки на обе истории изменений на
-    теге релиза — так технические подробности уезжают вместе с релизом;
+    релиза («v2.3.4 — Подзаголовок»);
+  * добавляет ссылку на историю изменений на теге релиза;
   * секции нет → фолбэк: ссылка на CHANGELOG + список коммитов с предыдущего
     тега (best-effort, требует fetch-depth: 0 в checkout);
   * печатает заголовок релиза одной строкой в stdout (когда --out — файл).
+
+История изменений одна — CHANGELOG.md. Отдельного технического дневника в
+проекте больше нет: он не поставлялся и не коммитился.
 """
 from __future__ import annotations
 
@@ -49,51 +50,26 @@ def extract_section(text: str, version: str):
     return subtitle, section.strip().strip("`").strip()
 
 
-DEV_SECTION = "🔧 Для разработчиков"
-
-
 def repo_slug() -> str:
     """owner/name — из CI, с тем же дефолтом, что и в остальных скриптах."""
     return os.environ.get("GITHUB_REPOSITORY", "ScarFace11/Yandex-Buisnes-Parser")
 
 
-def dev_section(dev_changelog, version: str) -> str:
-    """Свёрнутый блок с техническими заметками версии (или '').
-
-    Раздела в CHANGES-DEV.md может не быть (старые версии, чужой файл) —
-    тогда релиз просто остаётся таким, каким был. Обязательным его делает
-    tests/test_changelogs.py, а не этот скрипт.
-    """
-    if not dev_changelog:
-        return ""
-    p = Path(dev_changelog)
-    if not p.exists():
-        return ""
-    found = extract_section(p.read_text(encoding="utf-8-sig"), version)
-    if not found or not found[1].strip():
-        return ""
-    return (f"<details>\n<summary>{DEV_SECTION} — технические подробности</summary>\n\n"
-            f"{found[1].strip()}\n\n</details>")
-
-
 def changelog_links(version: str, tag: str = "") -> str:
-    """Ссылки на обе истории изменений — на теге релиза, а не на main."""
+    """Ссылка на историю изменений — на теге релиза, а не на main."""
     ref = tag or (f"v{version}" if version else "main")
     server = os.environ.get("GITHUB_SERVER_URL", "https://github.com").rstrip("/")
     repo = repo_slug().strip("/")
     if not repo:
         return ""
-    base = f"{server}/{repo}/blob/{ref}"
-    return (f"📄 [CHANGELOG.md]({base}/CHANGELOG.md) · "
-            f"🔧 [CHANGES-DEV.md]({base}/CHANGES-DEV.md)")
+    return f"📄 [CHANGELOG.md]({server}/{repo}/blob/{ref}/CHANGELOG.md)"
 
 
-def build_body(tag: str, user_changelog, dev_changelog) -> tuple:
+def build_body(tag: str, user_changelog) -> tuple:
     """(заголовок релиза, тело) для тега.
 
-    Тело: пользовательский раздел CHANGELOG → свёрнутые технические заметки
-    CHANGES-DEV → ссылки на обе истории. Если раздела версии нет — фолбэк
-    со списком коммитов с прошлого тега (как было раньше).
+    Тело: раздел CHANGELOG.md версии → ссылка на CHANGELOG на теге. Если
+    раздела версии нет — фолбэк со списком коммитов с прошлого тега.
     """
     version = strip_tag(tag)
     cl = Path(user_changelog) if user_changelog else None
@@ -102,9 +78,7 @@ def build_body(tag: str, user_changelog, dev_changelog) -> tuple:
 
     if found:
         subtitle, body = found
-        parts = [body, dev_section(dev_changelog, version),
-                 changelog_links(version, tag)]
-        body = "\n\n".join(p for p in parts if p)
+        body = "\n\n".join(p for p in (body, changelog_links(version, tag)) if p)
     else:
         # Секции для этой версии нет — собираем тело вручную (edge case ТЗ:
         # «если описаний не было — собрать из коммитов»).
@@ -112,8 +86,7 @@ def build_body(tag: str, user_changelog, dev_changelog) -> tuple:
         server = os.environ.get("GITHUB_SERVER_URL", "https://github.com").rstrip("/")
         repo = repo_slug()
         body = (f"Полное описание — в [CHANGELOG.md]({server}/{repo}/"
-                f"blob/main/CHANGELOG.md) и [CHANGES-DEV.md]({server}/{repo}/"
-                f"blob/main/CHANGES-DEV.md).")
+                f"blob/main/CHANGELOG.md).")
         commits = git_log_since_previous_tag(tag)
         if commits:
             body += "\n\n### Коммиты\n\n" + commits
@@ -123,7 +96,7 @@ def build_body(tag: str, user_changelog, dev_changelog) -> tuple:
 
 
 def strip_tag(tag: str) -> str:
-    """`v2.3.1` → `2.3.1`."""
+    """`v2.3.4` → `2.3.4`."""
     tag = str(tag or "").strip()
     return tag[1:] if tag[:1] in ("v", "V") else tag
 
@@ -148,16 +121,14 @@ def git_log_since_previous_tag(tag: str) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--tag", required=True, help="тег релиза, например v2.3.0")
+    ap.add_argument("--tag", required=True, help="тег релиза, например v2.3.4")
     ap.add_argument("--changelog", default="CHANGELOG.md")
-    ap.add_argument("--dev-changelog", default="CHANGES-DEV.md",
-                    help="техническая история — уйдёт в блок «Для разработчиков»")
     ap.add_argument("--out", default="-",
                     help="файл для тела релиза; «-» — печатать тело в stdout")
     args = ap.parse_args()
 
     tag = args.tag.strip()
-    title, body = build_body(tag, args.changelog, args.dev_changelog)
+    title, body = build_body(tag, args.changelog)
 
     if args.out == "-":
         sys.stdout.write(body + "\n")

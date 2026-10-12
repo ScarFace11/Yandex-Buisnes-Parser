@@ -114,18 +114,13 @@ def logs():
 @bp.route("/status")
 def status():
     s = run_manager.status()
+    # Браузер — единственный движок сбора; фронтенд по этому флагу показывает
+    # предупреждение «Chrome не найден», если он отсутствует.
     try:
-        from yandex_maps_parser.browser_client import is_installed as pw_installed
-        from yandex_maps_parser.cdp_client import is_installed as cdp_installed
-        s["playwright_available"] = pw_installed() or cdp_installed()
+        from yandex_maps_parser.cdp_client import is_installed as browser_installed
+        s["browser_available"] = browser_installed()
     except Exception:
-        s["playwright_available"] = False
-    # 2GIS Places API quota (billed pages this process) for the stats tab.
-    try:
-        from yandex_maps_parser.twogis import quota_used as _tg_quota
-        s["twogis_quota_used"] = _tg_quota()
-    except Exception:
-        s["twogis_quota_used"] = 0
+        s["browser_available"] = False
     return jsonify(s)
 
 

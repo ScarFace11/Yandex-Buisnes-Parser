@@ -1,262 +1,28 @@
 """
-HTTP session management and low-level request helpers.
+Статистика сбора: счётчики, задержки, аналитика для интерфейса.
 
-Engine: curl-cffi (curl-impersonate) when installed — a libcurl binding
-that byte-for-byte impersonates a real Chrome TLS/JA3 + HTTP/2 handshake,
-defeating TLS-fingerprint anti-bot. Sessions also carry Chrome's full
-header set (UA, sec-ch-ua, Accept-Language ordering), so Yandex sees a
-request indistinguishable from a real browser at the transport layer.
-Falls back to httpx (HTTP/2, no fingerprint) when curl_cffi is absent —
-all call sites are engine-agnostic: they only use .get()/.head(),
-.status_code/.text/.headers and httpx.Timeout objects, which the
-_SessionWrapper below translates transparently.
+Здесь раньше жил HTTP-движок (httpx + curl_cffi с подменой TLS-отпечатка
+Chrome). Он удалён вместе с HTTP-путём: страницы Яндекс.Карт читает только
+настоящий браузер (см. cdp_client.py и browser_search.py). Прямые запросы
+ловит антибот, а сам IP/аккаунт после серии таких обращений выглядит
+подозрительно — приложение этим не пользуется вообще.
+
+Осталось то, что нужно интерфейсу: сколько страниц открыто, сколько заняло,
+какая задержка p95 (по ней enrichment включает мягкое торможение) и
+реэкспорт лимитера из rate_limit.
 """
 import threading
 import time
 from collections import deque
 
-import httpx
-
-try:  # optional engine — install curl-cffi for Chrome-grade TLS fingerprints
-    from curl_cffi.requests import Session as _CffiSession
-    from curl_cffi.requests.exceptions import (
-        CurlError as _CurlError,
-        Timeout as _CffiTimeout,
-    )
-except ImportError:
-    _CffiSession = None
-
-from .constants import USER_AGENTS
-from . import state
-
-# Browser preset to impersonate. "chrome" tracks the newest Chrome the
-# installed curl_cffi ships fingerprints for (updated upstream).
-_IMPERSONATE = "chrome"
-
-
-class _SessionWrapper:
-    """Translate httpx-style calls to curl_cffi (or pass through to httpx).
-
-    Callers across the codebase do:
-        client.get(url, params=..., timeout=httpx.Timeout(...))
-        r.status_code / r.text / r.headers / r.content
-        client.head(url, timeout=...)
-    curl_cffi.Session supports the same surface except:
-      * timeout — accepts a float, not httpx.Timeout. We map
-        (connect, read[, total]) tuples to a single float (the read phase;
-        the hard wall-clock deadline is enforced by _abortable_get anyway).
-      * exception types — mapped to their closest httpx equivalents so the
-        except clauses in _get() keep working unchanged.
-    """
-
-    def __init__(self, session) -> None:
-        self._s = session
-
-    @staticmethod
-    def _norm_timeout(timeout):
-        if isinstance(timeout, httpx.Timeout):
-            return timeout.read
-        if isinstance(timeout, (tuple, list)):
-            return timeout[1] if len(timeout) >= 2 else timeout[0]
-        return timeout
-
-    def get(self, url, **kw):
-        try:
-            if "timeout" in kw:
-                kw["timeout"] = self._norm_timeout(kw["timeout"])
-            return self._s.get(url, **kw)
-        except _CffiTimeout as e:              # connect or read timeout
-            raise httpx.TimeoutException(str(e)) from e
-        except _CurlError as e:                # DNS, TLS, proxy, connection reset…
-            raise httpx.ConnectError(str(e)) from e
-
-    def head(self, url, **kw):
-        try:
-            if "timeout" in kw:
-                kw["timeout"] = self._norm_timeout(kw["timeout"])
-            return self._s.head(url, **kw)
-        except _CffiTimeout as e:
-            raise httpx.TimeoutException(str(e)) from e
-        except _CurlError as e:
-            raise httpx.ConnectError(str(e)) from e
-
-    def close(self) -> None:
-        try:
-            self._s.close()
-        except Exception:
-            pass
-
-# ── Per-thread session storage ────────────────────────────────
-_ua_lock     = threading.Lock()
-_ua_index    = 0
-_proxy_lock  = threading.Lock()
-_proxy_index = 0
-_local       = threading.local()
-
-_MAX_RATE_LIMIT_RETRIES = 8
-
-# Rate limiting policy: реэкспорт из rate_limit — extractors и runner
-# импортируют эти имена отсюда (pyflakes помечает часть как unused ложно).
+# Реэкспорт лимитера: extractors/enrichment/cdp_client импортируют эти имена
+# отсюда исторически (pyflakes помечает часть как unused — ложное срабатывание).
 from .rate_limit import (
     _get_rps, _rps_drop, _rps_reset,
     _set_cooldown, _anti_bot_detected, _anti_bot_reset, _cooldown_remaining,
     _wait_for_token, _interruptible_sleep,
 )
-
-
-def _next_ua() -> str:
-    global _ua_index
-    with _ua_lock:
-        ua = USER_AGENTS[_ua_index % len(USER_AGENTS)]
-        _ua_index += 1
-    return ua
-
-
-def _next_proxy() -> str | None:
-    if not state.PROXIES:
-        return None
-    global _proxy_index
-    with _proxy_lock:
-        p = state.PROXIES[_proxy_index % len(state.PROXIES)]
-        _proxy_index += 1
-    return p
-
-
-def _make_client(proxy: str | None = None):
-    """Create an HTTP client: curl_cffi (Chrome impersonation) or httpx.
-
-    curl_cffi path — libcurl fork that replays Chrome's exact TLS/JA3 and
-    HTTP/2 SETTINGS frames; the strongest defence against TLS-fingerprint
-    blocking, and faster than httpx to boot. Falls back to a plain httpx
-    client with HTTP/2 when curl_cffi is not installed.
-    """
-    if _CffiSession is not None:
-        try:
-            kwargs = dict(
-                impersonate=_IMPERSONATE,
-                timeout=20,
-                headers={
-                    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-                    "Referer": "https://yandex.ru/maps/",
-                },
-            )
-            if proxy:
-                kwargs["proxy"] = proxy
-            return _SessionWrapper(_CffiSession(**kwargs))
-        except Exception as e:
-            state.syslog(f"_make_client: curl_cffi failed ({e!r}), using httpx")
-    # httpx fallback with HTTP/2 support (graceful HTTP/1.1 downgrade).
-    # Each client maintains its own connection pool.  With HTTP/2, multiple
-    # concurrent requests are multiplexed over a single TCP+TLS connection.
-    return _make_httpx_client(proxy)
-
-
-def _make_httpx_client(proxy: str | None = None) -> httpx.Client:
-    """Create an httpx client with HTTP/2 support (graceful fallback)."""
-    limits = httpx.Limits(
-        max_connections=20,
-        max_keepalive_connections=10,
-        keepalive_expiry=30,
-    )
-    timeout = httpx.Timeout(connect=8, read=20, write=8, pool=5)
-    headers = {
-        "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-        "Referer": "https://yandex.ru/maps/",
-    }
-    kwargs = dict(
-        timeout=timeout,
-        headers=headers,
-        follow_redirects=True,
-        limits=limits,
-    )
-    if proxy:
-        kwargs["proxy"] = proxy
-
-    # Try HTTP/2 first; fall back to HTTP/1.1 if h2 is not installed
-    try:
-        return httpx.Client(**kwargs, http2=True)
-    except ImportError:
-        return httpx.Client(**kwargs)
-
-
-# Client pool for proxy rotation: one client per proxy + one direct.
-# Round-robin between them to distribute requests across IPs.
-_client_pool: list = []
-_pool_lock = threading.Lock()
-_pool_index = 0
-
-
-def _init_client_pool() -> None:
-    """Initialize (or reinitialize) the client pool from state.PROXIES.
-
-    Called at the start of each run.  Creates one httpx client per proxy
-    plus one direct client (no proxy).  With N proxies, we get N+1 clients
-    that rotate via _next_client().
-    """
-    global _client_pool, _pool_index
-    with _pool_lock:
-        # Close old clients
-        for c in _client_pool:
-            try:
-                c.close()
-            except Exception:
-                pass
-        _client_pool = []
-        # Direct client (no proxy)
-        _client_pool.append(_make_client())
-        # One client per proxy
-        for proxy_url in state.PROXIES:
-            try:
-                _client_pool.append(_make_client(proxy_url))
-            except Exception:
-                pass
-        _pool_index = 0
-    state.syslog(f"client_pool: {len(_client_pool)} clients ({len(state.PROXIES)} proxies)")
-
-
-def close_client_pool() -> None:
-    """Close all HTTP clients in the pool. Call at run end to free connections."""
-    global _client_pool, _pool_index
-    with _pool_lock:
-        for c in _client_pool:
-            try:
-                c.close()
-            except Exception:
-                pass
-        _client_pool = []
-        _pool_index = 0
-
-
-def _next_client():
-    """Round-robin to the next client in the pool."""
-    global _pool_index
-    with _pool_lock:
-        if not _client_pool:
-            _client_pool.append(_make_client())
-        client = _client_pool[_pool_index % len(_client_pool)]
-        _pool_index += 1
-    return client
-
-
-# Shared client for single-threaded requests (search, geocoding)
-_main_client = _make_client()
-
-
-def _worker_client():
-    """Return (or lazily create) the current thread's dedicated client.
-
-    In proxy mode, returns the next client from the rotation pool.
-    In direct mode, returns a thread-local client.
-    """
-    if state.PROXIES:
-        return _next_client()
-    if not hasattr(_local, "client"):
-        _local.client = _make_client()
-    return _local.client
-
-
-# ── Global rate limiting ─────────────────────────────────────
-
+from . import state
 
 # ── Usage statistics + real-time analytics ───────────────────
 _stats_lock = threading.Lock()
@@ -269,7 +35,7 @@ _stats = {
     "errors": 0,
 }
 
-# Rolling latency window (last N requests)
+# Rolling latency window (last N pages)
 _latency_window: deque[float] = deque(maxlen=200)
 _latency_lock = threading.Lock()
 
@@ -286,12 +52,11 @@ _rps_request_count: int = 0
 
 
 def _request_kind(url: str) -> str:
-    if "search-maps.yandex" in url:
-        return "search"
-    if "geocode-maps.yandex" in url:
-        return "geocode"
+    """Что за страницу открываем: выдача поиска, карточка или что-то ещё."""
     if "yandex.ru/maps/org" in url:
         return "detail"
+    if "/maps" in url:
+        return "search"
     return "other"
 
 
@@ -384,12 +149,9 @@ def reset_stats() -> None:
 
 
 def get_stats() -> dict:
-    """Return detailed request statistics with per-kind breakdown."""
+    """Return detailed statistics with per-kind breakdown."""
     with _stats_lock:
         stats = dict(_stats, by_kind=dict(_stats["by_kind"]))
-    # Add per-kind latency from the latency window
-    # Note: per-kind latency would require tracking kind alongside latency,
-    # which adds overhead. For now, aggregate stats suffice.
     try:
         import tracemalloc
         current, peak = tracemalloc.get_traced_memory()
@@ -401,172 +163,20 @@ def get_stats() -> dict:
     return stats
 
 
-
-def _abortable_get(client, url, params, timeout, allow_redirects, stop_event, skip_event, total=None):
-    """Run GET in a thread, abort if stop/skip is set during the request.
-
-    This allows the search to respond to stop/skip within ~1 second
-    even during a long HTTP request (which normally blocks for up to 20s).
-
-    total — optional wall-clock deadline in seconds for the WHOLE request.
-    The per-chunk httpx read timeout alone is not enough: Yandex can drip
-    a response for minutes while staying under the read timeout, which
-    burned 200-300s per page in production. When the deadline passes the
-    request is abandoned and a TimeoutException is raised (the retry loop
-    in _get() then handles it).
-    """
-    result = [None]  # mutable container for thread result
-    error = [None]
-    deadline = time.monotonic() + total if total else None
-
-    def _do_request():
-        try:
-            # httpx timeout is set on the client; per-request override via keyword
-            timeout_obj = httpx.Timeout(timeout[0], read=timeout[1]) if isinstance(timeout, tuple) else httpx.Timeout(timeout)
-            result[0] = client.get(url, params=params, timeout=timeout_obj)
-        except Exception as e:
-            error[0] = e
-
-    t = threading.Thread(target=_do_request, daemon=True)
-    t.start()
-
-    # Wait for request to complete OR for stop/skip signal OR total deadline
-    while t.is_alive():
-        t.join(timeout=0.5)  # check every 0.5s
-        if stop_event and stop_event.is_set():
-            return None  # stop requested — abort
-        if skip_event and skip_event.is_set():
-            return None  # skip requested — abort
-        if deadline is not None and time.monotonic() > deadline:
-            # Abandon the request thread (daemon — it finishes on its own)
-            error[0] = httpx.TimeoutException(
-                f"Total deadline {total}s exceeded: {url[:80]}"
-            )
-            break
-
-    if error[0] is not None:
-        raise error[0]
-    return result[0]
-
-
-def _get(
-    url: str,
-    params: dict | None = None,
-    session: httpx.Client | None = None,
-    timeout: int | tuple = (8, 20),
-    allow_redirects: bool = True,
-    retries: int | None = None,
-) -> httpx.Response | None:
-    """GET with retries, rate limiting and stop/skip support.
-
-    timeout may be a plain number (all phases), a 2-tuple (connect, read)
-    or a 3-tuple (connect, read, total) where total is a hard wall-clock
-    deadline for the whole request (see _abortable_get).
-
-    retries overrides state.RETRY_COUNT (total attempts). The detail-page
-    fallback passes 2 — Yandex throttles plain-HTTP hard (p95 100-325s per
-    page), so a second 60s-deadline attempt rarely beats the first one and
-    burning a third costs another minute per anti-bot page for nothing.
-    """
-    s = session or (_next_client() if state.PROXIES else _main_client)
-    net_attempts    = 0
-    rate_limit_hits = 0
-    max_attempts    = state.RETRY_COUNT if retries is None else retries
-    _stats_count_request(url)
-
-    # Optional 3rd element: total wall-clock deadline for the request
-    total = timeout[2] if isinstance(timeout, tuple) and len(timeout) >= 3 else None
-
-    while True:
-        if state._STOP_EVENT and state._STOP_EVENT.is_set():
-            return None
-        if state.is_skip_city():
-            return None
-        if _wait_for_token():
-            return None
-        try:
-            state.syslog(f"http_get: {url[:80]}")
-            _t0 = time.monotonic()
-            r = _abortable_get(s, url, params, timeout, allow_redirects,
-                               state._STOP_EVENT, state._SKIP_CITY_EVENT,
-                               total=total)
-            _elapsed = time.monotonic() - _t0
-            _record_latency(_elapsed)
-
-            state.syslog(f"http_response: status={r.status_code}, url={url[:80]}, latency={_elapsed:.1f}s")
-            if r.status_code == 429:
-                rate_limit_hits += 1
-                _stats_add("rate_limits")
-                _rps_drop()  # adaptive: reduce RPS on rate limit
-                if rate_limit_hits > _MAX_RATE_LIMIT_RETRIES:
-                    state.warn(
-                        f"Лимит API (429) — слишком много повторов ({rate_limit_hits}), пропускаем URL."
-                    )
-                    return None
-                retry_after = 0
-                try:
-                    retry_after = int(r.headers.get("Retry-After", 0))
-                except (ValueError, TypeError):
-                    pass
-                wait = retry_after if retry_after > 0 else min(20 * rate_limit_hits, 120)
-                state.warn(
-                    f"⏸ Лимит API (429). Автопауза {wait} сек, затем продолжим… "
-                    f"(попытка {rate_limit_hits}/{_MAX_RATE_LIMIT_RETRIES})"
-                )
-                _set_cooldown(wait)
-                _stats_add("cooldown_seconds", wait)
-                if _interruptible_sleep(wait):
-                    return None
-                state.warn("▶ Пауза завершена, продолжаем…")
-                continue
-
-            if r.status_code == 403:
-                state.syslog(f"http_403: url={url[:100]}")
-                state.warn("Доступ запрещён (403) — возможно, лимит API или блокировка IP.")
-                return None
-            if r.status_code < 500:
-                return r
-
-            # 5xx
-            net_attempts += 1
-            _stats_add("retries")
-            state.syslog(f"http_5xx: status={r.status_code}, url={url[:100]}, attempt={net_attempts}/{max_attempts}")
-            state.warn(f"⚠ HTTP {r.status_code} — повтор {net_attempts}/{max_attempts}")
-            if net_attempts >= max_attempts:
-                return None
-            if _interruptible_sleep(state.RETRY_DELAY * net_attempts, quiet=True):
-                return None
-
-        except (httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError, OSError) as e:
-            net_attempts += 1
-            _stats_add("retries")
-            _stats_add("errors")
-            # Drop RPS on connection errors (SSL timeout = Yandex is throttling us)
-            _rps_drop(reason=f"error:{type(e).__name__}")
-            state.syslog(f"http_error: {type(e).__name__}: {e}, url={url[:100]}, attempt={net_attempts}")
-            state.warn(f"⚠ Сеть: {type(e).__name__} — повтор {net_attempts}/{max_attempts}")
-            if net_attempts >= max_attempts:
-                return None
-            if _interruptible_sleep(state.RETRY_DELAY * net_attempts, quiet=True):
-                return None
-
-
-def _head(url: str, timeout: int = 10) -> int:
-    """HEAD-check a URL (used for social-link validation).
-
-    Uses the shared connection pool instead of creating a new client
-    per request — avoids connection leak and TLS handshake overhead.
-    """
-    if state._STOP_EVENT and state._STOP_EVENT.is_set():
-        return 0
-    if state.is_skip_city():
-        return 0
-    if _wait_for_token():
-        return 0
-    _stats_count_request(url)
+def browser_stats() -> dict:
+    """Сводка по браузеру (вкладки, открытые страницы) — для панели статистики."""
     try:
-        s = _next_client() if state.PROXIES else _main_client
-        r = s.head(url, timeout=httpx.Timeout(timeout))
-        return r.status_code
+        from . import cdp_client
+        return cdp_client.get_stats()
     except Exception:
-        return 0
+        return {}
+
+
+def _count_error() -> None:
+    """Учесть ошибку загрузки (браузер не открыл страницу)."""
+    _stats_add("errors")
+    _stats_add("retries")
+
+
+# state импортируется для совместимости: modules читают статистику через него
+_ = state

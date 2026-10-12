@@ -605,11 +605,12 @@ function onTemplateTextKeydown(e) {
   const rows = (typeof filteredRows !== 'undefined' && filteredRows && filteredRows.length) ? filteredRows : allResults;
   const record = (rows || []).find(r => reviewKey(r) === key);
   if (!record) return;
-  // Пометить/снять просмотренное напротив организации (той, чей соц-бейдж нажали)
-  toggleViewed(key, !isReviewed(record));
-  // Перерисовать таблицу: строка получит/потеряет класс is-reviewed,
-  // а маркер просмотренности рядом с соцсетью обновится.
-  refreshReviewedUI();
+  // Отмечаем открытой ИМЕННО эту сеть: гасим её бейдж, а строку не трогаем.
+  // Отметка «просмотрено» (чекбокс строки) гасит все поля сразу — это
+  // отдельное действие и не должно срабатывать от клика по соцсети.
+  if (typeof markSocialViewed === 'function' && markSocialViewed(record, social)) {
+    if (el.classList && el.classList.add) el.classList.add('social-opened');
+  }
   const tpl = getTemplateFor(social);
   if (!tpl) return;
   event.preventDefault();
@@ -661,23 +662,150 @@ async function bulkCopyNext() {
   await bulkCopyOne(next);
 }
 
-// ── Интеграция с «Отправить в VK» ──────────────────────────────
-function onSenderRandomChange() {
-  const chk = document.getElementById('s-random-tpl');
-  const ta = document.getElementById('s-message');
-  if (chk && chk.checked && ta) {
-    ta.value = '';
-    showToast('Текст для каждого сообщения выберется случайно из набора vk', 'info');
+// ── Автоматическая отправка сообщений в приложении отсутствует: по ст. 18 ФЗ
+// «О рекламе» реклама возможна только с предварительного согласия адресата.
+// Шаблоны остаются для ручного копирования текста в таблице и в обходе.
+
+// ═══════════════════════════════════════════
+//  Пользовательское соглашение (первый вход)
+// ═══════════════════════════════════════════
+// Версия соглашения приходит с сервера: её видно в окне, чтобы отличие
+// «перечитать» от «принять новую редакцию» не было загадкой.
+let TERMS_VERSION = '';
+
+function onTermsCheckbox() {
+  const chk = document.getElementById('terms-accept-chk');
+  const btn = document.getElementById('terms-accept-btn');
+  if (btn) btn.disabled = !(chk && chk.checked);
+}
+
+// Окно соглашения живёт в двух режимах:
+//   accept  — первый вход (или новая редакция): чекбокс и «Продолжить»;
+//   readonly — «прочитать ещё раз» из шапки: только текст и «Закрыть».
+function _termsMode(readOnly) {
+  const row = document.getElementById('terms-accept-row');
+  const decline = document.getElementById('terms-decline');
+  const accept = document.getElementById('terms-accept-btn');
+  const close = document.getElementById('terms-close-btn');
+  if (row) row.hidden = readOnly;
+  if (decline) decline.hidden = readOnly;
+  if (accept) accept.hidden = readOnly;
+  if (close) close.hidden = !readOnly;
+  const note = document.getElementById('terms-version-note');
+  if (note) {
+    note.textContent = readOnly
+      ? 'Редакция ' + (TERMS_VERSION || '') + ' — вы её уже приняли, можно перечитывать в любой момент.'
+      : (TERMS_VERSION ? 'Редакция ' + TERMS_VERSION + '.' : '');
   }
 }
 
-function fillSenderFromTemplate() {
-  const sel = document.getElementById('s-template');
-  const t = (sel && messageTemplates.find(x => x.id === sel.value)) || getActiveTemplateFor('vk');
-  if (!t) { showToast('Нет шаблонов', 'warning'); return; }
-  const ta = document.getElementById('s-message');
-  if (ta) ta.value = t.text;
-  showToast('Текст шаблона вставлен', 'success');
+// Кнопка «Соглашение» в шапке: открыть текст, ничего не переспрашивая.
+function openTermsOverlay() {
+  const ov = document.getElementById('terms-overlay');
+  if (!ov) return;
+  _termsMode(true);
+  ov.hidden = false;
+}
+
+function closeTermsOverlay() {
+  const ov = document.getElementById('terms-overlay');
+  if (ov) ov.hidden = true;
+}
+
+// Возврат с экрана «отказ»: показать соглашение снова — уже с возможностью
+// принять. Раньше окно безвозвратно удалялось, и единственным выходом
+// оставалось закрыть приложение.
+function reopenTerms() {
+  const declined = document.getElementById('terms-declined');
+  if (declined) declined.hidden = true;
+  const ov = document.getElementById('terms-overlay');
+  if (!ov) return;
+  _termsMode(false);
+  const chk = document.getElementById('terms-accept-chk');
+  if (chk) chk.checked = false;
+  onTermsCheckbox();
+  ov.hidden = false;
+}
+
+function closeAppTab() {
+  window.close();
+  // Браузер может не дать закрыть вкладку — тогда хотя бы объясним.
+  setTimeout(() => showToast('Закройте вкладку вручную (Ctrl+W) и завершите приложение', 'info'), 150);
+}
+
+function acceptTerms() {
+  fetch('/terms/accept', {method: 'POST', headers: {'Content-Type': 'application/json'}})
+    .then(r => r.json())
+    .then(() => {
+      // Скрываем, а не удаляем: кнопка «Соглашение» в шапке должна работать
+      // и после первого принятия.
+      closeTermsOverlay();
+      const declined = document.getElementById('terms-declined');
+      if (declined) declined.hidden = true;
+      showToast('Соглашение принято — добро пожаловать', 'success');
+    })
+    .catch(() => showToast('Не удалось сохранить согласие — проверьте, что приложение запущено', 'error'));
+}
+
+function declineTerms() {
+  closeTermsOverlay();
+  const declined = document.getElementById('terms-declined');
+  if (declined) declined.hidden = false;
+}
+
+// ═══════════════════════════════════════════
+//  Минимально допустимая версия (ниже — не работаем)
+// ═══════════════════════════════════════════
+// Порог публикуется вместе с релизом и проверяется на каждом открытии окна:
+// старая сборка может быть несовместима с форматом данных и маршрутами.
+// Сеть недоступна → сервер отвечает без блокировки, и приложение работает.
+function initVersionGate() {
+  fetch('/version/minimum')
+    .then(r => r.json())
+    .then(v => {
+      if (!v || !v.blocked) return;
+      const gate = document.getElementById('version-gate');
+      const text = document.getElementById('version-gate-text');
+      const versions = document.getElementById('version-gate-versions');
+      if (text) {
+        text.textContent = 'Эта сборка приложения (v' + v.current + ') устарела: ' +
+          'она работает только с данными и маршрутами версии v' + v.minimum + ' и новее. ' +
+          'Продолжить работу на ней нельзя — это привело бы к ошибкам в результатах.';
+      }
+      if (versions) {
+        versions.textContent = 'Установлено: v' + v.current +
+          ' · минимально допустимая: v' + (v.minimum || '—') +
+          (v.latest ? ' · актуальная: v' + v.latest : '') +
+          (v.notice ? ' · ' + v.notice : '');
+      }
+      if (gate) gate.hidden = false;
+    })
+    .catch(() => {});   // сервер недоступен — не блокируем
+}
+
+// Кнопка на плашке «нужно обновить»: ведёт на страницу загрузки релиза.
+function openReleasesPage() {
+  fetch('/update/status')
+    .then(r => r.json())
+    .then(s => {
+      const url = (s && s.download_url) || '';
+      if (url) { window.open(url, '_blank', 'noopener'); return; }
+      showToast('Ссылка на релиз недоступна — откройте страницу релизов вручную', 'info');
+    })
+    .catch(() => showToast('Приложение не отвечает — перезапустите его', 'error'));
+}
+
+function initTermsGate() {
+  fetch('/terms/status')
+    .then(r => r.json())
+    .then(j => {
+      TERMS_VERSION = (j && j.version) || '';
+      _termsMode(Boolean(j && j.accepted));   // принято → окно только для чтения
+      if (j && j.accepted) return;            // уже принято — работаем
+      const ov = document.getElementById('terms-overlay');
+      if (ov) ov.hidden = false;              // первый вход: блокируем интерфейс
+    })
+    .catch(() => {});                         // сервер недоступен — не блокируем
 }
 
 (function init() {
@@ -700,19 +828,22 @@ function fillSenderFromTemplate() {
   loadCityHistoryMeta();
 
   // Sidebar counters / summary live-update on any edit of the basic fields
+  // Навешиваем ОДИН раз: иначе каждый «Найти компании» добавлял бы новый
+  // слушатель (а с «{once:true}» — ещё и мёртвый), и один ввод вызывал бы
+  // несколько пересчётов подряд.
   const _fq = document.getElementById('f-queries');
   if (_fq) _fq.addEventListener('input', () => {
+    clearFieldError(_fq.closest('div'));   // красная рамка снимается при правке
     updateQueriesCounter();
     updateClearAllBtn();
     updateBasicSummary();
   });
   const _fci = document.getElementById('f-city-input');
   if (_fci) _fci.addEventListener('input', () => {
+    clearFieldError(document.getElementById('fw-city'));
     updateClearAllBtn();
   });
 
-  const _fp = document.getElementById('f-pages');
-  if (_fp) _fp.addEventListener('input', updatePagesCapNote);
 
   try {
     const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY));
@@ -732,10 +863,13 @@ function fillSenderFromTemplate() {
   updateBasicSummary();
   updateRunBtnState();
   renderPresets();
-  loadExcelCols();
+  loadParseFields();
   initResultsPanel();
   loadReviewed();
+  loadSocialViewed();
   loadColState();
+  // Порядок столбцов («Столбцы» → перетаскивание) — отдельно от видимости.
+  loadColOrder();
   applyHistorySections();
   // Stats tab shows zero cards right away — before any search
   renderDefaultStats();
@@ -745,27 +879,13 @@ function fillSenderFromTemplate() {
   loadNotifySettings();
   updateNotifyBtn();
 
-  // Sender init
-  restoreSenderConfig();
-  loadSenderFiles();
-  // After files are loaded, restore selected file
-  setTimeout(() => {
-    const pf = window._senderPendingFile;
-    if (pf) {
-      const sel = document.getElementById('s-excel-file');
-      for (let i = 0; i < sel.options.length; i++) {
-        if (sel.options[i].value === pf) { sel.selectedIndex = i; break; }
-      }
-    }
-  }, 800);
-
   // Чёрный список слов («🚫 Исключить по словам»): список и шаблоны — до первого
   // рендера счётчика, чтобы подсказка не мигала пустой строкой.
   fillBlacklistTemplateSelect();
   loadBlacklistWords();
 
-  // Шаблоны сообщений («📝 Шаблоны»): состояние нужно таблице, обходу и
-  // рассылке, поэтому читаем сразу, а не при первом заходе на вкладку.
+  // Шаблоны сообщений («📝 Шаблоны»): состояние нужно таблице и обходу,
+  // поэтому читаем сразу, а не при первом заходе на вкладку.
   loadTemplates();
   const _tplOverlay = document.getElementById('tpl-modal');
   if (_tplOverlay) _tplOverlay.addEventListener('click', e => { if (e.target === _tplOverlay) closeTemplateModal(); });
@@ -778,6 +898,9 @@ function fillSenderFromTemplate() {
   const _advBox = document.getElementById('f-output-advanced');
   if (_advBox && _advSaved === '1') _advBox.checked = true;
   loadOutputDir();
+
+  // Хранение результатов: срок автоудаления из settings.json (по умолчанию 30 дней).
+  initRetention();
 
   // Sticky-футер «Фильтрация результата» паркуется над доком сайдбора —
   // его высота живёт в токене --dock-h (медленно меняется от шрифта/зума).
@@ -792,10 +915,18 @@ function fillSenderFromTemplate() {
   // API-keys status badge (✅ / ⚠️ / ❌) from .env
   refreshApiKeysStatus();
 
-  // Check Playwright availability
+  // Пользовательское соглашение: при первом входе блокируем интерфейс,
+  // пока не принято (хранится на сервере в settings.json).
+  initTermsGate();
+
+  // Устаревшую версию приложение блокирует до обновления.
+  initVersionGate();
+
+  // Браузер — единственный способ загрузки страниц: если Chrome не найден,
+  // поиск работать не будет, и сказать об этом надо сразу.
   fetch('/status').then(r => r.json()).then(s => {
-    if (s.playwright_available === false) {
-      const el = document.getElementById('playwright-notice');
+    if (s.browser_available === false) {
+      const el = document.getElementById('browser-notice');
       if (el) el.style.display = '';
     }
     // A paused run survives a page reload: without this the dock showed
@@ -805,13 +936,6 @@ function fillSenderFromTemplate() {
       enterPausedState(s.paused.resume);
     }
   }).catch(() => {});
-
-  // Reload files list when switching to sender tab
-  const _origShowTab = showTab;
-  showTab = function(name) {
-    _origShowTab(name);
-    if (name === 'sender') loadSenderFiles();
-  };
 })();
 
 // ═══════════════════════════════════════════
