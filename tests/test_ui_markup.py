@@ -266,17 +266,20 @@ class TestOutputFolderSettings:
 
     def test_form_has_the_folder_field_and_buttons(self):
         for needle in ('id="f-output-dir"', 'id="btn-output-browse"', 'id="btn-output-save"',
-                       'id="btn-output-default"', 'id="f-output-advanced"',
+                       'id="btn-output-default"', 'id="btn-output-open"',
+                       'id="f-output-advanced"',
                        'id="f-output-raw"', 'id="f-output-processed"', 'id="f-output-archive"',
                        'id="output-dir-hint"', 'id="output-dir-err"'):
             assert needle in TEMPLATE, needle
 
     def test_handlers_exist(self):
         for fn in ("function loadOutputDir(", "function saveOutputDir(", "function resetOutputDir(",
-                   "function pickOutputDir(", "function onOutputAdvancedToggle(",
+                   "function pickOutputDir(", "function openOutputDir(",
+                   "function onOutputAdvancedToggle(",
                    "function applyOutputDirState("):
             assert fn in APP_JS, fn
         assert "'/output-dir'" in APP_JS and "'/folder-picker'" in APP_JS
+        assert "'/output/open'" in APP_JS, "кнопка «Открыть» не зовёт сервер"
 
     def test_hint_explains_that_service_files_stay_put(self):
         assert "Ключи, кэш найденного и история остаются" in APP_JS
@@ -286,6 +289,7 @@ class TestOutputFolderSettings:
         assert '@bp.route("/output-dir", methods=["GET"])' in api
         assert '@bp.route("/output-dir", methods=["POST"])' in api
         assert '@bp.route("/folder-picker", methods=["POST"])' in api
+        assert '@bp.route("/output/open", methods=["POST"])' in api, "нет кнопки «Открыть папку» на сервере"
 
 
 class TestNotificationSettings:
@@ -1939,3 +1943,40 @@ class TestTemplateHotReloadInDevMode:
         assert "app.jinja_env.auto_reload = True" in app_py
         # В собранном приложении (PyInstaller) это лишний stat на рендер.
         assert 'getattr(sys, "frozen", False)' in app_py
+
+class TestStatsGraphics:
+    """«Статистика»: распределение рейтинга, готовность лидов, полнота данных."""
+
+    def test_new_graphics_functions_exist(self):
+        for name in ("function ratingBucketRows(", "function leadBucketRows(",
+                     "function coverageRows(", "function pctBarRows(",
+                     "function ratingSectionHTML(", "function leadSectionHTML(",
+                     "function coverageSectionHTML("):
+            assert name in APP_JS, name
+
+    def test_graphics_are_rendered_into_the_stats_panel(self):
+        for call in ("${ratingSectionHTML(data)}", "${leadSectionHTML(data)}",
+                     "${coverageSectionHTML(data)}"):
+            assert call in APP_JS, call
+
+    def test_bucket_colors_are_theme_tokens(self):
+        """Полосы носят var(--…) — цвет следует за темой, а не за строкой."""
+        assert "color: 'var(--grn)'" in APP_JS
+        assert "background:var(--c)" in APP_JS
+
+    def test_lead_thresholds_match_the_table_badge(self):
+        """Пороги лидов в графике — те же 70/45, что у бейджа scoreHTML."""
+        assert re.search(r"min:\s*70", APP_JS)
+        assert re.search(r"min:\s*45", APP_JS)
+
+    def test_percentages_are_against_all_records(self):
+        """Полнота данных меряется от ВСЕХ записей, а не от максимальной."""
+        assert "Math.round(r.count / (r.total || 1) * 100)" in APP_JS
+
+    def test_summary_cards_grow_with_quality_metrics(self):
+        assert "'Средний рейтинг'" in APP_JS
+        assert "'Горячих лидов'" in APP_JS
+
+    def test_empty_stats_have_an_illustration(self):
+        assert 'class="sta-art" aria-hidden="true"' in APP_JS
+        assert ".sta-art{" in STYLE and ".sta-col-hi{" in STYLE

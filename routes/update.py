@@ -77,6 +77,13 @@ bp = Blueprint("update", __name__)
 APP_DIR_NAME = "YandexBusinessParser"     # top-level folder inside the release zip
 EXE_NAME = "YandexBusinessParser.exe"
 ZIP_ASSET_NAME = "YandexBusinessParser-windows-x64.zip"
+# Файлы релиза по системам. Windows обновляется внутри приложения (zip с exe),
+# macOS ставится вручную с установочного образа — поэтому ему нужен свой .dmg,
+# а не чужой windows-архив. Регресс: на Mac кнопка «Скачать» отдавала
+# YandexBusinessParser-windows-x64.zip (то есть .exe) — приложение, скачанное
+# «для macOS», не запускалось.
+MAC_ZIP_TMPL = "YandexBusinessParser-macos-{arch}.zip"
+MAC_DMG_TMPL = "YandexBusinessParser-macos-{arch}.dmg"
 STATE_FILE = "_update_state.json"         # progress for /update/status polling
 ASSET_CACHE_TTL = 10 * 60                 # секунд: кэш проверки релиза по API
 # Кэш минимально допустимой версии: она меняется раз в несколько релизов,
@@ -196,35 +203,77 @@ def _releases_page() -> str:
     return f"https://github.com/{GITHUB_REPO}/releases/latest"
 
 
-def _versioned_asset_url(version: str, url: str) -> str:
-    """`url` if it is pinned to v<version>, else "".
+def _mac_arch() -> str:
+    """arm64 у Apple Silicon, x64 у Intel (и всё неопознанное — x64).
+
+    Ассеты релиза выпускаются двумя сборками (`asset_arch` в build-macos.yml),
+    поэтому ссылку нужно выбирать не только по системе, но и по архитектуре:
+    arm64-образ на Intel не запустится и наоборот.
+    """
+    try:
+        import platform as _platform
+        machine = (_platform.machine() or "").strip().lower()
+    except Exception:
+        machine = ""
+    return "arm64" if machine in ("arm64", "aarch64") else "x64"
+
+
+def _release_asset_name(install: bool = False) -> str:
+    """Имя файла релиза для ТЕКУЩЕЙ системы.
+
+    `install=True` — формат для ручной установки: на macOS это .dmg (образ,
+    который монтируется и перетаскивается в «Программы»), на Windows — тот же
+    zip с exe (его ставит и внутренний обновлятор). Держим одно правило для
+    скачивания и для подписи кнопки, чтобы ссылка и текст не расходились.
+    """
+    import sys
+    if sys.platform == "darwin":
+        tmpl = MAC_DMG_TMPL if install else MAC_ZIP_TMPL
+        return tmpl.format(arch=_mac_arch())
+    return ZIP_ASSET_NAME
+
+
+def _versioned_asset_url(version: str, url: str, asset: str = ZIP_ASSET_NAME) -> str:
+    """`url` if it is pinned to v<version> **and** points at `asset`, else "".
 
     Only `.../releases/download/v<version>/<asset>` is safe to hand to the
     updater: the `releases/latest/download/...` alias serves the previous
     published release while the new one is a draft (GitHub hides drafts),
     which is how a user could end up re-installing the version already on
     disk.
+
+    Проверка имени файла обязательна: version.json штампуется ссылкой на
+    windows-архив, и без неё macOS уезжал скачивать .exe.
     """
     version = str(version or "").strip()
     url = str(url or "").strip()
     if not version or not url:
         return ""
-    return url if f"/releases/download/v{version}/" in url else ""
+    if f"/releases/download/v{version}/" not in url:
+        return ""
+    return url if url.rstrip("/").endswith("/" + str(asset or "")) else ""
 
 
-def _release_asset_url(version: str, use_cache: bool = True) -> str:
-    """browser_download_url of the zip asset of EXACTLY the v<version> release.
+def _release_asset_url(version: str, asset: str = ZIP_ASSET_NAME,
+                       use_cache: bool = True) -> str:
+    """browser_download_url of the requested asset of EXACTLY the v<version> release.
 
     `/releases/tags/v<version>` is used instead of `/releases/latest`: it
     answers 404 while the release is a draft or was deleted, and that is
     precisely the case we must not treat as an available update. Returns ""
-    when the release is not published or has no zip asset.
+    when the release is not published or has no such asset.
+
+    Имя файла (`asset`) — параметр, а не константа: на macOS нужен .dmg, и
+    кэш тоже разделён по имени файла, иначе одна платформа отдавала бы адрес,
+    сохранённый для другой.
     """
     version = str(version or "").strip()
+    asset = str(asset or ZIP_ASSET_NAME).strip()
     if not version:
         return ""
     cache = _state().get("asset") or {}
-    if use_cache and cache.get("version") == version:
+    if (use_cache and cache.get("version") == version
+            and cache.get("asset") == asset):
         if time.time() - float(cache.get("at") or 0) < ASSET_CACHE_TTL:
             return str(cache.get("url") or "")
     url = ""
@@ -240,17 +289,19 @@ def _release_asset_url(version: str, use_cache: bool = True) -> str:
         if r.status_code == 200:
             data = r.json() or {}
             if not data.get("draft"):
-                for asset in data.get("assets", []):
-                    if asset.get("name") == ZIP_ASSET_NAME:
-                        url = asset.get("browser_download_url", "")
+                for found in data.get("assets", []):
+                    if found.get("name") == asset:
+                        url = found.get("browser_download_url", "")
                         break
     except Exception:
         pass
-    _save_state(asset={"version": version, "url": url, "at": time.time()})
+    _save_state(asset={"version": version, "asset": asset, "url": url,
+                       "at": time.time()})
     return url
 
 
-def _download_target(latest: str, stamped_url: str = "") -> tuple:
+def _download_target(latest: str, stamped_url: str = "",
+                     asset: str = ZIP_ASSET_NAME) -> tuple:
     """(url, reason) — where the advertised version can really be downloaded.
 
     1. the URL stamped into version.json, when it is pinned to v<latest>
@@ -261,12 +312,13 @@ def _download_target(latest: str, stamped_url: str = "") -> tuple:
        offering an update that would silently no-op.
     """
     version = str(latest or "").strip()
+    asset = str(asset or ZIP_ASSET_NAME).strip()
     if not version:
         return "", "Неизвестна версия обновления — повторите проверку позже."
-    pinned = _versioned_asset_url(version, stamped_url)
+    pinned = _versioned_asset_url(version, stamped_url, asset)
     if pinned:
         return pinned, ""
-    resolved = _release_asset_url(version)
+    resolved = _release_asset_url(version, asset)
     if resolved:
         return resolved, ""
     return "", (f"Релиз v{version} ещё не опубликован на GitHub. Обновление "
@@ -382,6 +434,9 @@ def update_status():
         "newer": False,
         "changelog": "",
         "download_url": "",
+        # Какой файл релиза нужен ИМЕННО этой системе: windows-zip или
+        # macos-<arch>.dmg. UI берёт отсюда и ссылку, и подпись кнопки.
+        "asset_name": _release_asset_name(install=True),
         # false → в баннере нет кнопки «Обновить сейчас» (macOS/исходники).
         "auto_apply": _is_frozen() and _self_update_supported(),
         "platform": sys.platform,
@@ -398,7 +453,10 @@ def update_status():
         out["download_url"] = _releases_page()
         out["newer"] = _ver_tuple(out["latest"] or "0") > _ver_tuple(APP_VERSION)
         if out["newer"]:
-            url, why = _download_target(out["latest"], stamped)
+            # Версия, до которой предлагается обновиться, и файл под эту
+            # систему — баннер показывает и то, и другое.
+            out["target_version"] = out["latest"]
+            url, why = _download_target(out["latest"], stamped, out["asset_name"])
             if url:
                 out["download_url"] = url
             else:

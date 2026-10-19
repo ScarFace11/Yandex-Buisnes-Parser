@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { readAppSrc } from './_src.mjs';
+import { readAppSrc, MODAL_A11Y_STUB } from './_src.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const src = readAppSrc(root);
@@ -85,6 +85,10 @@ const stubFetch = (url, opts) => {
 };
 globalThis.fetch = stubFetch;
 
+// Слова статусов для текстового отчёта: объявлены однострочной константой,
+// поэтому grabConst (ищет «\n};») их не вырежет — задаём здесь как есть.
+globalThis.DIAG_STATUS_WORDS = { ok: 'OK', warn: 'ВНИМАНИЕ', error: 'ОШИБКА' };
+
 globalThis.escapeHtml = s => String(s == null ? '' : s)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -96,7 +100,9 @@ globalThis._pluralRu = (n, one, few, many) => {
 };
 
 (0, eval)([
+  MODAL_A11Y_STUB,
   grabConst('UI_ICONS'),
+  grabConst('DIAG_GROUP_NAMES'),
   grabConst('DIAG_GROUP_TITLES'),
   grabConst('DIAG_STATUS'),
   grab('showDiagnostics'),
@@ -106,6 +112,9 @@ globalThis._pluralRu = (n, one, few, many) => {
   grab('setDiagSummary'),
   grab('renderDiagnostics'),
   grab('diagRowHTML'),
+  grab('diagReportText'),
+  grab('copyDiagReport'),
+  grab('_syncDiagCopyBtn'),
 ].join('\n'));
 
 function reset() {
@@ -113,6 +122,7 @@ function reset() {
   // оставлять после себя «висящий» промис для следующих тестов.
   globalThis.fetch = stubFetch;
   globalThis._diagBusy = false;
+  globalThis._diagLast = [];
   els['diag-overlay'] = mkEl('diag-overlay');
   els['diag-summary'].innerHTML = '';
   els['diag-summary'].className = '';
@@ -284,7 +294,7 @@ test('сервер недоступен — панель не падает и г
 test('пустой список групп означает полную проверку', async () => {
   reset();
   await globalThis.runDiagnostics([], runButtons[0]);
-  assert.deepEqual(requests[0].body.groups, ['keys', 'files', 'data', 'env']);
+  assert.deepEqual(requests[0].body.groups, ['keys', 'files', 'data', 'runs', 'env']);
 });
 
 // ── Модалка ───────────────────────────────────────────────────
@@ -297,9 +307,9 @@ test('showDiagnostics: три кнопки запуска и предупреж�
   assert.equal(overlay.id, 'diag-overlay');
   assert.match(overlay.innerHTML, /#i-pulse/);
   assert.match(overlay.innerHTML, /Диагностика/);
-  assert.match(overlay.innerHTML, /runDiagnostics\(\['keys','files','data','env'\]/);
+  assert.match(overlay.innerHTML, /runDiagnostics\(\['keys','files','data','runs','env'\]/);
   assert.match(overlay.innerHTML, /runDiagnostics\(\['keys'\]/);
-  assert.match(overlay.innerHTML, /runDiagnostics\(\['files','data','env'\]/);
+  assert.match(overlay.innerHTML, /runDiagnostics\(\['files','data','runs','env'\]/);
   assert.match(overlay.innerHTML, /живой запрос к ВКонтакте/,
     'человек должен знать, что проверка ключей делает внешний запрос');
   assert.match(overlay.innerHTML, /id="diag-summary"/);
@@ -375,6 +385,59 @@ test('обычные проверки просят быстрый режим', a
   await globalThis.runDiagnostics(['keys'], runButtons[1]);
   assert.equal(requests[0].body.deep, false,
     'без явного флага сервер не открывает браузер');
+});
+
+// ── Прогоны, легенда и копирование отчёта ────────────────────
+
+test('группа «Прогоны и кэш» есть в кнопках и в отчёте', () => {
+  reset();
+  globalThis.showDiagnostics();
+  assert.match(appended[0].innerHTML, /'runs'/, 'история прогонов — часть «Проверить всё»');
+  globalThis.renderDiagnostics([{
+    group: 'runs', status: 'ok', title: 'Последний прогон',
+    detail: '17.10.2026 14:32: Уфа · 42 организации',
+  }], ['runs']);
+  assert.match(els['diag-results'].innerHTML, /Прогоны и кэш/);
+  assert.match(els['diag-results'].innerHTML, /42 организации/);
+});
+
+test('легенда объясняет три статуса словами', () => {
+  reset();
+  globalThis.showDiagnostics();
+  const html = appended[0].innerHTML;
+  assert.match(html, /diag-legend/);
+  assert.match(html, /в порядке/);
+  assert.match(html, /сбор не пойдёт/);
+  assert.match(html, /цвет полосы слева и есть статус/i,
+    'легенда должна объяснять, что означает цвет');
+});
+
+test('в окне видно, как проверить без запуска интерфейса', () => {
+  reset();
+  globalThis.showDiagnostics();
+  const html = appended[0].innerHTML;
+  assert.match(html, /--check/);
+  assert.match(html, /без окна приложения/);
+});
+
+test('текстовый отчёт годится для пересылки: без разметки, с подсказками', () => {
+  globalThis._diagLast = [
+    { group: 'runs', status: 'warn', title: 'Прогонов ещё не было',
+      detail: 'История пуста.', hint: 'Запустите поиск.' },
+    { group: 'files', status: 'ok', title: 'Папка доступна', detail: 'output' },
+  ];
+  const text = globalThis.diagReportText();
+  assert.doesNotMatch(text, /<svg|<div|<span/, 'в буфер обмена не должен попадать HTML');
+  assert.match(text, /Прогоны и кэш/);
+  assert.match(text, /\[ВНИМАНИЕ\]/);
+  assert.match(text, /→ Запустите поиск\./);
+  assert.match(text, /Итог: 2 проверок: 1 в порядке, 1 с предупреждениями/);
+  assert.doesNotMatch(text, /ключ|token/i, 'в отчёте не должно быть даже намёка на секреты');
+});
+
+test('копирование отчёта не падает без результатов', async () => {
+  reset();
+  assert.equal(await globalThis.copyDiagReport(null), false);
 });
 
 test('неключевые проверки не запускаются на загрузке страницы', () => {

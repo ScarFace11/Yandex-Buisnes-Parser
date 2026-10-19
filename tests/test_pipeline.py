@@ -443,11 +443,17 @@ class TestRawPipelineMode:
         import yandex_maps_parser.processing as proc
         monkeypatch.setattr(proc, "process_all", lambda *a, **k: calls.__setitem__("n", calls["n"] + 1) or {})
 
-        # Simulate: raw files exist from run(), city loop completed.
-        monkeypatch.setattr(state, "_RAW_FILES_LAST_RUN", ["Z:/raw/x.xlsx"], raising=False)
+        # Настоящий ход: сам сбор (run) пишет raw и перечисляет файлы в
+        # _RAW_FILES_RUN — только тогда этапу 2 есть что фильтровать.
+        # Раньше здесь подкладывался _RAW_FILES_LAST_RUN, но run_web сбрасывает
+        # его перед обходом городов, и этап 2 запускался с ПУСТЫМ списком:
+        # тест не отличал «фильтровать нечего» от «фильтры всё сняли».
+        monkeypatch.setattr(runner, "run",
+                            lambda *a, **k: state.__setattr__(
+                                "_RAW_FILES_RUN", ["Z:/raw/x.xlsx"]))
 
-        # run_web with an empty city list: the loop body never runs but
-        # _loop_ok becomes True → the finally block performs stage 2.
+        # run_web with an empty city list: город берётся из state.CITY,
+        # цикл заканчивается без ошибок → finally выполняет этап 2.
         params = {"queries": [], "cities": [], "pipeline": "raw",
                   "output_excel": True, "output_json": False,
                   "output_csv": False, "output_map": False,
@@ -458,3 +464,30 @@ class TestRawPipelineMode:
         except Exception:
             pass
         assert calls["n"] == 1, "stage 2 must run exactly once on a complete crawl"
+
+    def test_empty_crawl_does_not_run_stage2(self, monkeypatch):
+        """Собирать было нечего — этап 2 молчит, а не «фильтры ничего не нашли»."""
+        calls = {"n": 0}
+        logs = []
+        monkeypatch.setattr(state, "PIPELINE", "raw", raising=False)
+        monkeypatch.setattr(state, "RAW_MODE", "keep", raising=False)
+        monkeypatch.setattr(state, "SEARCH_QUERIES", ["кафе"])
+        monkeypatch.setattr(state, "CITY", "Уфа")
+        monkeypatch.setattr(state, "_RAW_FILES_RUN", [], raising=False)
+
+        import yandex_maps_parser.processing as proc
+        monkeypatch.setattr(proc, "process_all",
+                            lambda *a, **k: calls.__setitem__("n", calls["n"] + 1) or {})
+        monkeypatch.setattr(runner, "run", lambda *a, **k: None)
+
+        params = {"queries": [], "cities": [], "pipeline": "raw",
+                  "output_excel": True, "parse_mode": "all"}
+        runner._apply_params(params)
+        try:
+            runner.run_web(params, lambda lv, m: logs.append((lv, m)))
+        except Exception:
+            pass
+        assert calls["n"] == 0, "на пустом сборе этап 2 запускаться не должен"
+        assert any("Этап 2 пропущен" in str(m) for _lv, m in logs), logs[-5:]
+        assert not any("Ничего не найдено по заданным фильтрам" in str(m)
+                       for _lv, m in logs), " ложная причина пустоты в логе"

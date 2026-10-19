@@ -12,6 +12,7 @@ import re
 import threading
 import time
 import uuid
+import urllib.request
 import multiprocessing
 
 # Writable dir: next to the .exe when frozen, project root from source
@@ -51,8 +52,30 @@ _STOP_GRACE_SEC = 8  # seconds
 # tens of seconds, so a pause gets a longer grace than a plain stop.
 _PAUSE_GRACE_SEC = 45  # seconds
 
+# ── Жизнь записей в реестре прогонов ──────────────────────────
+# finish_run убирает только успешно завершённые прогоны и лишь через 12 ч
+# после старта. Прогон, чей процесс умер (watchdog, kill) или о котором
+# родитель так и не узнал, оставался в _runs навсегда — за долгую сессию
+# реестр накапливал тысячи записей. Теперь уборка идёт ещё и периодически,
+# при каждом new_run(): по сроку жизни и по количеству записей.
+_RUN_TTL_S = 24 * 3600        # завершённые прогоны живут сутки
+_MAX_FINISHED_RUNS = 100      # ... но не больше сотни завершённых за сессию
+_MAX_PAUSED_RUNS = 20         # свежие паузы бережём для «Продолжить», старые — нет
+_SWEEP_INTERVAL_S = 60        # чаще раза в минуту реестр не перебираем
+
 # Compiled ANSI escape pattern for stripping colour codes from log lines
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+# ── API callback (webhook) ────────────────────────────────────
+# Публичный API (/api/v1/search) принимает callback_url: когда прогон
+# заканчивается, приложение отправляет на этот адрес POST с итогами —
+# n8n/другая автоматизация получает событие вместо опроса статуса.
+# Доставка ненадёжна по определению (сторонний адрес может быть недоступен),
+# поэтому ошибка — это лог, а не сбой прогона: данные уже записаны.
+_CB_TIMEOUT_S = 10   # таймаут одного POST на callback_url
+_CB_RETRIES = 2      # попыток доставки (с паузой между ними)
+_CB_RETRY_DELAY_S = 1.0
 
 
 def _pause_resume_payload(entry: dict) -> dict | None:
@@ -105,6 +128,7 @@ class RunManager:
     def __init__(self):
         self._runs: dict[str, dict] = {}
         self._lock = threading.Lock()
+        self._last_sweep = 0.0
 
     def new_run(self) -> dict:
         run_id = uuid.uuid4().hex[:8]
@@ -125,12 +149,64 @@ class RunManager:
             "count":      0,
             "cities":     [],
             "started_at": time.time(),
+            "finished_at": 0.0,      # 0 → прогон ещё не закончился
+            # Ошибка раннера: отличает «сломалось» от «ничего не найдено»
+            # (см. _entry_status в routes/public_api.py).
+            "error":      None,
+            # Прогресс: заполняется мостом из сообщений городов (см. _forward).
+            "cities_done": 0,
+            "cities_total": 0,
+            "records_so_far": 0,
             "_done":      False,
             "_run_mode":  "thread",   # "process" or "thread"
         }
+        self._sweep()          # уборка реестра — до добавления новой записи
         with self._lock:
             self._runs[run_id] = entry
         return entry
+
+    def _sweep(self) -> int:
+        """Убрать из реестра старые записи прогонов; вернуть число удалённых.
+
+        finish_run чистит только те прогоны, до которых дошёл, и лишь по
+        сроку в 12 ч. Запись убитого/упавшего процесса не удалял никто —
+        теперь её снимает эта уборка: по TTL, по числу завершённых и по
+        числу паузных. Активные и стоящие в очереди не трогаются никогда,
+        а свежие паузы живут для «Продолжить» (но не бесконечно много).
+        """
+        now = time.time()
+        removed = 0
+        with self._lock:
+            if now - self._last_sweep < _SWEEP_INTERVAL_S:
+                return 0            # реестр перебирается не чаще раза в минуту
+            self._last_sweep = now
+
+            def _idle(r: dict) -> bool:
+                return not r.get("active") and not r.get("queued")
+
+            # 1) По сроку жизни: всё завершённое старше _RUN_TTL_S. Паузные
+            #    записи TTL не считает: их берегут для «Продолжить».
+            for rid in [rid for rid, r in self._runs.items()
+                        if _idle(r) and not r.get("paused")
+                        and now - r.get("started_at", 0) > _RUN_TTL_S]:
+                del self._runs[rid]
+                removed += 1
+            # 2) Паузные: храним последние _MAX_PAUSED_RUNS штук.
+            paused = sorted((kv for kv in self._runs.items()
+                             if _idle(kv[1]) and kv[1].get("paused")),
+                            key=lambda kv: kv[1].get("started_at", 0))
+            for rid, _r in paused[:max(0, len(paused) - _MAX_PAUSED_RUNS)]:
+                del self._runs[rid]
+                removed += 1
+            # 3) По количеству: самые старые завершённые сверх лимита
+            #    (самая длинная сессия не должна растить реестр бесконечно).
+            finished = sorted((kv for kv in self._runs.items()
+                               if _idle(kv[1]) and not kv[1].get("paused")),
+                              key=lambda kv: kv[1].get("started_at", 0))
+            for rid, _r in finished[:max(0, len(finished) - _MAX_FINISHED_RUNS)]:
+                del self._runs[rid]
+                removed += 1
+        return removed
 
     def get(self, run_id: str) -> dict | None:
         with self._lock:
@@ -336,6 +412,12 @@ class RunManager:
                 # pause_event MUST be handed to run_web: state._PAUSE_EVENT is
                 # what the closing lines and the done message read, and a fresh
                 # internal event would never be set by stop_run().
+                # Стартовый/финальный прогресс — как в runner.run_process:
+                # API знает знаменатель сразу, а после конца видит all/done.
+                _total_cities = len(params.get("cities") or [])
+                if _total_cities:
+                    mp_queue.put({"type": "progress", "cities_done": 0,
+                                  "cities_total": _total_cities})
                 files = _parser.run_web(params, _log_to_queue, stop_event, skip_event,
                                         pause_event)
                 # Build the frontend-friendly merged JSON (english keys, all
@@ -371,6 +453,10 @@ class RunManager:
                 # deliver the done message to the frontend.
                 # This is the ONLY place done is sent for normal completion.
                 skipped = list(getattr(_parser.state, '_SKIPPED_CITIES', []))
+                if _total_cities and not stop_event.is_set() and not pause_event.is_set():
+                    mp_queue.put({"type": "progress", "cities_done": _total_cities,
+                                  "cities_total": _total_cities,
+                                  "records_so_far": count})
                 mp_queue.put({"type": "done", "files": files, "count": count,
                               "stopped": stop_event.is_set() and not pause_event.is_set(),
                               "paused": pause_event.is_set(),
@@ -385,8 +471,12 @@ class RunManager:
                 try:
                     mp_queue.put({"type": "log", "level": "warn",
                                   "msg": f"Ошибка: {exc}\n{tb}"})
+                    # Явная ошибка: мост пометит прогон failed, и клиент
+                    # отличит «сломалось» от «ничего не найдено».
+                    mp_queue.put({"type": "error", "message": str(exc)})
                     mp_queue.put({"type": "done", "files": [], "count": 0,
                                   "stopped": False, "paused": False,
+                                  "error": str(exc),
                                   "resume": None, "formats": []})
                 except Exception:
                     pass
@@ -590,6 +680,132 @@ run_manager = RunManager()
 
 # ── Bridge thread helper ──────────────────────────────────────
 
+def _callback_payload(entry: dict) -> dict:
+    """Итоги прогона для callback_url — те же поля, что отдаёт /api/v1/status."""
+    stop_ev = entry.get("stop_event")
+    pause_ev = entry.get("pause_event")
+    was_paused = bool(entry.get("paused") or (pause_ev and pause_ev.is_set()))
+    stopped = bool(stop_ev and stop_ev.is_set() and not was_paused)
+    if entry.get("error"):
+        status = "failed"          # упавший прогон — это не «done с нулём записей»
+    elif was_paused:
+        status = "paused"
+    elif stopped:
+        status = "stopped"
+    else:
+        status = "done"
+    params = entry.get("params") or {}
+    return {
+        "event":      "run.finished",
+        "run_id":     entry.get("id", ""),
+        "status":     status,
+        "count":      entry.get("count", 0),
+        "files":      entry.get("files", []),
+        "cities":     entry.get("cities", []),
+        "started_at": entry.get("started_at", 0),
+        "finished_at": time.time(),
+        # Новые поля: клиент видит причину падения и прогресс, а не гадает по
+        # «count: 0». Старые поля остались на своих местах (совместимость).
+        "error":      entry.get("error"),
+        "progress":   {"cities_done":    int(entry.get("cities_done") or 0),
+                       # Знаменатель берём из списка городов, если счётчик
+                       # моста ещё не дошёл (прогон мог упасть до первого города).
+                       "cities_total":   int(entry.get("cities_total") or 0)
+                                         or len(entry.get("cities") or []),
+                       "records_so_far": int(entry.get("records_so_far") or 0)},
+        # Пакетный режим (/api/v1/batch): к какой пачке относится прогон.
+        "batch_id":    params.get("batch_id"),
+        "batch_index": params.get("batch_index"),
+    }
+
+def _post_callback(url: str, payload: dict) -> None:
+    """POST JSON на callback_url; недоступность адреса — не ошибка прогона."""
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    last_err = None
+    for attempt in range(_CB_RETRIES):
+        try:
+            req = urllib.request.Request(
+                url, data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=_CB_TIMEOUT_S) as resp:
+                if 200 <= resp.status < 300:
+                    return          # доставлено
+                last_err = f"HTTP {resp.status}"
+        except Exception as e:      # адрес недоступен / таймаут
+            last_err = e
+        if attempt + 1 < _CB_RETRIES:
+            time.sleep(_CB_RETRY_DELAY_S)
+    try:
+        print(f"[api] callback не доставлен ({url}): {last_err}")
+    except Exception:
+        pass
+
+def _apply_progress(entry: dict, data) -> None:
+    """Обновить прогресс прогона: города и найденные записи.
+
+    Прогресс уже течёт в потоке логов: runner.run_web отдаёт
+    "city/<номер>/<всего>/<город>" на входе города,
+    "city_done|<номер>|<всего>|<город>|<итог>|<записей>" на выходе и
+    "city_list|<города>" один раз со всем списком. Разбираем эти сообщения,
+    чтобы родитель знал, сколько городов пройдено (n8n смотрит
+    progress.cities_done), и не трогаем движок ради счётчиков.
+    Явное сообщение {"type": "progress", cities_done: …} тоже принимается —
+    на случай, если продюсер начнёт слать его напрямую.
+    """
+    if isinstance(data, dict):
+        for key in ("cities_done", "cities_total", "records_so_far"):
+            if data.get(key) is not None:
+                try:
+                    entry[key] = int(data[key])
+                except (TypeError, ValueError):
+                    pass
+        if isinstance(data.get("cities"), list) and data["cities"]:
+            entry["cities"] = data["cities"]
+        return
+
+    text = str(data or "")
+    if text.startswith("city/"):
+        parts = text.split("/")
+        if len(parts) >= 3:
+            try:
+                # Текущий город ещё в работе — считаем только пройденные.
+                entry["cities_done"] = max(0, int(parts[1]) - 1)
+                entry["cities_total"] = int(parts[2])
+            except (TypeError, ValueError):
+                pass
+    elif text.startswith("city_done|"):
+        parts = text.split("|")
+        if len(parts) >= 6:
+            try:
+                entry["cities_done"] = int(parts[1])
+                entry["cities_total"] = int(parts[2])
+                entry["records_so_far"] = int(entry.get("records_so_far") or 0) + int(parts[5])
+            except (TypeError, ValueError):
+                pass
+    elif text.startswith("city_list|"):
+        cities = [c for c in text.split("|", 1)[1].split("/") if c]
+        if cities:
+            entry["cities"] = cities
+
+
+def _fire_api_callback(entry: dict) -> None:
+    """Отправить итоги прогона на callback_url (если он задан) — в фоне.
+
+    Вызывается один раз на прогон, когда мост подтвердил конец (см.
+    _bridge_reader). Ошибка доставки не поднимается: прогон уже записан,
+    а автоматизация получит статус и опросом /api/v1/status.
+    """
+    url = str((entry.get("params") or {}).get("callback_url") or "").strip()
+    if not url:
+        return
+    payload = _callback_payload(entry)
+    threading.Thread(
+        target=_post_callback, args=(url, payload),
+        daemon=True, name=f"yp-callback-{entry.get('id', '')}",
+    ).start()
+
 def _bridge_reader(mp_queue, reg_queue, entry):
     """Read from multiprocessing.Queue, forward to regular Queue for SSE.
 
@@ -614,12 +830,46 @@ def _bridge_reader(mp_queue, reg_queue, entry):
     def _forward(m) -> None:
         """Forward one message; record a real done so the bridge never
         synthesises a second one (which used to arrive with stopped=False and
-        empty files/formats and could report «Готово» for a real stop)."""
-        if isinstance(m, dict) and m.get("type") == "done":
-            entry["_done"] = True
-            _res = m.get("resume")
-            if isinstance(_res, dict) and isinstance(_res.get("position"), dict):
-                entry["_position"] = _res["position"]   # for status() after reload
+        empty files/formats and could report «Готово» for a real stop).
+
+        Здесь же мост переносит итоги прогона из дочернего процесса в
+        родительский entry: files / count / cities / error / progress.
+        Дочерний процесс НЕ может писать в self._runs (это память родителя,
+        а не общая), а /api/v1/results читает именно entry["files"] — без
+        этой записи API всегда отдавал пустой список результатов и статус
+        «running» уже после конца поиска.
+        """
+        if isinstance(m, dict):
+            kind = m.get("type")
+            if kind == "done":
+                entry["_done"] = True
+                entry["finished_at"] = time.time()
+                # Итоги: файлы городов, всего записей, города прогона.
+                if isinstance(m.get("files"), list):
+                    entry["files"] = m["files"]
+                if isinstance(m.get("cities"), list) and m["cities"]:
+                    entry["cities"] = m["cities"]
+                try:
+                    entry["count"] = int(m.get("count") or 0)
+                except (TypeError, ValueError):
+                    pass
+                if m.get("error"):
+                    entry["error"] = str(m["error"])
+                if m.get("paused"):
+                    entry["paused"] = True
+                _res = m.get("resume")
+                if isinstance(_res, dict) and isinstance(_res.get("position"), dict):
+                    entry["_position"] = _res["position"]   # for status() after reload
+            elif kind == "error":
+                # Явная ошибка раннера: прогон помечается failed, и клиент
+                # отличает «сломалось» от «ничего не найдено». В SSE это
+                # сообщение не уходит — оно служебное, для родителя.
+                entry["error"] = str(m.get("message") or m.get("error") or "unknown error")
+                return
+            elif kind == "progress":
+                _apply_progress(entry, m)
+            elif kind == "log" and m.get("level") == "progress":
+                _apply_progress(entry, m.get("msg"))
         reg_queue.put(m)
 
     while True:
@@ -668,6 +918,8 @@ def _bridge_reader(mp_queue, reg_queue, entry):
         except Exception:
             break
 
+    entry["finished_at"] = entry.get("finished_at") or time.time()
+
     # CRASH SAFETY: If the producer died without sending a done message,
     # send one now so the frontend gets a clean completion signal. A PAUSED
     # run keeps its paused flag + resume payload here: a hard-killed child
@@ -680,6 +932,12 @@ def _bridge_reader(mp_queue, reg_queue, entry):
         # Mirror runner.run_process: a user-requested stop must not be reported
         # as a clean «Готово» on the crash path.
         stopped = bool(stop_ev and stop_ev.is_set() and not was_paused)
+        # Нормальный прогон ВСЕГДА отправляет done до сентинела. Если его нет
+        # и это не стоп/пауза — процесс умер молча (watchdog, kill): помечаем
+        # ошибкой, чтобы клиент не принял «count: 0» за честный пустой ответ.
+        if not was_paused and not stopped:
+            entry["error"] = entry.get("error") or (
+                "run process ended without a done message (killed or crashed)")
         # The payload is built in its own try: a failure inside it must not
         # cost the frontend the done message (and with it «Продолжить»).
         resume = None
@@ -698,6 +956,13 @@ def _bridge_reader(mp_queue, reg_queue, entry):
             pass
 
     entry["_done"] = True
+
+    # Уведомление для автоматизации (callback_url из /api/v1/search): прогон
+    # кончился — сообщаем об этом наружу, не заставляя опрашивать статус.
+    try:
+        _fire_api_callback(entry)
+    except Exception:
+        pass
 
     # CRITICAL: Delay finish_run() to give the frontend time to receive
     # the done message and close the SSE connection. Without this delay,

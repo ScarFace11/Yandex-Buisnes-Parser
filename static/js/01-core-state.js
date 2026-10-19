@@ -82,6 +82,19 @@ function parseFieldsEnabled() {
 }
 // Собираются ли соцсети вообще (мастер-переключатель «Соцсети»).
 function socialsEnabled() { return parseFieldsEnabled().has('socials'); }
+// Поля, которые есть ТОЛЬКО на карточке организации: соцсети, телефон,
+// рейтинг с отзывами и сайт. Выдача Яндекс.Карт их не отдаёт — телефон и
+// сайт приходят телом карточки, соцсети тоже почти всегда только оттуда.
+// Значит карточку нужно открывать, если выбран хотя бы один такой столбец.
+const CARD_FIELDS = ['socials', 'phone', 'rating', 'aggregator_url'];
+function cardFieldsEnabled() {
+  const f = parseFieldsEnabled();
+  return CARD_FIELDS.some(k => f.has(k));
+}
+// Флаг «грузить карточку организации». Раньше он повторял только выбор
+// «Соцсети»: при выключенных соцсетях карточка не открывалась вообще, и
+// телефон, который находят лишь на ней, молча не попадал в таблицу.
+function detailFetchEnabled() { return cardFieldsEnabled(); }
 let vkMode = 'all';                 // 'all' | 'active_semi' | 'active' — VK activity filter
 let _lastCompletedCityIdx = 0;     // track last completed city for notification
 let _cityProgressData = {};        // {cityName: {total, found, status, pct}}
@@ -214,6 +227,145 @@ function clearFieldError(wrapEl) {
   wrapEl.querySelectorAll('.field-invalid').forEach(e => e.classList.remove('field-invalid'));
 }
 
+// ═══════════════════════════════════════════
+//  Модальные окна: фокус и клавиатура
+// ═══════════════════════════════════════════
+// Одна механика на все модалки приложения. Раньше каждый диалог (подтверждение,
+// сохранение пресета, имя списка, диагностика, редакторы шаблонов и переменных)
+// собирал оверлей сам, и ни один не запирал фокус: по Tab можно было уйти
+// в интерфейс ЗА окном и продолжать работать «под» ним, а после закрытия фокус
+// оказывался на body — с клавиатуры обход начинался с самого верха. Здесь:
+// имя диалога, фокус внутрь, ловушка Tab и возврат фокуса туда, откуда открыли.
+//
+// Работает и для окон, которые убирают из DOM (uiConfirm и др.), и для
+// постоянных окон страницы, которые только прячут атрибутом hidden
+// (#tpl-modal, #terms-overlay, #version-gate): закрытие ловится наблюдателем
+// и по удалению узла, и по hidden.
+const MODAL_FOCUSABLE = 'a[href], button:not([disabled]), ' +
+  'input:not([disabled]):not([type="hidden"]), select:not([disabled]), ' +
+  'textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+const MODAL_STACK = [];   // открытые окна: Tab и Escape работают с верхним
+let _modalSeq = 0;
+
+function modalA11y(overlay) {
+  if (!overlay) return null;
+  // Диалог на странице у каждого окна свой (ui-modal / tpl-modal / logs-modal
+  // и т. д.) — роль и имя ставим на него, а не на подложку.
+  const box = overlay.querySelector(
+    '.ui-modal, .tpl-modal, .logs-modal, .skip-modal, .changelog-modal') || overlay;
+  if (!box.getAttribute('role')) box.setAttribute('role', 'dialog');
+  box.setAttribute('aria-modal', 'true');
+  // Имя диалога обязано пережить перерисовку содержимого. Окна со списком
+  // (логи, шаблоны, диагностика) подъезжают запросом и заменяют внутренности
+  // целиком — раньше вместе с ними исчезал и заголовок, на который указывал
+  // aria-labelledby, и открытый диалог оставался без имени (скринридер читал
+  // просто «диалог», а тест клавиатуры падал через раз — когда успевал
+  // заметить mid-flight состояние). Поэтому имя ставится заново и после
+  // каждой перерисовки, а не только при открытии.
+  const nameTheBox = () => {
+    const ref = box.getAttribute('aria-labelledby');
+    const current = ref ? document.getElementById(ref) : null;
+    if (current && box.contains(current)) return;
+    const title = box.querySelector('h1, h2, h3');
+    if (title) {
+      if (!title.id) title.id = 'ui-modal-title-' + (++_modalSeq);
+      box.removeAttribute('aria-label');
+      box.setAttribute('aria-labelledby', title.id);
+      return;
+    }
+    box.removeAttribute('aria-labelledby');
+    if (!box.getAttribute('aria-label')) box.setAttribute('aria-label', 'Диалог');
+  };
+  nameTheBox();
+  // Вызов идемпотентен: постоянные окна страницы открывают много раз, а
+  // ловушка и наблюдатель должны быть одни. Роль и имя уже стоят выше —
+  // повторный вызов их только освежает.
+  if (overlay.__a11yOpen) return overlay.__a11yHandle;
+  overlay.__a11yOpen = true;
+
+  const items = () => Array.from(box.querySelectorAll(MODAL_FOCUSABLE))
+    .filter(el => !el.disabled && el.getClientRects().length > 0);
+  // Сначала поля ввода (там ждут текст), иначе первая кнопка. Вызывающий код
+  // может переставить фокус сам — тогда эта подстановка уже не нужна.
+  const focusInside = () => {
+    if (box.contains(document.activeElement)) return;
+    const first = items().find(el => /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) || items()[0];
+    if (first) first.focus();
+  };
+  const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  focusInside();
+  MODAL_STACK.push(overlay);
+
+  const isOpen = () => document.body.contains(overlay) && !overlay.hidden;
+  // Динамические окна в этот момент уже в DOM (их собрали и вставили выше),
+  // а постоянные уже показаны вызывающим кодом. Если же окно почему-то ещё
+  // скрыто, ждём первого «показали» — иначе закрытием покажется старт.
+  let seenOpen = isOpen();
+  const observer = new MutationObserver(() => {
+    if (isOpen()) {
+      seenOpen = true;
+      // Содержимое окна могло подъехать позже (список логов, перерисовка):
+      // возвращаем имя заголовку и, если фокус улетел вместе с заменённой
+      // кнопкой, ставим его на первое поле или кнопку.
+      nameTheBox();
+      focusInside();
+      return;
+    }
+    if (!seenOpen) return;          // окно ещё не показывали — это не закрытие
+    observer.disconnect();
+    const i = MODAL_STACK.indexOf(overlay);
+    if (i >= 0) MODAL_STACK.splice(i, 1);
+    overlay.__a11yOpen = false;
+    if (opener && document.body.contains(opener) && typeof opener.focus === 'function') {
+      opener.focus();
+    }
+  });
+  observer.observe(document.body, { childList: true });
+  observer.observe(overlay, { attributes: true, attributeFilter: ['hidden'] });
+  observer.observe(box, { childList: true, subtree: true });
+  overlay.__a11yHandle = { items, box };
+  return overlay.__a11yHandle;
+}
+
+// Tab и Escape обрабатываются на документе, а не на самом окне: если фокус
+// оказался вне окна (клик по фону, программный фокус), Tab обязан вернуть его
+// внутрь, а не увести в интерфейс за окном.
+document.addEventListener('keydown', e => {
+  const overlay = MODAL_STACK[MODAL_STACK.length - 1];
+  if (!overlay) return;
+  const handle = overlay.__a11yHandle;
+  const box = (handle && handle.box) || overlay;
+  if (!box.isConnected) {        // окно уже закрыли другим путём
+    const i = MODAL_STACK.indexOf(overlay);
+    if (i >= 0) MODAL_STACK.splice(i, 1);
+    return;
+  }
+  if (e.key === 'Tab') {
+    const list = handle ? handle.items() : [];
+    if (!list.length) return;
+    const active = document.activeElement;
+    if (!box.contains(active)) {
+      e.preventDefault();
+      (e.shiftKey ? list[list.length - 1] : list[0]).focus();
+      return;
+    }
+    if (e.shiftKey && active === list[0]) { e.preventDefault(); list[list.length - 1].focus(); }
+    else if (!e.shiftKey && active === list[list.length - 1]) { e.preventDefault(); list[0].focus(); }
+    return;
+  }
+  if (e.key === 'Escape') {
+    // Закрываем тем же путём, что и кнопка «Отмена»: у каждой модалки он один,
+    // а второй обработчик Escape (у окон на странице их нет вовсе) только
+    // повторил бы закрытие.
+    const cancel = box.querySelector('.m-cancel, .skip-cancel, [data-modal-close]');
+    if (!cancel) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    cancel.click();
+  }
+}, true);
+
 // Modern confirm dialog — replacement for window.confirm
 function uiConfirm(message, title = 'Подтвердите действие', okLabel = 'Удалить', danger = true) {
   return new Promise(resolve => {
@@ -234,6 +386,7 @@ function uiConfirm(message, title = 'Подтвердите действие', o
     overlay.addEventListener('click', e => { if (e.target === overlay) done(false); });
     overlay.addEventListener('keydown', e => { if (e.key === 'Escape') done(false); });
     document.body.appendChild(overlay);
+    modalA11y(overlay);
     overlay.querySelector('.m-ok').focus();
   });
 }
@@ -338,15 +491,49 @@ function refreshBrowserAvailability() {
     if (!s || !s.ok) return;
     // Это браузер ДЛЯ СБОРА (CDP), а не браузер по умолчанию: интерфейс
     // может открываться в другом, а страницы Яндекс.Карт грузит этот.
-    // Подходят только Chromium-браузеры (Chrome/Chromium/Edge); Safari и
-    // Firefox CDP-автоматизацию не поддерживают.
+    // Подходит любой Chromium-браузер (Яндекс Браузер, Chrome, Edge, Brave,
+    // Vivaldi, Opera, Chromium); Safari и Firefox CDP не поддерживают вовсе.
+    const unsupported = (s.unsupported || []).join(', ');
     box.innerHTML = s.chrome
       ? '<span class="engine-badge ok" title="Этим браузером программа открывает страницы для сбора — он не обязан совпадать с вашим браузером по умолчанию">'
-        + '✔ Для сбора найден: ' + (s.chrome_path || 'Chromium-браузер').split(/[\\/]/).pop() + '</span>'
-      : '<span class="engine-badge miss" title="Сбор идёт через Chrome DevTools Protocol: нужен Chrome, Chromium или Edge">'
-        + '✖ Chromium-браузер не найден — установите Google Chrome, Chromium или Edge (Safari и Firefox не подходят)</span>';
+        + '✔ Для сбора найден: ' + (s.browser_name || (s.chrome_path || 'Chromium-браузер').split(/[\\/]/).pop()) + '</span>'
+      : '<span class="engine-badge miss" title="Сбор идёт через Chrome DevTools Protocol: нужен любой браузер на Chromium — Яндекс Браузер, Chrome, Edge, Brave, Chromium">'
+        + '✖ Браузер на Chromium не найден — подойдёт Яндекс Браузер, Google Chrome, Edge, Brave или Chromium'
+        + (unsupported ? ' (найдены ' + unsupported + ' — они не умеют CDP)' : '') + '</span>';
     box.style.display = '';
+
+    // Выбор браузера для сбора — только когда есть из чего выбирать.
+    // Один найденный браузер — выбор бессмыслен и только сбивал бы с толку.
+    const wrap = document.getElementById('browser-pick-wrap');
+    const sel = document.getElementById('f-browser');
+    const list = s.browsers || [];
+    if (wrap && sel && list.length > 1) {
+      const current = s.selected || '';
+      sel.innerHTML = '<option value="">Автоматически — '
+        + escapeHtml(s.browser_name || 'первый найденный') + '</option>'
+        + list.map(b => `<option value="${escapeHtml(b.path)}">${escapeHtml(b.name)}</option>`).join('');
+      sel.value = list.some(b => b.path === current) ? current : '';
+      wrap.style.display = '';
+    }
   }).catch(() => {});
+}
+
+// Сохраняем выбор браузера на сервере: он привязан к машине, поэтому живёт
+// в settings.json, а не в пресетах и не в localStorage браузера.
+function saveBrowserChoice(path) {
+  fetch('/browser/select', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: path || '' }),
+  }).then(r => r.json()).then(d => {
+    if (!d.ok) throw new Error(d.error || 'не сохранилось');
+    if (typeof showToast === 'function') {
+      showToast(path ? 'Браузер для сбора сохранён' : 'Браузер выбирается автоматически', 'ok');
+    }
+  }).catch(e => {
+    if (typeof showToast === 'function') showToast('Браузер не сохранён: ' + e.message, 'error');
+    refreshBrowserAvailability();
+  });
 }
 
 // ═══════════════════════════════════════════
@@ -382,6 +569,20 @@ function toggleRequiredSocial(key, tileEl) {
 function toggleGrid() {
   // Legacy checkbox support (e.g. restored presets) — maps to radio mode.
   setGridMode(document.getElementById('f-grid')?.checked ? 'manual' : 'whole');
+}
+
+// Сколько точек поиска даёт ручная сетка «радиус × шаг».
+//
+// Оценка используется в двух местах: подсказка под слайдерами
+// («Прогноз: ~N точек») и живая сводка настройки (объём прогона до запуска).
+// Формула одна на оба места намеренно: два разных числа для одного и того же
+// читались бы как ошибка. Точное число считает сервер (build_grid), здесь —
+// та же модель с поправкой на то, что круг покрытия обрезается квадратом
+// ячеек (0.64 — доля площади, попадающая в круг).
+function gridCellsEstimate(radius, step) {
+  const r = Math.max(1, +radius || 1);
+  const s = Math.max(1, +step || 1);
+  return Math.max(1, Math.round(Math.PI * Math.pow(r / s, 2) * 0.64) + 1);
 }
 
 // ── Grid coverage mode: «Весь город» / «Настроить вручную» ─────
@@ -465,7 +666,7 @@ function onGridSlider() {
   }
 
   // ── 2) Forecast: сколько точек и страниц откроет браузер ────────
-  const cells = Math.max(1, Math.round(Math.PI * Math.pow(r / Math.max(1, s), 2) * 0.64) + 1);
+  const cells = gridCellsEstimate(r, s);
   const tokens = cells * nQueries * pages;
   const tokFmt = n => n >= 10000 ? Math.round(n / 1000) + ' тыс.' : n.toLocaleString('ru-RU');
   const tokWord = n => (n % 10 === 1 && n % 100 !== 11) ? 'точка'
@@ -628,6 +829,9 @@ function initCitySelect() {
   inp.type = 'text'; inp.id = 'f-city-input';
   inp.placeholder = 'Добавить город…';
   inp.autocomplete = 'off';
+  // Полю нужна настоящая подпись: placeholder исчезает после ввода и
+  // скринридером как имя поля не читается (проверяет сквозной аудит).
+  inp.setAttribute('aria-label', 'Добавить город');
   const clr = document.createElement('button');
   clr.className = 'city-clear';
   clr.innerHTML = UI_ICONS.x;
@@ -718,8 +922,14 @@ window.addEventListener('resize', positionCityDropdown);
 function renderCityTags() {
   const tagsRow = document.getElementById('city-tags-row');
   if (!tagsRow) return;
+  // Крестик чипа — кнопка и для клавиатуры: без tabindex и обработчика Enter
+  // он оставался доступен только мышью, и убрать город с клавиатуры было
+  // нельзя (проверяет сквозной аудит интерфейса).
   tagsRow.innerHTML = selectedCities.map((c, i) =>
-    `<span class="city-tag">${c}<span class="city-tag-x" role="button" aria-label="Убрать город" onclick="removeCity(${i})">${UI_ICONS.x}</span></span>`
+    `<span class="city-tag">${c}<span class="city-tag-x" role="button" tabindex="0"`
+    + ' aria-label="Убрать город"'
+    + ` onclick="removeCity(${i})"`
+    + ` onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();removeCity(${i})}">${UI_ICONS.x}</span></span>`
   ).join('');
   // Update placeholder
   const inp = document.getElementById('f-city-input');

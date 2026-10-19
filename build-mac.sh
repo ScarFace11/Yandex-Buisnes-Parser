@@ -34,6 +34,11 @@ if [ "$(uname -s)" != "Darwin" ]; then
     exit 1
 fi
 
+if [ ! -f static/icon.icns ]; then
+    echo "[!] static/icon.icns не найден — .app получит стандартную иконку PyInstaller."
+    echo "    Создать фирменную: python scripts/gen_icon.py"
+fi
+
 echo "[1/5] Проверяю Python и PyInstaller..."
 "$PY" -m pip install --quiet --upgrade pyinstaller
 

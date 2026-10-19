@@ -117,6 +117,21 @@ class TestStampScript:
         assert "Ещё что-то" not in text
         assert "\n" not in text
 
+    def test_summarize_stops_at_the_next_bullet(self):
+        """Секция из одних пунктов списка: сводка — первый пункт, без маркера.
+
+        В сводку 2.3.4 иначе уезжало «- Записи, отключённые фильтрами…» одной
+        склейкой с несколькими другими пунктами, а показывается она в баннере
+        обновления и в «Что нового» как обычный текст.
+        """
+        mod = self._mod()
+        body = ("- **Первая фича** — о ней и должна быть сводка.\n"
+                "- **Вторая фича** — в сводку попасть не должна.\n")
+        text = mod.summarize(body)
+        assert text.startswith("Первая фича"), text
+        assert not text.startswith("-"), text
+        assert "Вторая фича" not in text
+
     def test_apply_version_writes_everything(self, tmp_path):
         mod = self._mod()
         target = tmp_path / "version.json"

@@ -339,14 +339,45 @@ class TestUpdaterOnMac:
         monkeypatch.setattr(sys, "platform", "darwin")
         monkeypatch.setattr(update_mod, "_is_frozen", lambda: True)
         monkeypatch.setattr(update_mod, "_is_dev", lambda: False)
+        # macOS нужен СВОЙ файл (.dmg), а не штампованная windows-ссылка.
+        mine = ("https://github.com/o/r/releases/download/v9.9.9/"
+                + update_mod._release_asset_name(install=True))
         monkeypatch.setattr(update_mod, "_remote_meta",
-                            lambda: {"version": "9.9.9", "download_url": self.PINNED})
+                            lambda: {"version": "9.9.9", "download_url": mine})
         d = client.get("/update/status").get_json()
         # Версию проверяем, чтобы баннер «доступна новая версия» работал…
         assert d["newer"] is True
         # …но файлы приложение само не меняет: UI даёт ссылку на релиз.
         assert d["auto_apply"] is False
         assert d["platform"] == "darwin"
+
+    def test_status_offers_the_direct_macos_installer_not_the_windows_exe(
+            self, monkeypatch, client):
+        """Регресс: на macOS кнопка «Скачать» вела на windows-архив (.exe).
+
+        version.json штампуется ссылкой на windows-zip, поэтому платформа
+        обязана сама подменить ассет и отдать ПРЯМУЮ ссылку на macos-образ."""
+        from routes import update as update_mod
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.setattr(update_mod, "_is_frozen", lambda: True)
+        monkeypatch.setattr(update_mod, "_is_dev", lambda: False)
+        asset = update_mod._release_asset_name(install=True)
+        assert asset.startswith("YandexBusinessParser-macos-")
+        assert asset.endswith(".dmg")
+        # Штампованная ссылка (windows zip) не подходит — сервер берёт точный
+        # ассет через API, здесь он подменён, чтобы не ходить в сеть.
+        mine = ("https://github.com/o/r/releases/download/v9.9.9/" + asset)
+        monkeypatch.setattr(update_mod, "_remote_meta",
+                            lambda: {"version": "9.9.9",
+                                     "download_url": self.PINNED})
+        monkeypatch.setattr(update_mod, "_release_asset_url",
+                            lambda version, *a, **k: mine)
+        d = client.get("/update/status").get_json()
+        assert d["newer"] is True
+        assert d["download_url"] == mine
+        assert d["asset_name"] == asset
+        assert d["target_version"] == "9.9.9"
+        assert "windows" not in d["download_url"]
 
     def test_download_and_apply_refuse_instead_of_running_a_bat(
             self, monkeypatch, client, tmp_path):
@@ -513,3 +544,49 @@ class TestGithubAutomation:
         wf = self._wf("build-exe.yml")
         assert "config.is_dev_build()" in wf
         assert "YandexBusinessParser-windows-x64.zip" in wf
+
+
+# ── Иконка приложения ──────────────────────────────────────────
+
+class TestAppIcon:
+    """static/icon.icns — настоящий контейнер со всеми размерами.
+
+    parser-mac.spec берёт её по умолчанию (YP_ICON — переопределение),
+    поэтому сам факт существования валидного файла и есть «подключение»:
+    в Dock у пользователя стоит фирменная иконка, а не пластик PyInstaller.
+    """
+
+    @staticmethod
+    def _icon() -> "Path":
+        from pathlib import Path
+        return Path(__file__).resolve().parent.parent / "static" / "icon.icns"
+
+    def test_icns_is_valid_container_with_all_sizes(self):
+        import struct
+        data = self._icon().read_bytes()
+        assert data[:4] == b"icns", "нет магии icns"
+        assert struct.unpack(">I", data[4:8])[0] == len(data), "размер заголовка не сходится"
+        i, kinds = 8, []
+        while i < len(data):
+            kind = data[i:i + 4].decode("ascii")
+            ln = struct.unpack(">I", data[i + 4:i + 8])[0]
+            assert ln >= 8, f"урезанная лекция {kind}"
+            assert data[i + 8:i + 16] == b"\x89PNG\r\n\x1a\n", f"{kind} — не PNG"
+            kinds.append(kind)
+            i += ln
+        # Все размеры, включая Retina-двойки (ic11…ic14), на месте.
+        assert set(kinds) >= {"ic07", "ic08", "ic09", "ic10",
+                              "ic11", "ic12", "ic13", "ic14"}
+
+    def test_mac_spec_defaults_to_the_project_icon(self):
+        from pathlib import Path
+        root = Path(__file__).resolve().parent.parent
+        spec = (root / "parser-mac.spec").read_text(encoding="utf-8")
+        assert 'static/icon.icns' in spec, "спецификация не находит иконку проекта"
+
+    def test_build_script_warns_about_a_missing_icon(self):
+        from pathlib import Path
+        root = Path(__file__).resolve().parent.parent
+        script = (root / "build-mac.sh").read_text(encoding="utf-8")
+        assert "static/icon.icns" in script, "сборка молчит об отсутствии иконки"
+        assert (root / "scripts" / "gen_icon.py").is_file(), "генератор иконки пропал"

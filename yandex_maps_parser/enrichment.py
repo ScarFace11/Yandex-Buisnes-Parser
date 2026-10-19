@@ -13,12 +13,9 @@ from tqdm import tqdm
 
 from .constants import KNOWN_PLATFORMS
 from .extractors import (
-    extract_rating_reviews,
-    extract_phone,
-    extract_website,
+    extract_page,
     fetch_html,
     extract_socials,
-    _extract_from_json_blob,
     _ANTIBOT_MARKERS,
 )
 from .exporters import record_key
@@ -283,33 +280,53 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
             # a worker for the rest of the batch. Release in a finally.
             try:
                 if html:
-                    for k, v in _extract_from_json_blob(html).items():
+                    # Одним разбором страницы: встроенные данные и секция
+                    # контактов разбираются один раз, а не на каждый шаг
+                    # (замер: 15.7 мс на карточку против 5–6 мс). Нужное
+                    # решается ДО разбора: лишние шаги не считаются вовсе.
+                    need_rating = (not record.get("rating")
+                                   or not record.get("reviews_count"))
+                    need_phone = not str(record.get("phone") or "").strip()
+                    need_site = not str(record.get("website") or "").strip()
+                    need_agg = not str(record.get("aggregator_url") or "").strip()
+                    page = extract_page(html, rating=need_rating,
+                                        phone=need_phone, website=need_site,
+                                        aggregator=need_agg)
+                    # Порядок приоритета: выдача → встроенные данные → секция
+                    # контактов карточки.
+                    for k, v in page["socials_json"].items():
                         socials.setdefault(k, v)
-                    for k, v in extract_socials(html).items():
+                    for k, v in page["socials_contacts"].items():
                         socials.setdefault(k, v)
                     # Rating/reviews live in the same blob as the socials, so this
                     # is free. Values already present (из выдачи Яндекс.Карт) win.
-                    if not record.get("rating") or not record.get("reviews_count"):
-                        _rating, _reviews = extract_rating_reviews(html)
-                        if _rating and not record.get("rating"):
-                            record["rating"] = _rating
-                        if _reviews and not record.get("reviews_count"):
-                            record["reviews_count"] = _reviews
+                    if need_rating:
+                        if page["rating"] and not record.get("rating"):
+                            record["rating"] = page["rating"]
+                        if page["reviews"] and not record.get("reviews_count"):
+                            record["reviews_count"] = page["reviews"]
                     # Телефон: выдача Яндекс.Карт его не показывает — на карточке
                     # организации он есть как ссылка tel:, а страница уже загружена.
-                    if not str(record.get("phone") or "").strip():
-                        _phone = extract_phone(html)
-                        if _phone:
-                            record["phone"] = _phone
-                            state.syslog(f"phone_from_page: {biz_name} → {_phone}")
+                    if need_phone and page["phone"]:
+                        record["phone"] = page["phone"]
+                        state.syslog(f"phone_from_page: {biz_name} → {page['phone']}")
                     # Сайт организации: раньше его отдавал API вместе с выдачей,
                     # теперь — блок контактов карточки (см. extract_website).
-                    site = ""
-                    if not str(record.get("website") or "").strip():
-                        site = extract_website(html)
-                        if site:
-                            record["website"] = site
-                            state.syslog(f"website_from_page: {biz_name} → {site[:80]}")
+                    site = page["website"] if need_site else ""
+                    if site:
+                        record["website"] = site
+                        state.syslog(f"website_from_page: {biz_name} → {site[:80]}")
+                    # Ссылка-витрина (taplink/linktree): Яндекс показывает её как
+                    # «Сайт», но отдельным полем. Раньше карточка её не читала,
+                    # и колонка «Сайт / Таплинк» была пустой всегда.
+                    if need_agg and page["aggregator"]:
+                        record["aggregator_url"] = page["aggregator"]
+                        state.syslog(f"aggregator_from_page: {biz_name} → {page['aggregator'][:80]}")
+                    # Зеркало social_normalize.normalize_record: обычный сайт виден
+                    # в колонке «Сайт / Таплинк» и в ЖИВОЙ таблице, а не только
+                    # в файлах, которые пишет этап сохранения.
+                    if record.get("website") and not record.get("aggregator_url"):
+                        record["aggregator_url"] = record["website"]
                 state.syslog(f"fetch_detail done: {biz_name}, socials_after={list(socials.keys())}, source={_fetch_source}, time={_fetch_elapsed:.1f}s")
             finally:
                 # Release concurrency slot (only if acquired)

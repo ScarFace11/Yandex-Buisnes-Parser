@@ -11,7 +11,8 @@
   (function () {
     try {
       var saved = localStorage.getItem('yp_theme_v1');
-      var dark = saved ? saved === 'dark'
+      // 'system' — тема «как в системе» (по умолчанию): следует за ОС.
+      var dark = (saved === 'dark' || saved === 'light') ? saved === 'dark'
         : !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
       document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
     } catch (e) { /* приватный режим — останемся на светлой */ }
@@ -33,6 +34,11 @@
 </head>
 <body>
 
+<!-- Первый Tab со страницы ведёт к содержимому, а не в длинную шапку из
+     восьми кнопок: клавиатурный пользователь иначе проматывает их каждую
+     загрузку. Ссылка видима только при фокусе. -->
+<a class="skip-link" href="#main-content">Перейти к содержимому</a>
+
 <!-- ── Спрайт иконок ────────────────────────────────────────────────
      Один набор глифов на всю страницу: разметка и модули static/js берут
      значки отсюда (`<use href="#i-…">`). Контейнер не display:none —
@@ -42,6 +48,9 @@
   <symbol id="i-search" viewBox="0 0 24 24"><path d="M11 4.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13z"/><path d="M15.8 15.8 21 21"/></symbol>
   <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20.5 12a8.5 8.5 0 1 1-2.6-6"/><path d="M20.5 4.5V10h-5.5"/></symbol>
   <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 20V9.5"/><path d="M7.5 14 12 9.5l4.5 4.5"/><path d="M4.5 4h15"/></symbol>
+  <!-- Звезда избранного города: в обычном состоянии — контур, у избранного
+       заливка (CSS .fav-star.on). -->
+  <symbol id="i-star" viewBox="0 0 24 24"><path d="M12 4.2l2.5 5.1 5.6.8-4 3.9 1 5.6-5.1-2.7-5.1 2.7 1-5.6-4-3.9 5.6-.8z"/></symbol>
   <symbol id="i-pause" viewBox="0 0 24 24"><path d="M9.5 5.5v13"/><path d="M14.5 5.5v13"/></symbol>
   <symbol id="i-play" viewBox="0 0 24 24"><path d="M7.5 4.8 19 12 7.5 19.2z"/></symbol>
   <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="1.5"/></symbol>
@@ -52,6 +61,7 @@
   <symbol id="i-bell-off" viewBox="0 0 24 24"><path d="M9.5 18a2.5 2.5 0 0 0 5 0"/><path d="M6.5 18h11l-1.3-2.2V11a4.2 4.2 0 0 0-8.4 0v4.8z"/><path d="M3.5 3.5l17 17"/></symbol>
   <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.5 1.5M16.9 16.9l1.5 1.5M18.4 5.6l-1.5 1.5M7.1 16.9l-1.5 1.5"/></symbol>
   <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5z"/></symbol>
+  <symbol id="i-auto" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor" stroke="none"/></symbol>
   <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
   <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5 10 17.5 19 7"/></symbol>
   <symbol id="i-square" viewBox="0 0 24 24"><rect x="4.5" y="4.5" width="15" height="15" rx="2.5"/></symbol>
@@ -63,6 +73,8 @@
   <symbol id="i-spreadsheet" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M4 10h16M10 10v9"/></symbol>
   <symbol id="i-list" viewBox="0 0 24 24"><path d="M4 6h16"/><path d="M4 11h16"/><path d="M4 16h10"/></symbol>
   <symbol id="i-grid" viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M9.3 4v16M14.7 4v16M4 9.3h16M4 14.7h16"/></symbol>
+  <symbol id="i-bug" viewBox="0 0 24 24"><rect x="8" y="8" width="8" height="12" rx="4"/><path d="M9.5 8C9.5 5.8 10.6 4.4 12 4.4s2.5 1.4 2.5 3.6"/><path d="M8 11H4.6M8 14.4H4.2M8 17.8H5M16 11h3.4M16 14.4h3.8M16 17.8h3"/></symbol>
+  <symbol id="i-undo" viewBox="0 0 24 24"><path d="M4.5 9h9.8a5.5 5.5 0 1 1 0 11H8.5"/><polyline points="8 5.2 4.5 9 8 12.6"/></symbol>
   <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h9"/><path d="M17 7h3"/><path d="M4 17h3"/><path d="M11 17h9"/><path d="M15 4.5v5"/><path d="M9 14.5v5"/></symbol>
   <symbol id="i-skip" viewBox="0 0 24 24"><path d="M6 5l7 7-7 7"/><path d="M17 5v14"/></symbol>
   <symbol id="i-arrow-down" viewBox="0 0 24 24"><path d="M12 5v14"/><path d="M6 13l6 6 6-6"/></symbol>
@@ -193,6 +205,12 @@
       <svg class="ico" aria-hidden="true"><use href="#i-pulse"/></svg>
       <span class="hdr-lbl">Диагностика</span>
     </button>
+    <button id="btn-report" onclick="openReportModal()"
+            title="Сообщить о проблеме или предложить улучшение — откроется форма issue на GitHub с метками и приложенным контекстом"
+            aria-label="Сообщить о проблеме">
+      <svg class="ico" aria-hidden="true"><use href="#i-bug"/></svg>
+      <span class="hdr-lbl">Проблема</span>
+    </button>
     <button id="btn-updates" onclick="manualUpdateCheck(this)"
             title="Проверить наличие новой версии на GitHub" aria-label="Обновления">
       <svg class="ico" aria-hidden="true"><use href="#i-refresh"/></svg>
@@ -232,6 +250,12 @@
       <div class="card-hdr">Подготовим поиск</div>
       <div class="form-body">
         <p class="intro-copy">Находим компании без сайта — чтобы предложить им свои услуги</p>
+
+        <!-- Живая сводка: главное (запрос, город, тип, соцсети, файлы) видно
+             без раскрытия аккордеонов. Каждый чип — кнопка и ведёт в свой
+             раздел, так что после правки формы не нужно искать поле глазами. -->
+        <div class="setup-sum" id="setup-summary" role="group"
+             aria-label="Текущие настройки поиска"></div>
 
         <!-- ══ API-ключи (статичный блок, не аккордеон) ══ -->
         <div class="api-status-block" id="api-keys-block">
@@ -303,8 +327,16 @@
                 <textarea id="f-queries" placeholder="кафе&#10;ресторан&#10;парикмахерская">кафе</textarea>
                 <div class="hint hint-row">
                   <span>Напишите по одному виду бизнеса в строке</span>
+                  <button type="button" class="spheres-btn" id="spheres-btn"
+                          aria-haspopup="listbox" aria-expanded="false" aria-controls="sphere-dropdown"
+                          title="Готовые наборы запросов по сферам и когда их уже парсили">Сферы ▾</button>
                   <span class="hint-count" id="queries-count" hidden></span>
                 </div>
+                <!-- Список сфер: существует с загрузки страницы (иначе aria-controls
+                     ссылается в пустоту), а initSpheres переносит его в <body>,
+                     чтобы аккордеон не обрезал выпадающий список. -->
+                <div class="city-dropdown sphere-dropdown" id="sphere-dropdown"
+                     role="listbox" aria-label="Сферы бизнеса"></div>
               </div>
 
               <div id="fw-city">
@@ -330,6 +362,18 @@
                 </div>
                 <div class="hint" id="source-hint">Карточки организаций открывает ваш браузер: соцсети, сайт и телефон берутся с карточки Яндекс.Карт. Ключи платных API не нужны.</div>
                 <div class="hint" id="engine-availability" style="display:none"></div>
+
+                <!-- Браузер для сбора: если Chrome и Яндекс Браузер стоят рядом,
+                     «первый найденный» — не обязательно тот, которым пользуются.
+                     Список приходит из /engines/status, выбор хранится в
+                     settings.json (не в пресетах: он привязан к машине). -->
+                <div id="browser-pick-wrap" style="display:none">
+                  <label class="lbl" for="f-browser">Браузер для сбора</label>
+                  <select id="f-browser" onchange="saveBrowserChoice(this.value)">
+                    <option value="">Автоматически — первый найденный</option>
+                  </select>
+                  <div class="hint">Подойдёт любой браузер на Chromium: Chrome, Edge, Яндекс Браузер, Brave, Vivaldi, Chromium. Safari и Firefox не умеют CDP.</div>
+                </div>
               </div>
 
             </div>
@@ -363,6 +407,11 @@
                 <div class="flt-group-body">
                   <div class="hint parse-pd-note"><b>Внимание:</b> телефон индивидуального предпринимателя или активность сообщества могут касаться физических лиц. Отмечая эти поля, вы становитесь оператором персональных данных и обязаны соблюдать 152-ФЗ (уведомление Роскомнадзора, законное основание, меры защиты).</div>
                   <div class="chk-grid" id="parse-personal-grid"></div>
+                  <div class="pd-actions">
+                    <button type="button" class="btn-sm" id="btn-no-personal" onclick="disablePersonalFields()"
+                            title="Снять все отметки в блоке персональных данных — в отчёт попадут только сведения о компании">Только данные компании</button>
+                    <span class="hint pd-actions-note">Имена и тексты отзывов приложение не собирает — только число отзывов.</span>
+                  </div>
                 </div>
               </div>
 
@@ -384,6 +433,11 @@
               <div class="tech-box">
                 <div class="tech-box-title">Скорость и объём</div>
                 <p class="tech-box-note">Значения по умолчанию подходят для большинства задач. Увеличивайте, если готовы к более долгому поиску.</p>
+                <div class="hint" id="polite-note">
+                  <b>Вежливый режим включён всегда:</b> между запросами есть пауза, а на ответ
+                  «слишком много запросов» (429) сбор сам снижает скорость. Так поиск не
+                  выглядит для сервиса шквалом обращений.
+                </div>
                 <div class="row2 row2-align">
                   <div>
                     <label class="lbl" for="f-pages" title="Сколько страниц по 50 результатов собирать с каждой точки сетки.">Страниц <span class="lbl-note">×50 результатов</span></label>
@@ -779,6 +833,15 @@
                 <label class="chk"><input type="checkbox" id="f-map"> HTML-карта</label>
               </div>
 
+              <!-- Журнал источников: в каждом файле есть когда собран и откуда
+                   взята запись — это и аргумент «данные актуальны на дату»,
+                   и возможность проверить любую строку по ссылке. -->
+              <div class="hint" id="src-journal-hint">
+                <b>Журнал источников:</b> в выгрузке у каждой организации есть колонки
+                «Дата сбора» (день и время) и «Яндекс.Карты» (ссылка на карточку-источник).
+                Имена и тексты отзывов не собираются.
+              </div>
+
               <div class="out-dir-block" id="output-dir-block">
                 <div class="sec">Куда сохранять</div>
                 <label class="lbl" for="f-output-dir">Папка для сохранения результатов</label>
@@ -787,6 +850,10 @@
                   <button type="button" class="btn-sm" id="btn-output-browse" onclick="pickOutputDir()"
                           title="Открыть системный диалог выбора папки">
                     <svg class="ico" aria-hidden="true"><use href="#i-folder"/></svg>Обзор…
+                  </button>
+                  <button type="button" class="btn-sm" id="btn-output-open" onclick="openOutputDir()"
+                          title="Открыть папку результатов в проводнике или Finder">
+                    <svg class="ico" aria-hidden="true"><use href="#i-folder-open"/></svg>Открыть
                   </button>
                   <button type="button" class="btn-sm" id="btn-output-save" onclick="saveOutputDir()"
                           title="Проверить путь и сохранить">
@@ -844,6 +911,12 @@
                     <svg class="ico" aria-hidden="true"><use href="#i-save"/></svg>Импорт данных
                     <input type="file" id="data-import-file" accept=".zip" hidden onchange="importAppData(this)" aria-hidden="true" tabindex="-1">
                   </label>
+                  <button class="btn-sm" id="btn-export-settings" onclick="exportAppSettings()"
+                          title="Скачать все настройки одним архивом: папки, браузер, хранение, пресеты, шаблоны и фильтры этого окна — перенос на другую машину. Делайте до сброса">
+                    <svg class="ico" aria-hidden="true"><use href="#i-download"/></svg>Экспорт настроек</button>
+                  <button class="btn-sm" id="btn-reset-settings" onclick="openResetSettingsModal()"
+                          title="Вернуть папки, браузер, хранение и настройки вкладок к стандартным. Пресеты, шаблоны писем и ключи API не трогаются">
+                    <svg class="ico" aria-hidden="true"><use href="#i-undo"/></svg>Сбросить настройки</button>
                   <span id="data-backup-note" class="panel-note">Автокопия отметок пишется ежедневно в output/_backup/ (хранятся 7 дней).</span>
                 </div>
               </div>
@@ -879,11 +952,12 @@
 
   <!-- ПРАВО: вкладки -->
   <main class="right-col" aria-label="Результаты и инструменты">
-    <!-- Плашка про отсутствующий браузер: без Chrome приложение не может
-         читать Яндекс.Карты — других способов загрузки страниц нет. -->
+    <!-- Плашка про отсутствующий браузер: без браузера на Chromium приложение
+         не может читать Яндекс.Карты — других способов загрузки страниц нет. -->
     <div id="browser-notice" class="playwright-notice" style="display:none" role="alert">
-      <svg class="ico" aria-hidden="true"><use href="#i-bolt"/></svg><b>Google Chrome не найден</b> — приложение читает Яндекс.Карты только настоящим браузером.
-      Установите <code>Google Chrome</code> (или Chromium/Edge) и перезапустите приложение.
+      <svg class="ico" aria-hidden="true"><use href="#i-bolt"/></svg><b>Браузер на Chromium не найден</b> — приложение читает Яндекс.Карты только настоящим браузером.
+      Подойдёт <code>Яндекс Браузер</code>, Google Chrome, Edge, Brave или Chromium. Safari и Firefox
+      не умеют Chrome DevTools Protocol — установите один из этих браузеров и перезапустите приложение.
       <button onclick="this.parentElement.style.display='none'" aria-label="Закрыть уведомление">
         <svg class="ico" aria-hidden="true"><use href="#i-x"/></svg>
       </button>
@@ -898,7 +972,7 @@
       <button class="tab-btn"        role="tab" aria-selected="false" aria-controls="p-templates" onclick="showTab('templates')" id="t-templates">Шаблоны сообщений</button>
     </nav>
 
-    <div class="tab-panels">
+    <div class="tab-panels" id="main-content">
 
       <!-- ══ LOG ══ -->
       <div class="tab-panel active" id="p-log" role="tabpanel" aria-labelledby="t-log" style="background:var(--term)">
@@ -950,10 +1024,16 @@
               </div>
               <h2>Как это работает</h2>
               <p class="onboarding-lead">Введите запрос в левой панели, чтобы начать сбор данных. Здесь будет отображаться живой лог вашего поиска и статус обработки городов.</p>
+              <!-- Шаги — кнопки, а не картинки: подсказка сразу и делает то,
+                   о чём говорит (ведёт к полю, запускает поиск, открывает
+                   результаты). -->
               <div class="flow-steps">
-                <div class="flow-step"><b>Шаг 01</b><strong>Напишите запрос и город</strong><span>Например: «стоматологии» и «Ярославль».</span></div>
-                <div class="flow-step"><b>Шаг 02</b><strong>Нажмите «Найти компании»</strong><span>Мы соберём компании с Яндекс.Карт.</span></div>
-                <div class="flow-step"><b>Шаг 03</b><strong>Просмотрите результаты и отправьте сообщения</strong><span>Выберите подходящих клиентов и скопируйте текст сообщения.</span></div>
+                <button type="button" class="flow-step" onclick="onboardingStep(1)">
+                  <b>Шаг 01</b><strong>Напишите запрос и город</strong><span>Например: «стоматологии» и «Ярославль».</span></button>
+                <button type="button" class="flow-step" onclick="onboardingStep(2)">
+                  <b>Шаг 02</b><strong>Нажмите «Найти компании»</strong><span>Мы соберём компании с Яндекс.Карт.</span></button>
+                <button type="button" class="flow-step" onclick="onboardingStep(3)">
+                  <b>Шаг 03</b><strong>Просмотрите результаты и отправьте сообщения</strong><span>Выберите подходящих клиентов и скопируйте текст сообщения.</span></button>
               </div>
             </div>
           </div>
@@ -1045,24 +1125,21 @@
 
           <div class="tbl-toolbar">
             <div class="results-toggle" id="results-toggle" role="group" aria-label="Источник данных"
-                 title="Откуда брать данные: сырые (этап 1), обработанные (этап 2) или всё вместе. Показываются результаты только текущего поиска.">
+                 title="Откуда брать данные: сырые (этап 1) или обработанные (этап 2). Показываются результаты только текущего поиска.">
               <button class="rt-btn active" data-view="raw"       onclick="setResultsView('raw')">Сырые данные</button>
               <button class="rt-btn"        data-view="processed" onclick="setResultsView('processed')">Обработанные</button>
-              <button class="rt-btn"        data-view="all"       onclick="setResultsView('all')">Все</button>
             </div>
             <button id="btn-scope-all" class="tbl-filter-btn" onclick="toggleScopeAll()"
                     title="Показаны только результаты текущего поиска. Нажмите, чтобы увидеть все файлы в папке (прошлые поиски).">
               <svg class="ico" aria-hidden="true"><use href="#i-square"/></svg>Все поиски</button>
-            <input type="text" id="tbl-search" placeholder="Поиск по таблице…" oninput="filterTable()"
-                   aria-label="Поиск по таблице">
+            <input type="text" id="tbl-search" placeholder="Поиск по строкам: название, адрес, телефон, сайт…"
+                   oninput="filterTable()"
+                   aria-label="Поиск по данным таблицы">
             <span class="tbl-count" id="tbl-count"></span>
             <label class="tbl-tpl-wrap" for="tbl-template"
-                   title="Шаблон, который подставится при клике по соцсети в таблице">Шаблон:
+                   title="Шаблон, который скопируется в буфер обмена при клике по соцсети в таблице. «— шаблон не выбран —»: клик просто открывает профиль, ничего не копируя">Шаблон:
               <select id="tbl-template" onchange="onTableTemplateChange()"></select>
             </label>
-            <button id="btn-unviewed" class="tbl-filter-btn" onclick="toggleUnviewedOnly()"
-                    title="Показать только компании без отметки «Просмотрено»">
-              <svg class="ico" aria-hidden="true"><use href="#i-square"/></svg>Непросмотренные</button>
             <div class="col-toggle-wrap">
               <button id="btn-cols" onclick="toggleColDropdown(event)" aria-haspopup="true" aria-expanded="false">
                 <svg class="ico" aria-hidden="true"><use href="#i-sliders"/></svg>Столбцы</button>
@@ -1089,12 +1166,15 @@
             </div>
           </div>
 
+          <!-- Цвет плитки задан в CSS (.sf-tag[data-key]) — там же записано,
+               почему у Telegram и WhatsApp он темнее брендового: белая
+               надпись 11px на исходных цветах не проходила контраст WCAG AA. -->
           <div class="tbl-social-row empty" id="social-filter-row">
             <span class="social-filter-lbl">Сеть:</span>
-            <button class="sf-tag" style="background:#4C75A3" data-key="vk"        onclick="toggleSocialFilter('vk')"        aria-label="Фильтр: VK">VK</button>
-            <button class="sf-tag" style="background:#C13584" data-key="instagram" onclick="toggleSocialFilter('instagram')" aria-label="Фильтр: Instagram">IG</button>
-            <button class="sf-tag" style="background:#2CA5E0" data-key="telegram"  onclick="toggleSocialFilter('telegram')"  aria-label="Фильтр: Telegram">TG</button>
-            <button class="sf-tag" style="background:#25D366" data-key="whatsapp"  onclick="toggleSocialFilter('whatsapp')"  aria-label="Фильтр: WhatsApp">WA</button>
+            <button class="sf-tag" data-key="vk"        onclick="toggleSocialFilter('vk')"        aria-label="Фильтр: VK">VK</button>
+            <button class="sf-tag" data-key="instagram" onclick="toggleSocialFilter('instagram')" aria-label="Фильтр: Instagram">IG</button>
+            <button class="sf-tag" data-key="telegram"  onclick="toggleSocialFilter('telegram')"  aria-label="Фильтр: Telegram">TG</button>
+            <button class="sf-tag" data-key="whatsapp"  onclick="toggleSocialFilter('whatsapp')"  aria-label="Фильтр: WhatsApp">WA</button>
             <button class="sf-clear" id="sf-clear-btn" onclick="clearSocialFilters()">
               <svg class="ico" aria-hidden="true"><use href="#i-x"/></svg>сбросить</button>
           </div>
@@ -1103,18 +1183,22 @@
             <table id="results-table">
               <thead>
                 <tr>
-                  <th data-col="rev" style="width:32px;text-align:center" title="Просмотрено">
+                  <th data-col="rev" style="width:32px;text-align:center"
+                      onclick="toggleReviewedFilter()"
+                      title="Клик переключает показ: всё → только непросмотренные → только просмотренные → всё">
                     <svg class="ico" aria-hidden="true"><use href="#i-check"/></svg>
                   </th>
                   <th class="nosort" data-col="num" title="Порядковый номер строки — сортировать нечего">#</th>
                   <th data-col="name" onclick="sortTableByKey('name')">Название</th>
                   <th data-col="category" onclick="sortTableByKey('category')">Категория</th>
                   <th data-col="address" onclick="sortTableByKey('address')">Адрес</th>
-                  <th data-col="phone" onclick="sortTableByKey('phone')">Телефон</th>
+                  <th class="nosort" data-col="phone"
+                      title="Телефон не сортируется: в ячейке несколько номеров и порядок им не задаётся">Телефон</th>
                   <th data-col="score" onclick="sortTableByKey('score')"
                       title="Оценка лида 0–90. Наведите курсор на число — покажем, какие критерии сработали именно у этой компании.">Оценка</th>
                   <th data-col="socials">Соцсети</th>
-                  <th class="nosort" data-col="rating" title="Рейтинг и число отзывов с Яндекс.Карт">Рейтинг</th>
+                  <th data-col="rating" onclick="sortTableByKey('rating')"
+                      title="Клик — сортировка по рейтингу, ещё раз — по числу отзывов; направление меняется следующими кликами">Рейтинг</th>
                 </tr>
               </thead>
               <tbody id="tbl-body">
@@ -1505,6 +1589,8 @@
 <script src="{{ url_for('static', filename='js/09-ui-extras.js') }}"></script>
 <script src="{{ url_for('static', filename='js/10-templates.js') }}"></script>
 <script src="{{ url_for('static', filename='js/11-app-init.js') }}"></script>
+<script src="{{ url_for('static', filename='js/12-setup-summary.js') }}"></script>
+<script src="{{ url_for('static', filename='js/13-spheres.js') }}"></script>
 <!-- Пользовательское соглашение: показывается при первом входе (и после
      обновления версии условий). Пока не принято — интерфейс заблокирован. -->
 <div class="ui-modal-overlay" id="terms-overlay" hidden>
@@ -1626,8 +1712,9 @@
 
       <h4>8. Технические требования и совместимость</h4>
       <p>8.1. Минимальные требования: ОС Windows 10/11, macOS 12+, Linux (Ubuntu 20.04+); оперативная
-         память не менее 4 ГБ; не менее 500 МБ свободного места; установленный браузер (Chrome/Chromium)
-         для браузерного режима; доступ к сети Интернет.</p>
+         память не менее 4 ГБ; не менее 500 МБ свободного места; установленный браузер на Chromium
+         (Яндекс Браузер, Google Chrome, Microsoft Edge, Brave, Chromium) для браузерного режима;
+         доступ к сети Интернет.</p>
       <p>8.2–8.4. Автор не гарантирует совместимость с иными конфигурациями, не оказывает
          техническую поддержку (если иное не предусмотрено отдельным соглашением) и оставляет за собой
          право выпускать обновления, изменять функциональность или прекращать поддержку без

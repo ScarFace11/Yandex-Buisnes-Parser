@@ -61,6 +61,7 @@ function toggleReviewed(url, cb) {
 // ══════════════════════════════════════════════════════════════
 const SUBTAB_KEY    = 'yp_results_subtab';   // current | history
 const CITY_TAB_KEY  = 'yp_results_city_tab';  // '' = все города
+const CITY_FAV_KEY  = 'yp_results_city_favs'; // избранные города («звёздочка»)
 const BULK_OPEN_KEY = 'yp_bulk_open';         // 1 | 0 — панель развёрнута
 const SCOPE_KEY     = 'yp_results_scope';     // current | all (текущий поиск | вся папка)
 const BULK_MAX_TABS = 50;                     // предел вкладок за один клик
@@ -69,7 +70,10 @@ const BULK_SOCIALS = ['vk', 'telegram', 'whatsapp', 'instagram'];
 
 let activeCity = '';            // выбранная вкладка города ('' = все)
 let _lastCities = [];           // города текущего вида (от /results-view)
-let unviewedOnly = false;       // фильтр «только непросмотренные»
+// Показ по отметке «Просмотрено»: 'all' | 'unviewed' | 'viewed'.
+// Переключается кликом по заголовку колонки ✓ (замена кнопки «Непросмотренные»).
+let reviewedFilter = 'all';
+let favoriteCities = new Set(); // города со звёздочкой — закрепляются сверху
 let currentFileNote = '';       // «· файл: …» когда таблица показывает один файл
 let currentFile = '';           // rel-путь файла, открытого из «Истории файлов»
 let bulkBusy = false;
@@ -113,8 +117,11 @@ function toggleViewed(key, checked) {
 
 function refreshReviewedUI() {
   updateBulkStats();
-  if (unviewedOnly) { curPage = 1; filterTable(); }
+  if (reviewedFilter !== 'all') { curPage = 1; filterTable(); }
   else if (filteredRows.length) renderPage();
+  // Прогресс обхода («просмотрено X из Y») живёт в полосах городов —
+  // вкладках и группах таблицы. Без перерисовки он отставал бы от отметок.
+  if (_lastCities.length) renderCityTabs(_lastCities);
 }
 
 function safeSocialUrl(u) {
@@ -215,6 +222,100 @@ function setResultsSubTab(name) {
 // ── City tabs ───────────────────────────────────────────────
 function cityOf(r) { return String((r && r.city) || '').trim() || 'Без города'; }
 
+// ── Избранные города («звёздочка») ──────────────────────────
+// Избранное меняет только ПОРЯДОК показа: город со звёздочкой закрепляется
+// сверху (и во вкладках, и в группировке «Все»), но сами данные и фильтры
+// не трогаются. Ключ — то же имя города, что дают вкладки и cityOf():
+// сервер уже нормализует пустое имя в «Без города» (см. _cities_of).
+function cityKeyOf(city) { return String(city || '').trim() || 'Без города'; }
+function isFavoriteCity(city) { return favoriteCities.has(cityKeyOf(city)); }
+
+function loadFavoriteCities() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(CITY_FAV_KEY) || '[]');
+    favoriteCities = new Set((Array.isArray(raw) ? raw : []).map(cityKeyOf));
+  } catch (e) { favoriteCities = new Set(); }
+}
+
+function saveFavoriteCities() {
+  try { localStorage.setItem(CITY_FAV_KEY, JSON.stringify([...favoriteCities])); } catch (e) {}
+}
+
+// Закрепление звезды — не только порядок: оно перерисовывает и вкладки, и
+// таблицу через innerHTML, а вместе с ними исчезает и узел звезды. После
+// первого же нажатия фокус терялся, и второй город с клавиатуры приходилось
+// искать заново. Возвращаем фокус звезде того же города (сравниваем по
+// нормализованному имени: у полосы в таблице и у вкладки они совпадают).
+function focusFavStar(city, scope) {
+  const key = cityKeyOf(city);
+  // И в результатах, и в выпадающем списке «Где ищем?» — звезда одна и та же.
+  const sel = scope || '#city-tabs .fav-star, #results-table .fav-star, #city-dropdown .fav-star';
+  const nodes = document.querySelectorAll(sel);
+  for (const n of nodes) {
+    if (cityKeyOf(favStarCity(n)) === key) { n.focus(); return; }
+  }
+}
+
+// Звезда в выпадающем списке «Где ищем?». Список избранных один на всё
+// приложение, поэтому закрепление сразу видно и во вкладках городов, и в
+// группах таблицы «Все».
+function toggleCityFavorite(city, ev) {
+  toggleFavoriteCity(city, ev);
+  const dd = document.getElementById('city-dropdown');
+  if (dd && dd.classList.contains('open')) {
+    updateCityDropdown();   // список перерисовывается — звезда и порядок новые
+    focusFavStar(city, '#city-dropdown .fav-star');
+  }
+}
+
+function toggleFavoriteCity(city, ev) {
+  if (ev && ev.stopPropagation) ev.stopPropagation();
+  if (ev && ev.preventDefault) ev.preventDefault();
+  const key = cityKeyOf(city);
+  if (!key) return;
+  // Возвращаем фокус только когда закрепили именно звезду, а не позвали
+  // toggleFavoriteCity откуда-то ещё (тап по строке фокус забирать не должен).
+  const fromStar = !!(ev && ev.target && ev.target.closest && ev.target.closest('.fav-star'));
+  if (favoriteCities.has(key)) favoriteCities.delete(key);
+  else favoriteCities.add(key);
+  saveFavoriteCities();
+  renderCityTabs(_lastCities);   // звёздочка и порядок вкладок
+  renderPage();                  // порядок групп в таблице «Все»
+  updateBulkStats();
+  if (fromStar) focusFavStar(city);
+}
+
+// Город, к которому относится звезда: ближайший предок с data-city. У вкладки
+// это .city-tab-wrap, у полосы в таблице — сам <tr> (звезда лежит внутри <td>,
+// и «взять город у родителя» там попадало в ячейку без города — закреплялся
+// «Без города»). Поэтому ищем не родителя, а ближайший элемент с городом.
+function favStarCity(el) {
+  const host = (el && el.closest) ? el.closest('[data-city]') : null;
+  return host ? (host.dataset.city || '') : '';
+}
+
+// Звезда помечена role="button" — значит должна срабатывать и с клавиатуры,
+// по Enter и пробелу (как крестик чипа-исключения). Без этого на неё нельзя
+// было попасть табом: фокус приходил, а нажатие ничего не делало.
+function onFavStarKey(ev, el) {
+  if (ev.key === 'Enter' || ev.key === ' ' || ev.key === 'Spacebar') {
+    ev.preventDefault();
+    const city = favStarCity(el);
+    if (city) toggleFavoriteCity(city, ev);
+  }
+}
+
+// Избранные — первыми, дальше порядок, в котором города пришли (по счёту).
+function orderCitiesForTabs(cities) {
+  const list = (Array.isArray(cities) ? cities : []).filter(Boolean);
+  const fav = [], rest = [];
+  list.forEach(c => {
+    const item = (typeof c === 'string') ? { city: c } : c;
+    (isFavoriteCity(item.city) ? fav : rest).push(item);
+  });
+  return fav.concat(rest);
+}
+
 function bulkScopeRows() {
   if (!activeCity) return allResults;
   return allResults.filter(r => cityOf(r) === activeCity);
@@ -233,12 +334,34 @@ function renderCityTabs(cities) {
   if (activeCity && !list.some(c => c.city === activeCity)) activeCity = '';
   box.hidden = false;
   const total = list.reduce((s, c) => s + (Number(c.count) || 0), 0);
+  const allStats = cityReviewStats('');
+  // «Все» — всегда первая; дальше избранные города, потом остальные.
   const tabs = [
-    `<button class="city-tab${activeCity ? '' : ' active'}" data-city="" onclick="setCityTab('')">Все <span class="city-count">(${total})</span></button>`,
-  ].concat(list.map(c =>
-    `<button class="city-tab${c.city === activeCity ? ' active' : ''}" data-city="${escapeHtml(c.city)}" onclick="setCityTab(this.dataset.city)">${escapeHtml(c.city)} <span class="city-count">(${c.count})</span></button>`
-  ));
+    `<button class="city-tab${activeCity ? '' : ' active'}" data-city="" onclick="setCityTab('')">Все <span class="city-count">(${total})</span>`
+      + reviewProgressHtml(allStats.done, allStats.total || total, 'city-done')
+      + '</button>',
+  ].concat(orderCitiesForTabs(list).map(_cityTabHtml));
   box.innerHTML = tabs.join('');
+}
+
+// Вкладка города со звёздочкой. Звезда — ОТДЕЛЬНЫЙ элемент рядом с кнопкой, а
+// не внутри неё (вложенные кнопки невалидны), поэтому клик по звезде не
+// переключает фильтр, а только закрепляет город. Город читаем из data-city:
+// не собираем JS-строку в разметке и не ломаемся на кавычках в названии.
+function _cityTabHtml(c) {
+  const fav = isFavoriteCity(c.city);
+  const hint = fav ? 'Убрать город из избранного' : 'В избранное — город закрепится сверху';
+  const stats = cityReviewStats(c.city);
+  const progress = reviewProgressHtml(stats.done, stats.total || c.count, 'city-done');
+  return `<span class="city-tab-wrap${fav ? ' fav' : ''}" data-city="${escapeHtml(c.city)}">`
+    + `<button class="city-tab${c.city === activeCity ? ' active' : ''}" data-city="${escapeHtml(c.city)}"`
+    + ` onclick="setCityTab(this.dataset.city)">${escapeHtml(c.city)}`
+    + ` <span class="city-count">(${c.count})</span>${progress}</button>`
+    + `<span class="fav-star${fav ? ' on' : ''}" role="button" tabindex="0" title="${hint}"`
+    + ` aria-label="${hint}" onclick="toggleFavoriteCity(favStarCity(this), event)"`
+    + ` onkeydown="onFavStarKey(event, this)">`
+    + `${UI_ICONS.star}</span>`
+    + '</span>';
 }
 
 function setCityTab(city) {
@@ -251,16 +374,52 @@ function setCityTab(city) {
   updateBulkStats();
 }
 
-// ── «Только непросмотренные» ─────────────────────────────────
-function toggleUnviewedOnly() {
-  unviewedOnly = !unviewedOnly;
-  const b = document.getElementById('btn-unviewed');
-  if (b) {
-    b.classList.toggle('active', unviewedOnly);
-    b.innerHTML = (unviewedOnly ? UI_ICONS.checkSquare : UI_ICONS.square) + 'Непросмотренные';
-  }
+// ── Показ по отметке «Просмотрено» ────────────────────────
+// Клик по заголовку колонки «✓» идёт по кругу: всё → только непросмотренные
+// → только просмотренные → всё. Отдельная кнопка «Непросмотренные» не нужна:
+// фильтр живёт там же, где и сама отметка.
+const REVIEWED_FILTER_CYCLE = ['all', 'unviewed', 'viewed'];
+
+function reviewedFilterNote() {
+  if (reviewedFilter === 'unviewed') return ' · только непросмотренные';
+  if (reviewedFilter === 'viewed') return ' · только просмотренные';
+  return '';
+}
+
+function syncReviewedFilterUI() {
+  const th = document.querySelector('#results-table th[data-col="rev"]');
+  if (!th) return;
+  const on = reviewedFilter !== 'all';
+  th.classList.toggle('rev-filter', on);
+  th.title = reviewedFilter === 'unviewed'
+    ? 'Показаны только непросмотренные. Клик — показать только просмотренные'
+    : reviewedFilter === 'viewed'
+      ? 'Показаны только просмотренные. Клик — показать все'
+      : 'Клик переключает показ: всё → только непросмотренные → только просмотренные → всё';
+}
+
+function toggleReviewedFilter() {
+  const i = REVIEWED_FILTER_CYCLE.indexOf(reviewedFilter);
+  reviewedFilter = REVIEWED_FILTER_CYCLE[(i + 1) % REVIEWED_FILTER_CYCLE.length];
+  syncReviewedFilterUI();
   curPage = 1;
   filterTable();
+}
+
+// Сколько организаций города уже просмотрено и сколько всего — для
+// полосы города во вкладках и в группе таблицы. city='' — все города.
+function cityReviewStats(city) {
+  const rows = city ? allResults.filter(r => cityOf(r) === city) : allResults;
+  let done = 0;
+  for (const r of rows) if (isReviewed(r)) done += 1;
+  return { done, total: rows.length };
+}
+
+// «✓5/42» + подсказка «Просмотрено 5 из 42 · осталось 37».
+function reviewProgressHtml(done, total, cssClass) {
+  const left = total - done;
+  const title = `Просмотрено ${done} из ${total} · осталось ${left}`;
+  return `<span class="${cssClass}" title="${title}">✓${done}/${total}</span>`;
 }
 
 // ── Bulk outreach panel ─────────────────────────────────────
@@ -717,6 +876,7 @@ function showLinksModal(items, label) {
   };
   overlay.addEventListener('click', e => { if (e.target === overlay) done(); });
   document.body.appendChild(overlay);
+  modalA11y(overlay);
   const ta = overlay.querySelector('textarea');
   if (ta) { ta.focus(); ta.select(); }
 }
@@ -730,7 +890,7 @@ async function persistReviewedMarks() {
     const d = await autoPersistReviewed(true);
     if (!d) { showToast('Не удалось записать отметки — попробуйте ещё раз', 'error'); return; }
     const extra = d.skipped ? ` · без колонки «Просмотрено»: ${d.skipped}` : '';
-    const scope = { raw: 'сырые (RAW)', processed: 'обработанные', all: 'RAW + обработанные' }[_resultsView] || _resultsView;
+    const scope = { raw: 'сырые (RAW)', processed: 'обработанные' }[_resultsView] || _resultsView;
     showToast(`Отметки записаны в ${scope}: ${d.updated} ячеек, ${d.files} ${pluralFiles(d.files)}${extra}`, 'success');
     if (d.errors && d.errors.length) {
       showToast(`Не удалось записать ${d.errors.length} ${pluralFiles(d.errors.length)}: ${d.errors[0].file}`, 'error');
@@ -1064,6 +1224,7 @@ function initResultsPanel() {
   let sub = 'current';
   try { if (localStorage.getItem(SUBTAB_KEY) === 'history') sub = 'history'; } catch (e) {}
   try { activeCity = localStorage.getItem(CITY_TAB_KEY) || ''; } catch (e) { activeCity = ''; }
+  loadFavoriteCities();
   try { if (localStorage.getItem(SCOPE_KEY) === 'all') _resultsScope = 'all'; } catch (e) {}
   updateScopeButton();
   try {

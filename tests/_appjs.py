@@ -21,6 +21,7 @@ JS_MODULES = [
     "09-ui-extras.js",
     "10-templates.js",
     "11-app-init.js",
+    "12-setup-summary.js",
 ]
 
 

@@ -259,6 +259,44 @@ class TestDownloadTarget:
         self._patch_api(monkeypatch, status_code=404)
         assert update_mod._release_asset_url("9.9.9", use_cache=False) == ""
 
+    def test_pinned_url_must_point_at_the_asset_we_need(self):
+        """version.json штампуется windows-ссылкой — но на macOS нужен .dmg.
+
+        Привязанный к версии адрес годится, только если он ведёт на ТОТ файл,
+        который нужен системе: иначе «скачать для macOS» отдавало .exe.
+        """
+        from routes import update as update_mod
+        mac = ("https://github.com/o/r/releases/download/v2.3.1/"
+               "YandexBusinessParser-macos-arm64.dmg")
+        assert update_mod._versioned_asset_url("2.3.1", mac) == ""
+        assert update_mod._versioned_asset_url(
+            "2.3.1", mac, "YandexBusinessParser-macos-arm64.dmg") == mac
+        assert update_mod._versioned_asset_url(
+            "2.3.1", self.PINNED,
+            "YandexBusinessParser-windows-x64.zip") == self.PINNED
+
+    def test_asset_name_follows_the_platform(self, monkeypatch):
+        import sys
+        from routes import update as update_mod
+        monkeypatch.setattr(sys, "platform", "win32")
+        assert update_mod._release_asset_name(install=True) == update_mod.ZIP_ASSET_NAME
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.setattr(update_mod, "_mac_arch", lambda: "arm64")
+        assert update_mod._release_asset_name(install=True).endswith("macos-arm64.dmg")
+        assert update_mod._release_asset_name(install=False).endswith("macos-arm64.zip")
+
+    def test_api_resolution_asks_for_the_requested_asset(self, monkeypatch):
+        from routes import update as update_mod
+        mac_asset = "YandexBusinessParser-macos-x64.dmg"
+        mac_url = "https://github.com/o/r/releases/download/v9.9.9/" + mac_asset
+        self._patch_api(monkeypatch, payload={
+            "draft": False,
+            "assets": [{"name": update_mod.ZIP_ASSET_NAME,
+                        "browser_download_url": self.PINNED},
+                       {"name": mac_asset, "browser_download_url": mac_url}]})
+        assert update_mod._release_asset_url("9.9.9", mac_asset,
+                                             use_cache=False) == mac_url
+
     def test_unpublished_version_gets_an_explanation(self, monkeypatch):
         from routes import update as update_mod
         monkeypatch.setattr(update_mod, "_release_asset_url", lambda *a, **k: "")

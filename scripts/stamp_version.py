@@ -34,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from release_notes import extract_section  # noqa: E402
 
 ZIP_ASSET = "YandexBusinessParser-windows-x64.zip"
+BULLET_RE = re.compile(r"^[-*•]\s+")
 HISTORY_LIMIT = 8
 SUMMARY_LIMIT = 400
 
@@ -63,6 +64,13 @@ def summarize(body: str, limit: int = SUMMARY_LIMIT) -> str:
     Именно абзац, а не первая строка: в CHANGELOG абзац часто начинается
     коротким жирным лидом («**Кнопка обновления работает.**») — без него
     в «Что нового» попадал обрывок фразы.
+
+    Абзац не перешагивает через пункт списка: в версиях, где секция сразу
+    начинается перечнем, первая строка — это уже законченная фича, и без
+    остановки сводка склеивала несколько разных пунктов в одну фразу.
+    Маркер списка («- », «* », «• ») в начале отбрасывается: сводка идёт
+    в баннер обновления и в «Что нового» как обычный текст, где «- » в начале
+    выглядит мусором.
     """
     para = []
     for raw in (body or "").splitlines():
@@ -73,7 +81,9 @@ def summarize(body: str, limit: int = SUMMARY_LIMIT) -> str:
             continue
         if not para and (line.startswith("#") or line.startswith("```")):
             continue
-        para.append(line)
+        if para and BULLET_RE.match(line):
+            break
+        para.append(BULLET_RE.sub("", line, count=1))
     text = re.sub(r"[*_`\[\]]", "", " ".join(para)).strip()
     text = re.sub(r"\s+", " ", text)
     if len(text) > limit:

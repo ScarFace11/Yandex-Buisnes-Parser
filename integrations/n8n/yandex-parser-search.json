@@ -1,0 +1,125 @@
+{
+  "name": "Yandex-Parser: поиск организаций",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Yandex-Parser → n8n\n\n1. Запустите приложение (оно слушает 127.0.0.1:5000, порт смотрите в консоли).\n2. В этом воркфлоу укажите СВОЙ URL вебхука (копируется в ноде Webhook).\n3. POST на вебхук с телом `{\"queries\":[\"кафе\"],\"cities\":[\"Москва\"]}` — и через несколько минут вернутся организации.\n\nЕсли n8n работает в Docker, замените `127.0.0.1` на адрес хоста (`host.docker.internal` на Windows/macOS).\n\nВместо опроса можно принять событие по завершении: передайте в `/api/v1/search` поле `callback_url` с адресом второго вебхука n8n.",
+        "height": 330,
+        "width": 380,
+        "color": 5
+      },
+      "id": "f0a1b2c3-d4e5-4f60-8172-a3b4c5d6e7f8",
+      "name": "Как это работает",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-380, -80]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "yandex-parser-search",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "a11e70de-1a2b-4c3d-9e8f-001122334455",
+      "name": "Webhook: запрос на поиск",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "webhookId": "yp-search"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:5000/api/v1/search",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ queries: $json.body.queries || ['кафе'], cities: $json.body.cities || ['Москва'], social_mode: $json.body.social_mode || 'all', max_pages: $json.body.max_pages || 1 }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "b22f81ef-2b3c-4d4e-8f90-112233445566",
+      "name": "Запустить поиск (POST /search)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [240, 0]
+    },
+    {
+      "parameters": {
+        "url": "http://127.0.0.1:5000/api/v1/results",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "run_id",
+              "value": "={{ $json.run_id }}"
+            },
+            {
+              "name": "wait",
+              "value": "300"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 320000
+        }
+      },
+      "id": "c33a92f0-3c4d-4e5f-9012-223344556677",
+      "name": "Дождаться и получить результаты",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [480, 0]
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "results",
+        "options": {}
+      },
+      "id": "d44b03a1-4d5e-4f60-8123-334455667788",
+      "name": "Одна организация — один элемент",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [720, 0]
+    }
+  ],
+  "connections": {
+    "Webhook: запрос на поиск": {
+      "main": [
+        [
+          {
+            "node": "Запустить поиск (POST /search)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Запустить поиск (POST /search)": {
+      "main": [
+        [
+          {
+            "node": "Дождаться и получить результаты",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Дождаться и получить результаты": {
+      "main": [
+        [
+          {
+            "node": "Одна организация — один элемент",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

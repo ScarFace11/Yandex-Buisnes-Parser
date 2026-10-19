@@ -72,3 +72,9 @@ replit.nix
 .local/
 .agents/
 .freebuff
+
+# Локальные артефакты проверки вёрстки и разработки
+screenshots/
+yp-*.log
+icon-preview.png
+icon-final.png

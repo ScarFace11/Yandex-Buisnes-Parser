@@ -83,12 +83,32 @@ def run() -> None:
     envelope = None
     if coords:
         center_lat, center_lon, envelope = coords
-        state.ok(f"  → {center_lat:.5f}, {center_lon:.5f}")
+        # Откуда взялись координаты: из офлайн-справочника или с карты
+        # (для городов вне каталога). Это видно в логе — если поиск ушёл
+        # не в тот город, причина читается сразу, без разбора кода.
+        try:
+            from .city_coords import lookup as _coord_lookup
+            _coord_src = "справочник городов" if _coord_lookup(state.CITY) else "карта"
+        except Exception:
+            _coord_src = ""
+        state.ok(f"  → {center_lat:.5f}, {center_lon:.5f}"
+                 + (f" ({_coord_src})" if _coord_src else ""))
     else:
-        center_lat, center_lon = 55.7558, 37.6173
-        state.warn("Геокодинг не удался, использую координаты Москвы")
+        # Город не опознан. Раньше здесь молча подставлялась Москва, и прогон
+        # по любому незнакомому названию искал в Москве. Теперь ищем по
+        # тексту «запрос + город» (Яндекс разрешает город сам), а сетка точек
+        # не строится — её не вокруг чего строить.
+        center_lat, center_lon = None, None
+        state.warn(f"  Координаты «{state.CITY}» не найдены — ищу по названию "
+                   "города в запросе (без сетки точек)")
 
-    grid_points = build_grid(center_lat, center_lon, envelope) if state.USE_GRID else [(center_lat, center_lon)]
+    # Сетка имеет смысл только с координатами: без них среди точек нечего
+    # перебирать, а в логе появились бы «None» вместо широты.
+    use_grid = bool(state.USE_GRID and center_lat is not None)
+    if state.USE_GRID and not use_grid:
+        state.info("  🗺  Сетка точек пропущена: у города нет координат")
+    grid_points = build_grid(center_lat, center_lon, envelope) if use_grid \
+        else [(center_lat, center_lon)]
     state.syslog(f"grid_points: {len(grid_points)}, envelope={'yes' if envelope else 'no'}")
 
     if state.OUTPUT_FILENAME:
@@ -176,7 +196,7 @@ def run() -> None:
     progress_lock = threading.Lock()
     progress_count = len(completed)
 
-    grid_index = build_grid_index(grid_points) if state.USE_GRID else {}
+    grid_index = build_grid_index(grid_points) if use_grid else {}
     dead_points: dict[tuple[float, float], bool] = {}
 
     def mark_progress(query: str) -> None:
@@ -296,7 +316,7 @@ def run() -> None:
                 mark_progress(query)
                 continue
 
-            if state.USE_GRID:
+            if use_grid:
                 state.syslog(f"point {point_num}/{total_points} [{lat:.3f}, {lon:.3f}], query={query}")
             else:
                 state.info(f"  🔍 Поиск: «{query}» в {state.CITY}…")
@@ -559,6 +579,15 @@ def run() -> None:
 
     if not full_records:
         state.warn("Подходящих записей не найдено. Попробуйте изменить запросы или фильтры.")
+        if getattr(state, "SEARCH_BLOCKED", ""):
+            # Пустота из-за капчи — не повод менять запросы и фильтры: выдачи
+            # вообще не было, и это надо сказать отдельно от «ничего не нашлось».
+            # Текст берётся тот же, что и в строке поиска — одно объяснение.
+            try:
+                from .search import search_failure_hint
+                state.warn("  ⚠ " + search_failure_hint())
+            except Exception:
+                pass
         if state.CITY_ALL_SEEN:
             state.warn(
                 f"  ⚠ {state.CITY}: все найденные организации уже парсились ранее — "
@@ -623,6 +652,9 @@ def _apply_params(params: dict) -> None:
     except Exception:
         state.BLACKLIST_WORDS = []
     state.reset_crawl_skips()
+    # Счётчики непрочитанных карточек — на прогон целиком (как и предфильтр):
+    # лог отчитывается по каждому городу дельтой, а в итоге — суммой.
+    state.reset_read_failures()
     # Фильтры, которые сбор может решить по одной записи (см.
     # processing.crawl_skip_reason): без них снятые этапом 2 записи появлялись
     # бы в живой таблице и пропадали только в конце прогона.
@@ -658,6 +690,10 @@ def _apply_params(params: dict) -> None:
         state.FETCH_DETAIL = False
     # Re-create semaphore to match the new MAX_WORKERS setting
     state._detail_semaphore = threading.Semaphore(state.MAX_WORKERS)
+
+
+class _NoRawData(Exception):
+    """Этап 2 не нужен: сырых файлов нет (не ошибка, а пустой сбор)."""
 
 
 def _run_was_interrupted() -> bool:
@@ -801,6 +837,14 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None, pause_event=
     # because every organization found there was parsed in an earlier run.
     _seen_flags: list[bool] = []
     state._ALL_ALREADY_SEEN = False
+    # Проверка «Вы не робот?» от Яндекса: сбрасывается на каждый прогон, чтобы
+    # прошлая капча не объясняла сегодняшнюю пустоту.
+    state.SEARCH_BLOCKED = ""
+    try:
+        from . import browser_search
+        browser_search.reset_blocked()
+    except Exception:
+        pass
 
     # Continuation mode: after the user's cities, keep parsing further cities
     # from the catalog (population order), until continue_limit extra cities
@@ -836,10 +880,24 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None, pause_event=
     # HTTP-фолбэк удалён — если браузер не запустился, честно говорим об этом,
     # а не долбим сервис «серыми» запросами.
     if state.USE_BROWSER:
+        # Выбор браузера: параметр запуска → settings.json → автоматически.
+        # Путь проверяет cdp_client: удалённый браузер не должен ломать сбор
+        # «не найден» при живом Chrome рядом.
+        _browser_path = str(params.get("browser_path") or "").strip()
+        if not _browser_path:
+            try:
+                import paths as _paths_mod
+                _browser_path = str(_paths_mod.load_settings().get("browser_path") or "").strip()
+            except Exception:
+                _browser_path = ""
+        cdp_client.set_browser(_browser_path)
         cdp_ok = cdp_client.init_browser(pool_size=min(state.MAX_WORKERS, 20))
         if cdp_ok:
-            _syslog("Browser pool: CDP initialized (real Chrome/Chromium)")
-            _weblog("info", "  🌐 Режим: браузер (Chrome/Chromium через CDP)")
+            _binfo = cdp_client.browser_info()
+            _syslog(f"Browser pool: CDP initialized ({_binfo.get('name')} at {_binfo.get('path')})")
+            _weblog("info", "  🌐 Режим: браузер ("
+                             + (_binfo.get("name") or "Chrome/Chromium")
+                             + " через CDP)")
         else:
             _syslog("Browser pool: CDP unavailable, no HTTP fallback (removed)")
             _weblog("warn", "  ⚠ Браузер не найден — установите Chrome/Chromium "
@@ -855,7 +913,19 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None, pause_event=
             _weblog("warn", "  ⚠ Не удалось открыть отладочный Chrome")
     # Deduped: the same line was previously printed twice for single-city
     # runs (once here, once via the city header path).
-    _dedup_weblog("info", f"  Поиск: {len(cities)} город(ов), запросы: {', '.join(state.SEARCH_QUERIES)}")
+    # Города печатаются полностью: в живом прогоне пользователь выбрал
+    # «Москва», а лог показывал «Калуга» — одно число городов не давало
+    # заметить, что в форму попало не то название.
+    _dedup_weblog("info", f"  Поиск: {len(cities)} город(ов) — {', '.join(cities)}; "
+                         f"запросы: {', '.join(state.SEARCH_QUERIES)}")
+    # Журнал источников: дата сбора и откуда взяты данные. В выгрузке то же
+    # время лежит в колонке «Дата сбора» (parsed_at) у каждой организации.
+    _dedup_weblog("info", f"  📅 Данные собираются сейчас: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+                         " · источник — публичная выдача Яндекс.Карт")
+    # Лимиты: приложение не «долбит» сервис, а ждёт между запросами;
+    # при 429 пауза увеличивается сама (rate_limit).
+    _dedup_weblog("info", "  🐢 Вежливый режим: пауза между запросами, "
+                         "авто-замедление при 429 — сервис не получает шквал запросов")
 
     try:
         for city_idx, city in enumerate(cities):
@@ -1016,6 +1086,15 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None, pause_event=
                 # before a pause (preloaded in run_web on resume).
                 _raw_input = (list(getattr(state, "_RAW_FILES_RUN", []) or [])
                               or list(getattr(state, "_RAW_FILES_LAST_RUN", []) or []))
+                if not _raw_input:
+                    # Собирать было нечего (пустая выдача, капча, все записи
+                    # сняты предфильтром) — фильтровать тоже нечего. Раньше
+                    # этап 2 всё равно запускался и добавлял к честной причине
+                    # пустоты ложную: «Ничего не найдено по заданным фильтрам.
+                    # Измените настройки».
+                    _weblog("info", "  🧪 Этап 2 пропущен: сырых данных нет — "
+                                     "фильтровать нечего (причина выше)")
+                    raise _NoRawData()
                 _stage2 = process_all(
                     _raw_input,
                     _filters,
@@ -1027,6 +1106,8 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None, pause_event=
                     _rel = os.path.relpath(_pf, str(getattr(state, "RESULTS_DIR", None) or state.OUTPUT_DIR))
                     if _rel not in all_files:
                         all_files.append(_rel)
+            except _NoRawData:
+                pass
             except Exception as exc:
                 try:
                     _weblog("warn", f"  [!] Ошибка обработки: {exc}")
@@ -1174,6 +1255,13 @@ def run_process(params: dict, mp_queue, stop_file: str | None = None,
             pass
 
     try:
+        # Стартовый прогресс для родителя: сколько городов всего. У одного
+        # города движок своих сообщений о переходе не шлёт (они нужны полосе
+        # городов в интерфейсе), а API должен знать знаменатель сразу.
+        _total_cities = len(params.get("cities") or [])
+        if _total_cities:
+            mp_queue.put({"type": "progress", "cities_done": 0,
+                          "cities_total": _total_cities})
         files = run_web(params, _q_log, stop_event, skip_event, pause_event)
         # Build the frontend-friendly merged JSON (english keys, all cities)
         # so the results table and stats render correctly even when only
@@ -1209,6 +1297,13 @@ def run_process(params: dict, mp_queue, stop_file: str | None = None,
             _pos = state.pause_position()
         except Exception:
             _pos = {}
+        # Финальный прогресс: прогон дошёл до конца — все города пройдены и
+        # записей столько же, сколько в итоге. При стопе/паузе не сообщаем:
+        # сколько городов успело пройти, уже знает родитель по city_done.
+        if _total_cities and not stop_event.is_set() and not pause_event.is_set():
+            mp_queue.put({"type": "progress", "cities_done": _total_cities,
+                          "cities_total": _total_cities,
+                          "records_so_far": count})
         mp_queue.put({"type": "done", "files": files, "count": count,
                       "stopped": stop_event.is_set() and not pause_event.is_set(),
                       "paused": pause_event.is_set(),
@@ -1226,9 +1321,13 @@ def run_process(params: dict, mp_queue, stop_file: str | None = None,
     except Exception as exc:
         try:
             mp_queue.put({"type": "log",  "level": "warn", "msg": f"Ошибка: {exc}"})
+            # Явная ошибка для родителя: мост пометит прогон failed, и
+            # /api/v1/status отличит «сломалось» от «ничего не найдено».
+            mp_queue.put({"type": "error", "message": str(exc)})
             mp_queue.put({"type": "done", "files": [], "count": 0,
                           "stopped": stop_event.is_set() and not pause_event.is_set(),
                           "paused": pause_event.is_set(),
+                          "error": str(exc),
                           "resume": None, "formats": []})
         except Exception:
             pass

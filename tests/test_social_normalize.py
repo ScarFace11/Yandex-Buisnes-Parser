@@ -120,6 +120,15 @@ class TestVk:
         assert normalize_vk_url("https://example.com/x") is None
         assert normalize_vk_url("") is None
 
+    def test_escaped_ref_and_trackcode_tail_is_a_profile(self):
+        """Запись из живого прогона: `…/heroeskaluga&amp;trackcode=…`."""
+        assert (normalize_vk_url("https://vk.ru/heroeskaluga&amp;trackcode=4433fd7c")
+                == "https://vk.com/heroeskaluga")
+
+    def test_trackcode_query_dropped(self):
+        assert (normalize_vk_url("https://vk.com/club42?trackcode=1")
+                == "https://vk.com/club42")
+
 
 class TestEnsureHttps:
     def test_upgrades_http(self):

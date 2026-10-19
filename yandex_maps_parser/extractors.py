@@ -3,6 +3,7 @@ HTML / text extraction: social links, emails, descriptions, reviews.
 """
 import json
 import re
+from html import unescape as _html_unescape
 
 from .constants import (
     LINK_AGGREGATORS,
@@ -13,8 +14,12 @@ from . import state
 
 # ── Compiled patterns ─────────────────────────────────────────
 
+# Метки, которые площадки и Яндекс вешают на исходящие ссылки. `trackcode` —
+# собственная метка Яндекс.Карт: без неё ссылка из карточки приходит вида
+# «https://vk.ru/club?trackcode=4433fd7c…» и в выгрузке выглядит мусором.
 _UTM_RE = re.compile(
-    r'[?&](utm_\w+|ref|from|fbclid|gclid|yclid|si|igshid)=[^&]*', re.I
+    r'[?&](utm_\w+|ref|from|fbclid|gclid|yclid|ysclid|trackcode|erid|si|igshid)=[^&]*',
+    re.I,
 )
 _TRAILING_RE = re.compile(r'[?&]$')
 
@@ -53,6 +58,48 @@ _TWITTER_NON_PROFILE = re.compile(
     re.I,
 )
 
+# ── Блок контактов самой организации ──────────────────────────
+# Страница карточки — это НЕ только данные организации: в state-JSON лежит
+# блок «похожие организации» (ключ `competitor`), подборки и соседние
+# карточки, у каждой свои ссылки и телефон. Раньше они подмешивались к
+# записи. Контакты самой организации живут в секции «Контакты»
+# (заголовок card-section-header__title) — разбор и ограничиваем ею.
+_CONTACTS_SEC_RE = re.compile(
+    r'<h[23][^>]*class="[^"]*card-section-header__title[^"]*"[^>]*>\s*Контакты\s*</h[23]>'
+    r'.*?'
+    # Конец секции: следующий заголовок раздела, скрипт (state страницы) или
+    # конец документа — дальше на странице уже чужие данные.
+    r'(?=<h[23][^>]*class="[^"]*card-section-header__title|<script|</body>|$)',
+    re.S,
+)
+
+# Ключи встроенных данных, которые описывают ЧУЖИЕ организации:
+# `competitor` — блок «похожие организации», `relatedAdverts`/`relatedPlaces`
+# — подборки и соседние карточки. Их контакты и оценки никогда не
+# принадлежат разбираемой карточке, поэтому ветка пропускается целиком.
+_FOREIGN_JSON_KEYS = frozenset({
+    "competitor", "relatedadverts", "relatedplaces",
+    "nearbyonmap", "nearbyoncard",
+})
+
+
+def _is_foreign_key(key) -> bool:
+    return str(key).lower() in _FOREIGN_JSON_KEYS
+
+
+def own_contacts_html(html: str) -> str:
+    """Секция «Контакты» карточки — или пустая строка.
+
+    Пустая строка означает «страница не карточка организации» (фрагмент,
+    JSON выдачи, чужой сайт) — вызывающий в этом случае разбирает вход как
+    раньше, без ограничения.
+    """
+    if not html:
+        return ""
+    m = _CONTACTS_SEC_RE.search(html)
+    return m.group(0) if m else ""
+
+
 _JSON_BLOB_RE = re.compile(
     r'(?:window\.(?:__)?(?:NUXT|INITIAL_STATE|SERVER_STATE|PRELOADED_STATE|'
     r'APP_STATE|REDUX_STATE|DATA|STATE)(?:__)?'
@@ -86,8 +133,19 @@ def _is_aggregator(url: str) -> bool:
 
 
 def _clean_social_url(url: str) -> str:
-    """Remove UTM / tracking parameters from a social URL."""
+    """Remove UTM / tracking parameters from a social URL.
+
+    В атрибутах HTML «&» приходит как «&amp;», поэтому ссылка сначала
+    раскодируется: иначе `?ref=x&amp;trackcode=y` после снятия `ref`
+    превращалось в `.../club&amp;trackcode=y` — обрывок запроса вместо адреса
+    профиля. Целый запрос (`?v=…` у YouTube, `?phone=…` у WhatsApp) не
+    трогается; отрезается только хвост, начинающийся с «&» без «?»:
+    это всегда остаток снятого параметра, а не самостоятельный запрос.
+    """
+    url = _html_unescape(url or "")
     url = _UTM_RE.sub("", url)
+    if "?" not in url:
+        url = url.split("&", 1)[0]
     url = _TRAILING_RE.sub("", url)
     return url.rstrip("/.,);\"'")
 
@@ -173,12 +231,31 @@ def fetch_html(url: str, session=None, biz_id: str = "") -> str:
         return ""
 
     if not text:
-        state.warn("Карточка не открылась в браузере — детали этой организации пропущены.")
+        # Остановка/пропуск города — это не потерянная карточка: считать её
+        # в счётчике значило бы показать в итоге «не прочитано N» там, где
+        # пользователь сам прервал прогон.
+        aborted = bool((state._STOP_EVENT and state._STOP_EVENT.is_set())
+                       or state.is_skip_city())
+        if aborted:
+            return ""
+        reason = ""
+        try:
+            reason = cdp_client.take_failure_reason()
+        except Exception:
+            reason = ""
+        if reason not in state.READ_FAILURE_LABELS:
+            reason = "no_page"
+        state.warn(f"Карточка не открылась в браузере ({state.READ_FAILURE_LABELS[reason]}) "
+                   "— детали этой организации пропущены.")
+        # Счётчик потерь: запись всё равно попадёт в выгрузку, и без этой
+        # цифры её «пустые контакты» выглядят как «так и есть».
+        state.inc_read_failure(reason)
         return ""
 
     lower = text[:4000].lower()
     if any(m in lower for m in _ANTIBOT_MARKERS):
         state.warn("Яндекс вернул anti-bot страницу — детали этой карточки пропущены.")
+        state.inc_read_failure("antibot")
         return ""
 
     if biz_id:
@@ -192,8 +269,72 @@ def fetch_html(url: str, session=None, biz_id: str = "") -> str:
 
 # ── Extractors ────────────────────────────────────────────────
 
+# ── Разобранная страница ──────────────────────────────────────
+# Одна карточка разбирается несколькими функциями подряд (соцсети, рейтинг,
+# телефон, сайт), и каждая раньше ЗАНОВО искала встроенный JSON и секцию
+# контактов: встроенные данные страницы разбирались json до четырёх раз
+# на одну и ту же страницу (замер на карточках из кэша: 15.7 мс на страницу,
+# из них 13 мс — повторный разбор того же самого). PageView разбирает и то,
+# и другое ОДИН раз и отдаёт всем шагам уже готовое.
+#
+# Поведение при этом не меняется: тот же предел 200 КБ, тот же список
+# пропускаемых ветвей чужих организаций, тот же порядок блобов — меняется
+# только число повторов. Функции без PageView (`extract_socials(text)` и др.)
+# работают как раньше: это их контракт, на нём стоят тесты и внешние вызовы.
+
+
+class PageView:
+    """Страница карточки, разобранная один раз: блобы JSON и секция контактов."""
+
+    JSON_LIMIT = 200_000
+
+    __slots__ = ("html", "head", "_blobs", "_contacts")
+
+    def __init__(self, html: str):
+        self.html = html or ""
+        self.head = self.html[:self.JSON_LIMIT]
+        self._blobs = None
+        self._contacts = None
+
+    def blobs(self) -> list:
+        """Встроенные данные страницы (state-JSON, ld+json), уже разобранные."""
+        if self._blobs is None:
+            self._blobs = _blobs_in(self.head)
+        return self._blobs
+
+    def contacts(self) -> str:
+        """Секция «Контакты» самой организации или пустая строка."""
+        if self._contacts is None:
+            self._contacts = own_contacts_html(self.html)
+        return self._contacts
+
+
+def view_of(html, view=None) -> "PageView":
+    """Готовая PageView или новая — чтобы вызов с одной страницей не менялся."""
+    return view if view is not None else PageView(html)
+
+
+def _blobs_in(text: str) -> list:
+    """Разобрать встроенные данные из куска HTML — в порядке появления."""
+    objs = []
+    if not text:
+        return objs
+    decoder = json.JSONDecoder()
+    for m in _JSON_BLOB_RE.finditer(text):
+        try:
+            obj, _ = decoder.raw_decode(text, m.start(1))
+        except (ValueError, json.JSONDecodeError):
+            continue
+        objs.append(obj)
+    return objs
+
+
 def _collect_url_strings(obj, depth: int = 0, limit: int = 200) -> list[str]:
-    """Recursively collect string values that look like URLs from a decoded object."""
+    """Recursively collect string values that look like URLs from a decoded object.
+
+    Ветки чужих организаций (competitor и подборки) пропускаются: ссылки оттуда
+    никогда не являются контактами этой карточки.
+    """
     out: list[str] = []
 
     def walk(o, d: int) -> None:
@@ -203,7 +344,9 @@ def _collect_url_strings(obj, depth: int = 0, limit: int = 200) -> list[str]:
             if "http" in o:  # fast pre-check, avoids regex on non-URL strings
                 out.append(o)
         elif isinstance(o, dict):
-            for v in o.values():
+            for k, v in o.items():
+                if _is_foreign_key(k):
+                    continue
                 walk(v, d + 1)
         elif isinstance(o, (list, tuple)):
             for v in o:
@@ -213,7 +356,7 @@ def _collect_url_strings(obj, depth: int = 0, limit: int = 200) -> list[str]:
     return out
 
 
-def _extract_from_json_blob(html: str) -> dict[str, str]:
+def _extract_from_json_blob(html: str = "", view=None) -> dict[str, str]:
     r"""Parse embedded JSON blobs in a Yandex Maps page and extract socials.
 
     Uses JSONDecoder.raw_decode so deeply nested objects are parsed correctly
@@ -221,15 +364,9 @@ def _extract_from_json_blob(html: str) -> dict[str, str]:
     Limits parsing to the first 200KB to avoid slow parsing of huge pages.
     """
     result: dict[str, str] = {}
-    # Only parse the first 200KB — social links are always near the top
-    text = html[:200_000]
-    decoder = json.JSONDecoder()
-    for m in _JSON_BLOB_RE.finditer(text):
-        start = m.start(1)
-        try:
-            obj, _ = decoder.raw_decode(text, start)
-        except (ValueError, json.JSONDecodeError):
-            continue
+    # Only the first 200KB, and only once per page — social links are always
+    # near the top (см. PageView: тот же предел делят все шаги разбора).
+    for obj in view_of(html, view).blobs():
         for url in _collect_url_strings(obj):
             url = _clean_social_url(url)
             if not url or EXCLUDE_URLS.search(url):
@@ -273,6 +410,8 @@ def _find_numbers(obj, keys, depth: int = 0):
         return None
     if isinstance(obj, dict):
         for key, value in obj.items():
+            if _is_foreign_key(key):
+                continue          # рейтинг похожей/соседней организации — чужой
             if str(key).lower() in keys:
                 num = _num(value)
                 if num is not None:
@@ -283,7 +422,9 @@ def _find_numbers(obj, keys, depth: int = 0):
                         num = _num(value.get(sub))
                         if num is not None:
                             return num
-        for value in obj.values():
+        for key, value in obj.items():
+            if _is_foreign_key(key):
+                continue
             num = _find_numbers(value, keys, depth + 1)
             if num is not None:
                 return num
@@ -295,7 +436,7 @@ def _find_numbers(obj, keys, depth: int = 0):
     return None
 
 
-def extract_rating_reviews(html: str) -> tuple[object, object]:
+def extract_rating_reviews(html: str, view=None) -> tuple[object, object]:
     """Pull (rating, reviews_count) out of a Yandex Maps page, or ("", "").
 
     Reads the same embedded JSON blob that socials come from, so it costs no
@@ -304,14 +445,8 @@ def extract_rating_reviews(html: str) -> tuple[object, object]:
     """
     if not html:
         return "", ""
-    text = html[:200_000]
-    decoder = json.JSONDecoder()
     rating = reviews = None
-    for m in _JSON_BLOB_RE.finditer(text):
-        try:
-            obj, _ = decoder.raw_decode(text, m.start(1))
-        except (ValueError, json.JSONDecodeError):
-            continue
+    for obj in view_of(html, view).blobs():
         if rating is None:
             rating = _find_numbers(obj, _RATING_KEYS)
         if reviews is None:
@@ -332,9 +467,15 @@ def extract_rating_reviews(html: str) -> tuple[object, object]:
     return rating_out, reviews_out
 
 
-def extract_socials(text: str) -> dict[str, str]:
+def extract_socials(text: str, view=None) -> dict[str, str]:
     """Extract real social-profile links (URLs only — no fabrication from
-    phone numbers or @mentions in arbitrary text)."""
+    phone numbers or @mentions in arbitrary text).
+
+    На странице карточки разбор ограничивается секцией «Контакты»: ссылки из
+    блока «похожие организации» (и вообще всё, что лежит в state-JSON чужих
+    карточек) в запись не попадают. На обычном тексте/JSON поведение прежнее.
+    """
+    text = (view.contacts() if view is not None else own_contacts_html(text)) or text
     result: dict[str, str] = {}
     for url in _HTTP_LIKE.findall(text):
         url = _clean_social_url(url)
@@ -356,6 +497,9 @@ def extract_socials(text: str) -> dict[str, str]:
 # does not always include Phones). Card pages render the contact phone as a
 # `tel:` link, so that link is by far the most reliable signal.
 _TEL_LINK_RE = re.compile(r'href=["\']tel:([+\d\s()\-]{7,25})["\']', re.I)
+# Номер, как его рендерит блок контактов самой организации
+# (<span dir="ltr" itemprop="telephone">+7 (913) 714-24-24</span>).
+_TEL_ITEMPROP_RE = re.compile(r'itemprop=["\']telephone["\'][^>]*>([^<]{7,25})<', re.I)
 # Scripts/styles are cut out before the loose text pass: otherwise any
 # 11-digit number in the page state (a view counter, an id) reads as a phone.
 _SCRIPT_BLOCK_RE = re.compile(r"<(script|style)\b[^>]*>.*?</\1>", re.I | re.S)
@@ -401,6 +545,8 @@ def _phone_from_json(value, depth: int = 0) -> str:
         return ""
     if isinstance(value, dict):
         for key, sub in value.items():
+            if _is_foreign_key(key):
+                continue          # телефон «похожей» организации — чужой
             if str(key).lower() not in _PHONE_KEYS:
                 continue
             cand = sub
@@ -414,7 +560,9 @@ def _phone_from_json(value, depth: int = 0) -> str:
                 phone = _format_phone(_phone_digits(cand))
                 if phone:
                     return phone
-        for sub in value.values():
+        for key, sub in value.items():
+            if _is_foreign_key(key):
+                continue
             phone = _phone_from_json(sub, depth + 1)
             if phone:
                 return phone
@@ -431,6 +579,14 @@ def _phone_from_json(value, depth: int = 0) -> str:
 # выдача его не показывает, поэтому сайт читается с карточки организации:
 # ссылка в блоке контактов («Сайт») или поле url/site/website в данных
 # страницы. Так фильтр «только без сайтов» продолжает работать.
+#
+# Ссылка «Сайт» ищется по ВСЕМУ HTML карточки, а не по усечённому началу
+# страницы: замер по 168 закэшированным карточкам — каждая ~900 КБ, кнопка
+# «Сайт» живёт в шапке собственной карточки на отметке ~670 КБ, а head
+# ограничен 200 КБ. По старой схеме сайт не находился НИ РАЗУ на всех 168
+# карточках, хотя в HTML он был у трёх из них. Секция «Контакты» не
+# подходит: она начинается ПОСЛЕ кнопки «Сайт». У экстракции телефона
+# секция «Контакты» остаётся — у неё свой контракт (см. extract_phone).
 _WEBSITE_KEYS = ("url", "site", "website", "siteurl", "domain")
 _WEBSITE_LINK_RE = re.compile(
     r'href=["\'](https?://[^"\']+)["\'][^>]*>\s*(?:<[^>]+>)*[^<]{0,40}?Сайт',
@@ -451,37 +607,36 @@ def _is_own_website(url: str) -> bool:
     return True
 
 
-def extract_website(html: str) -> str:
-    """Сайт организации со страницы карточки — или "" (если сайта нет)."""
-    if not html:
-        return ""
-    text = html[:200_000]
+def _site_link_in_page(html: str, view, accept) -> str:
+    """Первая ссылка «Сайт» на странице карточки, проходящая фильтр ``accept``.
 
-    # 1. Блок контактов: ссылка рядом со словом «Сайт» — самый надёжный сигнал.
+    Ссылка лежит в кнопочной строке СОБСТВЕННОЙ карточки (~670 КБ от начала
+    страницы — замер по 168 закэшированным карточкам), далеко за прежним
+    пределом 200 КБ, поэтому сканируется весь HTML. На каждой карточке такая
+    ссылка ровно одна и принадлежит этой организации: кнопку «Сайт» чужие
+    карточки («похожие организации») не разворачивают. Секция «Контакты»
+    при этом НЕ используется: она начинается ПОСЛЕ кнопочной строки, и
+    ограничивать ею — не находить ссылку вовсе (так и было на всех 168
+    карточках). Всё, что не проходит accept (соцсети, Яндекс, агрегаторы
+    вместо сайта), отбрасывается как раньше.
+    """
+    v = view_of(html, view)
+    text = v.html or v.head
     for m in _WEBSITE_LINK_RE.finditer(text):
         cand = m.group(1).strip()
-        if _is_own_website(cand):
+        if accept(cand):
             return _clean_social_url(cand)
-
-    # 2. Данные страницы: url/site/website с настоящим адресом организации.
-    decoder = json.JSONDecoder()
-    for m in _JSON_BLOB_RE.finditer(text):
-        try:
-            obj, _ = decoder.raw_decode(text, m.start(1))
-        except (ValueError, json.JSONDecodeError):
-            continue
-        found = _website_from_json(obj)
-        if found:
-            return found
     return ""
 
 
-def _website_from_json(value, depth: int = 0) -> str:
-    """Первый настоящий сайт под ключом url/site/website в данных страницы."""
+def _site_key_from_json(value, accept, depth: int = 0) -> str:
+    """Первый URL под ключом url/site/website в данных страницы, проходящий accept."""
     if depth > 12 or value is None:
         return ""
     if isinstance(value, dict):
         for key, sub in value.items():
+            if _is_foreign_key(key):
+                continue
             if str(key).lower() not in _WEBSITE_KEYS:
                 continue
             cand = sub
@@ -489,40 +644,88 @@ def _website_from_json(value, depth: int = 0) -> str:
                 cand = cand.get("value") or cand.get("text") or cand.get("url") or ""
             if isinstance(cand, (list, tuple)):
                 cand = next((x for x in cand if isinstance(x, str)), "")
-            if isinstance(cand, str) and _is_own_website(cand.strip()):
+            if isinstance(cand, str) and accept(cand.strip()):
                 return _clean_social_url(cand.strip())
-        for sub in value.values():
-            found = _website_from_json(sub, depth + 1)
+        for key, sub in value.items():
+            if _is_foreign_key(key):
+                continue
+            found = _site_key_from_json(sub, accept, depth + 1)
             if found:
                 return found
     elif isinstance(value, (list, tuple)):
         for sub in value:
-            found = _website_from_json(sub, depth + 1)
+            found = _site_key_from_json(sub, accept, depth + 1)
             if found:
                 return found
     return ""
 
 
-def extract_phone(html: str) -> str:
-    """Первый настоящий телефон со страницы карточки — или "".
+def extract_website(html: str, view=None) -> str:
+    """Сайт организации со страницы карточки — или "" (если сайта нет)."""
+    if not html:
+        return ""
+    # 1. Блок контактов: ссылка рядом со словом «Сайт» — самый надёжный сигнал.
+    found = _site_link_in_page(html, view, _is_own_website)
+    if found:
+        return found
 
-    Порядок по надёжности: ссылка tel: (её рендерят для контактов самой
-    организации) → телефон в данных страницы под ключом phone/tel →
-    телефон в тексте. Служебные 8-800 и короткие номера отбраковываются.
+    # 2. Данные страницы: url/site/website с настоящим адресом организации.
+    for obj in view_of(html, view).blobs():
+        found = _site_key_from_json(obj, _is_own_website)
+        if found:
+            return found
+    return ""
+
+
+def extract_aggregator(html: str, view=None) -> str:
+    """Ссылка-витрина (taplink/linktree) из карточки — или "".
+
+    Яндекс показывает такую ссылку как «Сайт» организации, но сайтом она не
+    считается (см. _is_own_website / LINK_AGGREGATORS): раньше карточка её не
+    читала вовсе, и колонка «Сайт / Таплинк» оставалась пустой, даже когда
+    витрина была. Порядок тот же, что у extract_website: секция «Контакты»
+    целиком → данные страницы.
     """
     if not html:
         return ""
-    text = html[:200_000]
+    found = _site_link_in_page(html, view, _is_aggregator)
+    if found:
+        return found
+    for obj in view_of(html, view).blobs():
+        found = _site_key_from_json(obj, _is_aggregator)
+        if found:
+            return found
+    return ""
+
+
+def extract_phone(html: str, view=None) -> str:
+    """Первый настоящий телефон со страницы карточки — или "".
+
+    Порядок по надёжности: itemprop="telephone" в секции «Контакты» самой
+    организации → ссылка tel: → телефон в данных страницы под ключом
+    phone/tel → телефон в тексте. Служебные 8-800 и короткие номера
+    отбраковываются.
+
+    На карточке разбор ограничивается секцией «Контакты»: телефоны из блока
+    «похожие организации» чужие, а секция лежит глубже 200 КБ — прежнему
+    усечению их не хватало, и номер с карточки не находился вовсе.
+    """
+    if not html:
+        return ""
+    section = view.contacts() if view is not None else own_contacts_html(html)
+    text = section if section else (view.head if view is not None else html[:200_000])
+    for m in _TEL_ITEMPROP_RE.finditer(text):
+        phone = _format_phone(_phone_digits(m.group(1)))
+        if phone:
+            return phone
     for m in _TEL_LINK_RE.finditer(text):
         phone = _format_phone(_phone_digits(m.group(1)))
         if phone:
             return phone
-    decoder = json.JSONDecoder()
-    for m in _JSON_BLOB_RE.finditer(text):
-        try:
-            obj, _ = decoder.raw_decode(text, m.start(1))
-        except (ValueError, json.JSONDecodeError):
-            continue
+    # Данные страницы: в секции контактов своего JSON нет (она кончается на
+    # `<script`), поэтому берётся либо своя секция, либо начало страницы —
+    # ровно как раньше, только разобранное один раз.
+    for obj in (_blobs_in(section) if section else view_of(html, view).blobs()):
         phone = _phone_from_json(obj)
         if phone:
             return phone
@@ -531,5 +734,51 @@ def extract_phone(html: str) -> str:
         if phone:
             return phone
     return ""
+
+
+# ── Всё, что нужно от страницы, за один разбор ─────────────────
+
+def extract_page(html: str, *, socials: bool = True, rating: bool = True,
+                 phone: bool = True, website: bool = True,
+                 aggregator: bool = True) -> dict:
+    """Собрать с карточки всё сразу, разобрав страницу ОДИН раз.
+
+    Тот же результат, что у пяти отдельных вызовов, но встроенные данные и
+    секция контактов разбираются однажды: замер на карточках из кэша — 15.7 мс
+    на страницу против 5–6 мс. На прогоне в тысячи организаций это минуты
+    процессорного времени сборщика (и столько же ожидания в рабочем потоке).
+
+    Возвращает словарь с ключами:
+
+    * ``socials_json`` — соцсети из встроенных данных страницы;
+    * ``socials_contacts`` — соцсети из секции «Контакты» самой организации;
+    * ``rating``, ``reviews`` — оценка и число отзывов;
+    * ``phone`` — телефон, ``website`` — сайт организации;
+    * ``aggregator`` — ссылка-витрина (taplink/linktree), та же колонка
+      отчёта «Сайт / Таплинк», но поле отдельное — сайт она не заменяет.
+
+    Соцсети отдаются ДВУМЯ словарями, а не одним: у вызывающего уже есть
+    соцсети из выдачи поиска, и порядок приоритета (выдача → встроенные
+    данные → секция контактов) задаётся им, а не разбором. Пустая строка
+    значит «данных нет» — вызывающий не должен делать из неё ноль.
+    """
+    view = PageView(html)
+    out: dict = {"socials_json": {}, "socials_contacts": {},
+                 "rating": "", "reviews": "", "phone": "", "website": "",
+                 "aggregator": ""}
+    if not html:
+        return out
+    if socials:
+        out["socials_json"] = _extract_from_json_blob(view=view)
+        out["socials_contacts"] = extract_socials(html, view=view)
+    if rating:
+        out["rating"], out["reviews"] = extract_rating_reviews(html, view=view)
+    if phone:
+        out["phone"] = extract_phone(html, view=view)
+    if website:
+        out["website"] = extract_website(html, view=view)
+    if aggregator:
+        out["aggregator"] = extract_aggregator(html, view=view)
+    return out
 
 

@@ -254,6 +254,9 @@ function resetBtn() {
   // Run finished → back to ready/grey depending on what is filled in.
   updateRunBtnState();
   updateStatsBadge();
+  // У сфер появилась новая запись в истории — подписи «когда и по каким
+  // городам парсили» должны обновиться, а не ждать пяти минут TTL.
+  if (typeof refreshSpheresSoon === 'function') refreshSpheresSoon();
 }
 
 // ═══════════════════════════════════════════
@@ -293,7 +296,10 @@ function toggleScopeAll() {
 }
 
 function setResultsView(view) {
-  if (!['raw', 'processed', 'all'].includes(view)) view = 'raw';
+  // Кнопка «Все» убрана из интерфейса: режим объединял два источника, но по
+  // факту показывал обработанные — непонятный дубль. Значение 'all' из
+  // старых вызовов/API приводится к «Обработанные», остальное — к сырым.
+  if (!['raw', 'processed'].includes(view)) view = view === 'all' ? 'processed' : 'raw';
   _resultsView = view;
   _resultsLoadedOnce = true;   // вкладка больше не «пустая» — запрос ушёл
   document.querySelectorAll('#results-toggle .rt-btn').forEach(b =>
@@ -415,6 +421,20 @@ function pickOutputDir() {
     })
     .catch(() => showOutputDirError('Не удалось открыть диалог выбора папки', null))
     .finally(() => { if (btn) { btn.disabled = false; btn.innerHTML = UI_ICONS.folder + 'Обзор…'; } });
+}
+
+// 📁 «Открыть» — показать папку результатов в файл-менеджере ОС
+// (Finder на macOS, проводник на Windows). Путь сервер берёт из настроек
+// приложения — открытую папку нельзя подменить запросом.
+function openOutputDir() {
+  const btn = document.getElementById('btn-output-open');
+  if (btn) { btn.disabled = true; btn.innerHTML = UI_ICONS.busy + 'Открываю…'; }
+  postJSON('/output/open', {})
+    .then(d => {
+      if (!(d && d.ok)) showToast((d && d.error) || 'Не удалось открыть папку', 'error');
+    })
+    .catch(() => showToast('Сервер не ответил — папку открыть не удалось', 'error'))
+    .finally(() => { if (btn) { btn.disabled = false; btn.innerHTML = UI_ICONS.folderOpen + 'Открыть'; } });
 }
 
 function saveOutputDir() {
@@ -821,8 +841,10 @@ function _applyRowFilters(source) {
   return source.filter(r => {
     // City tab ('' = все города)
     if (activeCity && cityOf(r) !== activeCity) return false;
-    // «Только непросмотренные»
-    if (unviewedOnly && isReviewed(r)) return false;
+    // Показ по отметке «Просмотрено» (клик по заголовку колонки ✓):
+    // только непросмотренные / только просмотренные / всё.
+    if (reviewedFilter === 'unviewed' && isReviewed(r)) return false;
+    if (reviewedFilter === 'viewed' && !isReviewed(r)) return false;
     // Search every visible/data field
     const searchable = Object.values(r).some(value =>
       String(value ?? '').toLocaleLowerCase('ru-RU').includes(q)
@@ -853,6 +875,11 @@ function _orderFilteredRows() {
       const va = +a.lead_score || 0, vb = +b.lead_score || 0;
       return sortAsc ? va - vb : vb - va;
     });
+    return;
+  }
+  // «Рейтинг» (7 — оценка, 8 — число отзывов): числовой порядок, пустые в конце.
+  if (sortCol === 7 || sortCol === 8) {
+    _sortRatingRows();
     return;
   }
   if (sortCol >= 2) {
@@ -901,11 +928,14 @@ function minScoreThreshold() {
 // колонка не кликабельна и стрелку не показывает.
 const NOSORT_COLS = new Set([0, 1]);
 
-// Ключ колонки → старый числовой индекс сортировки (2..6). Числа — часть
+// Ключ колонки → старый числовой индекс сортировки (2..8). Числа — часть
 // контракта: те же индексы уходят на сервер (`sort_col`) для «Массового
 // обхода», поэтому визуальный порядок столбцов на них не влияет.
-const COL_SORT_INDEX = { rev: null, num: null, name: 2, category: 3, address: 4, phone: 5, score: 6, socials: null, rating: null };
-const SORT_INDEX_COL = { 2: 'name', 3: 'category', 4: 'address', 5: 'phone', 6: 'score' };
+// Телефон в контракте остался (сервер умеет), но в шапке не кликается:
+// в ячейке несколько номеров, и порядок им не задаётся.
+// 7/8 — «Рейтинг»: колонка одна, а смысла два (оценка и число отзывов).
+const COL_SORT_INDEX = { rev: null, num: null, name: 2, category: 3, address: 4, phone: null, score: 6, socials: null, rating: 7 };
+const SORT_INDEX_COL = { 2: 'name', 3: 'category', 4: 'address', 5: 'phone', 6: 'score', 7: 'rating' };
 
 // Заголовок берём по data-col, а не по позиции в строке: столбцы можно
 // переставлять («Столбцы» → перетаскивание), а сортировка должна оставаться
@@ -915,8 +945,9 @@ function _thByCol(key) {
 }
 
 function sortTableByKey(key) {
+  if (key === 'rating') { cycleRatingSort(); return; }
   const idx = COL_SORT_INDEX[key];
-  if (!idx) return;                 // «Просмотрено», «#», «Соцсети», «Рейтинг» не сортируются
+  if (!idx) return;                 // «Просмотрено», «#», «Соцсети», «Телефон» не сортируются
   sortTable(idx);
 }
 
@@ -927,12 +958,68 @@ function resetSortHeaders() {
     t.classList.remove('asc');
     t.classList.remove('desc');
   });
+  _clearRatingSortLabel();          // метка «по отзывам» живёт только при сортировке
   const num = _thByCol('num');
   if (num) num.classList.add('nosort');
 }
 
+// ── «Рейтинг»: одна колонка — два смысла ─────────────────────────
+// Клики идут по кругу: рейтинг ↓ → рейтинг ↑ → отзывы ↓ → отзывы ↑ → снова.
+// Пустые значения (нет данных) всегда в конце, как бы ни шла сортировка:
+// «нет рейтинга» не должно оказываться первым при сортировке по убыванию.
+const RATING_SORT_CYCLE = [
+  { col: 7, asc: false }, { col: 7, asc: true },
+  { col: 8, asc: false }, { col: 8, asc: true },
+];
+
+function _numSortVal(v) {
+  if (v === undefined || v === null || String(v).trim() === '') return null;
+  const f = parseFloat(String(v).replace(',', '.'));
+  return isFinite(f) ? f : null;
+}
+
+// Метка в заголовке («рейтинг» / «отзывы») — иначе по одной стрелке
+// непонятно, чем именно отсортирована колонка.
+let _ratingSortLabel = null;
+
+function _clearRatingSortLabel() {
+  if (_ratingSortLabel && typeof _ratingSortLabel.remove === 'function') _ratingSortLabel.remove();
+  _ratingSortLabel = null;
+}
+
+function _sortRatingRows() {
+  const key = sortCol === 8 ? 'reviews_count' : 'rating';
+  const present = [], missing = [];
+  (filteredRows || []).forEach(r => (_numSortVal(r[key]) === null ? missing : present).push(r));
+  present.sort((a, b) => {
+    const va = _numSortVal(a[key]), vb = _numSortVal(b[key]);
+    return sortAsc ? va - vb : vb - va;
+  });
+  filteredRows = present.concat(missing);
+}
+
+function cycleRatingSort() {
+  const i = RATING_SORT_CYCLE.findIndex(s => s.col === sortCol && s.asc === sortAsc);
+  const next = RATING_SORT_CYCLE[(i + 1) % RATING_SORT_CYCLE.length];   // -1 → первый
+  sortCol = next.col;
+  sortAsc = next.asc;
+  resetSortHeaders();
+  const th = _thByCol('rating');
+  if (th) {
+    th.classList.add(sortAsc ? 'asc' : 'desc');
+    const label = document.createElement('span');
+    label.className = 'sort-mode';
+    label.textContent = sortCol === 8 ? 'отзывы' : 'рейтинг';
+    th.appendChild(label);
+    _ratingSortLabel = label;
+  }
+  _sortRatingRows();
+  renderPage();
+}
+
 function sortTable(col) {
   if (NOSORT_COLS.has(col)) return;
+  if (col === 7 || col === 8) { cycleRatingSort(); return; }   // «Рейтинг» живёт своим циклом
   const th = _thByCol(SORT_INDEX_COL[col]);
   if (!th) return;
   if (sortCol === col) { sortAsc = !sortAsc; }
@@ -960,13 +1047,92 @@ function sortTable(col) {
   renderPage();
 }
 
+// Сколько ячеек захватывает полоса города. Берём число столбцов в шапке:
+// пользователь может скрывать столбцы, и фиксированная «9» выглядела бы
+// неверно. В тестовом DOM шапки нет — там остается запасное значение.
+function _tableColspan() {
+  try {
+    const ths = document.querySelectorAll('#results-table thead th');
+    if (ths && ths.length) return ths.length;
+  } catch (e) {}
+  return 9;
+}
+
+// Полоса-заголовок группы города в таблице «Все». Со звёздочкой: город можно
+// закрепить сверху прямо из таблицы. Город берём из data-city, а не из
+// JS-строки в разметке (кавычки в названии больше не ломают onclick).
+function _cityGroupHtml(g) {
+  const fav = isFavoriteCity(g.city);
+  const hint = fav ? 'Убрать город из избранного' : 'В избранное — город закрепится сверху';
+  return `<tr class="city-group${fav ? ' fav' : ''}" data-city="${escapeHtml(g.city)}">`
+    + `<td colspan="${_tableColspan()}">`
+    + `<span class="fav-star${fav ? ' on' : ''}" role="button" tabindex="0" title="${hint}"`
+    + ` aria-label="${hint}" onclick="toggleFavoriteCity(favStarCity(this), event)"`
+    + ` onkeydown="onFavStarKey(event, this)">`
+    + `${UI_ICONS.star}</span>`
+    + `<span class="city-group-name">${escapeHtml(g.city)}</span>`
+    + reviewProgressHtml(g.rows.filter(r => isReviewed(r)).length, g.rows.length, 'city-group-done')
+    + `<span class="city-group-count">${g.rows.length}</span>`
+    + '</td></tr>';
+}
+
+// Строки → группы по городу. Порядок городов: избранные сверху, дальше — в
+// порядке первого появления в списке; порядок строк ВНУТРИ группы остаётся
+// тем же, что задан сортировкой таблицы.
+function _groupRowsByCity(rows) {
+  const map = new Map();
+  (rows || []).forEach(r => {
+    const c = cityOf(r);
+    if (!map.has(c)) map.set(c, []);
+    map.get(c).push(r);
+  });
+  const fav = [], rest = [];
+  map.forEach((list, city) => {
+    (isFavoriteCity(city) ? fav : rest).push({ city, rows: list });
+  });
+  return fav.concat(rest);
+}
+
+// Одна строка организации. Вынесено из renderPage: при группировке по городам
+// строки идут между полосами городов, а нумерация («#») — сквозная по таблице.
+function _resultRowHtml(r, n) {
+  // Same key as the backend _review_key(): card URL, else name|city|address.
+  const rawReviewUrl = reviewKey(r);
+  const reviewUrl = escapeHtml(rawReviewUrl);
+  const isRev = isReviewed(r);
+  // Ключ, по которому хранится отметка «просмотрено» — тот же, что у checkbox,
+  // чтобы метка напротив соцсети и свой checkbox синхронизировались.
+  const rowKey = reviewKey(r);
+  const rowIsRev = isRev;
+  // data-col у каждой ячейки: по нему применяется пользовательский порядок
+  // столбцов и скрытие («Столбцы» → перетаскивание) — позиция в разметке
+  // больше ничего не значит.
+  return `
+    <tr class="${rowIsRev ? 'is-reviewed' : ''}">
+      <td data-col="rev" style="text-align:center"><input type="checkbox" class="rev-cb"
+        aria-label="${escapeHtml((rowIsRev ? 'Снять отметку «просмотрено»: ' : 'Отметить «просмотрено»: ') + (r.name || r.address || 'организация'))}"
+        ${rowIsRev ? 'checked' : ''} ${!rawReviewUrl ? 'disabled' : ''}
+        data-review-url="${reviewUrl}"
+        onchange="toggleReviewed(this.dataset.reviewUrl, this)"></td>
+      <td data-col="num">${n}</td>
+      <td data-col="name"><a class="tbl-link" href="${escapeHtml(safeUrl(r.yandex_maps_url))}" target="_blank" rel="noopener noreferrer">${escapeHtml(r.name || '—')}</a></td>
+      <td data-col="category" class="tbl-cat">${escapeHtml(r.category || '—')}</td>
+      <td data-col="address">${escapeHtml(r.address || '—')}</td>
+      <td data-col="phone">${phoneHTML(r)}</td>
+      <td data-col="score">${scoreHTML(r)}</td>
+      <td data-col="socials">${socialsHTML(r, rowKey, rowIsRev)}</td>
+      <td data-col="rating">${ratingHTML(r)}</td>
+    </tr>`;
+}
+
 function renderPage() {
   // Без пагинации: показываем ВСЕ записи. Скроллится по вертикали внутри
   // .tbl-wrap (ширина таблицы = ширина блока), строк не скрывается.
   const total = filteredRows.length;
   const slice = filteredRows;
 
-  document.getElementById('tbl-count').textContent = total ? `${total} записей${currentFileNote}` : '';
+  document.getElementById('tbl-count').textContent = total
+    ? `${total} записей${currentFileNote}${reviewedFilterNote()}` : '';
   const exportWrap = document.getElementById('export-sel-wrap');
   if (exportWrap) exportWrap.style.display = total ? 'flex' : 'none';
 
@@ -978,34 +1144,24 @@ function renderPage() {
     return;
   }
 
-  tbody.innerHTML = slice.map((r, i) => {
-    // Same key as the backend _review_key(): card URL, else name|city|address.
-    const rawReviewUrl = reviewKey(r);
-    const reviewUrl = escapeHtml(rawReviewUrl);
-    const isRev = isReviewed(r);
-    // Ключ, по которому хранится отметка «просмотрено» — тот же, что у checkbox,
-    // чтобы метка напротив соцсети и свой checkbox синхронизировались.
-    const rowKey = reviewKey(r);
-    const rowIsRev = isRev;
-    // data-col у каждой ячейки: по нему применяется пользовательский порядок
-    // столбцов и скрытие («Столбцы» → перетаскивание) — позиция в разметке
-    // больше ничего не значит.
-    return `
-    <tr class="${rowIsRev ? 'is-reviewed' : ''}">
-      <td data-col="rev" style="text-align:center"><input type="checkbox" class="rev-cb"
-        ${rowIsRev ? 'checked' : ''} ${!rawReviewUrl ? 'disabled' : ''}
-        data-review-url="${reviewUrl}"
-        onchange="toggleReviewed(this.dataset.reviewUrl, this)"></td>
-      <td data-col="num">${i + 1}</td>
-      <td data-col="name"><a class="tbl-link" href="${escapeHtml(safeUrl(r.yandex_maps_url))}" target="_blank" rel="noopener noreferrer">${escapeHtml(r.name || '—')}</a></td>
-      <td data-col="category" class="tbl-cat">${escapeHtml(r.category || '—')}</td>
-      <td data-col="address">${escapeHtml(r.address || '—')}</td>
-      <td data-col="phone">${phoneHTML(r)}</td>
-      <td data-col="score">${scoreHTML(r)}</td>
-      <td data-col="socials">${socialsHTML(r, rowKey, rowIsRev)}</td>
-      <td data-col="rating">${ratingHTML(r)}</td>
-    </tr>`;
-  }).join('');
+  // В режиме «Все» строки идут группами по городам: сначала полоса с названием
+  // города и числом организаций, затем сами организации этого города. Внутри
+  // выбранного города группировка не нужна — там один город по определению.
+  // Группа из одного города тоже не нужна: заголовок к одной и той же строке
+  // ничего не добавляет.
+  const groups = activeCity ? null : _groupRowsByCity(slice);
+  const grouped = (groups && groups.length > 1) ? groups : null;
+  const html = [];
+  let rowNo = 0;
+  if (grouped) {
+    grouped.forEach(g => {
+      html.push(_cityGroupHtml(g));
+      g.rows.forEach(r => { rowNo += 1; html.push(_resultRowHtml(r, rowNo)); });
+    });
+  } else {
+    slice.forEach(r => { rowNo += 1; html.push(_resultRowHtml(r, rowNo)); });
+  }
+  tbody.innerHTML = html.join('');
 
   // Новые строки — в пользовательском порядке столбцов (если он задан).
   applyColOrder();

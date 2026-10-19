@@ -259,6 +259,40 @@ jobs:
             || { echo "::error::в бандле нет static/js/модулей (01-core-state.js)"; exit 1; }
           echo "Layout в порядке: $APP"
 
+      - name: Verify no local-build marker and version threshold (release build)
+        # Та же проверка, что на Windows: релизный бандл обязан подчиняться
+        # порогу минимальной версии, то есть НЕ содержать метку .local-build
+        # (её ставит build-mac.sh / build-manual.yml, см.
+        # config.skips_min_version). Удаление выше — не гарантия: проверяем
+        # факт в уже упакованном бандле и сверяем версию с тегом.
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          APP="dist-mac/YandexBusinessParser.app"
+          if find "$APP" -name '.local-build' | grep -q .; then
+            echo "::error::в релизном бандле осталась метка .local-build"; exit 1
+          fi
+          VJ=$(find "$APP/Contents" -name 'version.json' -path '*static*' | head -1)
+          [ -n "$VJ" ] || { echo "::error::в бандле нет static/version.json"; exit 1; }
+          python3 - "$VJ" "${GITHUB_REF_NAME#v}" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1], encoding="utf-8-sig"))
+          tag = sys.argv[2]
+          if str(data.get("version")) != tag:
+              print(f"::error::version.json внутри бандла объявляет {data.get('version')}, а тег {tag}")
+              sys.exit(1)
+          def ver(s):
+              return [int(x) for x in str(s or "0").split(".") if x.isdigit()]
+          v, m = ver(data.get("version")), ver(data.get("min_version"))
+          if m:
+              n = max(len(v), len(m))
+              v = v + [0] * (n - len(v))
+              m = m + [0] * (n - len(m))
+              if v < m:
+                  print(f"::error::версия бандла {data.get('version')} ниже порога min_version {data.get('min_version')}")
+                  sys.exit(1)
+          print(f"OK: версия {data.get('version')} = тег, min_version {data.get('min_version') or 'не задан'}, метки .local-build нет")
+          PY
+
       - name: Upload the artifacts
         uses: actions/upload-artifact@v4
         with:

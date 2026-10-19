@@ -142,11 +142,32 @@ CRAWL_SKIP_LABELS = {
     "missing_socials": "без нужных сетей",
 }
 
+# ── Непрочитанные карточки ─────────────────────────────────────
+# Организация попала в выгрузку, но её карточка не открылась: телефона,
+# сайта и соцсетей у неё нет не потому, что их нет, а потому что страница не
+# прочиталась. Раньше такие записи пропадали тихо (одна строка в логе на
+# карточку — и всё), и в выгрузке они выглядели как обычные «без контактов».
+# Счётчик делает потерю видимой: сколько, почему и в конце прогона.
+_READ_FAILURES: dict[str, int] = {}
+_READ_FAILURES_LOGGED: dict[str, int] = {}
+_read_failures_lock = threading.Lock()
+READ_FAILURE_LABELS = {
+    "no_page":     "карточка не открылась",
+    "antibot":     "антибот-страница",
+    "no_content":  "страница без содержимого",
+}
+
 # Set by run() for the city that just finished: True when the search returned
 # organizations but every one of them was already parsed in an earlier run
 # (global seen store), so the city produced nothing new. run_web() uses it to
 # explain the empty result instead of leaving the user with "нашлось 0".
 CITY_ALL_SEEN = False
+
+# Set by search_page() when Yandex answered a search with its SmartCaptcha
+# («Вы не робот?») instead of a result list. Empty string — a normal run.
+# A city that found nothing because of a challenge must not be explained with
+# «попробуйте изменить запросы или фильтры»: no search happened at all.
+SEARCH_BLOCKED = ""
 
 # ⏸ Last known run position, updated as the search moves on (city / query /
 # point). Frozen at pause time into a resume payload so «Продолжить» can tell
@@ -519,6 +540,48 @@ def crawl_skip_take_delta() -> dict:
         _CRAWL_SKIPPED_LOGGED = counts
     delta = {k: v - prev.get(k, 0) for k, v in counts.items() if v - prev.get(k, 0) > 0}
     return {"total": sum(delta.values()), **delta}
+
+
+def reset_read_failures() -> None:
+    """Обнулить счётчики непрочитанных карточек (вызывается на старте прогона)."""
+    global _READ_FAILURES, _READ_FAILURES_LOGGED
+    with _read_failures_lock:
+        _READ_FAILURES = {}
+        _READ_FAILURES_LOGGED = {}
+
+
+def inc_read_failure(reason: str) -> None:
+    """Отметить карточку, которую не удалось прочитать (вызывают потоки сбора)."""
+    global _READ_FAILURES
+    with _read_failures_lock:
+        _READ_FAILURES = {**_READ_FAILURES,
+                          reason: _READ_FAILURES.get(reason, 0) + 1}
+
+
+def read_failure_summary() -> dict:
+    """Итог за прогон: {"total": N, причина: N, ...}."""
+    with _read_failures_lock:
+        counts = dict(_READ_FAILURES)
+    return {"total": sum(counts.values()), **counts}
+
+
+def read_failure_take_delta() -> dict:
+    """Счётчики с прошлого вызова — лог отчитывается по каждому городу."""
+    global _READ_FAILURES_LOGGED
+    with _read_failures_lock:
+        counts = dict(_READ_FAILURES)
+        prev = dict(_READ_FAILURES_LOGGED)
+        _READ_FAILURES_LOGGED = counts
+    delta = {k: v - prev.get(k, 0) for k, v in counts.items() if v - prev.get(k, 0) > 0}
+    return {"total": sum(delta.values()), **delta}
+
+
+def read_failure_text(counts: dict | None = None) -> str:
+    """Расшифровка для лога: «карточка не открылась 3, антибот-страница 1»."""
+    data = read_failure_summary() if counts is None else counts
+    parts = [f"{READ_FAILURE_LABELS.get(k, k)} {v}" for k, v in data.items()
+             if k != "total" and v]
+    return ", ".join(parts)
 
 
 def crawl_skip_text(counts: dict | None = None) -> str:

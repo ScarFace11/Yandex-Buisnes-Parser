@@ -36,6 +36,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from . import cdp_client
+from . import city_coords
 from . import state
 
 # Селекторы карточки поисковой выдачи Яндекс.Карт (проверены на живой
@@ -52,6 +53,46 @@ _CARDS_PER_PAGE = 25
 # служебные JSON-скрипты страницы — сотни байт, состояние — сотни килобайт.
 _STATE_MIN_BYTES = 50_000
 
+# Признаки страницы-проверки вместо выдачи. На подозрительный запрос Яндекс
+# отвечает SmartCaptcha («Вы не робот?», адрес /showcaptcha) с тем же кодом 200,
+# и раньше это выглядело как «страница не открылась»: сбор ждал 90 секунд
+# состояние, ещё 90 — разбор вёрстки (в живом прогоне 17.10.2026 — 3 минуты на
+# город), а в лог уходило «проверьте, что браузер запускается и есть интернет».
+# Браузер при этом работал, интернет тоже — врала сама формулировка.
+_BLOCK_JS = (
+    "(location.href.indexOf('showcaptcha') >= 0"
+    " || /(вы не робот|подтвердите, что запросы)/i.test(document.title || '')"
+    " || !!document.querySelector('.SmartCaptcha, #captcha-container'))"
+)
+
+# Почему выдача не пришла — на прогон, для человеческого объяснения в UI.
+_block_lock = threading.Lock()
+_last_block = ""
+
+
+def blocked_reason() -> str:
+    """«captcha», если Яндекс в этом прогоне показал проверку вместо выдачи.
+
+    Пустая строка — выдача не блокировалась (пусто может быть и просто потому,
+    что организация не нашлась).
+    """
+    with _block_lock:
+        return _last_block
+
+
+def reset_blocked() -> None:
+    """Забыть прошлую проверку: новый прогон — новый отсчёт."""
+    global _last_block
+    with _block_lock:
+        _last_block = ""
+
+
+def _set_blocked(reason: str) -> None:
+    global _last_block
+    with _block_lock:
+        _last_block = reason
+
+
 # Бюджет на добирание следующих страниц внутри страницы (секунды):
 # страница выдачи — ~1,3 с, десяток страниц — ~15 с, с запасом.
 _PAGING_BUDGET_S = 45
@@ -59,13 +100,42 @@ _PAGING_BUDGET_S = 45
 _city_cache: dict[str, tuple[float, float] | None] = {}
 _city_lock = threading.Lock()
 
+# Центр, который Яндекс.Карты ставят, когда НЕ узнали название: с ним поиск
+# молча уезжал в Москву, хотя пользователь просил другой город. Точка у
+# Яндекса конкретная, поэтому и допуск маленький (~200 м) — так не задеты
+# города рядом с Москвой (Химки, Мытищи и т. д.).
+_DEFAULT_CENTER = (55.7558, 37.6173)
+_DEFAULT_EPS = 0.002
+
+
+def _looks_like_default_center(city: str, coords: tuple[float, float]) -> bool:
+    """Это «Москва по умолчанию» вместо запрошенного города?
+
+    Проверяется только для названий вне таблицы координат: там центр уже
+    известен и никаких догадок не нужно.
+    """
+    if city_coords.lookup(city) is not None:
+        return False
+    low = str(city or "").strip().lower().replace("ё", "е")
+    if low.startswith("москв") or low in ("мск", "moscow"):
+        return False
+    lat, lon = coords
+    return (abs(lat - _DEFAULT_CENTER[0]) < _DEFAULT_EPS
+            and abs(lon - _DEFAULT_CENTER[1]) < _DEFAULT_EPS)
+
 
 def _state_wait_expr() -> str:
-    """Готовность страницы: предзагруженное состояние выдачи уже в документе."""
+    """Готовность страницы: состояние выдачи уже в документе — или это капча.
+
+    Проверка входит в условие ожидания намеренно: на странице-проверке
+    состояния не будет никогда, и без неё ожидание гарантированно выжидало
+    весь таймаут (90 с) вместо того, чтобы сразу сказать, что случилось.
+    """
     return (
-        "Array.prototype.some.call("
+        "(Array.prototype.some.call("
         "document.querySelectorAll('script[type=\"application/json\"]'),"
         f"function (s) {{ return (s.textContent || '').length > {_STATE_MIN_BYTES}; }})"
+        " || " + _BLOCK_JS + ")"
     )
 
 
@@ -80,7 +150,8 @@ def _state_harvest_js(want: int) -> str:
                           -(-want // _CARDS_PER_PAGE)))
     return _STATE_JS.replace("$WANT$", str(int(want))) \
                    .replace("$MAXPAGE$", str(int(max_page))) \
-                   .replace("$BUDGET$", str(int(_PAGING_BUDGET_S * 1000)))
+                   .replace("$BUDGET$", str(int(_PAGING_BUDGET_S * 1000))) \
+                   .replace("$BLOCK$", _BLOCK_JS)
 
 
 # Шаблон JS (подстановки — $WANT$/$MAXPAGE$/$BUDGET$). Значений для формата
@@ -92,6 +163,10 @@ _STATE_JS = """
   const maxPage = $MAXPAGE$;
   const budgetMs = $BUDGET$;
   const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  // Проверка «Вы не робот?» — не выдача: сообщаем наверх сразу и не ждём
+  // состояние, которого на такой странице не появится.
+  if ($BLOCK$) return JSON.stringify({blocked: 'captcha'});
 
   // Состояние выдачи — самый большой inline-JSON документа.
   const readState = (doc) => {
@@ -183,6 +258,7 @@ def _harvest_js(want: int) -> str:
 (async () => {
   const want = %d;
   const sleep = ms => new Promise(r => setTimeout(r, ms));
+  if ($BLOCK$) return JSON.stringify({blocked: 'captcha'});
   const cards = () => [...document.querySelectorAll('%s')];
   // Ждём первую отрисовку списка (SPA подгружает его после загрузки страницы).
   for (let i = 0; i < 40 && cards().length === 0; i++) await sleep(500);
@@ -231,14 +307,18 @@ def _harvest_js(want: int) -> str:
   });
   let total = 0;
   const head = document.querySelector('.search-list-view__title, .search-heading-title, h1');
-  if (head) { const m = (head.textContent || '').match(/(\\d[\\d\\s]*)/); if (m) total = parseInt(m[1].replace(/\\s/g, ''), 10) || 0; }
-  return JSON.stringify({cards: out, url: location.href, total: total});
+  if (head) { const m = (head.textContent || '').match(/(\\d[\\d\\s]*)/); if (m) total = parseInt(m[1].replace(/\\s/g, ''), 10) || 0; }  return JSON.stringify({cards: out, url: location.href, total: total});
 })()
-""" % (int(want), CARD_SELECTOR)
+""".replace("$BLOCK$", _BLOCK_JS) % (int(want), CARD_SELECTOR)
 
 
 def _search_url(query: str, city: str, lat: float | None, lon: float | None) -> str:
-    """URL страницы поиска: текст запроса + город, при точке — её центр."""
+    """URL страницы поиска: текст запроса + город, при точке — её центр.
+
+    Без координат (город не опознан) центр в адрес не добавляем: тогда
+    Яндекс разрешает город сам по тексту «запрос + город», а не по точке,
+    вокруг которой иначе построилась бы сетка непонятно где.
+    """
     text = f"{query} {city}".strip()
     url = "https://yandex.ru/maps/?text=" + quote(text)
     if lat is not None and lon is not None:
@@ -298,6 +378,10 @@ def _harvest_from_state(url: str, want: int) -> list[dict]:
     except (ValueError, TypeError):
         state.syslog(f"browser_search: не разобрал состояние выдачи ({str(raw)[:120]!r})")
         return []
+    if data.get("blocked"):
+        _set_blocked(str(data.get("blocked")))
+        state.syslog("browser_search: вместо выдачи Яндекс показал проверку «Вы не робот?»")
+        return []
     cards = _items_to_cards(data.get("cards") or [])
     if cards:
         state.syslog(f"browser_search: cards={len(cards)} из {data.get('total') or '?'} "
@@ -310,7 +394,8 @@ def _harvest_from_dom(url: str, want: int) -> list[dict]:
     raw = cdp_client.eval_in_page(
         url,
         _harvest_js(want),
-        wait_expr=f"document.querySelectorAll('{CARD_SELECTOR}').length > 0",
+        wait_expr=(f"(document.querySelectorAll('{CARD_SELECTOR}').length > 0"
+                   f" || {_BLOCK_JS})"),
         timeout_s=90.0,
     )
     if not raw:
@@ -320,10 +405,14 @@ def _harvest_from_dom(url: str, want: int) -> list[dict]:
     except (ValueError, TypeError):
         state.syslog(f"browser_search: не разобрал JSON выдачи ({str(raw)[:120]!r})")
         return []
+    if data.get("blocked"):
+        _set_blocked(str(data.get("blocked")))
+        return []
     return _items_to_cards(data.get("cards") or [])
 
 
-def harvest_cards(query: str, city: str, lat: float, lon: float, max_cards: int = 50) -> list[dict]:
+def harvest_cards(query: str, city: str, lat: float | None, lon: float | None,
+                  max_cards: int = 50) -> list[dict]:
     """Карточки выдачи Яндекс.Карт по запросу (без API-ключей).
 
     Возвращает список словарей: id, name, category, address, rating,
@@ -338,7 +427,7 @@ def harvest_cards(query: str, city: str, lat: float, lon: float, max_cards: int 
     url = _search_url(query, city, lat, lon)
     state.syslog(f"browser_search: {url}")
     cards = _harvest_from_state(url, want)
-    if not cards:
+    if not cards and not blocked_reason():
         state.syslog("browser_search: состояния с выдачей нет — разбираю вёрстку")
         cards = _harvest_from_dom(url, want)
         if cards:
@@ -348,11 +437,22 @@ def harvest_cards(query: str, city: str, lat: float, lon: float, max_cards: int 
 
 
 def city_center(city: str) -> tuple[float, float] | None:
-    """Координаты центра города — из той же карты, без геокодера-API.
+    """Координаты центра города: таблица → кэш → карта (без геокодера-API).
 
-    Открываем поиск по названию города и читаем центр карты из адреса
-    страницы (`ll=`/`sll=`), который Яндекс проставляет сам. Результат
-    кэшируется в памяти и на диске: геокодинг города нужен один раз.
+    Порядок важен:
+
+    1. Города каталога приложения берутся из таблицы `city_coords` — мгновенно,
+       без сети и без браузера, и всегда верные (раньше на каждый город
+       тратилась навигация).
+    2. Кэш на диске — для городов вне каталога, но только «здоровые»
+       значения: центр по умолчанию (Москва), осевший в кэше от прошлых
+       версий, отбрасывается и ищется заново.
+    3. Карта: несколько формулировок запроса и проверка результата — если
+       Яндекс не узнал название, он вернёт Москву, и это надо заметить, а не
+       отдать дальше (иначе прогон молча идёт по Москве).
+
+    None означает «город не опознан»: вызывающий ищет по тексту запроса без
+    сетки точек, а не подставляет Москву.
     """
     key = (city or "").strip().lower()
     if not key:
@@ -361,20 +461,52 @@ def city_center(city: str) -> tuple[float, float] | None:
         if key in _city_cache:
             return _city_cache[key]
 
-    coords = _center_from_disk(key)
+    coords = city_coords.lookup(city)
+
     if coords is None:
-        raw = cdp_client.eval_in_page(
-            "https://yandex.ru/maps/?text=" + quote(city),
-            "location.href",
-            timeout_s=45.0,
-        )
-        coords = _parse_center(raw or "")
+        coords = _center_from_disk(key)
+        if coords is not None and _looks_like_default_center(city, coords):
+            # Мусор в кэше: когда-то город не опознался и туда лёг центр Москвы.
+            state.syslog(f"browser_search: в кэше координат «{city}» лежит центр "
+                         "по умолчанию — ищу заново")
+            coords = None
+
+    if coords is None:
+        coords = _center_from_browser(city)
         if coords is not None:
             _center_to_disk(key, coords)
 
     with _city_lock:
         _city_cache[key] = coords
     return coords
+
+
+def _center_from_browser(city: str) -> tuple[float, float] | None:
+    """Центр города с карты: варианты запроса + отбраковка «Москвы по умолчанию».
+
+    Одного захода `?text=<city>` мало: если Яндекс не узнал название, он
+    отдаёт центр по умолчанию, и раньше это принималось за ответ. Поэтому
+    пробуем несколько формулировок и берём только осмысленный результат.
+    """
+    for query in (city, f"{city}, Россия", f"город {city}"):
+        raw = cdp_client.eval_in_page(
+            "https://yandex.ru/maps/?text=" + quote(query),
+            "location.href",
+            timeout_s=45.0,
+        )
+        coords = _parse_center(raw or "")
+        if coords is None:
+            continue
+        if _looks_like_default_center(city, coords):
+            state.syslog(f"browser_search: «{query}» не распознан — Яндекс вернул "
+                         "центр по умолчанию, пробую иначе")
+            continue
+        state.syslog(f"browser_search: центр «{city}» с карты: "
+                     f"{coords[0]:.4f}, {coords[1]:.4f}")
+        return coords
+    state.syslog(f"browser_search: координаты «{city}» не получены — "
+                 "поиск пойдёт по тексту без сетки точек")
+    return None
 
 
 # Accept both the usual %2C and a raw comma: the mobile page / live JS

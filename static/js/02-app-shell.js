@@ -278,8 +278,13 @@ function updateBasicSummary() {
   if (!el) return;
   const queries = (document.getElementById('f-queries')?.value || '')
     .split('\n').map(s => s.trim()).filter(Boolean);
+  // Строка нужна только у СВЁРНУТОГО раздела: когда он открыт, те же значения
+  // видны в полях, а главное (запрос и города) уже показано чипами вверху
+  // панели — третий повтор одного и того же только шумел.
+  const sec = document.getElementById('acc-basic');
+  const collapsed = !sec || !sec.classList.contains('open');
   const summaryHidden = !queries.length && !selectedCities.length;
-  el.style.display = summaryHidden ? 'none' : '';
+  el.style.display = (summaryHidden || !collapsed) ? 'none' : '';
   if (summaryHidden) return;
   let qPart = 'Кого ищем: не задано';
   if (queries.length) {
@@ -297,7 +302,11 @@ function getFilteredCities() {
   return CITIES_DATA
     .filter(c => !selSet.has(c.name))
     .filter(c => !q || c.name.toLowerCase().includes(q))
-    .sort((a, b) => b.pop - a.pop);
+    // Избранные города (со звёздочкой) — первыми, дальше по числу жителей.
+    // Тот же список избранных, что и в результатах, поэтому закрепление
+    // видно и там, и здесь.
+    .sort((a, b) => ((isFavoriteCity(b.name) ? 1 : 0) - (isFavoriteCity(a.name) ? 1 : 0))
+      || (b.pop - a.pop));
 }
 
 function updateCityDropdown() {
@@ -313,9 +322,18 @@ function updateCityDropdown() {
     // к фону сохраняется в обеих темах.
     const barColor = `hsl(${hue}, 38%, 55%)`;
     const safeName = c.name.replace(/'/g, "\\'");
-    return `<div class="city-option" onmousedown="addCity('${safeName}')">`
+    const fav = isFavoriteCity(c.name);
+    const hint = fav ? 'Убрать город из избранного' : 'В избранное — город закрепится сверху';
+    return `<div class="city-option${fav ? ' fav' : ''}" data-city="${escapeHtml(c.name)}" onmousedown="addCity('${safeName}')">`
       + `<div class="city-option-top">`
-      +   `<span class="city-option-name">${c.name}</span>`
+      +   `<span class="city-option-left">`
+      +     `<span class="fav-star${fav ? ' on' : ''}" role="button" tabindex="0" data-city="${escapeHtml(c.name)}"`
+      +       ` title="${hint}" aria-label="${hint}"`
+      +       ` onmousedown="event.stopPropagation()"`
+      +       ` onclick="toggleCityFavorite(favStarCity(this), event)"`
+      +       ` onkeydown="onFavStarKey(event, this)">${UI_ICONS.star}</span>`
+      +     `<span class="city-option-name">${c.name}</span>`
+      +   `</span>`
       +   `<span class="city-option-pop">${formatPopulation(c.pop)}</span>`
       + `</div>`
       + cityHistoryLine(c.name)
@@ -545,6 +563,7 @@ function openBlacklistSaveModal() {
   overlay.addEventListener('click', e => { if (e.target === overlay) done(false); });
   document.addEventListener('keydown', onKey, true);
   document.body.appendChild(overlay);
+  modalA11y(overlay);
   input.focus();
 }
 

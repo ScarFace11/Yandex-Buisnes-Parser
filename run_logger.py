@@ -7,6 +7,7 @@ Thread-safe: multiple enrichment threads can write concurrently.
 """
 import os
 import re
+import sys
 import threading
 import time
 from datetime import datetime
@@ -19,6 +20,22 @@ except Exception:
     LOGS_DIR = "logs"
 MAX_LOG_DAYS = 30      # auto-cleanup logs older than this
 MAX_LOG_FILES = 200    # keep at most this many log files (newest wins)
+
+# ── Как лог попадает на диск ───────────────────────────────────
+# Раньше файл ОТКРЫВАЛСЯ на каждую строку: 0.45 мс на строку (замер на
+# 20 000 строк — 6.3 с против 0.05 с у одного открытого дескриптора, 130×),
+# и это под общим замком, то есть двадцать потоков сбора выстраивались в
+# очередь на каждый syslog. Открытый дескриптор и сброс буфера пачкой дают
+# тот же файл, но перестают быть узким местом прогона.
+#
+# Сброс — по числу строк ИЛИ по времени (что сработает раньше): пачка
+# быстрая, а файл на диске отстаёт не больше чем на FLUSH_SECONDS.
+# Записи поиска живут в JSONL-сайдкаре (state._emit_result) — лог это
+# диагностика, поэтому «не больше секунд» здесь честная цена за скорость.
+FLUSH_EVERY_LINES = 200
+FLUSH_SECONDS = 5.0
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 class RunLogger:
@@ -40,6 +57,12 @@ class RunLogger:
         self._lock = threading.Lock()
         self._started_at = time.time()
         self._lines = 0
+        # Открытый на запись файл и счётчики сброса буфера.
+        self._handle = None
+        self._unsaved = 0
+        self._last_flush = time.monotonic()
+        self._write_errors = 0
+        self._open_handle()
 
         # Write header
         self._write("═" * 60)
@@ -53,17 +76,84 @@ class RunLogger:
     def path(self) -> str:
         return self._path
 
-    def _write(self, text: str) -> None:
-        """Write a line to the log file (thread-safe)."""
-        # Strip ANSI codes
-        clean = re.sub(r"\x1b\[[0-9;]*m", "", text)
-        with self._lock:
+    def _open_handle(self) -> None:
+        """Открыть файл на дозапись — один раз на прогон.
+
+        Не удалось открыть (папка только для чтения, файл занят) — работаем
+        прежним путём: каждая строка открывает файл сама. Лог не должен
+        ронять поиск ни в каком случае.
+        """
+        try:
+            self._handle = open(self._path, "a", encoding="utf-8",
+                                buffering=64 * 1024)
+        except Exception:
+            self._handle = None
+
+    def _flush_locked(self) -> None:
+        """Сбросить буфер на диск (вызывается под замком)."""
+        if self._handle is None:
+            return
+        try:
+            self._handle.flush()
+        except Exception:
+            self._note_write_error()
+        self._unsaved = 0
+        self._last_flush = time.monotonic()
+
+    def _note_write_error(self) -> None:
+        """Один раз сообщить о поломке записи лога — молчащий лог хуже ошибки."""
+        self._write_errors += 1
+        if self._write_errors == 1:
             try:
-                with open(self._path, "a", encoding="utf-8") as f:
-                    f.write(clean + "\n")
-                self._lines += 1
+                print(f"[!] Не удалось записать строку лога {self._path}",
+                      file=sys.stderr)
             except Exception:
                 pass
+
+    def flush(self) -> None:
+        """Записать буфер лога на диск (для проверок и завершения)."""
+        with self._lock:
+            self._flush_locked()
+
+    def close(self) -> None:
+        """Дописать буфер и закрыть файл. Повторный вызов безопасен."""
+        with self._lock:
+            self._flush_locked()
+            if self._handle is not None:
+                try:
+                    self._handle.close()
+                except Exception:
+                    pass
+                self._handle = None
+
+    def _write(self, text: str) -> None:
+        """Записать строку в лог (потокобезопасно, без открытия файла)."""
+        clean = _ANSI_RE.sub("", text)
+        line = clean + "\n"
+        with self._lock:
+            if self._handle is None:
+                # Запасной путь: дескриптора нет — открываем файл на строку.
+                self._write_without_handle(line)
+                return
+            try:
+                self._handle.write(line)
+                self._lines += 1
+                self._unsaved += 1
+                if (self._unsaved >= FLUSH_EVERY_LINES
+                        or time.monotonic() - self._last_flush >= FLUSH_SECONDS):
+                    self._flush_locked()
+            except Exception:
+                self._note_write_error()
+                self._write_without_handle(line)
+
+    def _write_without_handle(self, line: str) -> None:
+        """Строка мимо открытого дескриптора — тем же способом, что и раньше."""
+        try:
+            with open(self._path, "a", encoding="utf-8") as f:
+                f.write(line)
+            self._lines += 1
+        except Exception:
+            self._note_write_error()
 
     def log(self, level: str, msg: str) -> None:
         """Log a message from the search pipeline.
@@ -139,6 +229,8 @@ class RunLogger:
             self._write("  ⏹ Остановлено пользователем")
         self._write(f"  Лог: {self._path}")
         self._write("═" * 60)
+        # Итог обязан быть на диске целиком: за ним сюда и заходят.
+        self.close()
 
 
 def cleanup_old_logs() -> int:

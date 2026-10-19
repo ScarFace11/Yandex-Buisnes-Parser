@@ -28,6 +28,8 @@ if "websocket" not in sys.modules:
 from yandex_maps_parser.cdp_client import (
     _cdp_eval,
     _cdp_navigate_and_get_html,
+    _href_committed,
+    _navigation_target,
     _CDP_USER_AGENT,
 )
 
@@ -35,13 +37,27 @@ _ORG_URL = "https://yandex.ru/maps/org/4312570888"
 
 
 def _html(text="OK", size=2500):
-    """HTML padded past the >800-byte meaningful-content threshold."""
+    """HTML настоящей карточки: с блоком контактов и длиной больше порога.
+
+    Признак содержимого обязателен: без него страница организации считается
+    непрочитанной (см. TestCardContent), и тесты возврата HTML должны
+    выглядеть как живая карточка, а не как заглушка.
+    """
+    card = '<div class="business-contacts-view" itemprop="telephone">+7 999</div>'
+    return f"<html>{text}{card}{'x' * size}</html>"
+
+
+def _bare_html(text="Shell", size=2500):
+    """HTML без признаков карточки: шапка/заглушка вместо содержимого."""
     return f"<html>{text}{'x' * size}</html>"
 
 
-def _state(href, ready, length):
-    """Runtime.evaluate response for the href|readyState|len poll expression."""
-    return {"id": 90001, "result": {"result": {"value": f"{href}|{ready}|{length}"}}}
+def _state(href, ready, length, card=None):
+    """Runtime.evaluate response for the href|readyState|len[|card] poll expression."""
+    value = f"{href}|{ready}|{length}"
+    if card is not None:
+        value += "|" + ("true" if card else "false")
+    return {"id": 90001, "result": {"result": {"value": value}}}
 
 
 def _eval(value):
@@ -175,6 +191,124 @@ class TestCdpFetch:
         assert _focus_emulated(fake), "вкладка пула должна считаться активной"
 
 
+class TestCardContent:
+    """readyState=complete ≠ карточка прочитана.
+
+    Блок контактов и встроенное состояние страницы доезжают позже (или не
+    доезжают, если Яндекс отдал заглушку). Раньше признаком успеха был
+    только размер документа, поэтому обгрызенный/пустой документ уходил в
+    конвейер как карточка — а организация оставалась без телефона, сайта и
+    соцсетей («карточка не читается, запись пропущена»).
+    """
+
+    def test_org_url_without_content_is_retried_then_none(self):
+        """Документ готов, но карточки в нём нет → замер ещё раз, потом None."""
+        from yandex_maps_parser import cdp_client
+
+        ws_mod = _load_ws_module()
+        fake = FakeWebSocket(responses=[
+            _state(_ORG_URL, "complete", 1024),
+            _eval(_bare_html("первый")),
+            _eval(_bare_html("второй")),
+            _eval(_bare_html("третий")),
+        ])
+        logged: list[str] = []
+        with patch.object(ws_mod, "create_connection", return_value=fake), \
+                patch.object(cdp_client.state, "syslog", logged.append):
+            result = _cdp_navigate_and_get_html("ws://fake", _ORG_URL, timeout_s=5)
+
+        assert result is None, "страница без содержимого не должна считаться карточкой"
+        assert any("без содержимого карточки" in m for m in logged)
+
+    def test_content_arriving_late_is_waited_for(self):
+        """Первый замер — шапка, второй — уже настоящая карточка."""
+        ws_mod = _load_ws_module()
+        fake = FakeWebSocket(responses=[
+            _state(_ORG_URL, "complete", 1024),
+            _eval(_bare_html("шапка")),
+            _eval(_html("карточка")),
+        ])
+        with patch.object(ws_mod, "create_connection", return_value=fake):
+            result = _cdp_navigate_and_get_html("ws://fake", _ORG_URL, timeout_s=10)
+
+        assert result is not None and "карточка" in result
+
+    def test_aggregator_page_needs_no_card_markers(self):
+        """У страниц-агрегаторов (taplink) своих признаков карточки нет."""
+        ws_mod = _load_ws_module()
+        agg = "https://taplink.cc/coffee"
+        fake = FakeWebSocket(responses=[
+            _state(agg, "complete", 3000),
+            _eval(_bare_html("Taplink")),
+        ])
+        with patch.object(ws_mod, "create_connection", return_value=fake):
+            result = _cdp_navigate_and_get_html("ws://fake", agg, timeout_s=5)
+
+        assert result is not None and "Taplink" in result
+
+    def test_card_marker_detection(self):
+        from yandex_maps_parser.cdp_client import (
+            _is_org_card_url,
+            _looks_like_org_card,
+        )
+
+        assert _is_org_card_url(_ORG_URL)
+        assert _is_org_card_url("https://yandex.ru/maps/org/kafe/4312570888/")
+        assert not _is_org_card_url("https://taplink.cc/coffee")
+        assert not _is_org_card_url("https://yandex.ru/maps/?text=coffee")
+
+        # Каждый признак по отдельности достаточен.
+        for marker in ('class="business-contacts-view"',
+                       '<h2 class="card-section-header__title">Контакты</h2>',
+                       '<span itemprop="telephone">+7 999</span>',
+                       'class="orgpage-header-view__header"',
+                       '<script type="application/json">{}</script>',
+                       '<script type="application/ld+json">{}</script>'):
+            assert _looks_like_org_card("<html>" + marker + "x" * 2500 + "</html>")
+        # Заглушка и короткий документ — не карточка.
+        assert not _looks_like_org_card("<html></html>")
+        assert not _looks_like_org_card(_bare_html("shell"))
+
+
+class TestNavigationCommit:
+    """Вкладка из пула действительно перешла НА ЦЕЛЬ, а не осталась прежней.
+
+    Вкладка уже показывает предыдущую страницу с readyState=complete.
+    Раньше это ловилось только по числовому id организации: для слагов и
+    агрегаторов (taplink.cc/<ник>) проверки не было, и в результат попадал
+    HTML ЧУЖОЙ организации — отсюда «одна и та же ссылка на ВК у десятка
+    организаций» и телефон чужой фирмы.
+    """
+
+    def test_numeric_id_survives_yandex_url_rewrite(self):
+        target = _navigation_target(_ORG_URL)
+        assert _href_committed("https://yandex.ru/maps/org/кафе/4312570888/", target)
+        assert not _href_committed("https://yandex.ru/maps/org/999999999", target)
+
+    def test_slug_page_matches_by_exact_path(self):
+        target = _navigation_target("https://taplink.cc/coffee")
+        assert _href_committed("https://taplink.cc/coffee/", target)
+        assert not _href_committed("https://taplink.cc/bar", target)
+
+    def test_foreign_host_and_empty_href_are_not_committed(self):
+        target = _navigation_target(_ORG_URL)
+        assert not _href_committed("https://example.com/maps/org/4312570888", target)
+        assert not _href_committed("", target)
+        assert not _href_committed("about:blank", target)
+
+    def test_reused_tab_never_yields_the_previous_page(self):
+        """Агрегатор без числового id: прежняя страница вкладки не отдаётся."""
+        ws_mod = _load_ws_module()
+        fake = FakeWebSocket(responses=[
+            _state("https://taplink.cc/bar", "complete", 400000),  # чужая
+        ])
+        with patch.object(ws_mod, "create_connection", return_value=fake):
+            result = _cdp_navigate_and_get_html("ws://fake",
+                                                "https://taplink.cc/coffee",
+                                                timeout_s=2)
+        assert result is None, "возвращён HTML чужой страницы"
+
+
 def _focus_emulated(fake) -> bool:
     for msg in fake._sent:
         if msg["method"] == "Emulation.setFocusEmulationEnabled":
@@ -275,3 +409,85 @@ class TestSlowPromiseIsNotDropped:
             result = _cdp_eval(fake, "x()", time.monotonic() + 30.0)
         assert result is None
         assert time.monotonic() - t0 < 2.0
+
+
+class TestReadFailureReason:
+    """Причина отказа доходит до счётчика потерь (state.read_failure_*).
+
+    Раньше все потери карточек выглядели в логе одинаково («карточка не
+    открылась»), и нельзя было понять, что чинить: заглушка антибота, документ
+    без содержимого карточки или навигация, которая вообще не состоялась.
+    """
+
+    def test_no_card_content_is_reported(self):
+        from yandex_maps_parser import cdp_client
+
+        cdp_client.set_failure_reason("")
+        ws_mod = _load_ws_module()
+        fake = FakeWebSocket(responses=[
+            _state(_ORG_URL, "complete", 1024),
+            _eval(_bare_html("первый")),
+            _eval(_bare_html("второй")),
+            _eval(_bare_html("третий")),
+        ])
+        with patch.object(ws_mod, "create_connection", return_value=fake):
+            assert _cdp_navigate_and_get_html("ws://fake", _ORG_URL, timeout_s=5) is None
+
+        assert cdp_client.take_failure_reason() == "no_content"
+        # Причина читается один раз: чужой карточке она достаться не должна.
+        assert cdp_client.take_failure_reason() == ""
+
+    def test_tiny_stub_is_reported_as_antibot(self):
+        from yandex_maps_parser import cdp_client
+
+        cdp_client.set_failure_reason("")
+        ws_mod = _load_ws_module()
+        fake = FakeWebSocket(responses=[_state(_ORG_URL, "complete", 158)])
+        with patch.object(ws_mod, "create_connection", return_value=fake):
+            assert _cdp_navigate_and_get_html("ws://fake", _ORG_URL, timeout_s=2) is None
+
+        assert cdp_client.take_failure_reason() == "antibot"
+
+    def test_uncommitted_navigation_is_reported_as_no_page(self):
+        from yandex_maps_parser import cdp_client
+
+        cdp_client.set_failure_reason("")
+        ws_mod = _load_ws_module()
+        fake = FakeWebSocket(responses=[
+            _state("https://taplink.cc/bar", "complete", 400000),
+        ])
+        with patch.object(ws_mod, "create_connection", return_value=fake):
+            assert _cdp_navigate_and_get_html("ws://fake",
+                                              "https://taplink.cc/coffee",
+                                              timeout_s=2) is None
+
+        assert cdp_client.take_failure_reason() == "no_page"
+
+    def test_stop_does_not_look_like_a_lost_card(self):
+        """Остановка прогона — не потерянная карточка, причина пустая."""
+        import threading
+        from yandex_maps_parser import cdp_client
+
+        cdp_client.set_failure_reason("")
+        stop = threading.Event()
+        stop.set()
+        ws_mod = _load_ws_module()
+        fake = FakeWebSocket(responses=[_state(_ORG_URL, "complete", 2500)])
+        with patch.object(ws_mod, "create_connection", return_value=fake), \
+                patch.object(cdp_client.state, "_STOP_EVENT", stop):
+            assert _cdp_navigate_and_get_html("ws://fake", _ORG_URL, timeout_s=2) is None
+
+        assert cdp_client.take_failure_reason() == ""
+
+    def test_fetch_html_ignores_stopped_run(self):
+        """Остановили прогон → fetch_html не записывает «не прочитано»."""
+        import threading
+        from yandex_maps_parser import cdp_client, extractors, state
+
+        stop = threading.Event()
+        stop.set()
+        state.reset_read_failures()
+        with patch.object(cdp_client, "fetch_page", return_value=None), \
+                patch.object(state, "_STOP_EVENT", stop):
+            assert extractors.fetch_html(_ORG_URL) == ""
+        assert state.read_failure_summary()["total"] == 0

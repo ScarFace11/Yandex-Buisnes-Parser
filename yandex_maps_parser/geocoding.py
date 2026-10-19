@@ -8,6 +8,7 @@
 """
 import math
 
+from . import state
 from .browser_search import city_center
 
 _geocode_cache: dict[str, tuple[float, float, tuple[float, float, float, float] | None] | None] = {}
@@ -17,9 +18,13 @@ def geocode_city(city: str) -> tuple[float, float, tuple[float, float, float, fl
     """
     Return (lat, lon, envelope) for *city*.
 
-    envelope (рамка города) браузерная карта не отдаёт — возвращается None,
-    и сетка строится по одному радиусу GRID_RADIUS_KM. Так честнее: раньше
-    рамку давал геокодер-API, который мы больше не используем.
+    envelope — рамка города (юг, север, запад, восток) из офлайн-таблицы
+    city_coords: сетка точек обрезается по ней, чтобы круг радиусом 20 км не
+    захватывал пригороды и соседние районы.
+
+    Для городов вне каталога рамки нет (None) — сетка строится по кругу.
+    Это честнее, чем выдумывать границы: раньше рамку давал геокодер-API,
+    который мы больше не используем.
     """
     key = city.strip().lower()
     if key in _geocode_cache:
@@ -28,7 +33,12 @@ def geocode_city(city: str) -> tuple[float, float, tuple[float, float, float, fl
     result = None
     center = city_center(city)
     if center:
-        result = (center[0], center[1], None)
+        try:
+            from .city_coords import lookup_bbox
+            envelope = lookup_bbox(city)
+        except Exception:
+            envelope = None
+        result = (center[0], center[1], envelope)
 
     _geocode_cache[key] = result
     return result
@@ -55,11 +65,12 @@ def build_grid(
     lat0, lat1 = clat - r_lat, clat + r_lat
     lon0, lon1 = clon - r_lon, clon + r_lon
 
-    if envelope:
-        elat_min, elat_max, elon_min, elon_max = envelope
-        # Clip to the envelope (only ever shrinks the circle).
-        lat0, lat1 = max(lat0, elat_min), min(lat1, elat_max)
-        lon0, lon1 = max(lon0, elon_min), min(lon1, elon_max)
+    # Рамка города только ОТБРАСЫВАЕТ точки, но не сдвигает саму сетку.
+    # Раньше границы цикла обрезались по рамке — и решётка начиналась с края
+    # bbox, а не с того же места, что без рамки: точек становилось больше
+    # (Казань: 46 → 51), а не меньше. Рамка должна убирать запросы, а не
+    # добавлять, поэтому шагаем по-прежнему по кругу и фильтруем точки.
+    env = envelope if envelope else None
 
     pts: list[tuple[float, float]] = []
     lat = lat0
@@ -68,7 +79,11 @@ def build_grid(
         while lon <= lon1 + 1e-9:
             dlat = (lat - clat) * 111.32
             dlon = (lon - clon) * 111.32 * math.cos(math.radians(clat))
-            if dlat ** 2 + dlon ** 2 <= state.GRID_RADIUS_KM ** 2:
+            inside = dlat ** 2 + dlon ** 2 <= state.GRID_RADIUS_KM ** 2
+            if inside and env:
+                south, north, west, east = env
+                inside = south <= lat <= north and west <= lon <= east
+            if inside:
                 pts.append((round(lat, 6), round(lon, 6)))
             lon += lon_step
         lat += lat_step

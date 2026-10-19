@@ -16,7 +16,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { readAppSrc } from './_src.mjs';
+import { readAppSrc, MODAL_A11Y_STUB } from './_src.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const src = readAppSrc(root);
@@ -157,6 +157,7 @@ globalThis._pluralRu = (n, one, few, many) => {
 (0, eval)('globalThis.UI_ICONS = ' + grabConstValue('UI_ICONS') + ';');
 
 (0, eval)([
+  MODAL_A11Y_STUB,
   grab('escapeHtml'),
   grab('normalizeBlacklist'),
   grab('parseBlacklistInput'),

@@ -25,10 +25,17 @@ async function importAppData(input) {
     const parts = [];
     if (d.marks) parts.push(_pluralRu(d.marks, 'отметка', 'отметки', 'отметок'));
     if (d.settings) parts.push('настройки');
+    // Настройки вкладок (browser.json из «Экспорта настроек»): применяем сами —
+    // сервер их хранить не может, он лишь вернул снимок из архива.
+    const applied = applyImportedBrowserSettings(d.browser);
+    if (applied) parts.push('настройки окна: ' + applied);
     showToast('Импортировано: ' + (parts.join(', ') || 'ничего нового'), 'success');
     // Отметки приходят с сервера: перечитываем их и перерисовываем таблицу.
     try { loadReviewed(); } catch (e) {}
     try { _reloadDaily(); } catch (e) {}
+    // Настройки вступают в силу при загрузке страницы — перезагружаем,
+    // как это делает окно сброса.
+    if (applied) setTimeout(() => location.reload(), 1100);
   } catch (e) {
     showToast('Импорт не удался — сервер не ответил', 'error');
   }
@@ -164,6 +171,7 @@ function renderDefaultStats() {
       <div class="stat-card"><div class="num">0</div><div class="lbl">С соцсетями</div></div>
       <div class="stat-card"><div class="num">—</div><div class="lbl">Время</div></div>
     </div>
+    ${statsEmptyArtHTML()}
     <div class="stat-section">
       <h3>По соцсетям</h3>
       <div class="no-data" style="padding:18px 12px">Данные появятся после запуска поиска</div>
@@ -235,6 +243,142 @@ function donutHTML(rows, centerLabel) {
     + `<div class="donut-legend">${legend}</div></div>`;
 }
 
+// ═══════════════════════════════════════════
+//  Графики по качеству данных: рейтинг, лиды, полнота
+// ═══════════════════════════════════════════
+// Те же .bar-row, что и «Топ категорий», но цвета — токены темы
+// (var(--…)): светлая и тёмная темы получают свои оттенки бесплатно.
+// Пороги лидов — те же 70/45, что у бейджа в таблице (scoreHTML).
+const RATING_BUCKETS = [
+  {label: '5,0',        min: 5,    color: 'var(--grn)'},
+  {label: '4,5 – 4,9',  min: 4.5,  color: 'var(--blu)'},
+  {label: '4,0 – 4,4',  min: 4,    color: 'var(--yel)'},
+  {label: 'ниже 4,0',   min: 0.01, color: 'var(--red)'},
+];
+const LEAD_BUCKETS = [
+  {label: 'Горячие, 70+',   min: 70, color: 'var(--grn)'},
+  {label: 'Тёплые, 45–69',  min: 45, color: 'var(--yel)'},
+  {label: 'Холодные, 0–44', min: 0,  color: 'var(--blu)'},
+];
+
+// Строки для полос «Распределения рейтинга». Оценка в записях бывает
+// строкой с запятой («4,6») или шкалой 0..50 — нормализация та же, что
+// у балла лида (scoreRating). null — если оценок нет вовсе: секция тогда
+// не рисуется, а не пустует заглушкой.
+function ratingBucketRows(data) {
+  const counts = RATING_BUCKETS.map(() => 0);
+  let rated = 0;
+  for (const r of data) {
+    const v = scoreRating(r);
+    if (!(v > 0)) continue;
+    rated++;
+    for (let i = 0; i < RATING_BUCKETS.length; i++) {
+      if (v >= RATING_BUCKETS[i].min) { counts[i]++; break; }
+    }
+  }
+  if (!rated) return null;
+  const rows = RATING_BUCKETS
+    .map((b, i) => ({label: b.label, count: counts[i], color: b.color}))
+    .filter(r => r.count > 0);
+  const none = data.length - rated;
+  if (none) rows.push({label: 'Без оценки', count: none, color: 'var(--muted)'});
+  return rows;
+}
+
+// { rows, hot } — сегменты «Готовности лидов» и сколько горячих (≥70).
+// Записи без lead_score (старые файлы) живут отдельной серой полосой.
+function leadBucketRows(data) {
+  const counts = LEAD_BUCKETS.map(() => 0);
+  let scored = 0;
+  for (const r of data) {
+    if (r.lead_score == null || r.lead_score === '') continue;
+    scored++;
+    const v = +r.lead_score || 0;
+    for (let i = 0; i < LEAD_BUCKETS.length; i++) {
+      if (v >= LEAD_BUCKETS[i].min) { counts[i]++; break; }
+    }
+  }
+  if (!scored) return null;
+  const rows = LEAD_BUCKETS
+    .map((b, i) => ({label: b.label, count: counts[i], color: b.color}))
+    .filter(r => r.count > 0);
+  const none = data.length - scored;
+  if (none) rows.push({label: 'Не оценены', count: none, color: 'var(--muted)'});
+  return {rows, hot: counts[0]};
+}
+
+// Полнота данных: какая доля записей заполнена по каждому полю. Строки
+// показываются только для ВКЛЮЧЁННЫХ полей («Что парсить»): ноль у
+// выключенного поля — не пробел данных, а выбор пользователя.
+function coverageRows(data) {
+  const fields = (typeof parseFieldsEnabled === 'function') ? parseFieldsEnabled() : null;
+  const on = k => !fields || fields.has(k);
+  const socOn = (typeof socialsEnabled === 'function') ? socialsEnabled() : true;
+  const defs = [
+    {show: on('phone'),          label: 'Телефон',         test: r => !!String(r.phone || '').trim()},
+    {show: on('aggregator_url'), label: 'Сайт / Таплинк',  test: r => !!String(r.website || r.aggregator_url || '').trim()},
+    {show: socOn,                label: 'Соцсети',         test: r => Object.keys(SOCIALS).some(p => r[p])},
+    {show: on('rating'),         label: 'Рейтинг',         test: r => scoreRating(r) > 0},
+  ];
+  const total = data.length || 1;
+  return defs.filter(d => d.show)
+             .map(d => ({label: d.label, count: data.filter(d.test).length, total}));
+}
+
+// Полосы в процентах от ВСЕХ записей (не от максимума, как в категориях):
+// шкала тут — «сколько заполнено», и 100% должно быть во всю дорожку.
+function pctBarRows(rows) {
+  return rows.map(r => {
+    const pct = Math.round(r.count / (r.total || 1) * 100);
+    return `
+        <div class="bar-row">
+          <div class="bar-lbl">${escapeHtml(r.label)}</div>
+          <div class="bar-track"><div class="bar-fill" style="width:${pct}%;background:var(--c)"></div></div>
+          <div class="bar-val">${pct}%</div>
+        </div>`;
+  }).join('');
+}
+
+function ratingSectionHTML(data) {
+  const rows = ratingBucketRows(data);
+  if (!rows) return '';
+  return `<div class="stat-section">
+      <h3>Распределение рейтинга</h3>
+      ${barRows(rows)}
+    </div>`;
+}
+
+function leadSectionHTML(data) {
+  const info = leadBucketRows(data);
+  if (!info) return '';
+  return `<div class="stat-section">
+      <h3>Готовность лидов</h3>
+      ${barRows(info.rows)}
+    </div>`;
+}
+
+function coverageSectionHTML(data) {
+  const rows = coverageRows(data);
+  if (!rows.length) return '';
+  return `<div class="stat-section">
+      <h3>Полнота данных</h3>
+      ${pctBarRows(rows)}
+    </div>`;
+}
+
+// Пустая «Статистика»: столбцы и тренд — та же идея, что в онбординге,
+// но в статистическом ключе. Декоративна (aria-hidden): вся информация —
+// в тексте рядом.
+function statsEmptyArtHTML() {
+  return `<svg viewBox="0 0 120 64" class="sta-art" aria-hidden="true" focusable="false">`
+    + `<rect x="14" y="34" width="14" height="24" rx="3" class="sta-col"/>`
+    + `<rect x="38" y="24" width="14" height="34" rx="3" class="sta-col"/>`
+    + `<rect x="62" y="12" width="14" height="46" rx="3" class="sta-col-hi"/>`
+    + `<path d="M84 46l9-11 6 6 11-17" class="sta-line"/>`
+    + `<circle cx="110" cy="24" r="3" class="sta-dot"/>`
+    + `</svg>`;
+}
+
 function renderStats(data, elapsed, skippedCities) {
   if (!data.length) return;
   const total  = data.length;
@@ -249,6 +393,17 @@ function renderStats(data, elapsed, skippedCities) {
     {num: dur,     lbl: 'Время'},
   ];
   if (socOn) cards.splice(1, 0, {num: withSo, lbl: 'С соцсетями'});
+  // Качество данных — тоже итог: средняя оценка и горячие лиды читаются
+  // одним взглядом, без прокрутки к полосам ниже.
+  const rated = data.filter(r => scoreRating(r) > 0);
+  if (rated.length) {
+    const avg = rated.reduce((s, r) => s + scoreRating(r), 0) / rated.length;
+    cards.splice(cards.length - 1, 0, {num: avg.toFixed(1).replace('.', ','), lbl: 'Средний рейтинг'});
+  }
+  const leadInfo = leadBucketRows(data);
+  if (leadInfo && leadInfo.hot) {
+    cards.splice(cards.length - 1, 0, {num: leadInfo.hot, lbl: 'Горячих лидов'});
+  }
 
   const socialKeys = Object.keys(SOCIALS);
   const hasSocial = r => socialKeys.some(p => r[p]);
@@ -370,6 +525,10 @@ function renderStats(data, elapsed, skippedCities) {
         </div>
       </div>
     </div>
+
+    ${ratingSectionHTML(data)}
+    ${leadSectionHTML(data)}
+    ${coverageSectionHTML(data)}
   `;
     // Свежие файлы и отметки могли появиться только что — обновляем динамику,
     // но не во время прогона: там renderStats зовётся каждые 1.5 с, а обход

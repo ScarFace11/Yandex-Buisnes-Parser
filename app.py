@@ -82,6 +82,14 @@ def create_app() -> Flask:
         APP_VERSION = "dev"
         is_dev_build = lambda: True
     app.config["APP_VERSION"] = APP_VERSION
+    # Из исходников шаблоны читаются заново на каждый запрос: во время работы
+    # над интерфейсом правка templates/index.html должна быть видна после
+    # обновления страницы, а не после перезапуска сервера (Jinja кеширует
+    # скомпилированные шаблоны при debug=False). В собранном приложении файлы
+    # неизменяемы — там лишний stat на рендер ни к чему.
+    if not getattr(sys, "frozen", False):
+        app.config["TEMPLATES_AUTO_RELOAD"] = True
+        app.jinja_env.auto_reload = True
     # Сборка разработчика: в шапке горит метка DEV (другой exe, другой порт,
     # без авто-обновления — см. config.is_dev_build).
     app.config["DEV_BUILD"] = bool(is_dev_build())
@@ -272,6 +280,42 @@ def _open_browser_later(url: str, delay: float = 1.5) -> None:
     threading.Timer(delay, _go).start()
 
 
+def _maybe_run_selfcheck() -> None:
+    """`--check`: самопроверка без запуска интерфейса (см. selfcheck.py).
+
+    Флаг проверяется до выбора порта и до открытия окна: сервер не
+    поднимается вовсе, поэтому команду можно гонять в фоне, по SSH и в CI.
+    То же работает и в .exe-сборке: `YandexBusinessParser.exe --check`.
+    """
+    if "--check" not in sys.argv:
+        return
+    try:
+        import selfcheck
+    except Exception as exc:
+        print(f"Самопроверка недоступна: {type(exc).__name__}")
+        sys.exit(2)
+    args = [a for a in sys.argv[1:] if a != "--check"]
+    sys.exit(selfcheck.main(args))
+
+
+def _maybe_run_headless() -> None:
+    """`--run`: сбор по сохранённому пресету без интерфейса (см. headless.py).
+
+    Проверяется до выбора порта и до открытия окна: Flask не поднимается,
+    поэтому прогон можно оставить в фоне, запустить по SSH или по расписанию.
+    В сборке — `YandexBusinessParser.exe --run --preset «Уфа стоматология»`.
+    """
+    if "--run" not in sys.argv:
+        return
+    try:
+        import headless
+    except Exception as exc:
+        print(f"Сбор из консоли недоступен: {type(exc).__name__}")
+        sys.exit(2)
+    args = [a for a in sys.argv[1:] if a != "--run"]
+    sys.exit(headless.main(args))
+
+
 def _maybe_run_browser_probe() -> bool:
     """Probe-режим для проверки браузера внутри .exe (YP_BROWSER_PROBE=1).
 
@@ -346,6 +390,10 @@ if __name__ == "__main__":
     # Probe-режим: молча проверить Chromium и выйти (используется .exe-сборкой
     # для сабпроцесс-теста — см. _maybe_run_browser_probe в этом файле).
     _maybe_run_browser_probe()
+    # --check: те же проверки, что и в окне «Диагностика», но без сервера.
+    _maybe_run_selfcheck()
+    # --run: сбор по сохранённому пресету без интерфейса.
+    _maybe_run_headless()
     _port = _available_port(_startup_port())
     try:
         from config import APP_VERSION, is_dev_build

@@ -196,6 +196,22 @@ class TestLocalBuildBypass:
             assert "touch" not in text and "New-Item -ItemType File" not in text, \
                 f"{name}: релизная сборка не ставит метку локальной сборки"
 
+    def test_release_builds_verify_the_marker_is_gone(self):
+        """Мало удалить метку — сборка обязана ПРОВЕРИТЬ, что её нет в архиве.
+
+        Удаление — не гарантия: маркер мог вернуться из кэша pyinstaller.
+        Шаг проверки должен РОНЯТЬ job (exit 1), а заодно сверять версию
+        внутри сборки с тегом и с порогом min_version.
+        """
+        for name in ("build-exe.yml", "build-macos.yml"):
+            text = (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
+            assert "Verify no local-build marker" in text, \
+                f"{name}: нет шага проверки метки в релизной сборке"
+            step = text.split("Verify no local-build marker", 1)[1]
+            assert ".local-build" in step
+            assert "version.json" in step and "min_version" in step
+            assert "exit 1" in step, f"{name}: проверка не роняет сборку"
+
     def test_manual_builds_carry_the_marker(self):
         text = (ROOT / ".github" / "workflows" / "build-manual.yml").read_text(encoding="utf-8")
         assert text.count(".local-build") >= 2, "Windows и macOS сборки для проверки"

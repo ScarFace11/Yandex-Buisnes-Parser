@@ -293,13 +293,16 @@ def data_export():
 
 @bp.route("/data/import", methods=["POST"])
 def data_import():
-    """Импорт zip из /data/export: отметки и/или настройки.
+    """Импорт zip из /data/export и /settings/export: отметки, настройки,
+    настройки вкладок.
 
     Файлы берутся только из архива (пути внутри игнорируются), отметки
     объединяются с существующими: отметка ставится, если её ещё нет, —
     импорт не может стереть работу, сделанную после экспорта. Настройки
     замещают ключи целиком (это состояние, а не журнал). Существующий
-    settings.json копируется в _backup перед записью.
+    settings.json копируется в _backup перед записью. browser.json —
+    настройки вкладок (localStorage) из «Экспорта настроек»: они не
+    пишутся на сервере, а возвращаются интерфейсу для применения.
     """
     import zipfile
     file = request.files.get("file")
@@ -311,7 +314,7 @@ def data_import():
     except Exception:
         return jsonify({"ok": False, "error": "Это не zip-архив"}), 400
 
-    imported = {"marks": 0, "settings": False}
+    imported = {"marks": 0, "settings": False, "browser": {}}
 
     if "_reviewed.json" in names:
         try:
@@ -354,9 +357,26 @@ def data_import():
         except Exception as exc:
             return jsonify({"ok": False, "error": f"Настройки: {exc}"}), 500
 
-    if not imported["marks"] and not imported["settings"]:
+    if "browser.json" in names:
+        try:
+            incoming = json.loads(zf.read("browser.json").decode("utf-8"))
+        except Exception:
+            incoming = None
+        if not isinstance(incoming, dict):
+            return jsonify({"ok": False,
+                            "error": "browser.json в архиве повреждён"}), 400
+        # Архив — присланный файл, чужим ключам localStorage не верим:
+        # только свои (yp_) и только строки.
+        imported["browser"] = {
+            str(k): v for k, v in incoming.items()
+            if isinstance(k, str) and k.startswith("yp_") and isinstance(v, str)
+        }
+
+    if not imported["marks"] and not imported["settings"] \
+            and not imported["browser"]:
         return jsonify({"ok": False,
-                        "error": "В архиве нет _reviewed.json и settings.json"}), 400
+                        "error": "В архиве нет _reviewed.json, settings.json "
+                                 "и browser.json"}), 400
     return jsonify({"ok": True, **imported})
 
 
@@ -2222,6 +2242,56 @@ def _run_picker(cmd: list[str]) -> str:
     return out.splitlines()[-1].strip()
 
 
+@bp.route("/spheres", methods=["GET"])
+def spheres_list():
+    """Сферы бизнеса для выпадающего списка у поля «Кого будем искать?».
+
+    Reply: {ok, spheres: [{id, name, icon, queries}], history: [{id, last_ts,
+    cities, runs, results, queries}]}
+
+    История берётся из search_history и не хранится отдельно: очистка
+    истории во вкладке «История» автоматически убирает и подписи сфер.
+    """
+    try:
+        from yandex_maps_parser import spheres as _spheres
+        import search_history
+        summary = _spheres.history_summary(search_history.get_history(200))
+        return jsonify({"ok": True, "spheres": _spheres.catalog(), "history": summary})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"Сферы недоступны: {exc}",
+                        "spheres": [], "history": []}), 500
+
+
+@bp.route("/presets", methods=["GET", "POST"])
+def presets_store_api():
+    """Серверная копия пресетов поиска.
+
+    Пресеты живут в localStorage интерфейса, но консольный запуск
+    (`app.py --run --preset «Имя»`) браузера не видит — поэтому интерфейс
+    дублирует список в settings.json. GET — что сохранено, POST — заменить
+    список целиком (его присылает интерфейс после каждого изменения).
+
+    Body POST: {"presets": [{"name": "Уфа стоматология", "settings": {...}}]}
+    Reply: {ok, presets, count}
+
+    Ничего не запускает и никуда не ходит: только чтение/запись настроек.
+    Форма на чужой странице такой запрос отправить не может — нужен JSON,
+    а CORS-заголовков у сервиса нет.
+    """
+    import presets_store
+
+    if request.method == "GET":
+        presets = presets_store.load_presets()
+        return jsonify({"ok": True, "presets": presets, "count": len(presets)})
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or "presets" not in data:
+        return jsonify({"ok": False, "presets": [],
+                        "error": 'Ожидался JSON {"presets": [...]}'}), 400
+    presets = presets_store.save_presets(data.get("presets"))
+    return jsonify({"ok": True, "presets": presets, "count": len(presets)})
+
+
 @bp.route("/folder-picker", methods=["POST"])
 def folder_picker():
     """Открыть системный диалог выбора папки и вернуть выбранный путь."""
@@ -2238,3 +2308,46 @@ def folder_picker():
     if not path:
         return jsonify({"ok": False, "cancelled": True})
     return jsonify({"ok": True, "path": path})
+
+
+@bp.route("/output/open", methods=["POST"])
+def open_output_dir():
+    """Открыть текущую папку результатов в файл-менеджере ОС.
+
+    Body: {} — только JSON из своего окна: маршрут открывает окно
+    проводника на машине пользователя, и чужой странице делать это нельзя
+    (защитник — тот же принцип, что у /report/issue в diagnostics).
+    Путь в запросе НЕ принимается: открывается ровно та папка, что
+    настроена в приложении, поэтому маршрут не умеет открывать произвольные
+    каталоги. macOS → Finder (`open`), Windows → проводник (os.startfile),
+    прочее → xdg-open.
+    """
+    origin = request.headers.get("Origin")
+    if origin:
+        try:
+            from .diagnostics import _is_local_origin
+            if not _is_local_origin(origin):
+                return jsonify({"ok": False,
+                                "error": "Запрос пришёл с другого сайта — папка не открыта."}), 403
+        except Exception:
+            pass
+    if not request.is_json:
+        return jsonify({"ok": False,
+                        "error": "Открытие папки — только из окна приложения (JSON)."}), 415
+    p = _paths_module()
+    # results_root(), а НЕ output_dirs(): тот создаёт подпапки — открывать
+    # корень не должен ради этого порождать raw/processed.
+    root = str(p.results_root()) if p is not None else RESULTS_DIR
+    if not os.path.isdir(root):
+        return jsonify({"ok": False,
+                        "error": "Папки результатов ещё нет — она создастся при первом сохранении."}), 404
+    try:
+        if sys.platform == "darwin":
+            subprocess.Popen(["open", root])
+        elif os.name == "nt":
+            os.startfile(root)
+        else:
+            subprocess.Popen(["xdg-open", root])
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"Папка не открылась: {exc}"}), 500
+    return jsonify({"ok": True, "path": root})

@@ -1,0 +1,150 @@
+{
+  "name": "Yandex-Parser: пачка записей (список задач)",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Записи вместо набора задач руками\n\nОдна запись = один прогон парсера. Вместо того чтобы запускать запросы по одному, отправьте СПИСОК — как строки таблицы.\n\n1. Запустите приложение (оно слушает 127.0.0.1:5000, порт смотрите в консоли).\n2. В ноде «Записи (список задач)» замените пример на свои данные: вместо Code можно поставить «Google Sheets → Get rows», «Postgres → Select» или «Read Binary File» — главное, чтобы на выходе был массив `records`.\n3. Запись в коротком виде: `{ \"query\": \"кафе\", \"city\": \"Москва\" }` (один запрос, один город) или полная форма с массивами: `{ \"queries\": [\"кафе\", \"бар\"], \"cities\": [\"Москва\", \"Тверь\"] }`.\n4. Общие поля для всех записей кладите в `defaults` — например `{\"max_pages\": 5}`.\n\nПрогоны идут по очереди: первый стартует сразу, остальные ждут в очереди. Ждёт и общий результат: `/batch/<id>/results?wait=300`.",
+        "height": 460,
+        "width": 420,
+        "color": 5
+      },
+      "id": "a0b1c2d3-e4f5-4061-8273-b4c5d6e7f80a",
+      "name": "Как это работает",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-420, -60]
+    },
+    {
+      "parameters": {},
+      "id": "b1c2d3e4-f5a6-4072-9384-c5d6e7f80b1c",
+      "name": "Запустить вручную",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Записи-задания: одна строка — один прогон парсера.\n// Замените пример своими данными (или поставьте вместо ноды Code\n// «Google Sheets → Get rows» / «Postgres → Select» и передайте строки дальше).\nconst rows = [\n  { query: 'кафе', city: 'Москва' },\n  { query: 'автосервис', city: 'Казань' },\n  { query: 'стоматология', city: 'Уфа' },\n];\n\n// Запись может быть и полной формой: { queries: ['кафе'], cities: ['Москва'] }\nreturn [{ json: { records: rows } }];"
+      },
+      "id": "c2d3e4f5-a6b7-4083-8495-d6e7f80c2d3e",
+      "name": "Записи (список задач)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:5000/api/v1/batch",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ records: $json.records, defaults: { max_pages: 5, social_mode: 'all' } }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "d3e4f5a6-b7c8-4094-85a6-e7f80d3e4f5a",
+      "name": "Отправить пачку (POST /batch)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [460, 0]
+    },
+    {
+      "parameters": {
+        "url": "=http://127.0.0.1:5000/api/v1/batch/{{ $json.batch_id }}/results",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "wait",
+              "value": "300"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 320000
+        }
+      },
+      "id": "e4f5a6b7-c8d9-40a5-96b7-f80e4f5a6b7c",
+      "name": "Дождаться пачки и получить организации",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [700, 0]
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "results",
+        "options": {}
+      },
+      "id": "f5a6b7c8-d9e0-41b6-87c8-091f5a6b7c8d",
+      "name": "Одна организация — один элемент",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [940, 0]
+    },
+    {
+      "parameters": {
+        "content": "## Что тут важно\n\n- **Прогресс и поломки.** Пока прогоны идут, `GET /api/v1/batch/<id>` показывает `progress.cities_done` / `records_so_far`, а упавшие записи видны как `status: \"failed\"` с текстом в `error` — это не «ничего не нашлось».\n- **События вместо опроса.** В `/batch` (или в `defaults`) можно передать `callback_url` — по завершении КАЖДОГО прогона приложение отправит туда POST `{event, run_id, status, batch_id, batch_index, count, files}`.\n- **Если n8n в Docker**, `127.0.0.1` из контейнера не виден — замените на `host.docker.internal` (Windows/macOS) или адрес хоста.\n- **Много записей.** За один запрос принимается до 200 записей; больше — делите на части (`defaults` и `callback_url` помогают не повторяться).\n- Дальше из «одна организация — один элемент» данные идут куда угодно: Google Sheets, CRM, Airtable.",
+        "height": 420,
+        "width": 380,
+        "color": 4
+      },
+      "id": "a6b7c8d9-e0f1-42c7-98d9-1a2b6b7c8d9e",
+      "name": "Прогресс, ошибки, события",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [1180, -60]
+    }
+  ],
+  "connections": {
+    "Запустить вручную": {
+      "main": [
+        [
+          {
+            "node": "Записи (список задач)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Записи (список задач)": {
+      "main": [
+        [
+          {
+            "node": "Отправить пачку (POST /batch)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Отправить пачку (POST /batch)": {
+      "main": [
+        [
+          {
+            "node": "Дождаться пачки и получить организации",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Дождаться пачки и получить организации": {
+      "main": [
+        [
+          {
+            "node": "Одна организация — один элемент",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

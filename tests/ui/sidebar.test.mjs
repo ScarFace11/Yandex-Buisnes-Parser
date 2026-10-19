@@ -89,7 +89,7 @@ globalThis.dataSource = 'yandex';
 const fns = ['_pluralRu', '_countQueries', 'updateQueriesCounter', 'updateCityCount',
   'updateClearAllBtn', 'clearAllInputs', 'updateBasicSummary', 'renderCityTags',
   'isRunReady', 'updateRunBtnState', 'setRunBtnActive', 'resetBtn',
-  'updateApiKeysStatus', 'setGridMode', 'onGridSlider',
+  'updateApiKeysStatus', 'setGridMode', 'onGridSlider', 'gridCellsEstimate',
   'pauseRun', 'enterPausedState', 'resumeRun', 'togglePresetDropdown',
   'setRunIndicator', '_logNorm', '_isDup'];
 // stopRunWithConfirm is `async function` — grab() strips the modifier, so

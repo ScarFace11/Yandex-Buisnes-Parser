@@ -10,6 +10,7 @@ from . import state
 def print_limit_stats() -> None:
     """Print browser usage from the shared counters (сколько страниц открыто)."""
     _print_prefilter_stats()
+    _print_read_failure_stats()
     from .http_client import get_stats
     s = get_stats()
     if not s["requests"]:
@@ -53,6 +54,26 @@ def print_limit_stats() -> None:
                        f"кэш: {hits} ошибок: {bs.get('pages_error', 0)}")
     except Exception:
         pass
+
+
+def _print_read_failure_stats() -> None:
+    """Сколько карточек прочитать не удалось — и почему.
+
+    Такие организации в выгрузке есть, но без телефона, сайта и соцсетей: не
+    потому, что их нет, а потому что страница не открылась. Печатаем дельту
+    с прошлого вывода — строка встаёт в лог конца каждого города, а не только
+    в итог за прогон.
+    """
+    try:
+        delta = state.read_failure_take_delta()
+    except Exception:
+        return
+    if not delta.get("total"):
+        return
+    state.warn(f"    📄 не прочитано карточек: {delta['total']} "
+               f"({state.read_failure_text(delta)})")
+    state.syslog(f"  read_failures: total={delta['total']} "
+                 f"({state.read_failure_text(state.read_failure_summary())})")
 
 
 def _print_prefilter_stats() -> None:

@@ -131,8 +131,9 @@ class TestResumeWiring:
             fh.write("x")
         seen = []
         self._run(self._base(), monkeypatch, seen)
-        assert seen
-        assert seen[0] == [], "новый поиск не должен тащить прошлые raw-файлы"
+        # Сырых файлов у нового поиска нет — этап 2 не запускается вовсе
+        # (фильтровать нечего), и прошлые raw-файлы тем более не берёт.
+        assert seen == [], "новый поиск не должен тащить прошлые raw-файлы"
 
     def test_multi_city_slices_are_not_lost(self, raw_dir, monkeypatch):
         """Раньше этап 2 видел только файлы ПОСЛЕДНЕГО города.

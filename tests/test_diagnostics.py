@@ -201,6 +201,61 @@ class TestEnvironment:
         assert "dep_playwright" not in ids
 
 
+# ── Группа «runs»: что было в прошлых запусках ───────────────
+
+class TestRuns:
+    """История прогонов объясняет «старые данные» и «сбор не шёл» без логов."""
+
+    def test_last_run_is_described_in_words(self, monkeypatch):
+        import search_history
+
+        monkeypatch.setattr(search_history, "get_history", lambda limit=5: [{
+            "timestamp": 1792262195, "cities": ["Уфа", "Казань"],
+            "results_count": 42, "elapsed_sec": 130, "status": "completed"}])
+        row = _row(diag.check_runs(), "runs_recent")
+        assert row["status"] == "ok"
+        assert "Уфа, Казань" in row["detail"]
+        assert "42" in row["detail"]
+        assert "2 мин 10 с" in row["detail"], "длительность должна читаться, а не быть числом"
+
+    def test_empty_history_is_a_warning_with_a_next_step(self, monkeypatch):
+        import search_history
+
+        monkeypatch.setattr(search_history, "get_history", lambda limit=5: [])
+        row = _row(diag.check_runs(), "runs_recent")
+        assert row["status"] == "warn"
+        assert row["hint"], "без подсказки предупреждение бесполезно"
+
+    def test_failed_run_is_called_out(self, monkeypatch):
+        import search_history
+
+        monkeypatch.setattr(search_history, "get_history", lambda limit=5: [
+            {"timestamp": 1792262195, "cities": ["Уфа"], "results_count": 0,
+             "elapsed_sec": 10, "status": "completed"},
+            {"timestamp": 1792262000, "cities": ["Уфа"], "results_count": 0,
+             "elapsed_sec": 3, "status": "failed"}])
+        row = _row(diag.check_runs(), "runs_errors")
+        assert row["status"] == "warn"
+        assert "1 из" in row["detail"]
+
+    def test_more_than_three_cities_are_counted_not_hidden(self, monkeypatch):
+        import search_history
+
+        monkeypatch.setattr(search_history, "get_history", lambda limit=5: [{
+            "timestamp": 1792262195, "results_count": 1, "elapsed_sec": 5,
+            "cities": ["Уфа", "Казань", "Сочи", "Омск"], "status": "completed"}])
+        assert "+1" in _row(diag.check_runs(), "runs_recent")["detail"]
+
+    def test_run_group_runs_only_its_own_checks(self, monkeypatch):
+        def _boom(*_a, **_kw):
+            raise AssertionError("другие группы запускаться не должны")
+
+        monkeypatch.setattr(diag, "check_storage", _boom)
+        monkeypatch.setattr(diag, "check_vk_token", _boom)
+        rows = diag.run_checks(["runs"])
+        assert rows and all(r["group"] == "runs" for r in rows)
+
+
 # ── run_checks: сборка отчёта ─────────────────────────────────
 
 class TestRunChecks:
@@ -259,7 +314,8 @@ class TestEndpoints:
         data = client.post("/diagnostics/run", json={}).get_json()
         assert data["ok"] is True
         assert groups == ["vk"], "живая проверка ровно одна — токен ВК"
-        assert {r["group"] for r in data["results"]} == {"keys", "files", "data", "env", "engines"}
+        assert {r["group"] for r in data["results"]} == {
+            "keys", "files", "data", "runs", "env", "engines"}
 
     def test_string_group_is_accepted(self, client, monkeypatch):
         seen = []

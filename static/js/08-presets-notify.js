@@ -2,9 +2,45 @@
 function getPresets() {
   try { return JSON.parse(localStorage.getItem(PRESETS_KEY)) || []; } catch { return []; }
 }
-function savePresets(p) { localStorage.setItem(PRESETS_KEY, JSON.stringify(p)); }
+function savePresets(p) {
+  localStorage.setItem(PRESETS_KEY, JSON.stringify(p));
+  pushPresetsToServer(p);
+}
+
+// Копия пресетов на сервере (settings.json). Нужна ради консольного запуска:
+// `app.py --run --preset «Уфа стоматология»` не видит localStorage браузера.
+// Сбой сети не должен мешать сохранению в браузере — поэтому молча.
+function pushPresetsToServer(p) {
+  try {
+    if (typeof fetch !== 'function') return;
+    fetch('/presets', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({presets: p}),
+    }).catch(() => {});
+  } catch (e) { /* сохранение в браузере уже прошло */ }
+}
+
+// Обратная сторона: браузер открыли впервые или почистили localStorage, а
+// пресеты уже есть в настройках приложения — показываем их, а не пустой список.
+let _presetsPulled = false;
+function pullPresetsOnce() {
+  if (_presetsPulled || typeof fetch !== 'function') return;
+  _presetsPulled = true;
+  if (getPresets().length) return;
+  fetch('/presets')
+    .then(r => r.ok ? r.json() : null)
+    .then(d => {
+      const list = d && d.ok && Array.isArray(d.presets) ? d.presets : [];
+      if (!list.length || getPresets().length) return;
+      localStorage.setItem(PRESETS_KEY, JSON.stringify(list));
+      renderPresets();
+    })
+    .catch(() => {});
+}
 
 function renderPresets() {
+  pullPresetsOnce();
   // Presets live in a static block at the TOP of the sidebar (under API
   // keys) as a dropdown — discoverable before any accordion is opened.
   const wrap = document.getElementById('preset-dd-wrap');
@@ -15,10 +51,10 @@ function renderPresets() {
   if (!presets.length) {
     wrap.hidden = true;
     list.innerHTML = '';                      // drop stale items from the last render
-    if (hint) hint.textContent = 'Пресетов пока нет — настройте поиск и сохраните его кнопкой «+ Новый». Хранятся в этом браузере.';
+    if (hint) hint.textContent = 'Пресетов пока нет — настройте поиск и сохраните его кнопкой «+ Новый». Пресет хранится и в браузере, и в настройках приложения: его можно запустить и без интерфейса.';
     return;
   }
-  if (hint) hint.textContent = 'Выберите пресет — все настройки подставятся автоматически. Хранятся в этом браузере.';
+  if (hint) hint.textContent = 'Выберите пресет — настройки подставятся автоматически. Тот же пресет запускается без интерфейса: app.py --run --preset «Имя».';
   wrap.hidden = false;
   list.innerHTML = presets.map((p, i) => {
     const safeName = String(p.name).replace(/"/g, '&quot;');
@@ -152,6 +188,7 @@ function openPresetModal() {
   overlay.addEventListener('click', e => { if (e.target === overlay) done(false); });
   document.addEventListener('keydown', onKey, true);
   document.body.appendChild(overlay);
+  modalA11y(overlay);
   input.focus();
 }
 

@@ -150,6 +150,9 @@ globalThis.BULK_SOCIALS = ['vk', 'telegram', 'whatsapp', 'instagram'];
 globalThis.BULK_MAX_TABS = 50;
 globalThis.SUBTAB_KEY = 'yp_results_subtab';
 globalThis.CITY_TAB_KEY = 'yp_results_city_tab';
+globalThis.CITY_FAV_KEY = 'yp_results_city_favs';
+// Избранные города (звёздочка) — модульное состояние 05-results-bulk.
+globalThis.favoriteCities = new Set();
 globalThis.BULK_OPEN_KEY = 'yp_bulk_open';
 globalThis.PAGE_SIZE = 50;
 globalThis.FILE_TYPE_ICONS = {
@@ -186,7 +189,7 @@ globalThis.appendLog = (lvl, msg) => logLines.push({ lvl, msg });
 // «🚫 Исключить по словам» уезжает в рефильтр вместе с остальными фильтрами;
 // сам список (чипы, storage, дебаунс) живёт в tests/ui/blacklist.test.mjs.
 globalThis.blacklistWords = [];
-globalThis.unviewedOnly = false;
+globalThis.reviewedFilter = 'all';
 globalThis.activeCity = '';
 globalThis._lastCities = [];
 globalThis.currentFileNote = '';
@@ -248,6 +251,8 @@ globalThis.clearTimeout = () => {};
 // Score tables and limits live at module scope — load them verbatim.
 (0, eval)(['SCORE_MAX', 'SCORE_AGGREGATORS', 'SCORE_EXPENSIVE', 'SCORE_RULES',
   'REVIEWED_AUTOSAVE_MS', 'FILE_ACT_ICONS', 'UI_ICONS', 'REFILTER_LABEL',
+  // Показ по отметке «Просмотрено» — цикл заголовка колонки «✓».
+  'REVIEWED_FILTER_CYCLE',
   // «🎯 Тип компании» едет в рефильтр вместе с остальными фильтрами.
   'COMPANY_TYPE_PERIODS', 'COMPANY_TYPE_DEFAULT_MONTHS'].map(grabConst).join('\n'));
 
@@ -258,8 +263,17 @@ const fns = [
   // Живая перерисовка делит с filterTable общие фильтры и порядок
   '_applyRowFilters', '_orderFilteredRows', 'collapseChainsClient',
   'bulkScopeRows', 'bulkScopeStats', 'bulkOpenable', 'bulkWillOpen', 'renderCityTabs', 'setCityTab',
+  // Избранные города («звёздочка») и группировка таблицы «Все» по городам
+  'cityKeyOf', 'isFavoriteCity', 'loadFavoriteCities', 'saveFavoriteCities',
+  'toggleFavoriteCity', 'orderCitiesForTabs', '_cityTabHtml', 'onFavStarKey', 'favStarCity',
+  'focusFavStar',
+  '_groupRowsByCity', '_cityGroupHtml', '_resultRowHtml', '_tableColspan',
   'updateBulkStats', 'renderBulkProgress', 'resetBulkProgress', 'setBulkCount',
-  'toggleUnviewedOnly', 'fileCardHTML', 'renderFiles', 'bulkParams',
+  // Показ по отметке «Просмотрено»: фильтр живёт в заголовке колонки «✓»
+  'toggleReviewedFilter', 'reviewedFilterNote', 'syncReviewedFilterUI',
+  // Прогресс обхода в полосах городов и звезда в списке «Где ищем?»
+  'cityReviewStats', 'reviewProgressHtml', 'toggleCityFavorite',
+  'fileCardHTML', 'renderFiles', 'bulkParams',
   // Порядок обхода = порядок строк в таблице
   'bulkSortSpec', 'bulkOrderLabel', 'resetSortHeaders', 'sortTable',
   // File history: bulk archive / clear selection
@@ -307,7 +321,7 @@ function resetState(rows = ROWS) {
   globalThis.reviewedState = {};
   globalThis.socialViewedState = {};
   globalThis.activeCity = '';
-  globalThis.unviewedOnly = false;
+  globalThis.reviewedFilter = 'all';
   globalThis.currentFileNote = '';
   globalThis.currentFile = '';
   globalThis.bulkState = { social: 'vk', opened: 0, blocked: 0, keys: new Set(), copied: new Set(), texts: new Map(), copiedTexts: new Set() };
@@ -327,6 +341,8 @@ function resetState(rows = ROWS) {
   els['city-tabs'].innerHTML = '';
   els['city-tabs'].hidden = false;
   els['tbl-search'].value = '';
+  globalThis.favoriteCities = new Set();
+  try { localStorage.removeItem(globalThis.CITY_FAV_KEY); } catch (e) {}
 }
 
 // ── 1. Formatters ─────────────────────────────────────────────
@@ -440,6 +456,168 @@ test('renderCityTabs hides its row for a single city', () => {
   assert.equal(els['city-tabs'].hidden, true);
   assert.equal(els['city-tabs'].innerHTML, '');
   assert.equal(globalThis.activeCity, '');
+});
+
+// ── 3b. Группировка «Все» по городам и избранное ──────────────
+// Задача: в режиме «Все» между организациями идёт полоса с названием города,
+// а город со звёздочкой закрепляется сверху (и во вкладках, и в группах).
+
+test('_groupRowsByCity groups rows by city in first-appearance order', () => {
+  resetState();
+  const groups = globalThis._groupRowsByCity([
+    REC('А', 'Уфа'), REC('Б', 'Москва'), REC('В', 'Уфа'), REC('Г', ''),
+  ]);
+  assert.deepEqual(groups.map(g => g.city), ['Уфа', 'Москва', 'Без города']);
+  assert.deepEqual(groups[0].rows.map(r => r.name), ['А', 'В']);
+  assert.deepEqual(groups[2].rows.map(r => r.name), ['Г']);
+});
+
+test('a favourite city is pinned first in groups and in tabs', () => {
+  resetState();
+  globalThis.favoriteCities = new Set(['Москва']);
+  const groups = globalThis._groupRowsByCity([REC('А', 'Уфа'), REC('Б', 'Москва')]);
+  assert.deepEqual(groups.map(g => g.city), ['Москва', 'Уфа']);
+  const tabs = globalThis.orderCitiesForTabs([
+    { city: 'Уфа', count: 2 }, { city: 'Москва', count: 2 },
+  ]);
+  assert.deepEqual(tabs.map(c => c.city), ['Москва', 'Уфа']);
+});
+
+test('renderCityTabs draws a star and keeps «Все» in front', () => {
+  resetState();
+  globalThis.favoriteCities = new Set(['Уфа']);
+  globalThis.renderCityTabs([{ city: 'Москва', count: 2 }, { city: 'Уфа', count: 2 }]);
+  const html = els['city-tabs'].innerHTML;
+  assert.match(html, /class="city-tab-wrap fav" data-city="Уфа"/);
+  assert.match(html, /class="fav-star on"/);
+  assert.equal((html.match(/class="fav-star/g) || []).length, 2,
+    'звезда должна быть у каждого города, а не только у избранного');
+  assert.match(html, /Все <span class="city-count">\(4\)<\/span>/);
+  assert.ok(html.indexOf('data-city="Уфа"') < html.indexOf('data-city="Москва"'),
+    'избранный город должен идти до не-избранного');
+  // Звезда — вне кнопки-вкладки: клик по ней не переключает фильтр.
+  assert.ok(html.indexOf('</button><span class="fav-star') > 0);
+  // role="button" без Enter/пробела — ловушка для клавиатуры: фокус есть,
+  // нажатие ничего не делает. Обработчик обязан быть в разметке.
+  assert.match(html, /onkeydown="onFavStarKey\(event, this\)"/);
+  assert.match(html, /onclick="toggleFavoriteCity\(favStarCity\(this\), event\)"/);
+});
+
+// Полоса города в таблице: звезда лежит внутри <td colspan>, а город — на
+// <tr>. Клик по такой звезде раньше брал город у родителя (ячейка без
+// data-city) и закреплял «Без города» вместо настоящего города.
+const starIn = city => ({
+  parentElement: { dataset: {} },
+  closest: sel => (sel === '[data-city]' ? { dataset: { city } } : null),
+});
+
+test('звезда берёт город у ближайшего предка с data-city', () => {
+  assert.equal(globalThis.favStarCity(starIn('Санкт-Петербург')), 'Санкт-Петербург');
+  assert.equal(globalThis.favStarCity({ parentElement: { dataset: {} } }), '',
+    'предка с городом нет — город не выдумываем');
+});
+
+test('полоса города в таблице закрепляет свой город, а не «Без города»', () => {
+  resetState();
+  globalThis._lastCities = [{ city: 'Уфа', count: 2 }, { city: 'Москва', count: 2 }];
+  globalThis.renderCityTabs(globalThis._lastCities);
+  globalThis.toggleFavoriteCity(globalThis.favStarCity(starIn('Москва')));
+  assert.equal(globalThis.isFavoriteCity('Москва'), true);
+  assert.equal(globalThis.isFavoriteCity('Без города'), false);
+});
+
+test('focusFavStar возвращает фокус звезде того же города', () => {
+  const focused = [];
+  const star = city => ({
+    closest: sel => (sel === '[data-city]' ? { dataset: { city } } : null),
+    focus: () => focused.push(city),
+  });
+  const realQSA = globalThis.document.querySelectorAll;
+  globalThis.document.querySelectorAll = () => [star('Москва'), star('Уфа')];
+  try {
+    globalThis.focusFavStar('Уфа');
+  } finally {
+    globalThis.document.querySelectorAll = realQSA;
+  }
+  assert.deepEqual(focused, ['Уфа'], 'фокус уходит только звезде своего города');
+});
+
+test('звезда срабатывает с клавиатуры по Enter и пробелу', () => {
+  resetState();
+  globalThis._lastCities = [{ city: 'Уфа', count: 2 }, { city: 'Москва', count: 2 }];
+  globalThis.renderCityTabs(globalThis._lastCities);
+  const star = starIn('Уфа');
+  const ev = key => ({ key, prevented: 0, preventDefault() { this.prevented++; } });
+  const tab = ev('Tab');
+  globalThis.onFavStarKey(tab, star);
+  assert.equal(globalThis.isFavoriteCity('Уфа'), false, 'не Enter и не пробел — ничего не делаем');
+  assert.equal(tab.prevented, 0, 'чужую клавишу не перехватываем');
+  const space = ev(' ');
+  globalThis.onFavStarKey(space, star);
+  assert.equal(globalThis.isFavoriteCity('Уфа'), true);
+  assert.ok(space.prevented > 0, 'пробел по умолчанию прокручивает список — гасим');
+  globalThis.onFavStarKey(ev('Enter'), star);
+  assert.equal(globalThis.isFavoriteCity('Уфа'), false, 'повторное нажатие снимает звёздочку');
+});
+
+test('полоса города в таблице несёт тот же обработчик клавиатуры', () => {
+  resetState();
+  const html = globalThis._cityGroupHtml({ city: 'Уфа', rows: [{}, {}] });
+  assert.match(html, /role="button" tabindex="0"/);
+  assert.match(html, /onkeydown="onFavStarKey\(event, this\)"/);
+});
+
+test('toggleFavoriteCity persists the star and toggles it back off', () => {
+  resetState();
+  globalThis._lastCities = [{ city: 'Уфа', count: 2 }, { city: 'Москва', count: 2 }];
+  globalThis.renderCityTabs(globalThis._lastCities);
+  globalThis.toggleFavoriteCity('Уфа');
+  assert.equal(globalThis.isFavoriteCity('Уфа'), true);
+  assert.match(localStorage.getItem('yp_results_city_favs'), /Уфа/);
+  assert.match(els['city-tabs'].innerHTML, /class="fav-star on"/);
+  globalThis.toggleFavoriteCity('Уфа');
+  assert.equal(globalThis.isFavoriteCity('Уфа'), false);
+  assert.equal(localStorage.getItem('yp_results_city_favs'), '[]');
+});
+
+test('loadFavoriteCities restores saved cities and normalises the empty one', () => {
+  resetState();
+  localStorage.setItem('yp_results_city_favs', JSON.stringify(['Уфа', '  ']));
+  globalThis.loadFavoriteCities();
+  assert.equal(globalThis.isFavoriteCity('Уфа'), true);
+  assert.equal(globalThis.isFavoriteCity(''), true);       // '' → «Без города»
+  assert.equal(globalThis.isFavoriteCity('Казань'), false);
+});
+
+test('renderPage shows a full-width city row in «Все» mode', () => {
+  resetState();
+  globalThis.filteredRows = globalThis.allResults.map(r => ({ ...r }));
+  globalThis.activeCity = '';
+  globalThis.renderPage();
+  const html = els['tbl-body'].innerHTML;
+  assert.match(html, /<tr class="city-group" data-city="Уфа">/);
+  assert.match(html, /<td colspan="9">/);
+  assert.match(html, /<span class="city-group-name">Уфа<\/span>/);
+  assert.match(html, /<span class="city-group-count">2<\/span>/);
+  // Нумерация столбца «#» — сквозная по таблице, а не внутри группы.
+  assert.match(html, /<td data-col="num">3<\/td>/);
+});
+
+test('renderPage does not group rows inside a selected city tab', () => {
+  resetState();
+  globalThis.filteredRows = globalThis.allResults.filter(
+    r => globalThis.cityOf(r) === 'Уфа');
+  globalThis.activeCity = 'Уфа';
+  globalThis.renderPage();
+  assert.doesNotMatch(els['tbl-body'].innerHTML, /city-group/);
+});
+
+test('renderPage stays flat when every row is one city', () => {
+  resetState();
+  globalThis.filteredRows = [REC('А', 'Уфа'), REC('Б', 'Уфа')];
+  globalThis.activeCity = '';
+  globalThis.renderPage();
+  assert.doesNotMatch(els['tbl-body'].innerHTML, /city-group/);
 });
 
 test('renderCityTabs renders «Все» plus a tab per city with counts', () => {
@@ -714,27 +892,51 @@ test('filterTable applies the city tab filter', () => {
   assert.equal(els['tbl-count'].textContent, '2 записей');
 });
 
-test('toggleUnviewedOnly hides reviewed rows and toggles the button', () => {
+test('клик по заголовку «✓» переключает показ: всё → непросмотренные → просмотренные', () => {
   resetState();
   globalThis.reviewedState[globalThis.reviewKey(ROWS[0])] = true;
-  globalThis.toggleUnviewedOnly();
-  assert.equal(globalThis.unviewedOnly, true);
-  assert.equal(globalThis.filteredRows.length, 3);
-
-  globalThis.toggleUnviewedOnly();
-  assert.equal(globalThis.unviewedOnly, false);
+  globalThis.filterTable();
   assert.equal(globalThis.filteredRows.length, 4);
+
+  globalThis.toggleReviewedFilter();
+  assert.equal(globalThis.reviewedFilter, 'unviewed');
+  assert.equal(globalThis.filteredRows.length, 3, 'просмотренные уходят из показа');
+  assert.match(globalThis.reviewedFilterNote(), /только непросмотренные/);
+
+  globalThis.toggleReviewedFilter();
+  assert.equal(globalThis.reviewedFilter, 'viewed');
+  assert.equal(globalThis.filteredRows.length, 1, 'остаются только просмотренные');
+  assert.equal(globalThis.filteredRows[0].name, 'А');
+
+  globalThis.toggleReviewedFilter();
+  assert.equal(globalThis.reviewedFilter, 'all');
+  assert.equal(globalThis.filteredRows.length, 4, 'цикл замкнулся');
+  assert.equal(globalThis.reviewedFilterNote(), '');
 });
 
-test('refreshReviewedUI re-applies the unviewed filter after a bulk run', () => {
+test('refreshReviewedUI re-applies the reviewed filter after a bulk run', () => {
   resetState();
-  globalThis.toggleUnviewedOnly();            // 4 rows open
+  globalThis.toggleReviewedFilter();          // 4 rows → «только непросмотренные»
+  assert.equal(globalThis.reviewedFilter, 'unviewed');
   globalThis.reviewedState[globalThis.reviewKey(ROWS[0])] = true;
   globalThis.reviewedState[globalThis.reviewKey(ROWS[1])] = true;
   globalThis.refreshReviewedUI();
   assert.equal(globalThis.filteredRows.length, 2, 'marked rows drop out at once');
-  assert.equal(els['tbl-count'].textContent, '2 записей');
+  assert.equal(els['tbl-count'].textContent, '2 записей · только непросмотренные');
   assert.equal(els['unviewed-count'].textContent, '2', 'bulk counter follows the marks');
+});
+
+test('полоса города показывает прогресс обхода: просмотрено и всего', () => {
+  resetState();
+  globalThis.reviewedState[globalThis.reviewKey(ROWS[0])] = true;
+  globalThis.reviewedState[globalThis.reviewKey(ROWS[2])] = true;   // А (Уфа) + В (Москва)
+  const stats = globalThis.cityReviewStats('Уфа');
+  assert.deepEqual(stats, { done: 1, total: 2 });
+  const all = globalThis.cityReviewStats('');
+  assert.deepEqual(all, { done: 2, total: 4 });
+  const html = globalThis.reviewProgressHtml(1, 2, 'city-done');
+  assert.match(html, /✓1\/2/);
+  assert.match(html, /Просмотрено 1 из 2 · осталось 1/);
 });
 
 

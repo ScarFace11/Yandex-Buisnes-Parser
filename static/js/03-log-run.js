@@ -19,7 +19,16 @@ function _runElapsed() {
 }
 
 function showTab(name) {
-  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  // Активная вкладка — единственная в порядке табуляции, и только у неё
+  // aria-selected="true". Раньше класс .active переезжал, а aria-selected
+  // оставался на прежней вкладке: скринридер сообщал о выбранной не той
+  // вкладке, а Tab обходил все шесть кнопок подряд.
+  document.querySelectorAll('.tab-btn').forEach(b => {
+    const on = b.id === 't-' + name;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-selected', on ? 'true' : 'false');
+    b.tabIndex = on ? 0 : -1;
+  });
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
   document.getElementById('t-' + name).classList.add('active');
   document.getElementById('p-' + name).classList.add('active');
@@ -261,7 +270,9 @@ const LOG_CITY_RE = /🏙|Город\s+\d+\s*\/\s*\d+/i;
 // Итоги прогона: строки-результаты и карточка «Статистика». Это ЕДИНСТВЕННОЕ
 // содержимое вкладки «Важные» (ошибки живут во «Ошибках», механика — в
 // «Технических» и «Все»), поэтому класс .sum — ровно у этих строк.
-const LOG_SUMMARY_RE = /✅|📦\s*Raw|🎯\s*Processed|💾 Карта|⏪|⏭|⏹|⏸|📊/;
+// 📅 — журнал источников (дата и время сбора): одна строка на прогон,
+// но именно она отвечает «на какую дату актуальны данные».
+const LOG_SUMMARY_RE = /✅|📦\s*Raw|🎯\s*Processed|💾 Карта|⏪|⏭|⏹|⏸|📊|📅/;
 function _logIsSummary(lvl, text) {
   if (LOG_SUMMARY_RE.test(text)) return true;
   // Явные «ok»-строки без признаков механики тоже итоги (пропуск города,
@@ -490,6 +501,7 @@ const UI_ICONS = {
   bellOff:     '<svg class="ico" aria-hidden="true"><use href="#i-bell-off"/></svg>',
   sun:         '<svg class="ico" aria-hidden="true"><use href="#i-sun"/></svg>',
   moon:        '<svg class="ico" aria-hidden="true"><use href="#i-moon"/></svg>',
+  auto:        '<svg class="ico" aria-hidden="true"><use href="#i-auto"/></svg>',
   x:           '<svg class="ico" aria-hidden="true"><use href="#i-x"/></svg>',
   check:       '<svg class="ico" aria-hidden="true"><use href="#i-check"/></svg>',
   square:      '<svg class="ico" aria-hidden="true"><use href="#i-square"/></svg>',
@@ -518,6 +530,7 @@ const UI_ICONS = {
   pulse:       '<svg class="ico" aria-hidden="true"><use href="#i-pulse"/></svg>',
   chart:       '<svg class="ico" aria-hidden="true"><use href="#i-chart"/></svg>',
   gear:        '<svg class="ico" aria-hidden="true"><use href="#i-gear"/></svg>',
+  star:        '<svg class="ico" aria-hidden="true"><use href="#i-star"/></svg>',
   busy:        '<svg class="ico" aria-hidden="true"><use href="#i-hourglass"/></svg>',
 };
 
@@ -672,9 +685,19 @@ function handleProgress(raw) {
     setProgress(pct, `${pct}%${stageLabel}${foundLabel}${etaStr}`);
     document.title = `${pct}% ⏳ (${found} найдено) — Парсер`;
 
-    // Update live stats strip
+    // Update live stats strip. Число растёт рывками, поэтому смена значения
+    // отмечается короткой пульсацией: без неё счётчик читается как статичная
+    // цифра, а не как «идёт прямо сейчас».
     const lsFound = document.getElementById('ls-found-num');
-    if (lsFound) lsFound.textContent = found;
+    if (lsFound) {
+      const next = String(found);
+      if (lsFound.textContent !== next) {
+        lsFound.textContent = next;
+        lsFound.classList.remove('pop');
+        void lsFound.offsetWidth;          // перезапуск анимации
+        lsFound.classList.add('pop');
+      }
+    }
     const lsStage = document.getElementById('ls-stage');
     if (lsStage) lsStage.textContent = stage ? `«${stage}» · ${cur} из ${tot}` : `${cur} из ${tot}`;
 
@@ -692,6 +715,8 @@ function getParams() {
   return {
     queries:         document.getElementById('f-queries').value.split('\n').map(s=>s.trim()).filter(Boolean),
     cities:          [...selectedCities],
+    // Пусто — сервер возьмёт сохранённый выбор или первый найденный браузер.
+    browser_path:    (document.getElementById('f-browser') || {}).value || '',
     output_excel:    document.getElementById('f-excel').checked,
     output_json:     document.getElementById('f-json').checked,
     output_csv:      document.getElementById('f-csv').checked,
@@ -704,7 +729,10 @@ function getParams() {
     excel_columns:   getExcelCols(),
     use_grid:        _gridMode === 'manual',
     grid_radius:     +document.getElementById('f-grad').value  || 20,
-    grid_step:       +document.getElementById('f-gstep').value || 5,    // Соцсети собираются только если отмечены в «Что парсить»: без них не    // работают ни фильтр по соцсетям, ни массовый обход, ни оценка лида.    fetch_detail:    socialsEnabled(),
+    grid_step:       +document.getElementById('f-gstep').value || 5,    // Карточку организации грузим, если в «Что парсить» отмечено хотя бы одно
+    // «карточное» поле (соцсети, телефон, рейтинг, сайт): только на ней они и
+    // есть. Раньше флаг повторял один «Соцсети», и без них терялся телефон.
+    fetch_detail:    detailFetchEnabled(),
     collapse_chains: document.getElementById('f-collapse-chains').checked,
     chain_key:       (document.getElementById('f-chain-key') || {}).value || 'name_city',
     // Two-stage pipeline: the web app always collects raw (stage 1);
@@ -945,6 +973,7 @@ function showSkipConfirm() {
           </div>
         </div>`;
       document.body.appendChild(overlay);
+      modalA11y(overlay);
       overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
     })
     .catch(() => {});
@@ -978,6 +1007,44 @@ function handleCityDone(raw) {
     }
   }
 }
+
+// ═══════════════════════════════════════════
+//  Клавиатура в полосе вкладок (шаблон ARIA tablist)
+//
+//  Стрелки ← → листают вкладки, Home/End — к первой и последней. Без этого
+//  полоса из шести вкладок вела себя как шесть отдельных кнопок: Tab шёл по
+//  каждой из них, а между вкладками приходилось ходить только мышью.
+(function initTabListKeyboard() {
+  if (typeof document === 'undefined' || !document.querySelector) return;
+  const list = document.querySelector('.tab-bar');
+  if (!list) return;
+  const items = () => [...list.querySelectorAll('.tab-btn')];
+
+  // Начальное состояние: в порядке табуляции — только активная вкладка
+  // (highlighted в разметке), остальные доступны стрелками.
+  items().forEach(b => {
+    b.tabIndex = b.getAttribute('aria-selected') === 'true' ? 0 : -1;
+  });
+
+  list.addEventListener('keydown', e => {
+    const cur = e.target && e.target.closest ? e.target.closest('.tab-btn') : null;
+    if (!cur) return;
+    const all = items();
+    const i = all.indexOf(cur);
+    if (i < 0) return;
+    let next = null;
+    if (e.key === 'ArrowRight')     next = all[(i + 1) % all.length];
+    else if (e.key === 'ArrowLeft') next = all[(i - 1 + all.length) % all.length];
+    else if (e.key === 'Home')      next = all[0];
+    else if (e.key === 'End')       next = all[all.length - 1];
+    if (!next || next === cur) return;
+    e.preventDefault();
+    next.focus();
+    // Автоматическое переключение по стрелкам: у вкладок нет отдельного
+    // «подтверждения», как у кнопок, и ожидание Enter читалось бы как поломка.
+    showTab(next.id.replace(/^t-/, ''));
+  });
+})();
 
 // ═══════════════════════════════════════════
 //  Live per-city stats (multi-city runs)

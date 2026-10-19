@@ -161,6 +161,16 @@ def save_settings(values: dict) -> None:
     """
     data = load_settings()
     data.update(values or {})
+    replace_settings(data)
+
+
+def replace_settings(data: dict) -> None:
+    """Атомарно ЗАМЕНИТЬ settings.json целиком.
+
+    Нужен для операций, которые убирают ключи (сброс настроек до
+    стандартных): save_settings только добавляет/перезаписывает. Та же
+    запись через временный файл + os.replace.
+    """
     path = settings_path()
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -249,14 +249,14 @@ function templateTextForCopy(tpl) {
   return resolveVariantText(tpl) || String(tpl.text || '');
 }
 
-// Активный шаблон категории → первый её шаблон → первый вообще.
+// Активный шаблон категории. Только явный выбор: пусто = шаблона нет,
+// и клик по соцсети в таблице просто откроет профиль, ничего не копируя.
+// (Раньше тут был fallback на первый шаблон категории — из-за него нельзя
+// было отключить подстановку: «не выбрано» мгновенно превращалось в шаблон.)
 function getActiveTemplateFor(social) {
   const id = activeTemplateIds[social];
-  if (id) {
-    const t = messageTemplates.find(x => x.id === id);
-    if (t) return t;
-  }
-  return messageTemplates.find(t => t.category === social) || messageTemplates[0] || null;
+  if (!id) return null;
+  return messageTemplates.find(x => x.id === id) || null;
 }
 
 // Шаблон для массового обхода: только явно выбранный, без fallback.
@@ -484,6 +484,10 @@ function renderTemplates() {
           + '<div class="template-head">'
           + '<label class="tpl-card-chk" title="Выбрать для удаления">'
           + '<input type="checkbox" class="tpl-check" data-tpl-check="' + escapeHtml(t.id) + '"'
+          // Подпись у чекбокса своя: обёртка <label> текста не несёт (только
+          // title), поэтому имя у поля оставалось пустым — и для скринридера,
+          // и для голосового ввода.
+          + ' aria-label="Выбрать шаблон «' + escapeHtml(t.name) + '» для удаления"'
           + (_tplSelectedIds.has(t.id) ? ' checked' : '') + '></label>'
           + '<span class="template-name">' + escapeHtml(t.name) + '</span>'
           + '<span class="template-cat">' + escapeHtml(TEMPLATE_CAT_LABELS[t.category] || t.category) + '</span>'
@@ -658,7 +662,7 @@ function syncTemplateSelects() {
 }
 
 function renderTemplatePickers() {
-  fillTemplateSelect(document.getElementById('tbl-template'), false);
+  fillTemplateSelect(document.getElementById('tbl-template'), true);
   fillTemplateSelect(document.getElementById('bulk-template'), true);
   syncTemplateSelects();
   renderTemplatePickPanel();
@@ -689,6 +693,8 @@ function renderPickPanelBody() {
     body.innerHTML = catTemplates.length
       ? '<label class="lbl" for="tpl-pick-single">Шаблон:</label>'
         + '<select id="tpl-pick-single" onchange="onPickSingleChange()">'
+        // Без явного выбора копирования не будет — оставить пустым нельзя.
+        + '<option value="">— шаблон не выбран —</option>'
         + catTemplates.map(t => '<option value="' + escapeHtml(t.id) + '">' + escapeHtml(t.name) + '</option>').join('')
         + '</select>'
       : '<div class="tpl-pick-list-empty">В этой категории пока нет шаблонов.</div>';
@@ -757,6 +763,7 @@ function openPickModal() {
   if (avoid) avoid.checked = avoidRepeats;
   renderPickModalList();
   overlay.hidden = false;
+  modalA11y(overlay);
 }
 
 function renderPickModalList() {
@@ -925,6 +932,7 @@ function openTemplateModal(id) {
   updateTemplatePreview();
   const overlay = document.getElementById('tpl-modal');
   if (overlay) overlay.hidden = false;
+  if (overlay) modalA11y(overlay);
   if (nameEl && nameEl.focus) nameEl.focus();
 }
 

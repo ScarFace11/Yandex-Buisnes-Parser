@@ -298,3 +298,54 @@ class TestOnlyStableTags:
         assert config.is_dev_build() is True
         assert not self._pattern().match("v2.3.4-dev")
         assert not self._pattern().match("v" + str(config.APP_VERSION))
+
+
+# ── Ручной ввод тега: шаг прогоняется целиком ────────────────
+
+def _run_tag_step(tmp_path, raw_tag, input_tag=""):
+    """Прогон шага «Check the tag» с теми же env, что даёт GitHub Actions."""
+    out = tmp_path / "gh_output.txt"
+    out.write_text("", encoding="utf-8")
+    env = dict(os.environ)
+    env.update({
+        "GITHUB_OUTPUT": str(out),
+        "REPO": "owner/name",
+        "RAW_TAG": raw_tag,
+        "INPUT_TAG": input_tag,
+    })
+    res = subprocess.run([_bash(), "-c", _step_script("tag")],
+                         capture_output=True, env=env, timeout=120)
+    return (subprocess.CompletedProcess(
+                res.args, res.returncode,
+                res.stdout.decode("utf-8", "replace"),
+                res.stderr.decode("utf-8", "replace")),
+            out.read_text(encoding="utf-8"))
+
+
+class TestManualTagInput:
+    """Человек называет версию без «v» — публикация всё равно должна найти тег."""
+
+    @pytest.mark.parametrize("given,expected", [
+        ("2.3.4", "v2.3.4"), ("v2.3.4", "v2.3.4"),
+        ("V2.3.4", "v2.3.4"), (" 2.3.4 ", "v2.3.4"), ("2.2.1.1", "v2.2.1.1"),
+    ])
+    def test_manual_input_is_normalized_and_published(self, tmp_path, given, expected):
+        res, out = _run_tag_step(tmp_path, given, input_tag=given)
+        assert res.returncode == 0, res.stdout + res.stderr
+        assert f"tag={expected}" in out
+        assert "publish=true" in out
+
+    def test_manual_input_with_a_bad_tag_fails_loudly(self, tmp_path):
+        """Ручной запуск — осознанное действие: молчаливое «нечего делать» врёт."""
+        res, out = _run_tag_step(tmp_path, "2.3.4-rc1", input_tag="2.3.4-rc1")
+        assert res.returncode == 1
+        assert "::error::" in res.stdout
+        assert "publish=true" not in out
+
+    @pytest.mark.parametrize("branch", ["main", "v2.3.4-dev", "feature/x"])
+    def test_a_push_to_a_non_release_tag_stays_a_quiet_noop(self, tmp_path, branch):
+        """Пуш ветки/dev-тега ничего не публикует — но и не краснит конвейер."""
+        res, out = _run_tag_step(tmp_path, branch)
+        assert res.returncode == 0, res.stdout + res.stderr
+        assert "publish=false" in out
+        assert "::error::" not in res.stdout

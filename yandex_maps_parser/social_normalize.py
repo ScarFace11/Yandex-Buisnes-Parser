@@ -11,6 +11,7 @@
     повторов (встречаются карточки с одним номером в разных источниках).
 """
 import re
+from html import unescape as _html_unescape
 
 
 # ── Телефоны ──────────────────────────────────────────────────
@@ -122,13 +123,21 @@ _VK_HOST_RE = re.compile(r"^(?:m\.|www\.)?(?:vk\.ru|vk\.com|vkontakte\.ru)$", re
 
 
 def normalize_vk_url(url: str) -> str | None:
-    """vk.ru/… и vk.com/… → https://vk.com/… (один канонический формат)."""
+    """vk.ru/… и vk.com/… → https://vk.com/… (один канонический формат).
+
+    Адрес профиля никогда не содержит запроса, поэтому он отрезается целиком
+    вместе с хвостом из «&»: в старых записях встречается обрывок
+    `…/club&amp;trackcode=…` — в атрибутах HTML «&» приходит закодированным,
+    и ссылка не открывает профиль. Запись с таким хвостом должна стать
+    рабочим адресом, а не остаться мусором в выгрузке.
+    """
     if not url:
         return None
-    m = re.match(r"^https?://([^/?#]+)(/.*)?(\?.*)?(#.*)?$", url.strip(), re.I)
+    url = _html_unescape(url.strip())
+    m = re.match(r"^https?://([^/?#]+)(/.*)?(\?.*)?(#.*)?$", url, re.I)
     if not m or not _VK_HOST_RE.match(m.group(1) or ""):
         return None
-    path = m.group(2) or ""
+    path = (m.group(2) or "").split("?", 1)[0].split("&", 1)[0]
     return f"https://vk.com{path}"
 
 

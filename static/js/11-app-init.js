@@ -113,11 +113,15 @@ function showCopyTextModal(text) {
     + '<h3>Текст для отправки</h3>'
     + '<p>Автоматически скопировать не удалось — выделите текст и скопируйте сами.</p>'
     + '<textarea readonly rows="10">' + escapeHtml(text) + '</textarea>'
-    + '<div class="ui-modal-btns"><button type="button" class="m-ok">Понятно</button></div></div>';
+    // data-modal-close — единственная кнопка окна: Escape должен закрывать
+    // и его (helper ищет закрывающую кнопку по этому атрибуту).
+    + '<div class="ui-modal-btns"><button type="button" class="m-ok"'
+    + ' data-modal-close>Понятно</button></div></div>';
   const done = () => overlay.remove();
   overlay.querySelector('.m-ok').onclick = done;
   overlay.addEventListener('click', e => { if (e.target === overlay) done(); });
   document.body.appendChild(overlay);
+  modalA11y(overlay);
 }
 
 // Универсальный выбор из N вариантов (у uiConfirm их только два).
@@ -146,6 +150,7 @@ function uiChoose(message, title, options, opts) {
     overlay.querySelector('.m-cancel').onclick = () => done(null);
     overlay.addEventListener('click', e => { if (e.target === overlay) done(null); });
     document.body.appendChild(overlay);
+    modalA11y(overlay);
     const first = overlay.querySelector('.m-opt');
     if (first && first.focus) first.focus();
   });
@@ -417,6 +422,7 @@ function openVarModal(name) {
   onVarSourceChange();
   const overlay = document.getElementById('tpl-var-modal');
   if (overlay) overlay.hidden = false;
+  if (overlay) modalA11y(overlay);
   if (nameEl && nameEl.focus && !v) nameEl.focus();
 }
 
@@ -700,11 +706,20 @@ function _termsMode(readOnly) {
 }
 
 // Кнопка «Соглашение» в шапке: открыть текст, ничего не переспрашивая.
-function openTermsOverlay() {
-  const ov = document.getElementById('terms-overlay');
-  if (!ov) return;
-  _termsMode(true);
+// Блокирующие окна (соглашение, порог версии) — те же модалки: пока они
+// открыты, Tab не должен уходить в интерфейс за ними.
+function showOverlay(id) {
+  const ov = document.getElementById(id);
+  if (!ov) return null;
   ov.hidden = false;
+  modalA11y(ov);
+  return ov;
+}
+
+function openTermsOverlay() {
+  if (!document.getElementById('terms-overlay')) return;
+  _termsMode(true);
+  showOverlay('terms-overlay');
 }
 
 function closeTermsOverlay() {
@@ -718,13 +733,12 @@ function closeTermsOverlay() {
 function reopenTerms() {
   const declined = document.getElementById('terms-declined');
   if (declined) declined.hidden = true;
-  const ov = document.getElementById('terms-overlay');
-  if (!ov) return;
+  if (!document.getElementById('terms-overlay')) return;
   _termsMode(false);
   const chk = document.getElementById('terms-accept-chk');
   if (chk) chk.checked = false;
   onTermsCheckbox();
-  ov.hidden = false;
+  showOverlay('terms-overlay');
 }
 
 function closeAppTab() {
@@ -749,8 +763,7 @@ function acceptTerms() {
 
 function declineTerms() {
   closeTermsOverlay();
-  const declined = document.getElementById('terms-declined');
-  if (declined) declined.hidden = false;
+  showOverlay('terms-declined');
 }
 
 // ═══════════════════════════════════════════
@@ -785,7 +798,7 @@ function showVersionGate(v) {
       (v && v.latest ? ' · актуальная: v' + v.latest : '') +
       (v && v.notice ? ' · ' + v.notice : '');
   }
-  if (gate) gate.hidden = false;
+  if (gate) showOverlay('version-gate');
 }
 
 // Кнопка на плашке «нужно обновить»: ведёт на страницу загрузки релиза.
@@ -807,17 +820,14 @@ function initTermsGate() {
       TERMS_VERSION = (j && j.version) || '';
       _termsMode(Boolean(j && j.accepted));   // принято → окно только для чтения
       if (j && j.accepted) return;            // уже принято — работаем
-      const ov = document.getElementById('terms-overlay');
-      if (ov) ov.hidden = false;              // первый вход: блокируем интерфейс
+      showOverlay('terms-overlay');            // первый вход: блокируем интерфейс
     })
     .catch(() => {});                         // сервер недоступен — не блокируем
 }
 
 (function init() {
-  // Theme
-  const savedTheme = localStorage.getItem(THEME_KEY);
-  const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-  applyTheme(savedTheme ? savedTheme === 'dark' : prefersDark);
+  // Theme: сохранённый режим с учётом «как в системе» (по умолчанию).
+  applyThemePref(false);
 
   // Отметки «Просмотрено» должны дожить до следующей сессии, даже если
   // вкладку закрыли или свернули сразу после клика.
@@ -831,6 +841,8 @@ function initTermsGate() {
   selectedCities = [];
   initCitySelect();
   loadCityHistoryMeta();
+  // Сферы бизнеса подключаются из своего файла (13-spheres.js): он грузится
+  // после этого IIFE, поэтому initSpheres там вызывает себя сам.
 
   // Sidebar counters / summary live-update on any edit of the basic fields
   // Навешиваем ОДИН раз: иначе каждый «Найти компании» добавлял бы новый

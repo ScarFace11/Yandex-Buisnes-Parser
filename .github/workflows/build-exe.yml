@@ -199,6 +199,48 @@ jobs:
           Compress-Archive -Path dist/YandexBusinessParser/* `
             -DestinationPath dist/YandexBusinessParser-windows-x64.zip
 
+      - name: Verify no local-build marker and version threshold (release build)
+        # Релизная сборка обязана ПОДЧИНЯТЬСЯ порогу минимальной версии: метка
+        # .local-build (её ставит build.bat / build-manual.yml, см.
+        # config.skips_min_version) снимает порог — в скачанном архиве её быть
+        # не должно. Выше мы её удаляем, здесь проверяем ФАКТ: маркер мог
+        # вернуться из кэша pyinstaller. Заодно сверяем версию внутри сборки
+        # с тегом и что она не ниже min_version.
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $app = 'dist/YandexBusinessParser'
+          $marker = Get-ChildItem -Path $app -Recurse -Force -Filter '.local-build' -ErrorAction SilentlyContinue
+          if ($marker) {
+            Write-Host "::error::в релизной сборке осталась метка .local-build: $($marker.FullName -join ', ')"
+            exit 1
+          }
+          $vj = Join-Path $app 'static/version.json'
+          if (-not (Test-Path $vj)) { $vj = Join-Path $app '_internal/static/version.json' }
+          if (-not (Test-Path $vj)) { Write-Host '::error::в сборке нет static/version.json'; exit 1 }
+          $data = Get-Content $vj -Raw -Encoding UTF8 | ConvertFrom-Json
+          $tag = '${{ github.ref_name }}'.TrimStart('v')
+          if ("$($data.version)" -ne $tag) {
+            Write-Host "::error::version.json внутри сборки объявляет $($data.version), а тег $tag"
+            exit 1
+          }
+          function Ver([string]$s) { return @(@($s -split '\.') | Where-Object { $_ -match '^\d+$' } | ForEach-Object { [int]$_ }) }
+          $v = Ver $data.version
+          $m = Ver $data.min_version
+          if ($m.Count -gt 0) {
+            $n = [Math]::Max($v.Count, $m.Count)
+            while ($v.Count -lt $n) { $v += 0 }
+            while ($m.Count -lt $n) { $m += 0 }
+            for ($i = 0; $i -lt $n; $i++) {
+              if ($v[$i] -lt $m[$i]) {
+                Write-Host "::error::версия сборки $($data.version) ниже порога min_version $($data.min_version)"
+                exit 1
+              }
+              if ($v[$i] -gt $m[$i]) { break }
+            }
+          }
+          Write-Host "OK: версия $($data.version) = тег, min_version $($data.min_version), метки .local-build нет"
+
       - name: Attach exe to the GitHub Release
         # Релиз (черновик) уже создан job'ом release-draft с телом из
         # CHANGELOG — здесь только добавляем exe. generate_release_notes

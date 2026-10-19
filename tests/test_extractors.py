@@ -5,6 +5,8 @@ Run with: python -m pytest tests/ -v
 import sys
 import os
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from yandex_maps_parser.extractors import (
@@ -12,10 +14,14 @@ from yandex_maps_parser.extractors import (
     extract_phone,
     extract_rating_reviews,
     extract_website,
+    extract_aggregator,
+    extract_page,
+    PageView,
     _extract_from_json_blob,
     _clean_social_url,
     _normalize_social_url,
     _is_aggregator,
+    own_contacts_html,
 )
 from yandex_maps_parser.search import parse_feature
 
@@ -43,6 +49,65 @@ class TestExtractWebsite:
     def test_empty_page_has_no_website(self):
         assert extract_website("<html><body>нет контактов</body></html>") == ""
         assert extract_website("") == ""
+
+
+# ── Ссылка «Сайт» живёт глубже 200 КБ ────────────────────────────
+# Реальная карточка ~900 КБ, секция «Контакты» начинается около 690 КБ
+# (замер по 168 закэшированным страницам: ни на одной из них старый разбор
+# по первым 200 КБ не нашёл сайт, хотя в HTML он был). Секцию contacts
+# целиком читает и extract_phone — сайт теперь ищется так же.
+
+def _deep_card(site_href: str, pad: int = 250_000) -> str:
+    """Карточка, где кнопка «Сайт» глубже 200 КБ — как на реальных страницах.
+
+    Реальный порядок: кнопка «Сайт» в шапке карточки идёт РАНЬШЕ секции
+    «Контакты» (замер по закэшированным страницам: ссылка ~670 КБ, секция
+    ~690 КБ).
+    """
+    return ("x" * pad
+            + '<div class="action-button-view _type_action_button">'
+            + f'<a href="{site_href}" role="button" rel="nofollow">Сайт</a></div>'
+            + '<h3 class="card-section-header__title _wide">Контакты</h3>'
+            + '<h3 class="card-section-header__title _wide">Время работы</h3>')
+
+
+class TestSiteLinkBeyondPageHead:
+    def test_own_site_is_found_deep_in_the_contacts_section(self):
+        got = extract_website(_deep_card("https://salon-example.ru/"))
+        assert got == "https://salon-example.ru"
+
+    def test_aggregator_is_read_as_aggregator_not_as_website(self):
+        html = _deep_card("https://taplink.cc/salon")
+        assert extract_website(html) == "", "витрина сайтом не считается"
+        assert extract_aggregator(html) == "https://taplink.cc/salon"
+
+    def test_plain_site_leaves_the_aggregator_empty(self):
+        assert extract_aggregator(_deep_card("https://salon-example.ru")) == ""
+
+    def test_social_link_is_neither_site_nor_aggregator(self):
+        html = _deep_card("https://vk.com/salon")
+        assert extract_website(html) == ""
+        assert extract_aggregator(html) == ""
+
+    def test_aggregator_in_page_data(self):
+        html = ('<script type="application/json">'
+                '{"org":{"url":"https://taplink.cc/salon"}}</script>')
+        assert extract_aggregator(html) == "https://taplink.cc/salon"
+
+    def test_extract_page_carries_the_aggregator_field(self):
+        page = extract_page(_deep_card("https://taplink.cc/salon"))
+        assert page["aggregator"] == "https://taplink.cc/salon"
+        assert page["website"] == ""
+
+    def test_without_a_contacts_section_the_page_is_still_searched(self):
+        # Прежнее поведение для фрагментов без секции — оно сохранено.
+        html = '<a href="https://salon-example.ru/">Сайт</a>'
+        assert extract_website(html) == "https://salon-example.ru"
+
+    def test_yandex_erid_tag_is_stripped_from_the_site_url(self):
+        # Метка партнёрской программы Яндекса на ссылке «Сайт» — мусор в отчёте.
+        html = _deep_card("https://salon-example.ru/?erid=3MtFQRkqfB2huzBcH")
+        assert extract_website(html) == "https://salon-example.ru"
 
 
 # ── extract_socials ────────────────────────────────────────────
@@ -239,6 +304,25 @@ class TestCleanSocialUrl:
         cleaned = _clean_social_url(url)
         assert cleaned == url
 
+    def test_ref_before_trackcode_leaves_no_dangling_query(self):
+        """Живой случай 17.10.2026: в колонке ВК было `…/heroeskaluga&amp;trackcode=…`.
+
+        Ссылка из карточки приходит HTML-экранированной; после снятия `?ref=…`
+        оставался хвост `&amp;trackcode=…`, и адрес профиля превращался в мусор.
+        """
+        assert (_clean_social_url("https://vk.ru/club?ref=x&amp;trackcode=4433")
+                == "https://vk.ru/club")
+
+    def test_trackcode_removed(self):
+        assert _clean_social_url("https://vk.ru/club?trackcode=4433") == "https://vk.ru/club"
+
+    def test_real_query_is_kept(self):
+        """Параметры, без которых ссылка не работает, остаются на месте."""
+        url = "https://youtube.com/watch?v=abc&t=10"
+        assert _clean_social_url(url) == url
+        assert _clean_social_url("https://wa.me/79001234567?text=hi") == \
+            "https://wa.me/79001234567?text=hi"
+
 
 # ── _normalize_social_url ─────────────────────────────────────
 
@@ -354,3 +438,170 @@ class TestParseFeature:
         feat = self._make_feature(name="")
         rec = parse_feature(feat, "тест")
         assert rec is None
+
+
+# ── Блок контактов: чужие контакты не подмешиваются ────────────────
+# На карточке организации есть секция «Контакты» — контакты ИМЕННО её.
+# Всё остальное (блок «похожие организации» = ключ `competitor` в state-JSON,
+# подборки) принадлежит другим фирмам и раньше подмешивалось в запись.
+
+
+def _card_page(pad: int = 0) -> str:
+    """Синтетическая карточка: свои контакты в секции, чужие — в state-JSON."""
+    own = (
+        '<h3 class="card-section-header__title _wide">Контакты</h3>'
+        '<div class="card-phones-view__phone">'
+        '<span dir="ltr" itemprop="telephone">+7 (913) 714-24-24</span></div>'
+        '<a href="https://vk.com/own_biz" itemprop="sameAs">VK</a>'
+        '<a href="https://t.me/own_biz" itemprop="sameAs">TG</a>'
+        '<h3 class="card-section-header__title _wide">Время работы</h3>'
+    )
+    foreign = (
+        '<script type="application/json" class="state-view">'
+        '{"socialLinks":[{"type":"telegram","href":"https://t.me/own_biz"}],'
+        '"phones":[{"number":"+7 913 714-24-24"}],'
+        '"competitor":{'
+        '"socialLinks":[{"type":"vk","href":"https://vk.com/competitor"},'
+        '{"type":"whatsapp","href":"https://wa.me/79137995033"}],'
+        '"phones":[{"number":"+7 913 799-50-33"}],'
+        '"rating":4.8}}'
+        '</script>'
+    )
+    return "x" * pad + own + foreign
+
+
+class TestOwnContactsSection:
+    def test_section_is_cut_out_of_the_page(self):
+        sec = own_contacts_html(_card_page())
+        assert sec.startswith('<h3 class="card-section-header__title')
+        assert "itemprop=\"telephone\"" in sec and "own_biz" in sec
+        assert "Время работы" not in sec        # секция кончается следующим разделом
+        assert "competitor" not in sec          # state-JSON за пределами секции
+
+    def test_plain_text_has_no_section(self):
+        # Фрагмент/JSON выдачи/чужой сайт разбираются как раньше, без среза.
+        assert own_contacts_html("обычный текст") == ""
+        assert own_contacts_html("") == ""
+        assert own_contacts_html("<h3>Контакты</h3>") == ""
+
+    def test_socials_come_from_the_contacts_block_only(self):
+        soc = extract_socials(_card_page())
+        assert soc["vk"] == "https://vk.com/own_biz"
+        assert soc["telegram"] == "https://t.me/own_biz"
+        assert "whatsapp" not in soc, "wa.me из блока «похожие организации» — чужой"
+
+    def test_phone_is_read_from_the_contacts_block(self):
+        # Номер живёт глубже 200 КБ — прежнее усечение страницы его не
+        # находило вовсе, теперь разбор идёт по секции «Контакты».
+        assert extract_phone(_card_page(pad=250_000)) == "+7 913 714-24-24"
+
+    def test_competitor_phone_is_never_taken(self):
+        # Без секции (старая страница / другой формат) JSON всё равно
+        # чистится от чужих веток.
+        page = ('<script type="application/json">'
+                '{"competitor":{"phones":[{"number":"+7 913 799-50-33"}]}}'
+                '</script>')
+        assert extract_phone(page) == ""
+
+    def test_json_blob_ignores_the_similar_organisations_block(self):
+        soc = _extract_from_json_blob(_card_page())
+        # Внутри state-JSON свои ссылки есть (telegram), чужих нет.
+        assert "telegram" in soc
+        assert "vk" not in soc
+        assert "whatsapp" not in soc
+
+    def test_rating_is_not_taken_from_a_neighbour_card(self):
+        page = ('<script type="application/json">'
+                '{"relatedPlaces":[{"rating":4.9}],'
+                '"competitor":{"rating":4.8}}'
+                '</script>')
+        assert extract_rating_reviews(page) == ("", "")
+
+
+# ── extract_page: всё со страницы за один разбор ─────────────
+
+def _by_parts(html: str) -> dict:
+    """То же самое пятью отдельными вызовами — как было до extract_page."""
+    socials = dict(_extract_from_json_blob(html))
+    for k, v in extract_socials(html).items():
+        socials.setdefault(k, v)
+    rating, reviews = extract_rating_reviews(html)
+    return {"socials": socials, "rating": rating, "reviews": reviews,
+            "phone": extract_phone(html), "website": extract_website(html)}
+
+
+class TestExtractPage:
+    """Один разбор страницы вместо пяти — с тем же результатом.
+
+    Повторный разбор встроенных данных был чистой тратой: на карточках из
+    кэша сборщика пять проходов занимали 15.7 мс, один — 7 мс. Поэтому
+    главное здесь — не скорость сама по себе, а то, что результат не
+    поменялся, а страница действительно разбирается один раз.
+    """
+
+    @pytest.mark.parametrize("pad", (0, 250_000))
+    def test_same_result_as_separate_calls(self, pad):
+        html = _card_page(pad=pad)
+        page = extract_page(html)
+        parts = _by_parts(html)
+        assert page["phone"] == parts["phone"]
+        assert page["website"] == parts["website"]
+        assert (page["rating"], page["reviews"]) == (parts["rating"], parts["reviews"])
+        merged = dict(page["socials_json"])
+        for k, v in page["socials_contacts"].items():
+            merged.setdefault(k, v)
+        assert merged == parts["socials"]
+
+    def test_socials_come_back_in_two_blocks_with_priority_left_to_caller(self):
+        """Соцсети из выдачи важнее встроенных, встроенные — важнее контактов."""
+        page = extract_page(_card_page())
+        assert page["socials_json"].get("telegram") == "https://t.me/own_biz"
+        assert page["socials_contacts"].get("vk") == "https://vk.com/own_biz"
+        assert "competitor" not in str(page["socials_json"])
+
+    def test_page_is_parsed_once(self, monkeypatch):
+        """Встроенные данные разбираются один раз на страницу, а не на шаг."""
+        from yandex_maps_parser import extractors as ex
+
+        calls = []
+        real = ex._blobs_in
+
+        def counting(text):
+            calls.append(len(text))
+            return real(text)
+
+        monkeypatch.setattr(ex, "_blobs_in", counting)
+        page = ex.extract_page(_card_page())
+        assert page["phone"]
+        assert len(calls) == 1, f"данные страницы разобраны {len(calls)} раз"
+
+    def test_unneeded_steps_are_not_run_at_all(self, monkeypatch):
+        """Шаг не нужен (значение есть из выдачи) — он и не считается."""
+        from yandex_maps_parser import extractors as ex
+
+        calls = {"phone": 0, "website": 0, "rating": 0}
+        monkeypatch.setattr(ex, "extract_phone",
+                            lambda html, view=None: calls.update(phone=calls["phone"] + 1))
+        monkeypatch.setattr(ex, "extract_website",
+                            lambda html, view=None: calls.update(website=calls["website"] + 1))
+        monkeypatch.setattr(ex, "extract_rating_reviews",
+                            lambda html, view=None: (calls.update(rating=calls["rating"] + 1),
+                                                     ("", ""))[1])
+        page = ex.extract_page(_card_page(), rating=False, phone=False, website=False)
+        assert calls == {"phone": 0, "website": 0, "rating": 0}
+        assert page["phone"] == "" and page["website"] == ""
+        assert page["rating"] == "" and page["reviews"] == ""
+        assert page["socials_contacts"], "соцсети отключены не были — они нужны всегда"
+
+    def test_empty_page_gives_empty_values_not_errors(self):
+        page = extract_page("")
+        assert page == {"socials_json": {}, "socials_contacts": {},
+                        "rating": "", "reviews": "", "phone": "", "website": "",
+                        "aggregator": ""}
+
+    def test_one_view_serves_every_step(self):
+        """PageView помнит разбор: второй вызов отдаёт тот же результат без работы."""
+        view = PageView(_card_page())
+        first = view.blobs()
+        assert view.blobs() is first, "данные страницы разбираются повторно"
+        assert view.contacts() is view.contacts()

@@ -155,6 +155,61 @@ class TestDataTransfer:
                           content_type="multipart/form-data")
         assert res.status_code == 400
 
+    # ── browser.json: настройки вкладок из «Экспорта настроек» ──
+
+    @staticmethod
+    def _zip_with(**files):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            for name, content in files.items():
+                zf.writestr(name, content)
+        buf.seek(0)
+        return buf
+
+    def test_import_returns_browser_settings_filtered(self, client):
+        """browser.json принимается, но в ответ идут только свои ключи-строки.
+
+        Архив — присланный файл: чужим ключам localStorage не верим даже,
+        если их положили в архив руками.
+        """
+        payload = json.dumps({"yp_theme_v1": "dark", "yp_settings_v1": "{}",
+                              "foreign": "нет", "yp_num": 5})
+        res = client.post(
+            "/data/import",
+            data={"file": (self._zip_with(**{"browser.json": payload}), "x.zip")},
+            content_type="multipart/form-data")
+        data = res.get_json()
+        assert data["ok"] is True
+        assert data["browser"] == {"yp_theme_v1": "dark", "yp_settings_v1": "{}"}
+
+    def test_import_accepts_archive_of_only_browser_settings(self, client):
+        """Если настройки вкладок — единственное содержимое архива, это не мусор."""
+        payload = json.dumps({"yp_results_scope": "all"})
+        res = client.post(
+            "/data/import",
+            data={"file": (self._zip_with(**{"browser.json": payload}), "x.zip")},
+            content_type="multipart/form-data")
+        data = res.get_json()
+        assert data["ok"] is True
+        assert data["browser"] == {"yp_results_scope": "all"}
+        assert data["marks"] == 0 and data["settings"] is False
+
+    def test_import_rejects_corrupted_browser_json(self, client):
+        res = client.post(
+            "/data/import",
+            data={"file": (self._zip_with(**{"browser.json": "{broken"}), "x.zip")},
+            content_type="multipart/form-data")
+        assert res.status_code == 400
+        assert "browser.json" in res.get_json()["error"]
+
+    def test_import_of_unknown_files_is_still_refused(self, client):
+        """browser.json не делает архивом файлы без наших данных."""
+        res = client.post(
+            "/data/import",
+            data={"file": (self._zip_with(**{"other.txt": "hi"}), "x.zip")},
+            content_type="multipart/form-data")
+        assert res.status_code == 400
+
 
 # ── Короткие пути в логе ──────────────────────────────────────
 

@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { readAppSrc } from './_src.mjs';
+import { readAppSrc, MODAL_A11Y_STUB } from './_src.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const src = readAppSrc(root);
@@ -174,6 +174,7 @@ for (const name of Object.keys(INIT_VALUES)) {
 (0, eval)('globalThis.UI_ICONS = ' + grabConstValue('UI_ICONS') + ';');
 
 (0, eval)([
+  MODAL_A11Y_STUB,
   grab('escapeHtml'),
   grab('usedVariables'),
   grab('substituteTemplate'),
@@ -379,13 +380,18 @@ test('normalizeTemplatesClient отбрасывает мусор и обреза
 });
 
 // ── 3. Активный шаблон по категории ───────────────────────────
-test('getActiveTemplateFor идёт по цепочке: выбранный → первый категории → любой', () => {
+test('getActiveTemplateFor: только явный выбор, без подстановки «первого попавшегося»', () => {
+  // Клик по соцсети в таблице копирует текст шаблона в буфер обмена —
+  // значит «ничего не выбрано» должно честно означать «ничего не копировать».
   reset({ active: { vk: 'vk2' } });
   assert.equal(globalThis.getActiveTemplateFor('vk').id, 'vk2');
-  assert.equal(globalThis.getActiveTemplateFor('telegram').id, 'tg1');
-  assert.equal(globalThis.getActiveTemplateFor('whatsapp').id, 'vk1', 'нет категории — берём первый');
+  reset({ active: {} });
+  assert.equal(globalThis.getActiveTemplateFor('telegram'), null,
+    'без выбора шаблона нет — копировать нечего');
+  assert.equal(globalThis.getActiveTemplateFor('whatsapp'), null);
   reset({ active: { vk: 'ghost' } });
-  assert.equal(globalThis.getActiveTemplateFor('vk').id, 'vk1', 'несуществующий id игнорируется');
+  assert.equal(globalThis.getActiveTemplateFor('vk'), null,
+    'удалённый/чужой id не подменяется первым шаблоном');
 });
 
 // ── 4. Карточки и фильтр ──────────────────────────────────────

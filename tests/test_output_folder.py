@@ -324,3 +324,70 @@ class TestFolderPicker:
 
         assert resp.status_code == 501
         assert "вручную" in resp.get_json()["error"]
+
+
+# ── «Открыть папку» ────────────────────────────────────────────
+
+class TestOpenOutputDir:
+    """/output/open: открывает НАСТРОЕННУЮ папку в файл-менеджере ОС.
+
+    Путь из запроса не принимается вовсе — даже чужой JSON с полем path
+    не сможет заставить приложение открыть произвольный каталог.
+    """
+
+    @staticmethod
+    def _darwin_open(monkeypatch):
+        """macOS-путь открытия под наблюдением: ["open", папка]."""
+        import sys
+        popped = []
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.setattr("subprocess.Popen", lambda cmd: popped.append(cmd))
+        return popped
+
+    def test_opens_the_configured_folder(self, client, out_env, monkeypatch):
+        import paths
+        popped = self._darwin_open(monkeypatch)
+        os.makedirs(paths.results_root(), exist_ok=True)
+
+        resp = client.post("/output/open", json={})
+
+        assert resp.status_code == 200 and resp.get_json()["ok"] is True
+        assert popped and popped[0] == ["open", str(paths.results_root())]
+
+    def test_path_from_the_request_is_ignored(self, client, out_env, monkeypatch):
+        """Тело с path не открывает чужой каталог — маршрут его не читает."""
+        import paths
+        popped = self._darwin_open(monkeypatch)
+        os.makedirs(paths.results_root(), exist_ok=True)
+
+        resp = client.post("/output/open", json={"path": str(out_env / "Somewhere")})
+
+        assert resp.status_code == 200
+        assert popped and out_env / "Somewhere" not in [str(c[-1]) for c in popped]
+
+    def test_missing_folder_is_anhonest_404(self, client, out_env, monkeypatch):
+        import sys
+        import paths
+        # Открывать нечего — и ни одного запуска системы.
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.setattr(
+            "subprocess.Popen",
+            lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("запуск без папки!")))
+        # Несуществующая папка: results_root() отдаёт путь как есть, а открывать нечего.
+        ghost = out_env / "NoSuchDir"
+        paths.save_settings({"results_root": str(ghost)})
+
+        resp = client.post("/output/open", json={})
+
+        assert resp.status_code == 404
+        assert "ещё нет" in resp.get_json()["error"]
+
+    def test_rejects_foreign_origin(self, client):
+        resp = client.post("/output/open", json={},
+                           headers={"Origin": "https://evil.example"})
+        assert resp.status_code == 403
+
+    def test_rejects_non_json_body(self, client):
+        resp = client.post("/output/open", data="path=/etc",
+                           content_type="application/x-www-form-urlencoded")
+        assert resp.status_code == 415

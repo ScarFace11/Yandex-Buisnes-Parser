@@ -1,0 +1,71 @@
+name: Prune old release assets
+
+# Разовая/периодическая уборка архивов устаревших релизов. По умолчанию это
+# РЕЖИМ ОТЧЁТА: файлы не удаляются, в лог и в Summary попадает таблица «что
+# было бы удалено». Удаление включается только явным dry_run=false — и только
+# тогда скрипт вызывает DELETE по asset id. Теги, названия и описания релизов
+# не затрагиваются никогда (см. scripts/prune_releases.py).
+on:
+  workflow_dispatch:
+    inputs:
+      below:
+        description: "Порог: удалять архивы релизов НИЖЕ этой версии (пусто — взять min_version из version.json)"
+        required: false
+        default: ""
+        type: string
+      dry_run:
+        description: "Только отчёт (dry-run) — ничего не удалять"
+        required: true
+        default: true
+        type: boolean
+      patterns:
+        description: "Шаблоны файлов для удаления (через запятую)"
+        required: false
+        default: "*.zip,*.dmg"
+        type: string
+
+permissions:
+  contents: write        # удаление ассетов релиза
+
+jobs:
+  prune:
+    name: Prune release archives
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Prune (report, then delete when explicitly asked)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          args=(--repo "$GITHUB_REPOSITORY" --json prune-report.json
+                --summary "$GITHUB_STEP_SUMMARY")
+          # Шаблоны: строка «a,b» → повторяющиеся --pattern.
+          IFS=',' read -ra pats <<< "${{ inputs.patterns }}"
+          for p in "${pats[@]}"; do
+            [ -n "$p" ] && args+=(--pattern "$p")
+          done
+          BELOW="${{ inputs.below }}"
+          if [ -n "$BELOW" ]; then args+=(--below "$BELOW"); else args+=(--below-min); fi
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            echo "Режим отчёта: файлы не удаляются."
+          else
+            args+=(--apply)
+          fi
+          python scripts/prune_releases.py "${args[@]}"
+
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: prune-report
+          path: prune-report.json
+          retention-days: 14

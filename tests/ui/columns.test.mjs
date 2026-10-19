@@ -33,6 +33,28 @@ function grabLet(name) {
     src.indexOf(';', i)) + ';';
 }
 
+// `const NAME = …` как глобальное присваивание — та же механика, что у
+// встроенного блока ниже, но для новых констант (цикл «Рейтинг»).
+function grabConst(name) {
+  const i = src.indexOf('const ' + name + ' =');
+  assert.ok(i >= 0, 'const not found: ' + name);
+  const start = i + ('const ' + name + ' =').length;
+  const open = src[start];
+  let end;
+  if (open === '[' || open === '{') {
+    const close = open === '[' ? ']' : '}';
+    let depth = 0;
+    for (let k = start; k < src.length; k++) {
+      if (src[k] === open) depth++;
+      else if (src[k] === close) { depth--; if (!depth) { end = k + 1; break; } }
+    }
+  } else {
+    end = src.indexOf(';', start);
+  }
+  assert.ok(end > start, 'cannot slice const: ' + name);
+  return 'globalThis.' + name + ' = ' + src.slice(start, end) + ';';
+}
+
 // ── Минимальный DOM: узлы умеют перемещаться (appendChild = перенос) ──
 class El {
   constructor(tag, col) {
@@ -98,6 +120,7 @@ const allCells = [
 
 globalThis.document = {
   getElementById: id => els[id] ?? null,
+  createElement: tag => new El(tag),
   querySelector: sel => {
     const m = /th\[data-col="([^"]+)"\]/.exec(sel || '');
     if (!m) return null;
@@ -143,11 +166,16 @@ globalThis.localStorage = {
     end = src.indexOf(';', k);
   }
   return 'globalThis.' + name + ' = ' + src.slice(i + ('const ' + name + ' =').length, end) + ';';
-}).join('\n') + '\n' + grabLet('colOrder') + '\n' + grabLet('hiddenCols'));
+}).join('\n') + '\n' + grabLet('colOrder') + '\n' + grabLet('hiddenCols')
+  // «Рейтинг» сортируется своим циклом — метка в заголовке хранится здесь.
+  + '\n' + grabLet('_ratingSortLabel') + '\n'
+  + grabConst('RATING_SORT_CYCLE'));
 
 const fns = ['normalizeColOrder', 'saveColOrder', 'loadColOrder', 'resetColOrder',
   'applyColOrder', 'applyColClasses', 'moveCol', 'renderColDropdown',
   'sortTableByKey', 'sortTable', 'resetSortHeaders', '_thByCol',
+  // Цикл «Рейтинг»: оценка ↓ → оценка ↑ → отзывы ↓ → отзывы ↑
+  'cycleRatingSort', '_sortRatingRows', '_numSortVal', '_clearRatingSortLabel',
   '_stampMissingColIds'];
 (0, eval)(fns.map(grab).join('\n'));
 
@@ -239,10 +267,55 @@ test('a hidden column is hidden by class on its own cells, not by position', () 
 // ── 3. Сортировка остаётся привязана к колонке ────────────────
 test('sorting maps the column key to the legacy numeric index', () => {
   assert.deepEqual(globalThis.COL_SORT_INDEX,
-    { rev: null, num: null, name: 2, category: 3, address: 4, phone: 5, score: 6, socials: null, rating: null });
-  // «Рейтинг» и «Соцсети» не сортируются — как и раньше.
-  assert.equal(globalThis.COL_SORT_INDEX.rating, null);
+    { rev: null, num: null, name: 2, category: 3, address: 4, phone: null,
+      score: 6, socials: null, rating: 7 });
+  // «Соцсети» и «Просмотрено» не сортируются; телефон убран из сортировки:
+  // в ячейке несколько номеров и порядок им не задаётся.
   assert.equal(globalThis.COL_SORT_INDEX.socials, null);
+  assert.equal(globalThis.COL_SORT_INDEX.phone, null,
+    'телефон больше не сортируется');
+  // «Рейтинг» сортируется, но своим индексом — колонка одна, смыслов два.
+  assert.equal(globalThis.COL_SORT_INDEX.rating, 7);
+});
+
+test('rating sort cycles: оценка ↓ → оценка ↑ → отзывы ↓ → отзывы ↑', () => {
+  resetOrder();
+  globalThis.sortCol = -1;
+  globalThis.sortAsc = true;
+  globalThis.filteredRows = [
+    { rating: '4.2', reviews_count: 10 },
+    { rating: '5', reviews_count: 3 },
+    { rating: '', reviews_count: '' },      // без данных — всегда в конце
+    { rating: '4.8', reviews_count: 250 },
+  ];
+  const seen = [];
+  const prevRender = globalThis.renderPage;
+  globalThis.renderPage = () => seen.push([globalThis.sortCol, globalThis.sortAsc,
+    globalThis.filteredRows.map(r => r.reviews_count || r.rating)]);
+  try {
+    globalThis.cycleRatingSort();
+    assert.deepEqual(seen.at(-1).slice(0, 2), [7, false], 'первый клик — рейтинг по убыванию');
+    globalThis.cycleRatingSort();
+    assert.deepEqual(seen.at(-1).slice(0, 2), [7, true], 'второй — по возрастанию');
+    globalThis.cycleRatingSort();
+    assert.deepEqual(seen.at(-1).slice(0, 2), [8, false], 'третий — по числу отзывов');
+    globalThis.cycleRatingSort();
+    assert.deepEqual(seen.at(-1).slice(0, 2), [8, true], 'четвёртый — отзывы по возрастанию');
+    globalThis.cycleRatingSort();
+    assert.deepEqual(seen.at(-1).slice(0, 2), [7, false], 'цикл замкнулся');
+    // Пустое значение не выходит вперёд даже при сортировке по убыванию.
+    assert.equal(globalThis.filteredRows.at(-1).rating, '');
+    const ratingTh = headerRow.children.find(c => c.dataset.col === 'rating');
+    assert.ok(ratingTh._classes.has('desc'), 'стрелка стоит на заголовке «Рейтинг»');
+    globalThis.resetSortHeaders();
+    assert.equal(ratingTh._classes.has('desc'), false, 'и снимается');
+  } finally {
+    globalThis.sortCol = -1;
+    globalThis.sortAsc = true;
+    globalThis.filteredRows = [];
+    globalThis.renderPage = prevRender;
+    resetOrder();
+  }
 });
 
 test('resetSortHeaders keeps nosort and hidden classes, drops arrows', () => {

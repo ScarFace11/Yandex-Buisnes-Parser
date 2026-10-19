@@ -16,6 +16,7 @@ GeoJSON-подобные «фичи» с CompanyMetaData, чтобы весь о
 import threading
 
 from . import state
+from . import browser_search
 from .browser_search import harvest_cards
 
 _PAGE_SIZE = 50           # сколько карточек отдавать за одну «страницу»
@@ -26,7 +27,15 @@ _cache_lock = threading.Lock()
 
 
 def search_failure_hint() -> str:
-    """Человеческое объяснение пустой выдачи (браузер/страница не ответили)."""
+    """Человеческое объяснение пустой выдачи.
+
+    Проверка «Вы не робот?» объясняется отдельно: браузер и интернет тут ни при
+    чём, а совет «проверьте браузер» в этой ситуации уводил в сторону.
+    """
+    if browser_search.blocked_reason() == "captcha":
+        return ("Яндекс показал проверку «Вы не робот?» вместо выдачи — браузер "
+                "и интернет тут ни при чём. Проверка включается на подозрительные "
+                "запросы: повторите поиск через несколько минут.")
     return ("Не удалось открыть выдачу Яндекс.Карт. Проверьте, что браузер "
             "запускается (вкладка «🩺 Диагностика») и есть доступ в интернет.")
 
@@ -79,8 +88,17 @@ def search_page(
 
     cards = _harvest(query, city, lat, lon)
     if not cards:
-        state.warn(search_failure_hint())
-        state.tech("search: браузерная выдача пуста (страница не открылась или карточек нет)")
+        blocked = browser_search.blocked_reason()
+        if blocked:
+            # Один раз на прогон: иначе каждый город и запрос повторял бы то же
+            # самое, и в логе «Важные» было бы двадцать одинаковых строк.
+            if not getattr(state, "SEARCH_BLOCKED", ""):
+                state.SEARCH_BLOCKED = blocked
+                state.warn(search_failure_hint())
+            state.tech(f"search: Яндекс показал проверку вместо выдачи ({blocked})")
+        else:
+            state.warn(search_failure_hint())
+            state.tech("search: браузерная выдача пуста (страница не открылась или карточек нет)")
         return [], None
 
     chunk = cards[skip:skip + _PAGE_SIZE]

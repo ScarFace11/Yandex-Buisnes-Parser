@@ -107,6 +107,11 @@ PAIRS = [
     ("--on-accent", "--red-btn"), ("--on-accent", "--red-btn-2"),
     ("--on-accent", "--vk"), ("--on-accent", "--ig"),
     ("--on-accent", "--tg"), ("--on-accent", "--wa"),
+    # Плотные семантические фоны: единственные, на которые кладут белый
+    # текст кнопок (--grn/--blu/--red в тёмной теме светлые — они для
+    # текста и границ, а не под надпись).
+    ("--on-accent", "--grn-btn"), ("--on-accent", "--blu-btn"),
+    ("--on-accent", "--brand-dark"),
     ("--pause-txt", "--pause-from"), ("--pause-txt", "--pause-to"),
     ("--tip-txt", "--tip-bg"), ("--tip-ok", "--tip-bg"),
     ("--ok-txt", "--ok-bg"), ("--ok-strong", "--ok-bg"),
@@ -191,6 +196,51 @@ class TestContrast:
         """Графит вместо чёрного и мягкий светлый текст вместо белого."""
         assert DARK_TOKENS["--bg"] == "#101216"
         assert DARK_TOKENS["--txt"] == "#E6E9EF"
+
+    def test_every_on_accent_surface_is_readable(self):
+        """Правило с белой надписью обязано иметь плотный фон в ОБЕИХ темах.
+
+        Токен-тесты проверяют только пары из PAIRS, а правило вида
+        `background:var(--grn);color:var(--on-accent)` в тёмной теме давало
+        2.4:1: `--grn` там светлый (это цвет ТЕКСТА). Так уезжали кнопки
+        «Скачать», «Остановить», подтверждение в модалках и зелёный баннер.
+        """
+        css = re.sub(r"/\*.*?\*/", "", STYLE, flags=re.S)
+        bad = []
+        for sel, decl in re.findall(r"([^{}]+)\{([^{}]*)\}", css):
+            props = {}
+            for chunk in decl.split(";"):
+                if ":" in chunk:
+                    k, v = chunk.split(":", 1)
+                    props[k.strip().lower()] = v.strip()
+            if props.get("color") != "var(--on-accent)":
+                continue
+            bg = props.get("background") or props.get("background-color") or ""
+            m = re.fullmatch(r"var\((--[a-z0-9-]+)\)", bg)
+            if not m:
+                continue
+            tok = m.group(1)
+            for name, theme in (("светлая", LIGHT), ("тёмная", DARK_TOKENS)):
+                if tok not in theme:
+                    continue
+                fg = to_rgb(resolve(theme, theme["--on-accent"]))
+                surface = to_rgb(resolve(theme, theme[tok]))
+                if not fg or not surface:
+                    continue
+                if surface[3] < 1.0:
+                    surface = over(surface, to_rgb(resolve(theme, theme["--card"])))
+                ratio = contrast(fg, surface)
+                if ratio < 4.5:
+                    bad.append(f"{name} тема: {sel.strip()[:60]} — белый на {tok} "
+                               f"= {ratio:.2f}:1")
+        assert not bad, "белая надпись на светлом фоне: " + "; ".join(bad)
+
+    def test_dense_semantic_buttons_exist_for_both_themes(self):
+        """Кнопочные роли определены и темнее «текстовых» в тёмной теме."""
+        for tok in ("--grn-btn", "--blu-btn"):
+            assert tok in LIGHT and tok in DARK_TOKENS
+        assert luminance(to_rgb(DARK_TOKENS["--grn-btn"])) < luminance(to_rgb(DARK_TOKENS["--grn"]))
+        assert luminance(to_rgb(DARK_TOKENS["--blu-btn"])) < luminance(to_rgb(DARK_TOKENS["--blu"]))
 
     def test_pause_is_orange_in_both_themes(self):
         """⏸ Пауза — оранжевая; красный остаётся за ⏹ «Остановить»."""

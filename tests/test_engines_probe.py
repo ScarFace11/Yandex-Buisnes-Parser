@@ -244,6 +244,25 @@ class TestProbeEnginesDeep:
         assert row["status"] == "warn"
         assert row["hint"]
 
+    def test_live_search_row_names_the_check_instead_of_blaming_the_network(self, monkeypatch):
+        """Проверка «Вы не робот?» — не «нет интернета» и не «Яндекс сломался»."""
+        import yandex_maps_parser.browser_search as bs_mod
+
+        def blocked(*a, **kw):
+            bs_mod._set_blocked("captcha")
+            return []
+
+        monkeypatch.setattr(bs_mod, "harvest_cards", blocked)
+        try:
+            rows = self._probe(monkeypatch, cdp=self._fake_cdp(),
+                               live=diag._live_search_rows)
+        finally:
+            bs_mod.reset_blocked()
+        row = next(r for r in rows if r["id"] == "search_live")
+        assert "Вы не робот" in row["title"]
+        assert "Проверьте доступ в интернет" not in (row.get("hint") or "")
+        assert "Браузер и интернет при этом работают" in (row.get("hint") or "")
+
     def test_own_browser_is_closed_but_a_running_one_is_not(self, monkeypatch):
         """Проба не должна гасить браузер идущего прогона."""
         closed = []

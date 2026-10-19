@@ -53,12 +53,18 @@
   /* Красочный CTA кнопки поиска: прежний графитовый --cta в тёмной теме
      читался как выключенная кнопка. Градиент живёт в токене, чтобы цвет
      переключался вместе с темой (без hex-литералов в правилах). */
-  --run-grad:linear-gradient(135deg,#0EA5A4 0%,#1C7ED0 55%,#2A63E8 100%);
+  --run-grad:linear-gradient(135deg,#0D807E 0%,#1B76C2 55%,#2A63E8 100%);
   --run-shadow:0 6px 18px rgba(28,126,208,.38);
   --red:#c0392b;--red-btn:#c44040;--red-btn-2:#a83232;
   --yel:#b07525;--grn:#1f7a52;--blu:#3568a0;
+  /* ПЛОТНЫЕ семантические фоны — только под белый текст. Роли разведены
+     намеренно: `--grn`/`--blu`/`--red` — это цвет ТЕКСТА и границ на фоне
+     (в тёмной теме они светлые), а кнопка с белой надписью требует тёмного
+     фона в обеих темах. Один токен на два применения давал белую надпись на
+     светлом фоне: в тёмной теме такие кнопки читались на 2.4:1. */
+  --grn-btn:#1f7a52;--blu-btn:#3568a0;
   --bg:#f4f5f7;  --card:#ffffff; --bdr:#e4e6eb;
-  --txt:#15171c; --sub:#4b5361; --muted:#666d7b; --term:#fbfcfd;
+  --txt:#15171c; --sub:#4b5361; --muted:#5d6470; --term:#fbfcfd;
   --on-accent:#ffffff;    /* текст на плотном акценте (шапка, CTA, бейджи) */
   /* Роли поверхностей — те же имена, что в тёмной теме */
   --panel:#f7f8fa;        /* блоки внутри карточек, кнопки */
@@ -134,7 +140,7 @@
    центра. Файловые действия, закрытие баннера, сброс обхода, колонка
    «Просмотрено» — значок в них единственный. */
 .file-btn .ico,.ub-close .ico,.bulk-reset .ico,#results-table th .ico,
-#status-badge .ico{margin-right:0}
+#status-badge .ico,.rep-x .ico{margin-right:0}
 
 html,body{min-height:100vh}
 body{
@@ -211,10 +217,10 @@ header h1{font-size:14px;font-weight:700;letter-spacing:-.015em}
 /* «Пропустить город» — единственная кнопка в шапке с цветом по назначению.
    Раньше фон был литеральным rgba(100,140,200,…) — вне палитры. */
 #btn-skip{
-  display:none;background:var(--blu);color:var(--on-accent);font-weight:700;
+  display:none;background:var(--blu-btn);color:var(--on-accent);font-weight:700;
 }
-#btn-skip:hover{background:var(--blu);filter:brightness(1.10);opacity:1}
-[data-theme="dark"] #btn-skip{background:var(--blu);opacity:.92}
+#btn-skip:hover{background:var(--blu-btn);filter:brightness(1.10);opacity:1}
+[data-theme="dark"] #btn-skip{background:var(--blu-btn);opacity:.92}
 [data-theme="dark"] #btn-skip:hover{opacity:1;filter:brightness(1.05)}
 
 /* ── City progress bar (multi-city run strip under the header) ──
@@ -246,8 +252,8 @@ header h1{font-size:14px;font-weight:700;letter-spacing:-.015em}
 .skip-modal p{margin:0 0 20px;font-size:13px;color:var(--muted);line-height:1.5}
 .skip-modal-btns{display:flex;gap:10px;justify-content:flex-end}
 .skip-modal-btns button{padding:8px 20px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;border:none}
-.skip-modal-btns .skip-confirm{background:var(--blu);color:var(--on-accent)}
-.skip-modal-btns .skip-confirm:hover{background:var(--blu);filter:brightness(1.08)}
+.skip-modal-btns .skip-confirm{background:var(--blu-btn);color:var(--on-accent)}
+.skip-modal-btns .skip-confirm:hover{background:var(--blu-btn);filter:brightness(1.08)}
 .skip-modal-btns .skip-cancel{background:var(--track);color:var(--sub)}
 .skip-modal-btns .skip-cancel:hover{background:var(--row-hover);color:var(--txt)}
 /* Logs modal */
@@ -290,7 +296,7 @@ header h1{font-size:14px;font-weight:700;letter-spacing:-.015em}
 .notify-hint[hidden]{display:none}
 .notify-save{
   width:100%;margin-top:11px;padding:8px 12px;border:none;border-radius:7px;
-  background:var(--c);color:var(--on-accent);font-size:12.5px;font-weight:700;
+  background:var(--brand);color:var(--on-accent);font-size:12.5px;font-weight:700;
   font-family:inherit;cursor:pointer;transition:filter .15s,opacity .15s;
 }
 .notify-save:hover:not(:disabled){filter:brightness(1.07)}
@@ -353,7 +359,7 @@ header h1{font-size:14px;font-weight:700;letter-spacing:-.015em}
 /* ── Live badge on Results tab ── */
 .live-badge{
   display:inline-flex;align-items:center;justify-content:center;
-  background:var(--grn);color:var(--on-accent);
+  background:var(--grn-btn);color:var(--on-accent);
   font-size:10px;font-weight:800;min-width:18px;height:18px;
   border-radius:9px;padding:0 5px;margin-left:5px;vertical-align:middle;
   animation:badge-pop .18s ease;
@@ -601,12 +607,18 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
   display:grid;grid-template-columns:repeat(3,1fr);gap:14px;text-align:left;
 }
 .flow-step{
-  padding:16px;border-radius:var(--r-md);
+  width:100%;padding:16px;border-radius:var(--r-md);
   border:1px solid var(--bdr);background:var(--card);
   display:flex;flex-direction:column;gap:6px;
-  transition:border-color .14s,box-shadow .14s;
+  /* Шаг — не картинка, а кнопка: подсказка «с чего начать» сразу и делает
+     это (ведёт к полю, запускает поиск, открывает результаты). Раньше это
+     были div'ы с тенью при наведении, но клик по ним не делал ничего. */
+  font-family:inherit;text-align:left;cursor:pointer;
+  transition:border-color .14s,box-shadow .14s,transform .1s;
 }
-.flow-step:hover{border-color:var(--bdr-h);box-shadow:var(--sh)}
+.flow-step:hover{border-color:var(--bdr-h);box-shadow:var(--sh);transform:translateY(-1px)}
+.flow-step:active{transform:translateY(0)}
+.flow-step:focus-visible{outline:2px solid var(--c);outline-offset:2px}
 .flow-step b{
   font-size:10.5px;font-weight:800;color:var(--c);
   letter-spacing:.07em;text-transform:uppercase;
@@ -689,11 +701,11 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
 .ll.ok{color:var(--grn);background:rgba(44,133,96,.07);border-left-color:var(--grn)}
 /* informational — brand teal, subtle */
 .ll.info{color:var(--c);background:var(--c-soft);border-left-color:var(--glow)}
-.ll.warn{color:var(--yel);background:rgba(176,117,40,.08);border-left-color:var(--yel)}
+.ll.warn{color:var(--warn-txt);background:rgba(176,117,40,.08);border-left-color:var(--yel)}
 .ll.error{color:var(--red);background:rgba(196,64,64,.08);border-left-color:var(--red)}
 /* Лимиты внешних сервисов: визуально громче обычных предупреждений */
 .ll.quota-warn{
-  color:var(--yel);background:rgba(176,117,40,.16);border-left-color:var(--yel);
+  color:var(--warn-txt);background:rgba(176,117,40,.16);border-left-color:var(--yel);
   border-left-width:4px;font-weight:700;
 }
 .ll.quota-critical{
@@ -878,9 +890,24 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
    (col-hidden — фильтр без объекта только путает). */
 .tbl-social-row.empty,.tbl-social-row.col-hidden,.tbl-social-row.socials-off{display:none}
 .social-filter-lbl{font-size:11px;color:var(--muted);font-weight:700;white-space:nowrap;margin-right:2px}
+/* Цвет плитки фильтра — токен бренда соцсети (--vk/--ig/--tg/--wa): белая
+   надпись 11px/800 на исходных брендовых #2CA5E0 (Telegram) и #25D366
+   (WhatsApp) давала 2.78:1 и 1.98:1 при пороге WCAG AA 4.5:1 — TG и WA
+   читались хуже всего в полосе фильтров. В токенах лежат те же брендовые
+   цвета с опущенной ровно настолько яркостью, чтобы надпись проходила
+   порог; их же проверяет набор контрастных пар (--on-accent против каждого).
+   Значения сверены сквозным аудитом отрисованной страницы
+   (tests/a11y_audit.js → tests/test_a11y_browser.py), а не расчётом на
+   бумаге: там же, где живёт `--tile`, рисуется и кольцо активного чипа. */
+.sf-tag[data-key="vk"]{--tile:var(--vk)}
+.sf-tag[data-key="instagram"]{--tile:var(--ig)}
+.sf-tag[data-key="telegram"]{--tile:var(--tg)}
+.sf-tag[data-key="whatsapp"]{--tile:var(--wa)}
 .sf-tag{
   display:inline-flex;align-items:center;padding:3px 9px;border-radius:20px;
   font-size:11px;font-weight:800;color:var(--on-accent);cursor:pointer;border:none;
+  /* Плитка без своей сети (data-key нет) остаётся акцентной, а не прозрачной. */
+  background:var(--tile,var(--c));
   opacity:.25;transition:opacity .12s,transform .1s;user-select:none;
 }
 .sf-tag:hover{opacity:.52}
@@ -919,10 +946,14 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
 #col-dropdown{
   position:absolute;top:calc(100% + 5px);right:0;
   background:var(--card);border:1px solid var(--bdr);border-radius:var(--r-md);
-  box-shadow:var(--sh-lg);padding:6px 4px;z-index:400;
+  box-shadow:var(--sh-lg);padding:6px 4px;
+  /* Выше таблицы, панелей и модалок: список не должен прятаться под ними. */
+  z-index:900;
   min-width:232px;display:none;
 }
 #col-dropdown.open{display:block}
+/* Мало места снизу — список поднимается НАД кнопкой (см. fitColDropdown). */
+#col-dropdown.drop-up{top:auto;bottom:calc(100% + 5px)}
 /* Три колонки: ручка перетаскивания │ чекбокс+подпись │ стрелки сдвига.
    Раньше их было две (чекбокс │ подпись), и стрелки уезжали на вторую
    строку — список выглядел двухъярусным. */
@@ -1011,7 +1042,7 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
    --cd с белым текстом (см. .source-mode-opt[data-engine].active). */
 [data-theme="dark"] .parse-mode-opt.active,
 [data-theme="dark"] .social-mode-opt.active,
-[data-theme="dark"] .vk-mode-opt.active{background:var(--cd);border-color:var(--cd);color:var(--on-accent)}
+[data-theme="dark"] .vk-mode-opt.active{background:var(--brand);border-color:var(--brand);color:var(--on-accent)}
 [data-theme="dark"] .vk-mode-opt{background:var(--panel)}
 /* Numeric row under the VK segmented control */
 .num-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:10px}
@@ -1041,8 +1072,8 @@ details.advanced-settings>.dbody>.chk{grid-column:span 2}
    акцента, чтобы выбор читался в обеих темах. Прежняя версия красила
    только ТЕКСТ активного пункта в белый (--on-accent), а фона не было
    вовсе: в светлой теме получался белый на белом. */
-.source-mode-opt[data-engine].active{background:var(--c);border-color:var(--c)}
-[data-theme="dark"] .source-mode-opt[data-engine].active{background:var(--cd);border-color:var(--cd);color:var(--on-accent)}
+.source-mode-opt[data-engine].active{background:var(--brand);border-color:var(--brand)}
+[data-theme="dark"] .source-mode-opt[data-engine].active{background:var(--brand);border-color:var(--brand);color:var(--on-accent)}
 /* Доступность движка: бейдж под селектором («Chrome найден/не найден»). */
 .engine-badge{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px;margin-left:6px;vertical-align:middle}
 .engine-badge.ok{background:var(--ok-bg);color:var(--ok-txt);border:1px solid var(--ok-bdr)}
@@ -1135,7 +1166,7 @@ input[type="range"]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;b
   cursor:pointer;white-space:nowrap;flex-shrink:0;
   transition:background .12s;font-family:inherit;
 }
-#btn-save-key:hover{background:var(--cd)}
+#btn-save-key:hover{background:var(--brand-dark)}
 #btn-save-key:disabled{opacity:.45;cursor:default}
 #apikey-status{font-size:11px;margin-top:2px;padding:7px 10px;border-radius:6px;display:none;line-height:1.4;font-weight:600}
 #apikey-status.ok{background:var(--ok-bg);color:var(--ok-txt);border:1px solid var(--ok-bdr)}
@@ -1157,7 +1188,7 @@ input[type="range"]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;b
   pointer-events:auto;
 }
 .toast.show{transform:translateX(0);opacity:1}
-.toast.success{background:var(--ok-strong)}
+.toast.success{background:var(--grn-btn)}
 .toast.error{background:var(--red-btn)}
 .toast .t-ico{
   width:20px;height:20px;border-radius:50%;flex-shrink:0;
@@ -1461,6 +1492,14 @@ input[type="range"]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;b
 .bar-track{flex:1;height:9px;background:var(--track);border-radius:5px;overflow:hidden}
 .bar-fill{height:100%;border-radius:5px;transition:width .5s ease;min-width:4px}
 .bar-val{font-size:12px;color:var(--muted);width:30px;text-align:right;font-weight:600}
+/* Пустая «Статистика» — иллюстрация в тоне онбординга: столбцы и тренд
+   из тех же токенов, что и весь интерфейс. Декоративна (aria-hidden),
+   всю информацию несёт текст рядом. */
+.sta-art{display:block;margin:2px auto 10px;width:132px;height:auto}
+.sta-art .sta-col{fill:var(--track)}
+.sta-art .sta-col-hi{fill:var(--c)}
+.sta-art .sta-line{fill:none;stroke:var(--grn);stroke-width:2.4;stroke-linecap:round;stroke-linejoin:round}
+.sta-art .sta-dot{fill:var(--grn)}
 
 /* ════════════════════════════════
    VK SENDER TAB
@@ -1514,7 +1553,7 @@ details[open].sender-advanced summary::before{content:"▼  "}
 #btn-send-run:disabled{background:var(--track);cursor:not-allowed;box-shadow:none}
 #btn-send-stop{
   padding:11px 15px;border:none;border-radius:8px;
-  background:var(--red);color:var(--on-accent);font-size:13px;font-weight:700;
+  background:var(--red-btn);color:var(--on-accent);font-size:13px;font-weight:700;
   cursor:pointer;display:none;font-family:inherit;transition:filter .12s;
 }
 #btn-send-stop:hover{filter:brightness(1.1)}
@@ -1597,7 +1636,7 @@ details[open].sender-advanced summary::before{content:"▼  "}
   cursor:pointer;display:none;align-items:center;justify-content:center;
   transition:background .12s;
 }
-.city-input-wrap .city-clear:hover{background:var(--red);color:var(--on-accent)}
+.city-input-wrap .city-clear:hover{background:var(--red-btn);color:var(--on-accent)}
 .city-input-wrap .city-clear.visible{display:flex}
 
 /* Dropdown */
@@ -1627,6 +1666,26 @@ details[open].sender-advanced summary::before{content:"▼  "}
 [data-theme="dark"] .city-option-hist{color:var(--tip-ok)}
 .city-option-bar{width:100%;height:5px;background:var(--bdr);border-radius:3px;overflow:hidden}
 .city-option-bar-fill{height:100%;border-radius:3px;transition:width .2s}
+
+/* ── Сферы бизнеса: кнопка у поля запросов и её список ─────────────
+   Список использует те же .city-option/.city-dropdown: это такой же
+   выпадающий список, и две разные вёрстки для одного элемента читались бы
+   как ошибка. Здесь только то, что у сфер иное: кнопка и строки-опции. */
+.spheres-btn{
+  margin-left:auto;flex-shrink:0;display:inline-flex;align-items:center;gap:4px;
+  padding:2px 9px;border:1px solid var(--bdr);border-radius:999px;
+  background:var(--field);color:var(--txt);font:inherit;font-size:11px;
+  font-weight:600;cursor:pointer;transition:background .12s,border-color .12s;
+}
+.spheres-btn:hover{background:var(--row-hover);border-color:var(--c)}
+.spheres-btn:focus-visible{outline:2px solid var(--c);outline-offset:2px}
+.sphere-dropdown .sphere-option{width:100%;text-align:left}
+.sphere-dropdown .city-option-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sphere-empty{padding:10px 12px;font-size:12px;color:var(--muted)}
+
+/* «Только данные компании» в блоке персональных данных */
+.pd-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:10px}
+.pd-actions-note{font-size:11px;color:var(--muted);margin:0}
 
 [data-theme="dark"] .city-input-wrap input{background:var(--panel);border-color:var(--bdr);color:var(--txt)}
 [data-theme="dark"] .city-input-wrap input:focus{background:var(--tip-field)}
@@ -1683,7 +1742,7 @@ details[open].sender-advanced summary::before{content:"▼  "}
 #update-banner{
   display:flex;align-items:center;gap:12px;flex-wrap:wrap;
   padding:10px 24px;
-  background:var(--ok-strong);
+  background:var(--grn-btn);
   color:var(--on-accent);font-size:13px;font-weight:600;
   /* Прижат ПОД шапку и не зависит от прокрутки: раньше это был
      position:sticky внутри потока — баннер уезжал вместе со страницей и
@@ -1721,7 +1780,6 @@ body.has-update-banner{padding-top:48px}
   transition:color .12s;
 }
 .ub-close:hover{color:var(--on-accent)}
-[data-theme="dark"] #update-banner{background:var(--ok-strong)}
 
 /* Видимая с первого взгляда индикация обновления в шапке.
    Шапка приклеена к верху окна, поэтому кнопку видно при любой прокрутке —
@@ -1861,7 +1919,7 @@ input:focus-visible,textarea:focus-visible,select:focus-visible{
   --bdr-soft:#1F232B;    /* тонкие разделители внутри таблицы */
   --txt:#E6E9EF;         /* основной текст */
   --sub:#AAB3C0;         /* подписи (≥6:1 на карточке) */
-  --muted:#8B93A1;       /* самый тихий текст (≥5:1 на фоне) */
+  --muted:#939BAA;       /* самый тихий текст (≥4.5:1 и на подложке --acc-soft) */
   --on-accent:#ffffff;   /* текст на плотном акценте — белый в обеих темах */
   --hdr:#14171D;         /* шапка: тот же графит, отделена только границей */
   --c:#9BAEC4;--cl:#1B2028;--cd:#8296AC;
@@ -1870,10 +1928,13 @@ input:focus-visible,textarea:focus-visible,select:focus-visible{
   --cta:#3A4759;         /* сплошной акцент, как в светлой теме */
   --cta-shadow:0 6px 18px rgba(0,0,0,.45);
   /* Тот же красочный градиент кнопки поиска — светлее на тёмном фоне. */
-  --run-grad:linear-gradient(135deg,#0EA5A4 0%,#1C7ED0 55%,#2A63E8 100%);
+  --run-grad:linear-gradient(135deg,#0D807E 0%,#1B76C2 55%,#2A63E8 100%);
   --run-shadow:0 6px 18px rgba(42,99,232,.45);
   --red:#D9736F;--red-btn:#A8453F;--red-btn-2:#8E3630;
   --yel:#D3A24C;--grn:#5FB88C;--blu:#7FA8CE;
+  /* Плотные аналоги для кнопок с белой надписью (см. :root). Светлые
+     --grn/--blu/--red в тёмной теме — это цвет текста, а не фона. */
+  --grn-btn:#2E7D5B;--blu-btn:#31689B;
   --acc-soft:rgba(155,174,196,.12);
   /* Чип: нейтральная серая плашка, но в тон графита (как остальные
      поверхности), а не чистый Gray-700 из макета. */
@@ -1977,9 +2038,11 @@ html.theme-anim #log-output{
 [data-theme="dark"] .sender-part,[data-theme="dark"] .sender-config{background:var(--panel)}
 [data-theme="dark"] details.advanced-settings>summary{background:var(--panel)}
 [data-theme="dark"] details.advanced-settings>.dbody{background:var(--panel)}
-[data-theme="dark"] .dl-btn,[data-theme="dark"] .export-sel-btn,[data-theme="dark"] #btn-save-key{background:var(--panel)}
+[data-theme="dark"] .dl-btn,[data-theme="dark"] .export-sel-btn{background:var(--panel)}
 [data-theme="dark"] #dl-section{background:var(--cl);border-color:var(--bdr)}
-[data-theme="dark"] #btn-save-key{background:var(--c)}
+/* Плотный акцент под белый текст — `--brand`, а не `--c`: в тёмной теме
+   `--c` светлый (сланец), и белая надпись на нём давала 2.3:1. */
+[data-theme="dark"] #btn-save-key{background:var(--brand)}
 [data-theme="dark"] #apikey-status.ok{background:var(--ok-bg);border-color:var(--ok-bdr);color:var(--ok-txt)}
 [data-theme="dark"] #apikey-status.err{background:var(--err-bg);border-color:var(--err-bdr);color:var(--err-txt)}
 [data-theme="dark"] .stat-card{background:var(--card);border-color:var(--bdr)}
@@ -2384,7 +2447,7 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 .history-actions{display:flex;gap:7px;align-items:center;flex-wrap:wrap}
 .btn-sm.danger{border-color:var(--err-bdr);color:var(--red)}
 .btn-sm.danger:hover{background:var(--err-bg);border-color:var(--red)}
-.btn-sm.warn{border-color:var(--warn-bdr);color:var(--yel)}
+.btn-sm.warn{border-color:var(--warn-bdr);color:var(--warn-strong)}
 .btn-sm.warn:hover{background:var(--warn-bg);border-color:var(--yel)}
 .panel-title{margin:0 0 4px;font-size:17px;font-weight:800;color:var(--txt);letter-spacing:-.02em}
 .panel-desc{margin:0 0 14px;color:var(--sub);font-size:13px;line-height:1.55}
@@ -2417,7 +2480,7 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 .hist-meta b{color:var(--sub);font-weight:700}
 .hist-chip{font-size:10px;font-weight:800;padding:2px 8px;border-radius:20px;letter-spacing:.02em;flex-shrink:0}
 .hist-chip.completed{background:var(--ok-bg);color:var(--ok-txt)}
-.hist-chip.stopped{background:var(--err-bg);color:var(--red)}
+.hist-chip.stopped{background:var(--err-bg);color:var(--err-txt)}
 .hist-chip.unknown{background:var(--track);color:var(--muted)}
 .hist-chev{
   width:9px;height:9px;flex-shrink:0;
@@ -2437,7 +2500,7 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
   color:var(--on-accent);font-size:12px;font-weight:700;cursor:pointer;text-decoration:none;
   transition:background .13s,filter .13s;font-family:inherit;
 }
-.hist-dl-all:hover{background:var(--cd);filter:brightness(1.06)}
+.hist-dl-all:hover{background:var(--brand-dark);filter:brightness(1.06)}
 .hist-dl-all[aria-disabled="true"]{opacity:.55;cursor:default;filter:none}
 .hist-dl{
   display:inline-flex;align-items:center;gap:5px;padding:5px 11px;
@@ -2451,8 +2514,8 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
   border-radius:8px;border:none;font-size:12.5px;font-weight:800;
   cursor:pointer;text-decoration:none;font-family:inherit;transition:filter .12s;
 }
-.hist-btn.blue{background:var(--blu);color:var(--on-accent)}
-.hist-btn.red{background:var(--red);color:var(--on-accent)}
+.hist-btn.blue{background:var(--blu-btn);color:var(--on-accent)}
+.hist-btn.red{background:var(--red-btn);color:var(--on-accent)}
 .hist-btn:hover{filter:brightness(1.1)}
 .hist-sub{font-size:12px;color:var(--sub);padding-top:9px}
 .hist-empty{padding:26px;text-align:center;color:var(--muted);font-size:13px}
@@ -2470,6 +2533,12 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
   padding:22px 24px;max-width:420px;width:90%;
   box-shadow:var(--sh-lg);
   animation:modal-pop .2s cubic-bezier(.34,1.4,.64,1);
+  /* Окно выше экрана не бывает: содержимое прокручивается внутри, а не
+     уезжает за край вместе с формой (раньше длинная форма — «Сообщить
+     о проблеме» — не помещалась на экран и её нельзя было доскроллить). */
+  max-height:calc(100vh - 32px);
+  overflow-y:auto;
+  overscroll-behavior:contain;
 }
 @keyframes modal-pop{from{opacity:0;transform:scale(.94)}to{opacity:1;transform:scale(1)}}
 .ui-modal h3{margin:0 0 10px;font-size:16px;font-weight:800;color:var(--txt)}
@@ -2495,6 +2564,31 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 .diag-summary-ok{border-left-color:var(--grn)}
 .diag-summary-warn{border-left-color:var(--yel)}
 .diag-summary-error{border-left-color:var(--red)}
+/* Легенда: три статуса одним взглядом. Цвет живёт в полосе и значке, а не
+   в тексте — мелкая зелёная/жёлтая надпись не проходит по контрасту. */
+.diag-legend{
+  display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;
+  margin:0 0 12px;font-size:11.5px;color:var(--sub);
+}
+.diag-legend-item{
+  display:inline-flex;align-items:center;gap:5px;
+  padding-left:8px;border-left:3px solid var(--muted);
+}
+.diag-legend-item[data-status="ok"]{border-left-color:var(--grn)}
+.diag-legend-item[data-status="warn"]{border-left-color:var(--yel)}
+.diag-legend-item[data-status="error"]{border-left-color:var(--red)}
+.diag-legend-tip{flex:1 1 100%;color:var(--muted);line-height:1.45}
+/* Копирование отчёта: одна кнопка и объяснение, что в отчёте нет секретов. */
+.diag-copy-row{
+  display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;
+  margin:10px 0 14px;padding-top:10px;border-top:1px solid var(--bdr);
+}
+.diag-copy-hint{font-size:11px;line-height:1.45;color:var(--muted);flex:1 1 180px}
+.diag-note code{
+  font-family:var(--mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+  font-size:.95em;background:var(--card);border:1px solid var(--bdr);
+  border-radius:4px;padding:1px 4px;color:var(--txt);
+}
 .diag-group{margin-bottom:14px}
 .diag-group-title{
   font-size:11px;font-weight:800;color:var(--muted);
@@ -2524,15 +2618,117 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
   .diag-sr{display:none}
 }
 .ui-modal p{margin:0 0 18px;font-size:13px;color:var(--sub);line-height:1.6}
-.ui-modal-btns{display:flex;gap:9px;justify-content:flex-end}
+.ui-modal-btns{display:flex;gap:9px;justify-content:flex-end;flex-wrap:wrap}
+
+/* ── «Сообщить о проблеме»: метки, контекст, скриншот ── */
+/* Шире базового окна и с прокруткой: форма длинная, а окно выше экрана
+   не бывает — упирается в max-height у .ui-modal. */
+.report-modal{max-width:560px;width:min(560px,94vw);position:relative}
+/* Крестик справа сверху — быстрое закрытие окна. */
+.rep-x{
+  position:absolute;top:12px;right:13px;width:28px;height:28px;
+  display:flex;align-items:center;justify-content:center;
+  background:transparent;border:1px solid transparent;border-radius:7px;
+  color:var(--muted);font-size:15px;line-height:1;cursor:pointer;
+  transition:color .12s,background .12s;
+}
+.rep-x:hover{color:var(--txt);background:var(--track)}
+.rep-x:focus-visible{outline:2px solid var(--c);outline-offset:1px}
+/* Предупреждение «GitHub не подключён» + ссылка на вход. */
+.rep-gh-login{
+  display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;
+  background:var(--row-alt);border:1px solid var(--bdr);border-left:3px solid var(--yel);
+  border-radius:8px;padding:8px 10px;margin:0 0 10px;
+  font-size:12px;line-height:1.5;color:var(--sub);
+}
+.rep-gh-txt{flex:1 1 220px}
+.rep-gh-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.rep-gh-link{font-weight:700;color:var(--c);white-space:nowrap}
+/* Код device flow: отдельной строкой, крупно и с разрядкой — его надо
+   перенести глазами со страницы GitHub в это окно и обратно. */
+.rep-gh-code{
+  flex:1 1 100%;font-size:12px;line-height:1.5;color:var(--sub);
+  border-top:1px solid var(--bdr);padding-top:7px;
+}
+.rep-gh-usercode{
+  font-family:var(--mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+  font-size:14px;letter-spacing:.1em;color:var(--txt);
+}
+/* Поле-дропдаун меток: поле с выбранными пилюлями + выпадающий список. */
+.rep-label-select{position:relative}
+.rep-label-field{
+  display:flex;align-items:center;gap:8px;width:100%;min-height:38px;
+  padding:7px 10px;border:1px solid var(--bdr);border-radius:8px;
+  background:var(--card);color:var(--txt);font-family:inherit;font-size:13px;
+  text-align:left;cursor:pointer;
+}
+.rep-label-field:hover{border-color:var(--bdr-h)}
+.rep-label-field:focus-visible{outline:2px solid var(--c);outline-offset:1px}
+.rep-label-caret{margin-left:auto;color:var(--muted);flex:0 0 auto}
+.rep-label-pills{display:flex;flex-wrap:wrap;gap:4px;align-items:center}
+.rep-label-ph{color:var(--muted);font-size:12.5px}
+.rep-label-menu{
+  position:absolute;z-index:6;top:calc(100% + 4px);left:0;right:0;
+  background:var(--card);border:1px solid var(--bdr);border-radius:9px;
+  box-shadow:var(--sh-lg);padding:5px;max-height:250px;overflow-y:auto;
+  scrollbar-width:thin;
+}
+.rep-label-opt{
+  display:grid;grid-template-columns:16px auto 1fr;align-items:center;gap:8px;
+  padding:7px 8px;border-radius:6px;cursor:pointer;
+}
+.rep-label-opt:hover{background:var(--row-alt)}
+.rep-label-desc{font-size:12px;color:var(--sub);line-height:1.35}
+/* Цветная пилюля метки — как на самом GitHub. Цвет задаётся инлайн-стилем
+   из _ghPillCss (09-ui-extras.js) — там же выбирается контрастный текст. */
+.gh-pill{
+  display:inline-flex;align-items:center;padding:2px 9px;border-radius:999px;
+  font-size:11px;font-weight:700;line-height:1.5;white-space:nowrap;
+}
+.rep-label-opt .gh-pill{justify-self:start}
+.rep-checks{display:flex;flex-direction:column;gap:5px;margin:2px 0 4px}
+.rep-sec-lbl{font-size:11px;font-weight:800;color:var(--muted);text-transform:uppercase;
+  letter-spacing:.05em;margin:12px 0 4px}
+.rep-sec-lbl label{cursor:pointer}
+.report-modal input[type="text"],.report-modal input[type="password"],
+.report-modal textarea{width:100%;box-sizing:border-box}
+.report-modal textarea{resize:vertical;min-height:84px;line-height:1.45}
+.rep-preview-wrap{margin-top:6px;border:1px solid var(--bdr);border-radius:var(--r-sm);
+  background:var(--panel);padding:6px 9px}
+.rep-preview-wrap summary{cursor:pointer;font-size:12px;font-weight:700;color:var(--sub);list-style:none}
+.rep-preview-wrap summary::-webkit-details-marker{display:none}
+.rep-preview-wrap summary::before{content:'▸ ';color:var(--muted)}
+.rep-preview-wrap[open] summary::before{content:'▾ '}
+.rep-preview{margin:7px 0 2px;max-height:230px;overflow:auto;white-space:pre-wrap;
+  word-break:break-word;font-size:11.5px;line-height:1.45;color:var(--sub);
+  background:var(--card);border:1px solid var(--bdr);border-radius:var(--r-sm);padding:8px 9px;
+  scrollbar-width:thin}
+.rep-shot{border:1px dashed var(--bdr-h);border-radius:var(--r-sm);padding:12px 10px;
+  font-size:12px;color:var(--sub);text-align:center;cursor:pointer;transition:border-color .14s,background .14s}
+.rep-shot:hover,.rep-shot:focus-visible{border-color:var(--c);background:var(--cl)}
+.rep-shot img{max-width:100%;max-height:200px;border-radius:var(--r-sm);display:block;margin:0 auto 6px}
+.rep-shot-note{font-size:11.5px;color:var(--muted);margin-top:5px}
+/* Кнопка копирования — вне rep-shot (у того роль button, и кнопка внутри
+   была бы вложенным элементом управления). [hidden] глобально её гасит. */
+.rep-shot-actions{display:flex;gap:8px;margin-top:8px}
+/* Модалка сброса уже есть (.reset-modal), здесь только её ширина. */
+.reset-modal{max-width:460px}
 .ui-modal-btns button{
   padding:9px 20px;border-radius:8px;font-size:13px;font-weight:700;
   cursor:pointer;border:none;font-family:inherit;transition:filter .12s;
 }
 .ui-modal-btns button:hover{filter:brightness(1.08)}
 .ui-modal .m-cancel{background:var(--track);color:var(--sub)}
-.ui-modal .m-ok{background:var(--grn);color:var(--on-accent)}
-.ui-modal .m-ok.neutral{background:var(--c)}
+/* «Отменить» в окне сообщения — неактивной выглядеть не должна: это
+   полноценное действие с подтверждением, а не приглушённый остаток. */
+.ui-modal .m-cancel.rep-cancel{
+  background:var(--card);border:1px solid var(--bdr-h);color:var(--txt);
+}
+.ui-modal .m-cancel.rep-cancel:hover{border-color:var(--c);color:var(--txt)}
+/* «Открыть форму на GitHub» — слева, отмена и создание — справа. */
+.ui-modal-btns .rep-form-btn{margin-right:auto}
+.ui-modal .m-ok{background:var(--grn-btn);color:var(--on-accent)}
+.ui-modal .m-ok.neutral{background:var(--brand)}
 .ui-modal .m-ok.danger{background:var(--red)}
 /* Выключенная кнопка должна выглядеть выключенной: «Продолжить» в окне
    соглашения активна только после галочки, и без приглушения это неочевидно. */
@@ -2943,12 +3139,16 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 [data-theme="dark"] #status-badge.done{background:rgba(255,255,255,.16);color:var(--on-accent);border-color:rgba(255,255,255,.30)}
 [data-theme="dark"] #status-badge.running{background:var(--yel);color:var(--warn-on);border-color:var(--warn-bdr)}
 [data-theme="dark"] #status-badge.paused{background:var(--yel);color:var(--warn-on);border-color:var(--warn-bdr)}
-[data-theme="dark"] #status-badge.error{background:var(--red);color:var(--on-accent);border-color:var(--err-bdr)}
+[data-theme="dark"] #status-badge.error{background:var(--red-btn);color:var(--on-accent);border-color:var(--err-bdr)}
 [data-theme="dark"] #city-dropdown{background:var(--card);border-color:var(--c);box-shadow:0 10px 32px rgba(0,0,0,.5)}
 [data-theme="dark"] .city-option:hover{background:var(--field)}
 [data-theme="dark"] .soc-tile{border-color:var(--bdr-h);background:var(--card);color:var(--sub)}
 [data-theme="dark"] .tech-box{background:var(--tip-bg);border-color:var(--bdr)}
 [data-theme="dark"] .rt-btn{color:var(--sub)}
+/* Активная кнопка режима таблицы: правило выше перебивало .rt-btn.active
+   (одинаковая специфичность, но оно ниже по файлу), и надпись оставалась
+   серой на плотном --brand — 4.46:1 вместо нужных 4.5. */
+[data-theme="dark"] .rt-btn.active{color:var(--on-accent)}
 
 /* ══════════════════════════════════════════════════════════
    DARK THEME: contrast pass (inputs, ghost buttons, cards)
@@ -3091,8 +3291,66 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 .city-tab.active{color:var(--c);border-bottom-color:var(--c);font-weight:800}
 .city-count{color:var(--muted);font-size:11px;font-weight:700}
 .city-tab.active .city-count{color:var(--c)}
+/* Вкладка города вместе со звёздочкой: звезда — отдельный элемент РЯДОМ с
+   кнопкой (вложенные кнопки невалидны), клик по ней только закрепляет город. */
+.city-tab-wrap{display:inline-flex;align-items:stretch}
+.city-tab-wrap.fav .city-tab{color:var(--c);font-weight:700}
+.fav-star{
+  display:inline-flex;align-items:center;justify-content:center;
+  width:22px;height:22px;border-radius:50%;color:var(--muted);
+  cursor:pointer;opacity:.5;align-self:center;
+  transition:color .12s,opacity .12s,background .12s;
+}
+.fav-star:hover{opacity:1;color:var(--c);background:var(--panel)}
+.fav-star:focus-visible{outline:2px solid var(--c);outline-offset:1px;opacity:1}
+.fav-star.on{opacity:1;color:var(--yel)}
+.fav-star .ico{margin-right:0}
+.fav-star.on .ico{fill:currentColor;stroke:currentColor}
 
-/* ── «Только непросмотренные» ── */
+/* Полоса города в таблице «Все»: одна ячейка на всю ширину строки. */
+#results-table tr.city-group>td{
+  background:var(--panel);color:var(--txt);font-weight:800;font-size:12px;
+  letter-spacing:.02em;padding:6px 12px;
+  border-top:1px solid var(--bdr);border-bottom:1px solid var(--bdr-soft);
+}
+#results-table tr.city-group .fav-star{vertical-align:-5px}
+.city-group-name{margin:0 6px 0 2px}
+.city-group-count{color:var(--muted);font-weight:700;font-size:11px}
+
+/* Прогресс обхода рядом с названием города: сколько уже просмотрено
+   из скольких («✓12/42»). В подсказке — то же и остаток. */
+.city-done{
+  color:var(--grn);font-size:10.5px;font-weight:800;margin-left:6px;
+  font-variant-numeric:tabular-nums;
+}
+.city-group-done{
+  color:var(--grn);font-weight:800;font-size:11px;
+  margin:0 9px 0 5px;font-variant-numeric:tabular-nums;
+}
+
+/* Звезда избранного в выпадающем списке «Где ищем?» — тот же стиль, что
+   во вкладках городов; избранный город подсвечивается и первым в списке. */
+.city-option-left{display:flex;align-items:center;gap:5px;min-width:0}
+.city-option .fav-star{width:20px;height:20px;flex-shrink:0}
+.city-option.fav .city-option-name{color:var(--c);font-weight:700}
+
+/* Заголовок колонки «✓» — фильтр показа (всё / непросмотренные /
+   просмотренные). Кнопка «Непросмотренные» убрана: фильтр живёт здесь. */
+#results-table th[data-col="rev"]{cursor:pointer}
+#results-table th[data-col="rev"]:hover{color:var(--c)}
+#results-table th[data-col="rev"].rev-filter{
+  color:var(--c);background:var(--cl);border-bottom-color:var(--c);
+}
+
+/* Метка в заголовке «Рейтинг»: колонка одна, а сортировки две —
+   по оценке или по числу отзывов (направление показывает стрелка). */
+.sort-mode{
+  font-size:9.5px;font-weight:700;color:var(--muted);margin-left:4px;
+  letter-spacing:.01em;
+}
+#results-table th.asc .sort-mode,#results-table th.desc .sort-mode{color:var(--c)}
+
+/* ── Показ по отметке «Просмотрено» ── */
 .tbl-filter-btn{
   padding:5px 11px;border:1px solid var(--bdr);border-radius:6px;background:var(--card);
   color:var(--sub);font-size:11.5px;font-weight:700;cursor:pointer;font-family:inherit;
@@ -3581,6 +3839,10 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 /* Временная метка: колонка сохраняется, но текст виден только при смене
    секунды — иначе «14:30:15» повторялось бы десятки раз подряд. */
 #log-output .ll-time{display:inline-block;min-width:64px}
+/* В строке-городе фон — --brand, но метка времени наследовала тихий --muted
+   и пропадала: в светлой теме 2.03:1. На плотном фоне метка читается
+   только светлой. */
+#log-output .ll.city .ll-time{color:var(--on-accent);opacity:.78}
 #log-output .ll-time.same{visibility:hidden}
 /* Иерархия: подстроки конфигурации сдвинуты под своей строкой */
 #log-output .ll.ind-1{padding-left:26px;color:var(--muted)}
@@ -3636,6 +3898,14 @@ select.field-invalid{border-color:var(--red) !important;box-shadow:0 0 0 3px rgb
 [data-theme="dark"] .tpl-var-card{background:var(--panel)}
 [data-theme="dark"] .tpl-ac-box{background:var(--panel)}
 [data-theme="dark"] .tpl-var-kind{background:var(--field)}
+/* Планшет и узкое окно (621–860px): подписи кнопок шапки скрыты раньше
+   телефона. Седьмая кнопка («Проблема») довела ряд .hdr-right до 815px —
+   при окне 764px страница уходила в горизонтальный скролл (аудит: 826 > 764).
+   У каждой кнопки есть aria-label, поэтому значки без подписи остаются
+   доступными; полностью правила включаются на ≤620px ниже. */
+@media(max-width:860px){
+  .hdr-right > button .hdr-lbl{display:none}
+}
 @media(max-width:620px){
   header{padding:0 12px}
   header h1{font-size:12.5px}
@@ -3997,7 +4267,7 @@ header{
   padding:10px 14px;border-radius:var(--r,8px);font:inherit;font-size:13px;
   font-weight:700;cursor:pointer;border:1px solid transparent;
 }
-.terms-declined-btns .m-ok{background:var(--c);color:var(--on-accent)}
+.terms-declined-btns .m-ok{background:var(--brand);color:var(--on-accent)}
 .terms-declined-btns .m-cancel{background:transparent;border-color:var(--bdr);color:var(--sub)}
 .terms-declined-btns .m-cancel:hover{border-color:var(--bdr-h);color:var(--txt)}
 
@@ -4034,3 +4304,150 @@ header{
 .retention-custom{display:inline-flex;align-items:center;gap:6px}
 .retention-custom input{width:84px}
 #retention-status:empty{display:none}
+
+/* ══════════════════════════════════════════════════════════
+   ЖИВАЯ СВОДКА НАСТРОЙКИ (верх боковой панели)
+   ══════════════════════════════════════════════════════════ */
+/* Главное (что ищем, где, что собираем, какие файлы на выходе) показано
+   здесь, а длинная форма остаётся «вторым уровнем»: её раскрывают, только
+   если хотят что-то изменить. Каждый чип — кнопка и ведёт в свой раздел. */
+.setup-sum{
+  /* Две колонки, а не поток: в колонке 300px пять чипов подряд занимали
+     пять строк и сводка сама становилась «много информации». */
+  display:grid;grid-template-columns:1fr 1fr;gap:5px;
+  padding:8px 9px;margin:2px 0 12px;
+  background:var(--panel);border:1px solid var(--bdr);border-radius:var(--r-md);
+  animation:setup-sum-in .22s ease both;
+}
+.setup-chip{
+  display:flex;flex-direction:column;align-items:flex-start;gap:1px;
+  min-width:0;padding:5px 9px;border-radius:var(--r-sm);overflow:hidden;
+  background:var(--card);border:1px solid var(--bdr);
+  color:var(--txt);font-family:inherit;font-size:12px;font-weight:600;
+  cursor:pointer;text-align:left;
+  transition:border-color .14s,background .14s,transform .1s,box-shadow .14s;
+}
+.setup-chip:hover{
+  border-color:var(--c);background:var(--cl);transform:translateY(-1px);
+  box-shadow:var(--sh);
+}
+.setup-chip:active{transform:translateY(0)}
+.setup-chip:focus-visible{outline:2px solid var(--c);outline-offset:2px}
+/* «Объём» — итог всех остальных чипов (города × запросы × точки × страницы),
+   поэтому ширина не в одну колонку: иначе значение («≈1 200 организаций ·
+   132 стр.») обрезалось бы многоточием и его пришлось бы читать в подсказке. */
+.setup-chip[data-setup-key="volume"]{grid-column:1 / -1}
+.setup-chip-lbl{
+  font-size:10px;font-weight:800;color:var(--muted);
+  text-transform:uppercase;letter-spacing:.05em;
+}
+.setup-chip-lbl,.setup-chip-val{max-width:100%}
+.setup-chip-val{width:100%;font-size:11.5px;font-weight:700;color:var(--txt);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* «Не заполнено» — предупреждение, а не просто текст: этот чип ведёт туда,
+   без чего запуск не начнётся (запрос, город, формат выгрузки). */
+.setup-chip.is-missing{border-color:var(--warn-bdr);background:var(--warn-bg)}
+.setup-chip.is-missing .setup-chip-val{color:var(--warn-txt)}
+.setup-chip.is-missing .setup-chip-lbl{color:var(--warn-txt)}
+/* Изменившееся значение отмечается один раз — «форма живая». */
+.setup-chip.bump .setup-chip-val{animation:setup-val-pop .3s ease}
+@keyframes setup-sum-in{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+@keyframes setup-val-pop{
+  0%{color:var(--c);transform:scale(1)}
+  40%{color:var(--c);transform:scale(1.09)}
+  100%{transform:scale(1)}
+}
+
+/* ── Скачок к содержимому (первый Tab) ── */
+.skip-link{
+  position:fixed;top:-60px;left:12px;z-index:900;
+  padding:9px 14px;border-radius:0 0 var(--r-sm) var(--r-sm);
+  background:var(--brand);color:var(--on-accent);
+  font-size:12.5px;font-weight:700;text-decoration:none;
+  transition:top .16s ease;
+}
+.skip-link:focus-visible,.skip-link:focus{top:0;outline:2px solid var(--c);outline-offset:2px}
+
+/* ══════════════════════════════════════════════════════════
+   НЕГЛАВНОЕ — ПО НАВЕДЕНИЮ
+   ══════════════════════════════════════════════════════════ */
+/* Пояснение рядом с названием раздела («технические параметры» и т. п.)
+   в покое прячется: список из пяти разделов читался как десять строк текста.
+   Открывается при наведении и с клавиатуры; на тач-устройствах показывается
+   всегда (там «наведения» нет вовсе). */
+@media (hover:hover) and (pointer:fine){
+  .acc-sub{opacity:0;transition:opacity .18s}
+  .acc-hdr:hover .acc-sub,
+  .acc-hdr:focus-visible .acc-sub,
+  .acc.open .acc-sub{opacity:1}
+}
+
+/* ── Микро-движения: нажатие и появление ── */
+.tab-btn,.acc-hdr,.log-filter,.sf-tag,.setup-chip{transition-property:border-color,background,color,transform,box-shadow,opacity}
+.tab-btn:active,.acc-hdr:active,.log-filter:active,.sf-tag:active{transform:translateY(1px)}
+/* Появление панели при переключении вкладки: проявление + лёгкий подъём.
+   fill-mode BACKWARDS, а не BOTH: «both» держит анимацию в силе и навсегда
+   оставляет панели собственный stacking context (z-index:auto). Из-за него
+   z-index:900 списка «Столбцы» оказывался заперт внутри панели и уходил под
+   липкую шапку (sticky, z-index:200 в корневом контексте) — список был
+   перекрыт другими слоями. С fill backwards контекст живёт только 0.2 с
+   анимации, и список перекрывает шапку, как ему и положено.
+   Проверено в браузере: elementFromPoint над областью шапки отдаёт кнопку
+   списка, а не шапку. */
+.tab-panel.active{animation:panel-in .2s ease backwards}
+@keyframes panel-in{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
+
+/* Нажатие кнопок тулбара результатов: короткий «отклик» сжатием.
+   Список селекторов точечный — общий button:active задел бы чекбоксы и
+   переключатели, где нажатие не является отдельным действием. */
+#btn-cols,#btn-scope-all,.tbl-filter-btn,.export-sel-btn,.col-all-btn,.sf-clear,
+.pager button,.bulk-copy-btn,.bulk-persist-btn,.preset-chip{
+  transition:transform .08s ease,background .14s,color .14s,border-color .14s,box-shadow .14s;
+}
+#btn-cols:active:not(:disabled),#btn-scope-all:active:not(:disabled),
+.tbl-filter-btn:active:not(:disabled),.export-sel-btn:active:not(:disabled),
+.col-all-btn:active:not(:disabled),.sf-clear:active:not(:disabled),
+.pager button:active:not(:disabled),.bulk-copy-btn:active:not(:disabled),
+.bulk-persist-btn:active:not(:disabled),.preset-chip:active:not(:disabled){
+  transform:scale(.96);
+}
+
+/* Число «найдено» подпрыгивает, когда меняется (см. handleProgress). */
+#ls-found-num{display:inline-block}
+#ls-found-num.pop{animation:found-pop .34s ease}
+@keyframes found-pop{
+  0%{transform:scale(1)}
+  35%{transform:scale(1.22)}
+  100%{transform:scale(1)}
+}
+
+/* Полоса прогресса: пока поиск идёт, по ней едет светлая волна — видно,
+   что процесс живой, а не замер на одной цифре. Активность определяется по
+   видимой строке «Прямо сейчас». */
+body:has(.live-stats:not(.is-hidden)) #prog-bar{position:relative;overflow:hidden}
+body:has(.live-stats:not(.is-hidden)) #prog-bar::after{
+  content:'';position:absolute;inset:0;
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,.38),transparent);
+  animation:prog-sheen 1.5s linear infinite;
+}
+@keyframes prog-sheen{from{transform:translateX(-100%)}to{transform:translateX(100%)}}
+/* Сама полоса пока сбор идёт — дышит: подтверждение, что движение не
+   застряло на одной цифре (волна едет и по пустой полосе). */
+body:has(.live-stats:not(.is-hidden)) #prog-bar{animation:prog-breathe 1.6s ease-in-out infinite}
+@keyframes prog-breathe{0%,100%{filter:brightness(1)}50%{filter:brightness(1.25)}}
+
+/* ── Уважать «уменьшенное движение» ── */
+@media (prefers-reduced-motion:reduce){
+  .setup-sum,.setup-chip.bump .setup-chip-val,.tab-panel.active,
+  #ls-found-num.pop{animation:none}
+  body:has(.live-stats:not(.is-hidden)) #prog-bar::after{animation:none;opacity:0}
+  body:has(.live-stats:not(.is-hidden)) #prog-bar{animation:none}
+  .setup-chip:hover{transform:none}
+  .tab-btn:active,.acc-hdr:active,.log-filter:active,.sf-tag:active{transform:none}
+  #btn-cols:active:not(:disabled),#btn-scope-all:active:not(:disabled),
+  .tbl-filter-btn:active:not(:disabled),.export-sel-btn:active:not(:disabled),
+  .col-all-btn:active:not(:disabled),.sf-clear:active:not(:disabled),
+  .pager button:active:not(:disabled),.bulk-copy-btn:active:not(:disabled),
+  .bulk-persist-btn:active:not(:disabled),.preset-chip:active:not(:disabled){transform:none}
+  .skip-link{transition:none}
+}

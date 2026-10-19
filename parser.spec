@@ -37,6 +37,11 @@ a = Analysis(
             'run_manager',
             'run_logger',
             'search_history',
+            # app.py --check: самопроверка без интерфейса
+            'selfcheck',
+            # app.py --run: сбор по пресету без интерфейса
+            'headless',
+            'presets_store',
             'paths',
             'console_io',
             # multiprocessing children re-import the entry module
