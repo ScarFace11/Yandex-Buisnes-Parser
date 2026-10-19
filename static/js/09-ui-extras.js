@@ -325,7 +325,79 @@ function setAllCols(visible) {
 function toggleColDropdown(e) {
   e.stopPropagation();
   const dd = document.getElementById('col-dropdown');
-  dd.classList.toggle('open');
+  const willOpen = !dd.classList.contains('open');
+  dd.classList.toggle('open', willOpen);
+  if (willOpen) {
+    fitColDropdown(dd);
+    // Второй проход на следующем кадре: если в момент открытия панель ещё
+    // докручивалась/дописывалась (подгрузка таблицы, анимация вкладки),
+    // список мог измерить устаревшую геометрию и открыться не туда.
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => {
+      if (dd.classList.contains('open')) fitColDropdown(dd);
+    });
+  }
+}
+
+// Список «Столбцы» всплывает ВНУТРИ панели результатов, а не в корне окна:
+// выше прокрутки панели (и шапки) его всё равно обрезает ближайший
+// контейнер с overflow, а слева список срезает колонка настроек — визуально
+// это выглядело как «перекрыт другими слоями». Поэтому место меряем по
+// клип-контейнеру, а не по окну, и по горизонтали список прижимается так,
+// чтобы не вылезать за колонку.
+function _colClipBox(dd) {
+  let el = dd.parentElement;
+  while (el && el !== document.documentElement) {
+    const cs = getComputedStyle(el);
+    if (cs.overflow !== 'visible' || cs.overflowX !== 'visible' || cs.overflowY !== 'visible') return el;
+    el = el.parentElement;
+  }
+  return null;
+}
+
+function fitColDropdown(dd) {
+  if (!dd) return;
+  const btn = document.getElementById('btn-cols');
+  dd.classList.remove('drop-up');
+  dd.style.maxHeight = '';
+  dd.style.right = '';
+  const win = (typeof window !== 'undefined')
+    ? {top: 0, bottom: window.innerHeight, left: 0, right: window.innerWidth}
+    : {top: 0, bottom: 0, left: 0, right: 0};
+  const clip = _colClipBox(dd);
+  const box = clip ? clip.getBoundingClientRect() : win;
+  // 1. Горизонталь: левый край списка — внутри колонки (с запасом 4px).
+  let r = dd.getBoundingClientRect();
+  const overLeft = (box.left + 4) - r.left;
+  if (overLeft > 0) dd.style.right = (-Math.ceil(overLeft)) + 'px';
+  // 2. Вертикаль: снизу — если список там целиком помещается; вверх — только
+  //    если снизу не влезает, но вверх влезает (или там просто больше места).
+  //    Раньше «влезает снизу» мерилось по остатку ПОД открытым списком
+  //    (box.bottom - r.bottom), из-за чего вместо свободных 484px под
+  //    списком виделись 35px и список зря поднимался в 58-пиксельную щель.
+  r = dd.getBoundingClientRect();
+  const b = btn && btn.getBoundingClientRect ? btn.getBoundingClientRect() : null;
+  const spaceBelow = box.bottom - r.top - 8;
+  const spaceAbove = b ? b.top - box.top - 8 : 0;
+  const fitsBelow = r.height <= spaceBelow;
+  const fitsAbove = r.height <= spaceAbove;
+  const dropUp = !fitsBelow && (fitsAbove || spaceAbove > spaceBelow);
+  if (dropUp) dd.classList.add('drop-up');
+  const room = Math.max(dropUp ? spaceAbove : spaceBelow, 0);
+  if (room > 0) {
+    dd.style.maxHeight = Math.floor(room) + 'px';
+    dd.style.overflowY = 'auto';
+  }
+}
+
+// Пока список открыт, он должен переживать и скролл панели, и изменение
+// окна — иначе после прокрутки снова оказывался не у кнопки.
+if (typeof window !== 'undefined') {
+  const _refitCols = () => {
+    const dd = document.getElementById('col-dropdown');
+    if (dd && dd.classList.contains('open')) fitColDropdown(dd);
+  };
+  window.addEventListener('resize', _refitCols);
+  window.addEventListener('scroll', _refitCols, true);
 }
 
 // ═══════════════════════════════════════════
@@ -407,6 +479,21 @@ function renderParseFields() {
   renderParseFieldGrid(PARSE_REGULAR, 'parse-regular-grid');
   renderParseFieldGrid(PARSE_PERSONAL, 'parse-personal-grid');
   updateSocialUI();
+}
+
+// «Только данные компании»: одной кнопкой снимаем персональные поля.
+// Раньше их приходилось выключать по одному, и легко было забыть телефон —
+// а именно он превращает отчёт в обработку персональных данных.
+function disablePersonalFields() {
+  if (parseFields === null) parseFields = parseFieldsEnabled();
+  PARSE_PERSONAL.forEach(f => parseFields.delete(f.k));
+  saveParseFields();
+  renderParseFields();
+  if (allResults.length) filterTable();
+  if (typeof updateBasicSummary === 'function') updateBasicSummary();
+  if (typeof showToast === 'function') {
+    showToast('В отчёт попадут только сведения о компании — персональные поля сняты', 'ok');
+  }
 }
 
 function toggleParseField(k, on) {
@@ -769,19 +856,26 @@ function showLogsModal() {
   if (existing) existing.remove();
   const overlay = document.createElement('div');
   overlay.className = 'logs-modal-overlay';
+  // Заголовок живёт ВНЕ перерисовываемого тела: список логов подъезжает
+  // запросом и заменяет внутренности, а имя диалога (aria-labelledby) держится
+  // именно за заголовком — иначе окно теряло бы своё имя ровно в тот момент,
+  // когда лог загрузился.
   overlay.innerHTML = `<div class="logs-modal">
     <h3>${UI_ICONS.book}Логи запусков</h3>
-    <div class="logs-empty">Загрузка…</div>
+    <div class="logs-body"><div class="logs-empty">Загрузка…</div></div>
   </div>`;
   document.body.appendChild(overlay);
+  modalA11y(overlay);
+  const body = overlay.querySelector('.logs-body');
+  const closeBtn = '<div style="text-align:right;margin-top:12px">' +
+    '<button class="skip-cancel" onclick="this.closest(\'.logs-modal-overlay\').remove()">Закрыть</button></div>';
   overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
   fetch('/logs/list')
     .then(r => r.json())
     .then(data => {
       const logs = data.logs || [];
-      const modal = overlay.querySelector('.logs-modal');
       if (!logs.length) {
-        modal.innerHTML = `<h3>${UI_ICONS.book}Логи запусков</h3><div class="logs-empty">Логов пока нет. Запустите поиск чтобы создать лог.</div><div style="text-align:right;margin-top:12px"><button class="skip-cancel" onclick="this.closest('.logs-modal-overlay').remove()">Закрыть</button></div>`;
+        body.innerHTML = '<div class="logs-empty">Логов пока нет. Запустите поиск чтобы создать лог.</div>' + closeBtn;
         return;
       }
       const listHtml = logs.map(l => {
@@ -795,12 +889,10 @@ function showLogsModal() {
           </span>
         </li>`;
       }).join('');
-      modal.innerHTML = `<h3>${UI_ICONS.book}Логи запусков</h3>
-        <ul class="logs-list">${listHtml}</ul>
-        <div style="text-align:right;margin-top:12px"><button class="skip-cancel" onclick="this.closest('.logs-modal-overlay').remove()">Закрыть</button></div>`;
+      body.innerHTML = `<ul class="logs-list">${listHtml}</ul>` + closeBtn;
     })
     .catch(() => {
-      overlay.querySelector('.logs-modal').innerHTML = `<h3>${UI_ICONS.book}Логи запусков</h3><div class="logs-empty">Ошибка загрузки</div><div style="text-align:right;margin-top:12px"><button class="skip-cancel" onclick="this.closest('.logs-modal-overlay').remove()">Закрыть</button></div>`;
+      body.innerHTML = '<div class="logs-empty">Ошибка загрузки</div>' + closeBtn;
     });
 }
 
@@ -815,11 +907,22 @@ function showLogsModal() {
 // escapeHtml.
 // Заголовки групп и значки статусов — из того же спрайта, что и кнопки: в
 // отчёте рядом стоят три состояния, и разнобой между ними читался как шум.
+// Названия без значков — для текстового отчёта: в буфер обмена SVG класть нельзя.
+const DIAG_GROUP_NAMES = {
+  keys: 'Ключи API',
+  files: 'Файлы и папки',
+  data: 'Данные прошлых сборов',
+  runs: 'Прогоны и кэш',
+  env: 'Окружение',
+  engines: 'Браузер и выдача',
+};
 const DIAG_GROUP_TITLES = {
-  keys:  UI_ICONS.key + 'Ключи API',
-  files: UI_ICONS.folder + 'Файлы и папки',
-  data:  UI_ICONS.box + 'Данные прошлых сборов',
-  env:   UI_ICONS.info + 'Окружение',
+  keys:  UI_ICONS.key + DIAG_GROUP_NAMES.keys,
+  files: UI_ICONS.folder + DIAG_GROUP_NAMES.files,
+  data:  UI_ICONS.box + DIAG_GROUP_NAMES.data,
+  runs:  UI_ICONS.pulse + DIAG_GROUP_NAMES.runs,
+  env:   UI_ICONS.info + DIAG_GROUP_NAMES.env,
+  engines: UI_ICONS.search + DIAG_GROUP_NAMES.engines,
 };
 const DIAG_STATUS = {
   ok:    { icon: UI_ICONS.check, label: 'в порядке' },
@@ -827,6 +930,9 @@ const DIAG_STATUS = {
   error: { icon: UI_ICONS.x,     label: 'ошибка' },
 };
 let _diagBusy = false;
+// Последний отчёт — для кнопки «Скопировать»: пересказывать его руками
+// в переписке с поддержкой приходилось построчно.
+let _diagLast = [];
 
 function showDiagnostics() {
   const existing = document.getElementById('diag-overlay');
@@ -837,20 +943,37 @@ function showDiagnostics() {
   overlay.innerHTML = `
     <div class="ui-modal diag-modal" role="dialog" aria-modal="true" aria-labelledby="diag-title">
       <h3 id="diag-title">${UI_ICONS.pulse}Диагностика</h3>
-      <div class="diag-lead">Проверю браузер и токен ВК, права на папку результатов, окружение и данные
-        прошлых сборов — это четыре причины, из-за которых чаще всего «ничего не работает». Читать логи не нужно.</div>
+      <div class="diag-lead">Проверю браузер и токен ВК, права на папку результатов, окружение,
+        данные прошлых сборов и историю прогонов — то, из-за чего чаще всего «ничего не работает».
+        Читать логи не нужно.</div>
       <div class="diag-note">${UI_ICONS.key}«Только ключи» делает один живой запрос к ВКонтакте (проверка токена).
         «Проверить браузер» открывает настоящий Chrome и страницу выдачи: так видно, что браузер
         работает и что список организаций действительно загружается. Остальные проверки
-        идут локально и выполняются мгновенно.</div>
+        идут локально и выполняются мгновенно. Ту же самую проверку можно запустить
+        без окна приложения: <code>YandexBusinessParser.exe --check</code> (в консоли или в фоне).</div>
       <div class="diag-actions">
-        <button type="button" class="btn-sm diag-run" onclick="runDiagnostics(['keys','files','data','env'], this)">${UI_ICONS.checkSquare}Проверить всё</button>
-        <button type="button" class="btn-sm diag-run" onclick="runDiagnostics(['keys'], this)">${UI_ICONS.key}Только ключи</button>
-        <button type="button" class="btn-sm diag-run" onclick="runDiagnostics(['files','data','env'], this)">${UI_ICONS.folder}Без запросов к API</button>
-        <button type="button" class="btn-sm diag-run" onclick="runDiagnostics(['engines'], this, true)">${UI_ICONS.pulse}Проверить браузер</button>
+        <button type="button" class="btn-sm diag-run" title="Все локальные проверки и токен ВК — без открытия браузера"
+          onclick="runDiagnostics(['keys','files','data','runs','env'], this)">${UI_ICONS.checkSquare}Проверить всё</button>
+        <button type="button" class="btn-sm diag-run" title="Один живой запрос к ВКонтакте: действителен ли токен"
+          onclick="runDiagnostics(['keys'], this)">${UI_ICONS.key}Только ключи</button>
+        <button type="button" class="btn-sm diag-run" title="Папки, диск, настройки, данные и история прогонов — ничего не тратит и не запрашивает"
+          onclick="runDiagnostics(['files','data','runs','env'], this)">${UI_ICONS.folder}Без запросов к API</button>
+        <button type="button" class="btn-sm diag-run" title="Откроет браузер и страницу выдачи: занимает до минуты"
+          onclick="runDiagnostics(['engines'], this, true)">${UI_ICONS.pulse}Проверить браузер</button>
       </div>
       <div class="diag-summary" id="diag-summary" role="status" aria-live="polite">Нажмите «Проверить всё» — покажу, что работает, а что нет.</div>
+      <div class="diag-legend">
+        <span class="diag-legend-item" data-status="ok">${UI_ICONS.check}в порядке</span>
+        <span class="diag-legend-item" data-status="warn">${UI_ICONS.warn}будет хуже обычного</span>
+        <span class="diag-legend-item" data-status="error">${UI_ICONS.x}сбор не пойдёт</span>
+        <span class="diag-legend-tip">Цвет полосы слева и есть статус — читать пояснения построчно не обязательно.</span>
+      </div>
       <div class="diag-results" id="diag-results"></div>
+      <div class="diag-copy-row">
+        <button type="button" class="btn-sm" id="btn-diag-copy" onclick="copyDiagReport(this)"
+          title="Скопировать отчёт текстом — удобно переслать или приложить к обращению" disabled>${UI_ICONS.copy}Скопировать отчёт</button>
+        <span class="diag-copy-hint">Отчёт без секретов: только статусы и объяснения.</span>
+      </div>
       <div class="ui-modal-btns">
         <button type="button" class="m-cancel" onclick="closeDiagnostics()">Закрыть</button>
       </div>
@@ -858,6 +981,8 @@ function showDiagnostics() {
   overlay.addEventListener('click', e => { if (e.target === overlay) closeDiagnostics(); });
   overlay.addEventListener('keydown', e => { if (e.key === 'Escape') closeDiagnostics(); });
   document.body.appendChild(overlay);
+  // Фокус внутрь, Tab и Escape по окну, возврат фокуса на кнопку «Диагностика».
+  modalA11y(overlay);
   // Клавиатура: Esc должен работать и без клика внутри модалки.
   document.addEventListener('keydown', _diagEscape);
 }
@@ -877,7 +1002,8 @@ function closeDiagnostics() {
 // выдачи, поэтому отдельная кнопка, а не часть «Проверить всё».
 function runDiagnostics(groups, btn, deep) {
   if (_diagBusy) return Promise.resolve();
-  const list = Array.isArray(groups) && groups.length ? groups : ['keys', 'files', 'data', 'env'];
+  const list = Array.isArray(groups) && groups.length
+    ? groups : ['keys', 'files', 'data', 'runs', 'env'];
   const probe = !!deep;
   _diagBusy = true;
   const buttons = [...document.querySelectorAll('.diag-run')];
@@ -901,9 +1027,13 @@ function runDiagnostics(groups, btn, deep) {
       if (!data || data.ok === false) {
         setDiagSummary('⛔ Проверки не выполнились: '
           + escapeHtml((data && data.error) || 'сервер не ответил'), 'error');
+        _diagLast = [];
+        _syncDiagCopyBtn();
         return;
       }
-      renderDiagnostics(data.results || [], list);
+      _diagLast = data.results || [];
+      renderDiagnostics(_diagLast, list);
+      _syncDiagCopyBtn();
     })
     .catch(() => setDiagSummary('⛔ Не удалось выполнить проверки — сервер недоступен.', 'error'))
     .then(() => {
@@ -926,8 +1056,7 @@ function renderDiagnostics(results, groups) {
   const errors = results.filter(r => r.status === 'error').length;
   const warns = results.filter(r => r.status === 'warn').length;
   const ok = results.filter(r => r.status === 'ok').length;
-  const plural = _pluralRu(results.length, 'проверка', 'проверки', 'проверок');
-  let summary = `Проверок: ${results.length} (${plural}): `
+  let summary = `Проверок: ${results.length} — `
     + `<b>${ok}</b> в порядке`
     + (warns ? `, <b>${warns}</b> с предупреждениями` : '')
     + (errors ? `, <b>${errors}</b> с ошибками` : '') + '.';
@@ -945,6 +1074,55 @@ function renderDiagnostics(results, groups) {
       ${rows.map(diagRowHTML).join('')}
     </div>`;
   }).join('') || '<div class="diag-empty">Проверки ничего не вернули.</div>';
+}
+
+// ── Копирование отчёта ───────────────────────────────────────
+// Смысл: когда что-то не работает, отчёт пересылают автору или кладут в
+// обращение. Пересказывать двадцать строк руками — та ещё работа, поэтому
+// кнопка отдаёт ровно то же, что видно в окне, без разметки и без секретов.
+const DIAG_STATUS_WORDS = { ok: 'OK', warn: 'ВНИМАНИЕ', error: 'ОШИБКА' };
+
+function diagReportText() {
+  const lines = ['Диагностика Yandex Business Parser — '
+    + new Date().toLocaleString('ru-RU')];
+  const counts = { ok: 0, warn: 0, error: 0 };
+  for (const group of Object.keys(DIAG_GROUP_NAMES)) {
+    const rows = _diagLast.filter(r => r && r.group === group);
+    if (!rows.length) continue;
+    lines.push('', DIAG_GROUP_NAMES[group]);
+    for (const row of rows) {
+      const word = DIAG_STATUS_WORDS[row.status] || 'ПРОВЕРКА';
+      if (row.status in counts) counts[row.status]++;  // только известные статусы
+      lines.push(`  [${word}] ${row.title || ''}`.trimEnd());
+      if (row.detail) lines.push(`         ${row.detail}`);
+      if (row.hint) lines.push(`         → ${row.hint}`);
+    }
+  }
+  lines.push('', `Итог: ${_diagLast.length} проверок: ${counts.ok} в порядке`
+    + (counts.warn ? `, ${counts.warn} с предупреждениями` : '')
+    + (counts.error ? `, ${counts.error} с ошибками` : '') + '.');
+  return lines.join('\n');
+}
+
+function _syncDiagCopyBtn() {
+  const btn = document.getElementById('btn-diag-copy');
+  if (btn) btn.disabled = !_diagLast.length;
+}
+
+function copyDiagReport(btn) {
+  if (!_diagLast.length) return Promise.resolve(false);
+  const label = btn ? btn.innerHTML : '';
+  if (btn) btn.disabled = true;
+  return Promise.resolve(copyText(diagReportText()))
+    .then(ok => {
+      if (typeof showToast === 'function') {
+        showToast(ok ? 'Отчёт диагностики скопирован — можно переслать'
+                     : 'Не удалось скопировать отчёт — выделите текст в окне',
+                 ok ? 'ok' : 'error');
+      }
+      return ok;
+    })
+    .finally(() => { if (btn) btn.innerHTML = label; });
 }
 
 // Одна строка отчёта: значок по статусу, заголовок, объяснение и что делать.
@@ -986,7 +1164,8 @@ function checkForUpdates(silent) {
       }
       if (data.newer) {
         showUpdateBanner(data.latest, data.changelog || '',
-          data.download_url || 'https://github.com/ScarFace11/Yandex-Buisnes-Parser/releases/latest');
+          data.download_url || 'https://github.com/ScarFace11/Yandex-Buisnes-Parser/releases/latest',
+          data.asset_name || '');
         setUpdateIndicator(true, data.latest);
         return { newer: true, version: data.latest };
       }
@@ -1108,7 +1287,18 @@ function dismissUpdateBanner() {
   _syncBannerOffset();
 }
 
-function showUpdateBanner(newVer, changelog, url) {
+// `assetName` — файл релиза под текущую систему (windows zip или macos .dmg):
+// сервер отдаёт его вместе со ссылкой, чтобы кнопка не обещала .exe сборке на
+// macOS. Формат пишем в подписи: «Скачать v2.3.4 (macOS, .dmg) ↗».
+function _assetLabel(assetName) {
+  const name = String(assetName || '');
+  const ext = (name.match(/\.[a-z0-9]+$/i) || [''])[0].toLowerCase();
+  const os = /macos/i.test(name) ? 'macOS' : (/windows/i.test(name) ? 'Windows' : '');
+  const parts = [os, ext].filter(Boolean);
+  return parts.length ? ` (${parts.join(', ')})` : '';
+}
+
+function showUpdateBanner(newVer, changelog, url, assetName) {
   // Remove existing banner if any
   const existing = document.getElementById('update-banner');
   if (existing) existing.remove();
@@ -1135,7 +1325,7 @@ function showUpdateBanner(newVer, changelog, url) {
       ${frozen
         ? `<button class="ub-btn ub-primary" id="ub-self-update" onclick="selfUpdate()" title="Скачать и установить прямо из приложения — после установки просто обновите страницу">${UI_ICONS.upload}Обновить сейчас</button>
            <a class="ub-btn" href="${url}" target="_blank" rel="noopener noreferrer" title="Страница релизов на GitHub">GitHub ↗</a>`
-        : `<a class="ub-btn ub-primary" href="${url}" target="_blank" rel="noopener noreferrer" title="Скачайте сборку для своей системы на странице релизов">Скачать v${newVer} ↗</a>`}
+        : `<a class="ub-btn ub-primary" href="${url}" target="_blank" rel="noopener noreferrer" title="Скачайте сборку для своей системы${assetName ? ': ' + escapeHtml(assetName) : ''}">Скачать v${newVer}${_assetLabel(assetName)} ↗</a>`}
       <button class="ub-close" onclick="dismissUpdateBanner()" title="Скрыть (индикация останется в шапке)">${UI_ICONS.x}</button>
     `;
     document.body.prepend(banner);
@@ -1183,6 +1373,7 @@ function showChangelog() {
     overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
     overlay.addEventListener('keydown', e => { if (e.key === 'Escape') close(); });
     document.body.appendChild(overlay);
+    modalA11y(overlay);
   };
   if (_changelogCache) { render(_changelogCache); return; }
   fetch('/update/changelog')
@@ -1231,3 +1422,910 @@ async function selfUpdate() {
 }
 // ═══════════════════════════════════════════════════════════════
 //  Шаблоны сообщений («📝 Шаблоны»)
+
+// ═══════════════════════════════════════════
+//  Шаги «Как это работает» — не картинка, а действие
+//
+//  Три шага на пустом экране объясняли, что делать, но были обычными блоками:
+//  тень при наведении обещала клик, которого не было. Теперь каждый шаг
+//  делает то, о чём говорит: ведёт к полю, запускает поиск, открывает
+//  результаты — и объясняет, чего не хватает, если запустить пока нельзя.
+// ═══════════════════════════════════════════
+function _onboardingFocus(id) {
+  const el = document.getElementById(id);
+  if (!el) return false;
+  el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  // Фокус ставится ПОСЛЕ клика: браузер переводит фокус на нажатую кнопку-шаг
+  // уже после обработчика, и он «съедал» поле, к которому шаг ведёт.
+  setTimeout(() => {
+    if (typeof el.focus === 'function') el.focus({ preventScroll: true });
+  }, 0);
+  return true;
+}
+
+function onboardingStep(n) {
+  if (n === 1) {
+    // «Напишите запрос и город»: открываем раздел и ставим курсор в то поле,
+    // которое ещё пустое — сначала запрос, потом город.
+    const sec = document.getElementById('acc-basic');
+    if (sec && !sec.classList.contains('open')) {
+      const hdr = sec.querySelector('.acc-hdr');
+      if (hdr) toggleAccordion(hdr);
+    }
+    const queries = (document.getElementById('f-queries')?.value || '').trim();
+    _onboardingFocus(queries ? 'f-city-input' : 'f-queries');
+    return;
+  }
+
+  if (n === 2) {
+    // «Найти компании»: если данных не хватает — не молчим и не жмём впустую,
+    // а говорим, чего именно не хватает, и ведём к нужному полю.
+    if (isRunActive()) { showToast('Поиск уже идёт', 'info'); return; }
+    const queries = (document.getElementById('f-queries')?.value || '').trim();
+    if (!queries) {
+      showToast('Сначала напишите, кого искать — например «кафе»', 'error');
+      _onboardingFocus('f-queries');
+      return;
+    }
+    if (!selectedCities.length) {
+      showToast('Выберите хотя бы один город в разделе «Где ищем?»', 'error');
+      _onboardingFocus('f-city-input');
+      return;
+    }
+    document.getElementById('btn-run')?.click();
+    return;
+  }
+
+  if (n === 3) {
+    // «Просмотрите результаты»: пока показывать нечего, говорим об этом.
+    const hasRows = (typeof allResults !== 'undefined' && allResults.length > 0);
+    showTab('table');
+    if (!hasRows) {
+      showToast('Пока пусто — запустите поиск, и результаты появятся здесь', 'info');
+    }
+  }
+}
+
+// ═══════════════════════════════════════════
+//  Сообщить о проблеме: issue на GitHub
+// ═══════════════════════════════════════════
+// Кнопка в шапке открывает окно: пользователь пишет письмо, выбирает
+// метки и куски контекста, а кнопка открывает форму GitHub с
+// предзаполненным телом (URL-параметры new issue). Загружать файлы на
+// GitHub приложение не умеет и не должно (для этого нужен ключ и токен
+// пользователя), поэтому скриншот перекладывается штатным путём: вставка
+// из буфера обмена — туда же, куда его кладёт Win+Shift+S.
+const REPORT_REPO = 'ScarFace11/Yandex-Buisnes-Parser';
+// Метки — стандартный набор репозитория (проверено по GitHub API).
+// Цвета — как у меток на самом GitHub (примечательно: у каждой метки свой,
+// поэтому они читаются как привычные пилюли, а не как однообразные галочки).
+const REPORT_LABELS = [
+  { id: 'bug',           lbl: 'Баг — что-то не работает',         color: '#d73a49', on: true },
+  { id: 'enhancement',   lbl: 'Улучшение — новая возможность',    color: '#a2eeef' },
+  { id: 'question',      lbl: 'Вопрос — нужен совет',              color: '#d876e3' },
+  { id: 'documentation', lbl: 'Документация — инструкции, README', color: '#0075ca' },
+  { id: 'accessibility', lbl: 'Доступность — сложность использования', color: '#8250df' },
+];
+// Куски контекста: сервер даёт env/runs/лог, вкладка — свои фильтры.
+const REPORT_CTX_PARTS = [
+  { id: 'env',    lbl: 'Версия, система и браузер' },
+  { id: 'runs',   lbl: 'Последний прогон и кэш' },
+  { id: 'log',    lbl: 'Последние строки лога' },
+  { id: 'client', lbl: 'Фильтры и настройки этой вкладки' },
+];
+let _reportServerCtx = '';   // текст с сервера (env/runs/лог), по запросу
+let _reportShot = '';        // dataURL последнего скриншота (только превью)
+let _reportShotInClipboard = false;  // лежит ли картинка в буфере обмена
+let _reportInitial = '';     // снимок формы при открытии — для «Отменить»
+let _ghDeviceTimer = null;   // поллинг device flow (setInterval)
+// Выбор меток и кусков контекста запоминается между открытиями окна:
+// второй раз описывать баг одной и той же рубрикой не нужно.
+const REPORT_CHOICES_KEY = 'yp_report_choices_v1';
+
+// Тело issue собирается из кусков — чистая функция, её же гоняет node-тест.
+function composeReportBody(desc, sections) {
+  const head = (desc || '').trim() || '(описание не заполнено)';
+  const rest = (sections || []).filter(Boolean).join('\n\n');
+  return rest ? head + '\n\n---\n\n' + rest : head;
+}
+
+// Раздел контекста с сервера по заголовку («## Версия…» — до пустой строки).
+function _serverSection(ctx, titlePart) {
+  const parts = String(ctx || '').split(/\n\n(?=## )/);
+  const hit = parts.find(p => p.indexOf('## ' + titlePart) === 0);
+  return hit || '';
+}
+
+// Настройки вкладки — из localStorage: сервер их не видит, а для
+// «почему у меня так, а не иначе» это самое первое, что нужно.
+function _clientSettingsSection() {
+  const lines = ['## Фильтры и настройки этой вкладки'];
+  const read = (key) => {
+    try { return localStorage.getItem(key); } catch (e) { return null; }
+  };
+  const form = read('yp_settings_v1');
+  if (form) {
+    try {
+      const s = JSON.parse(form);
+      const interesting = ['query', 'queries', 'cities', 'parse_mode', 'social_mode',
+                           'required_socials', 'min_lead_score', 'formats', 'max_pages'];
+      interesting.forEach(k => {
+        if (s[k] !== undefined && s[k] !== null && s[k] !== '') {
+          lines.push('- ' + k + ': ' + JSON.stringify(s[k]));
+        }
+      });
+    } catch (e) { lines.push('- сохранённые фильтры не разобрать: ' + e.name); }
+  }
+  const fields = read('yp_parse_fields_v1');
+  if (fields) lines.push('- выбранные поля отчёта: ' + (fields.length > 160 ? fields.slice(0, 160) + '…' : fields));
+  lines.push('- тема: ' + (read('yp_theme_v1') || 'по умолчанию'));
+  lines.push('- таблица: «все поиски» = ' + (read('yp_results_scope') || 'нет')
+             + ', режим = ' + (read('yp_results_subtab') || 'сырые'));
+  return lines.length > 1 ? lines.join('\n') : '';
+}
+
+// URL формы GitHub. Длина ограничена: длинный адрес браузеры и GitHub
+// обрезают молча, поэтому при нехватке места последние разделы контекста
+// отбрасываются с явной пометкой в конце тела.
+function buildIssueUrl(opts) {
+  const title = String((opts && opts.title) || '').trim() || 'Сообщение из приложения';
+  const labels = (opts && opts.labels || []).filter(Boolean).join(',');
+  const limit = 7000;   // запас до жёстких лимитов URI
+  let body = String((opts && opts.body) || '');
+  let url = _issueUrl(title, labels, body);
+  let dropped = false;
+  while (url.length > limit && /\n\n## /.test(body)) {
+    // Последний раздел контекста — за борт (описание пользователя важнее).
+    // URL пересчитывается на каждой итерации: без этого условие смотрит на
+    // первый замер и сносит все разделы разом, хотя хватило бы одного.
+    const idx = body.lastIndexOf('\n\n## ');
+    body = body.slice(0, idx);
+    url = _issueUrl(title, labels, body);
+    dropped = true;
+  }
+  if (dropped) {
+    body += '\n\n_(некоторые разделы контекста опущены из-за длины сообщения — '
+          + 'полная версия остаётся в описании формы, скопируйте её при необходимости)_';
+  }
+  url = _issueUrl(title, labels, body);
+  // truncated — «тело пришлось обрезать»: интерфейс предупреждает, что часть
+  // контекста не доехала. Не «снова не влезло» — после обрезки URL обычно
+  // укладывается в лимит, но пользователю это знать всё равно нужно.
+  return { url: url, body: body, truncated: dropped };
+}
+
+function _issueUrl(title, labels, body) {
+  const qs = 'title=' + encodeURIComponent(title)
+    + (labels ? '&labels=' + encodeURIComponent(labels) : '')
+    + '&body=' + encodeURIComponent(body);
+  return 'https://github.com/' + REPORT_REPO + '/issues/new?' + qs;
+}
+
+function openReportModal() {
+  const existing = document.getElementById('report-overlay');
+  if (existing) existing.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'report-overlay';
+  overlay.className = 'ui-modal-overlay';
+  // Метки — не список галочек, а поле-дропдаун: внутри выпадает список с
+  // цветными пилюлями, как на самом GitHub. Чекбоксы .rep-label остаются
+  // прежними — сбор выбранных меток (openGitHubIssue/sendReportIssue) не меняется.
+  const labelOpts = REPORT_LABELS.map(l => `
+    <label class="rep-label-opt">
+      <input type="checkbox" class="rep-label" value="${l.id}" ${l.on ? 'checked' : ''}>
+      <span class="gh-pill" style="${_ghPillCss(l.color)}">${escapeHtml(l.id)}</span>
+      <span class="rep-label-desc">${escapeHtml(l.lbl)}</span>
+    </label>`).join('');
+  const ctxRows = REPORT_CTX_PARTS.map(p => `
+    <label class="chk"><input type="checkbox" class="rep-ctx" value="${p.id}" checked>
+      <span>${escapeHtml(p.lbl)}</span></label>`).join('');
+  overlay.innerHTML = `
+    <div class="ui-modal report-modal" role="dialog" aria-modal="true" aria-labelledby="report-title">
+      <button type="button" class="rep-x" onclick="cancelReportModal()"
+              title="Закрыть окно" aria-label="Закрыть окно">${UI_ICONS.x}</button>
+      <h3 id="report-title">${UI_ICONS.warn}Сообщить о проблеме</h3>
+      <!-- GitHub не создаёт issue анонимно. Поле токена убрано: вместо него —
+           вход по коду (device flow, client_id зашит в приложение); кнопка
+           входа показывается только при can_device, а без токена сообщение
+           уходит заполненной формой (кнопка внизу слева). -->
+      <div class="rep-gh-login" id="rep-gh-login" role="status" hidden>
+        <span class="rep-gh-txt" id="rep-gh-txt">GitHub не подключён — войдите по коду,
+          и «Создать issue» будет работать напрямую: без открытия формы.</span>
+        <span class="rep-gh-actions">
+          <button type="button" class="btn-sm" id="rep-gh-login-btn"
+                  onclick="startGitHubDeviceLogin()"
+                  title="Войти в GitHub по коду — токен придёт сам, вводить его нигде не нужно">
+            ${UI_ICONS.key}Войти в GitHub</button>
+          <a class="rep-gh-link" href="https://github.com/login/device" target="_blank" rel="noopener">Страница авторизации</a>
+        </span>
+        <span class="rep-gh-code" id="rep-gh-code" hidden></span>
+      </div>
+      <div class="diag-lead">Опишите, что случилось, — и отправьте. Метки, контекст
+        (версия, система, браузер, последний прогон, логи) и заголовок собираются
+        сами; скриншот вставляется в окно и перекладывается в форму GitHub.</div>
+      <div class="rep-sec-lbl" id="rep-labels-lbl">Метки GitHub</div>
+      <div class="rep-label-select" id="rep-label-select">
+        <button type="button" class="rep-label-field" id="rep-label-field"
+                aria-haspopup="listbox" aria-expanded="false"
+                aria-labelledby="rep-labels-lbl">
+          <span class="rep-label-pills" id="rep-label-pills"></span>
+          <span class="rep-label-caret" aria-hidden="true">▾</span>
+        </button>
+        <div class="rep-label-menu" id="rep-label-menu" role="listbox"
+             aria-multiselectable="true" aria-labelledby="rep-labels-lbl" hidden>
+          ${labelOpts}
+        </div>
+      </div>
+      <div class="rep-sec-lbl"><label for="rep-title-inp">Заголовок</label></div>
+      <input type="text" id="rep-title-inp" placeholder="Коротко: что не работает"
+             aria-label="Заголовок сообщения">
+      <div class="rep-sec-lbl"><label for="rep-desc">Описание</label></div>
+      <textarea id="rep-desc" rows="5"
+        placeholder="Что делали, что ожидалось, что получилось. Шаги воспроизведения — если они есть."></textarea>
+      <div class="rep-sec-lbl">Что приложить к сообщению</div>
+      <div class="rep-checks">${ctxRows}</div>
+      <details class="rep-preview-wrap">
+        <summary>Показать прилагаемый контекст</summary>
+        <pre class="rep-preview" id="rep-preview">Загружаю контекст…</pre>
+      </details>
+      <div class="rep-sec-lbl">Скриншот</div>
+      <div class="rep-shot" id="rep-shot" tabindex="0" role="button"
+           aria-label="Область для вставки скриншота">
+        Нажмите сюда и вставьте скриншот из буфера: <b>Ctrl+V</b>
+        (снимок экрана кладётся туда же — Win+Shift+S на Windows).
+        На GitHub он вставляется туда же — после открытия формы.
+      </div>
+      <!-- Кнопка вне rep-shot: тот имеет роль button, и кнопка внутри была бы
+           вложенным элементом управления — клик дошёл бы и до выбора файла. -->
+      <div class="rep-shot-actions" id="rep-shot-actions" hidden>
+        <button type="button" class="btn-sm" onclick="copyReportShot(this)"
+                title="Положить показанный скриншот в буфер обмена — затем Ctrl+V в форме GitHub">
+          ${UI_ICONS.copy}Скопировать скриншот в буфер</button>
+      </div>
+      <div class="ui-modal-btns">
+        <button type="button" class="btn-sm rep-form-btn" onclick="openGitHubIssue()"
+                title="Открыть заполненную форму issue — работает и без токена">${UI_ICONS.external}Открыть форму на GitHub</button>
+        <button type="button" class="m-cancel rep-cancel" onclick="cancelReportModal()"
+                title="Отменить создание сообщения">Отменить</button>
+        <button type="button" class="m-ok" id="rep-issue"
+                onclick="sendReportIssue()"
+                title="Создать issue на GitHub через API — без открытия сайта">${UI_ICONS.send}Создать issue</button>
+      </div>
+    </div>`;
+  // Клик вне окна и Escape ведут себя как «Отменить»: если пользователь что-то
+  // ввёл или выбрал — сначала подтверждение, а не мгновенная потеря данных.
+  overlay.addEventListener('click', e => { if (e.target === overlay) cancelReportModal(); });
+  document.body.appendChild(overlay);
+  modalA11y(overlay);
+  // Контекст с сервера — одним запросом; форма показывает его сразу.
+  _reportServerCtx = '';
+  fetch('/report/context')
+    .then(r => r.json())
+    .then(d => {
+      _reportServerCtx = (d && d.ok && d.context) || '';
+      _repSyncGithubLogin(!!(d && d.has_token), !!(d && d.can_device));
+      _renderReportPreview();
+    })
+    .catch(() => {
+      _reportServerCtx = '(контекст с сервера не получен — сервер недоступен)';
+      _repSyncGithubLogin(null, false);
+      _renderReportPreview();
+    });
+  // Обновление предпросмотра при любом изменении набора кусков контекста;
+  // выбор запоминаем — при следующем открытии окно откроется с ним.
+  overlay.querySelectorAll('.rep-ctx').forEach(cb => cb.addEventListener('change', () => {
+    _renderReportPreview();
+    _reportSaveChoices();
+  }));
+  // Дропдаун меток: открытие/закрытие и перерисовка выбранных пилюль в поле.
+  _reportRestoreChoices();
+  _repRenderPills();
+  document.getElementById('rep-label-field').addEventListener('click', () => {
+    const menu = document.getElementById('rep-label-menu');
+    _repToggleLabelMenu(menu.hidden);
+  });
+  overlay.querySelectorAll('.rep-label').forEach(cb =>
+    cb.addEventListener('change', () => {
+      _repRenderPills();
+      _renderReportPreview();
+      _reportSaveChoices();
+    }));
+  // Клик мимо списка (и клавиши) закрывают дропдаун, но не модалку.
+  overlay.addEventListener('click', e => {
+    if (!e.target.closest('#rep-label-select')) _repToggleLabelMenu(false);
+  });
+  overlay.addEventListener('keydown', e => { if (e.key === 'Escape') _repToggleLabelMenu(false); });
+  // Исходное состояние — чтобы «Отменить» понял, есть ли что терять.
+  _reportInitial = _reportSnapshot();
+  // Скриншот: вставка из буфера и выбор файла — оба пути дают превью.
+  const shot = document.getElementById('rep-shot');
+  shot.addEventListener('paste', _reportShotPasted);
+  shot.addEventListener('click', () => {
+    const inp = document.createElement('input');
+    inp.type = 'file'; inp.accept = 'image/*';
+    inp.onchange = () => { if (inp.files && inp.files[0]) _reportShotFile(inp.files[0], true); };
+    inp.click();
+  });
+  _renderReportPreview();
+}
+
+function _reportShotPasted(e) {
+  const items = (e.clipboardData && e.clipboardData.items) || [];
+  for (const it of items) {
+    if (it.type && it.type.indexOf('image/') === 0) {
+      const file = it.getAsFile();
+      if (file) { e.preventDefault(); _reportShotFile(file); }
+      return;
+    }
+  }
+}
+
+function _reportShotFile(file, fromFile) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    _reportShot = String(reader.result || '');
+    _reportShotInClipboard = !fromFile;   // вставка пришла из буфера — файл оттуда не брался
+    const box = document.getElementById('rep-shot');
+    if (!box) return;
+    // Выбранный файл в буфере НЕ лежит — раньше такое превью обещало
+    // вставку «он всё ещё в буфере», и вставка не работала.
+    const note = fromFile
+      ? 'Картинка выбрана файлом — сама по себе в буфере она не лежит. '
+        + 'Нажмите «Скопировать скриншот в буфер», затем Ctrl+V в форме GitHub.'
+      : 'Скриншот показан здесь, но на GitHub он попадает только вставкой: '
+        + 'в форме GitHub нажмите в тело сообщения и <b>Ctrl+V</b> — он всё ещё в буфере обмена.';
+    box.innerHTML = '<img src="' + _reportShot + '" alt="Выбранный скриншот">'
+      + '<div class="rep-shot-note">' + note + '</div>';
+    const actions = document.getElementById('rep-shot-actions');
+    if (actions) actions.hidden = false;
+  };
+  reader.readAsDataURL(file);
+}
+
+// Подключение GitHub: сервер отдаёт два булевых признака — has_token (токен
+// уже есть) и can_device (в сборке зашит client_id, вход по коду возможен).
+// Поля ввода токена в окне больше нет — вместо него вход по коду (device
+// flow): приложение показывает код, ведёт на github.com/login/device и
+// само меняет подтверждённый код на токен. Без client_id кнопки входа нет
+// вовсе: обычному пользователю не предлагают создавать OAuth-приложение —
+// остаётся заполненная форма.
+function _repSyncGithubLogin(has, canDevice) {
+  const el = document.getElementById('rep-gh-login');
+  if (!el) return;
+  el.hidden = has === true;
+  // Идущий вход по коду не сбрасываем: контекст с сервера приезжает
+  // асинхронно и мог бы своим ответом убить уже начатый поллинг.
+  if (has !== true && !_ghDeviceTimer) {
+    _ghDeviceReset();   // кнопку возвращает в исходное состояние — ниже своё
+    const login = canDevice === true;
+    const btn = document.getElementById('rep-gh-login-btn');
+    if (btn) btn.hidden = !login;
+    const actions = el.querySelector('.rep-gh-actions');
+    if (actions) actions.hidden = !login;
+    const txt = el.querySelector('.rep-gh-txt');
+    if (txt) {
+      txt.textContent = has === null
+        ? 'Сервер недоступен — вход по коду не работает, но сообщение всё равно уйдёт заполненной формой.'
+        : (login
+          ? 'GitHub не подключён — войдите по коду, и «Создать issue» будет работать напрямую: без открытия формы.'
+          : 'GitHub не подключён — сообщение уйдёт заполненной формой на GitHub: войдите туда обычным способом, форма уже заполнена.');
+    }
+  }
+}
+
+// ── Вход в GitHub по коду (device flow) ──────────────────
+function _ghDeviceReset() {
+  if (_ghDeviceTimer) { clearInterval(_ghDeviceTimer); _ghDeviceTimer = null; }
+  const box = document.getElementById('rep-gh-code');
+  if (box) { box.hidden = true; box.innerHTML = ''; }
+  const btn = document.getElementById('rep-gh-login-btn');
+  if (btn) { btn.hidden = false; btn.disabled = false; btn.innerHTML = UI_ICONS.key + 'Войти в GitHub'; }
+}
+
+function _ghDeviceStatus(text) {
+  const txt = document.getElementById('rep-gh-txt');
+  if (txt) txt.textContent = text;
+}
+
+// Кнопка «Войти в GitHub»: сервер выдаёт код, окно показывает его, открывается
+// страница авторизации, и дальше приложение само ждёт подтверждения.
+function startGitHubDeviceLogin() {
+  const btn = document.getElementById('rep-gh-login-btn');
+  if (btn) { btn.disabled = true; btn.innerHTML = 'Запрашиваю код…'; }
+  return fetch('/report/github/device/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  })
+    .then(r => r.json())
+    .then(d => {
+      if (!d || !d.ok) {
+        _ghDeviceStatus((d && d.error) || 'GitHub не выдал код входа — попробуйте позже.');
+        if (btn) { btn.disabled = false; btn.innerHTML = UI_ICONS.key + 'Войти в GitHub'; }
+        return false;
+      }
+      const codeBox = document.getElementById('rep-gh-code');
+      if (codeBox) {
+        codeBox.hidden = false;
+        codeBox.innerHTML = 'Код: <b class="rep-gh-usercode">' + escapeHtml(d.user_code)
+          + '</b> — введите его на <a href="' + escapeHtml(d.verification_uri)
+          + '" target="_blank" rel="noopener">странице авторизации</a> и подтвердите доступ. '
+          + 'Жду подтверждения…';
+      }
+      if (btn) btn.hidden = true;
+      try { window.open(d.verification_uri, '_blank'); } catch (e) { /* вкладку блокируем сами, ссылка есть в тексте */ }
+      _ghDevicePoll(d.device_code, d.interval || 5);
+      return true;
+    })
+    .catch(() => {
+      _ghDeviceStatus('Сервер не ответил — попробуйте ещё раз или откройте страницу авторизации по ссылке.');
+      if (btn) { btn.disabled = false; btn.innerHTML = UI_ICONS.key + 'Войти в GitHub'; }
+      return false;
+    });
+}
+
+// Опрос сервера каждые interval секунд (GitHub сам присылает slow_down —
+// тогда удлиняем паузу). Сбой одного опроса поллинг не бросает.
+function _ghDevicePoll(deviceCode, interval) {
+  _ghDeviceTimer = setInterval(() => {
+    fetch('/report/github/device/poll', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device_code: deviceCode }),
+    })
+      .then(r => r.json())
+      .then(d => {
+        if (d && d.ok) {
+          _ghDeviceReset();
+          const el = document.getElementById('rep-gh-login');
+          if (el) el.hidden = true;
+          showToast('GitHub подключён — «Создать issue» работает напрямую', 'ok');
+          if (d.save_warning) appendLog('warn', 'Токен не сохранён: ' + d.save_warning);
+          return;
+        }
+        if (d && d.pending) { if (d.slow_down) interval += 5; return; }
+        _ghDeviceReset();
+        _ghDeviceStatus((d && d.error) || 'Вход не завершён — попробуйте ещё раз.');
+      })
+      .catch(() => { /* один сбой опроса — не повод бросать ожидание */ });
+  }, Math.max(1, interval) * 1000);
+}
+
+// ── Память выбора: метки и куски контекста ───────────────────────
+function _reportSaveChoices() {
+  const overlay = document.getElementById('report-overlay');
+  if (!overlay) return;
+  const ids = sel => [...overlay.querySelectorAll(sel)]
+    .filter(cb => cb.checked).map(cb => cb.value);
+  try {
+    localStorage.setItem(REPORT_CHOICES_KEY, JSON.stringify({
+      labels: ids('.rep-label'),
+      ctx: ids('.rep-ctx'),
+    }));
+  } catch (e) { /* приватный режим — просто не запоминаем */ }
+}
+
+function _reportRestoreChoices() {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(REPORT_CHOICES_KEY) || 'null'); }
+  catch (e) { saved = null; }
+  if (!saved) return;   // первый запуск — значения по умолчанию из разметки
+  const overlay = document.getElementById('report-overlay');
+  if (!overlay) return;
+  const apply = (sel, wanted) => {
+    if (!Array.isArray(wanted)) return;
+    const set = new Set(wanted.map(String));
+    overlay.querySelectorAll(sel).forEach(cb => { cb.checked = set.has(cb.value); });
+  };
+  apply('.rep-label', saved.labels);
+  apply('.rep-ctx', saved.ctx);
+}
+
+// Двухступенчатая картинка → PNG-блоб для клипборда.
+// Клипборду нужен именно image/png: файл мог быть JPEG, а вставка из буфера
+// в форму GitHub ждёт PNG.
+function _shotPngBlob(dataUrl) {
+  return new Promise(resolve => {
+    if (!dataUrl || dataUrl.indexOf('data:image/png') !== 0) {
+      if (!dataUrl) { resolve(null); return; }
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const c = document.createElement('canvas');
+          c.width = img.naturalWidth; c.height = img.naturalHeight;
+          c.getContext('2d').drawImage(img, 0, 0);
+          c.toBlob(b => resolve(b), 'image/png');
+        } catch (e) { resolve(null); }
+      };
+      img.onerror = () => resolve(null);
+      img.src = dataUrl;
+      return;
+    }
+    try {
+      const bin = atob(dataUrl.slice(dataUrl.indexOf(',') + 1));
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      resolve(new Blob([bytes], { type: 'image/png' }));
+    } catch (e) { resolve(null); }
+  });
+}
+
+// Кнопка «Скопировать скриншот в буфер»: после неё Ctrl+V в форме GitHub
+// (или в комментарии к созданному issue) вставляет именно эту картинку.
+function copyReportShot(btn) {
+  if (!_reportShot) {
+    showToast('Скриншот не выбран', 'warn');
+    return Promise.resolve(false);
+  }
+  const label = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.innerHTML = 'Копирую…'; }
+  return _shotPngBlob(_reportShot)
+    .then(blob => {
+      if (!blob || !window.ClipboardItem
+          || !navigator.clipboard || !navigator.clipboard.write) {
+        throw new Error('clipboard unsupported');
+      }
+      return navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+    })
+    .then(() => {
+      _reportShotInClipboard = true;
+      showToast('Скриншот в буфере — Ctrl+V в форме GitHub', 'ok');
+      return true;
+    })
+    .catch(() => {
+      showToast('Браузер не дал скопировать картинку — скопируйте её из превью (Ctrl+C)', 'error');
+      return false;
+    })
+    .finally(() => { if (btn) { btn.disabled = false; btn.innerHTML = label; } });
+}
+
+function _renderReportPreview() {
+  const pre = document.getElementById('rep-preview');
+  if (!pre) return;
+  const parts = [];
+  const ctx = _reportServerCtx;
+  if (_ctxChecked('env')) parts.push(_serverSection(ctx, 'Версия, система и браузер'));
+  if (_ctxChecked('runs')) parts.push(_serverSection(ctx, 'Прогоны и кэш'));
+  if (_ctxChecked('log')) parts.push(_serverSection(ctx, 'Последние строки лога'));
+  if (_ctxChecked('client')) parts.push(_clientSettingsSection());
+  const body = composeReportBody('', parts);
+  pre.textContent = body || '(пусто — отметьте хотя бы один пункт)';
+}
+
+function _ctxChecked(id) {
+  const cb = document.querySelector('#report-overlay .rep-ctx[value="' + id + '"]');
+  return !cb || cb.checked;
+}
+
+function _reportBodyNow() {
+  const overlay = document.getElementById('report-overlay');
+  const desc = overlay ? (document.getElementById('rep-desc') || {}).value : '';
+  const parts = [];
+  const ctx = _reportServerCtx;
+  if (_ctxChecked('env')) parts.push(_serverSection(ctx, 'Версия, система и браузер'));
+  if (_ctxChecked('runs')) parts.push(_serverSection(ctx, 'Прогоны и кэш'));
+  if (_ctxChecked('log')) parts.push(_serverSection(ctx, 'Последние строки лога'));
+  if (_ctxChecked('client')) parts.push(_clientSettingsSection());
+  if (_reportShot) {
+    parts.push(_reportShotInClipboard
+      ? '> [!NOTE]\n> Скриншот был вставлен в окно приложения; вставьте его сюда: '
+        + 'нажмите в тело сообщения и Ctrl+V — снимок всё ещё в буфере обмена.'
+      : '> [!NOTE]\n> Скриншот показан в окно приложения, но в буфере его нет '
+        + '(кнопка «Скопировать скриншот в буфер» в окне сообщения); '
+        + 'вставьте его сюда через Ctrl+V, если оно нужно.');
+  }
+  return composeReportBody(desc, parts);
+}
+
+function openGitHubIssue() {
+  const overlay = document.getElementById('report-overlay');
+  if (!overlay) return;
+  const title = (document.getElementById('rep-title-inp') || {}).value || '';
+  const labels = [...overlay.querySelectorAll('.rep-label')]
+    .filter(cb => cb.checked).map(cb => cb.value);
+  const made = buildIssueUrl({ title: title, labels: labels, body: _reportBodyNow() });
+  const win = window.open(made.url, '_blank');
+  if (!win) {
+    // Браузер заблокировал окно — текст в буфере, ссылку показываем в логе.
+    copyText(made.body);
+    showToast('Браузер заблокировал открытие — текст скопирован, ссылка в журнале', 'warn');
+    appendLog('warn', 'Открыть форму вручную: ' + made.url.slice(0, 160) + '…');
+    return;
+  }
+  if (made.truncated) {
+    showToast('Контекст не поместился в ссылку — часть разделов опущена', 'warn');
+  }
+  closeReportModal();
+}
+
+// «Создать issue» — отправка тем же набором, что и в форму, но через
+// GitHub API: без открытия сайта. Без токена (или с протухшим) сервер
+// отвечает code=no_token/401 — тогда, не оставляя пользователя ни с чем,
+// открываем заполненную форму, как раньше.
+function sendReportIssue() {
+  const overlay = document.getElementById('report-overlay');
+  if (!overlay) return Promise.resolve(false);
+  const btn = document.getElementById('rep-issue');
+  const title = (document.getElementById('rep-title-inp') || {}).value || '';
+  const labels = [...overlay.querySelectorAll('.rep-label')]
+    .filter(cb => cb.checked).map(cb => cb.value);
+  // Токен в окне не вводится: его роль принял сервер (.env, GITHUB_TOKEN),
+  // а без него — тот же запасной путь, что и раньше, заполненная форма.
+  const payload = {
+    title: title,
+    labels: labels,
+    body: _reportBodyNow(),
+  };
+  const btnHtml = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.innerHTML = 'Отправляю…'; }
+  return fetch('/report/issue', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+    .then(r => r.json())
+    .then(d => {
+      if (btn) { btn.disabled = false; btn.innerHTML = btnHtml; }
+      if (d && d.ok) {
+        appendLog('ok', 'Issue #' + d.number + ' создан: ' + d.url);
+        if (d.save_warning) appendLog('warn', 'Токен не сохранён: ' + d.save_warning);
+        let opened = null;
+        try { opened = window.open(d.url, '_blank'); } catch (e) { opened = null; }
+        showToast(opened
+          ? 'Issue #' + d.number + ' создан — вставьте скриншот, если он нужен'
+          : 'Issue #' + d.number + ' создан — ссылка в журнале', 'ok');
+        closeReportModal();
+        return true;
+      }
+      const code = d && d.code;
+      if (code === 'no_token' || (d && d.status === 401)) {
+        showToast(((d && d.error) || 'Токена нет') + ' — открываю форму', 'warn');
+        appendLog('warn', 'Issue через API не создан: ' + ((d && d.error) || 'нет токена'));
+        openGitHubIssue();          // запасной путь — форма с тем же содержимым
+        return false;
+      }
+      showToast('Не удалось создать issue: ' + ((d && d.error) || 'GitHub не ответил'), 'error');
+      appendLog('error', 'GitHub API: ' + ((d && d.error) || 'нет ответа'));
+      return false;
+    })
+    .catch(() => {
+      if (btn) { btn.disabled = false; btn.innerHTML = btnHtml; }
+      showToast('Сервер не ответил — попробуйте «Открыть форму на GitHub»', 'error');
+      return false;
+    });
+}
+
+// ══ Дропдаун меток ══════════════════════════
+// Цвет пилюли — цвет метки на GitHub: в тёмной теме полупрозрачная подложка
+// и светлый текст (как на самом GitHub в тёмной теме), в светлой — сплошная
+// заливка с автоматически тёмным/светлым текстом по яркости цвета.
+function _ghPillCss(color) {
+  const c = String(color || '').replace('#', '');
+  if (c.length !== 6) return '';
+  const v = i => parseInt(c.slice(i, i + 2), 16);
+  const r = v(0), g = v(1), b = v(2);
+  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+  const to2 = n => n.toString(16).padStart(2, '0');
+  if (dark) {
+    // Светлее к белому — на тёмном фоне иначе метка сливается с карточкой.
+    const mix = n => to2(Math.round(n + (255 - n) * 0.4));
+    return 'background:color-mix(in srgb, #' + c + ' 22%, transparent);color:#'
+      + mix(r) + mix(g) + mix(b);
+  }
+  // Светлая тема GitHub: метка своим цветом, текст — контрастный.
+  return 'background:#' + c + ';color:' + (lum > 0.55 ? '#24292f' : '#ffffff');
+}
+
+function _repToggleLabelMenu(show) {
+  const menu = document.getElementById('rep-label-menu');
+  const field = document.getElementById('rep-label-field');
+  if (!menu || !field) return;
+  menu.hidden = !show;
+  field.setAttribute('aria-expanded', show ? 'true' : 'false');
+}
+
+// Выбранные метки в самом поле — цветные пилюли, чтобы список можно было
+// закрыть и всё равно видеть выбор. Без выбора — призрачная подпись.
+function _repRenderPills() {
+  const box = document.getElementById('rep-label-pills');
+  if (!box) return;
+  const overlay = document.getElementById('report-overlay');
+  const picked = [...overlay.querySelectorAll('.rep-label')]
+    .filter(cb => cb.checked).map(cb => cb.value);
+  if (!picked.length) {
+    box.innerHTML = '<span class="rep-label-ph">Выберите метки…</span>';
+    return;
+  }
+  const colors = {};
+  REPORT_LABELS.forEach(l => { colors[l.id] = l.color; });
+  box.innerHTML = picked.map(id =>
+    '<span class="gh-pill" style="' + _ghPillCss(colors[id]) + '">' + escapeHtml(id) + '</span>'
+  ).join('');
+}
+
+// ══ Отмена с подтверждением ══════════════════
+// Снимок формы: если пользователь ничего не трогал — закрываем молча,
+// если трогал (ввёл текст, поменял метки/контекст, вставил скриншот) —
+// спрашиваем подтверждение, чтобы не потерять набранное случайным кликом.
+function _reportSnapshot() {
+  const overlay = document.getElementById('report-overlay');
+  if (!overlay) return '';
+  const marks = sel => [...overlay.querySelectorAll(sel)]
+    .map(cb => (cb.checked ? '1' : '0')).join('');
+  return JSON.stringify({
+    title: (document.getElementById('rep-title-inp') || {}).value || '',
+    desc: (document.getElementById('rep-desc') || {}).value || '',
+    labels: marks('.rep-label'),
+    ctx: marks('.rep-ctx'),
+    shot: _reportShot ? '1' : '',
+  });
+}
+
+function _reportDirty() {
+  return _reportSnapshot() !== _reportInitial;
+}
+
+// Кнопка «Отменить», Escape и клик по фону — все через этот путь.
+// Открытый дропдаун меток закрывается первым: Escape при открытом списке
+// должен закрывать список, а не терять всю форму.
+function cancelReportModal() {
+  const menu = document.getElementById('rep-label-menu');
+  if (menu && !menu.hidden) { _repToggleLabelMenu(false); return; }
+  if (!_reportDirty()) { closeReportModal(); return; }
+  uiConfirm('Закрыть окно? Набранное сообщение не будет отправлено.',
+            'Отменить сообщение?', 'Закрыть без отправки', true)
+    .then(ok => { if (ok) closeReportModal(); });
+}
+
+function closeReportModal() {
+  const overlay = document.getElementById('report-overlay');
+  if (overlay) overlay.remove();
+  _reportShot = '';
+  _reportShotInClipboard = false;
+  _reportInitial = '';
+  _ghDeviceReset();   // поллинг входа живёт не дольше окна
+}
+
+// ═══════════════════════════════════════════
+//  Сброс настроек до стандартных
+// ═══════════════════════════════════════════
+// Сервер возвращает к стандартным папкам, браузеру и хранению, сохраняя
+// пресеты, шаблоны писем, соглашение и ключи (routes/diagnostics.py).
+// Настройки вкладки живут в localStorage — их чистит интерфейс.
+const RESET_KEPT_NOTE = 'Пресеты, шаблоны писем, ключи API, история и сами файлы результатов НЕ трогаются.';
+
+function openResetSettingsModal() {
+  const existing = document.getElementById('reset-overlay');
+  if (existing) existing.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'reset-overlay';
+  overlay.className = 'ui-modal-overlay';
+  overlay.innerHTML = `
+    <div class="ui-modal reset-modal" role="dialog" aria-modal="true" aria-labelledby="reset-title">
+      <h3 id="reset-title">${UI_ICONS.warn}Сбросить настройки до стандартных?</h3>
+      <div class="diag-lead">Вернутся к стандартным: папки результатов (стандартная папка приложения),
+        выбор браузера, срок хранения файлов, а также фильтры, столбцы и прочие настройки вкладок этого окна.</div>
+      <div class="diag-note">${escapeHtml(RESET_KEPT_NOTE)}</div>
+      <div class="ui-modal-btns">
+        <button type="button" class="m-cancel" onclick="closeResetSettingsModal()">Отмена</button>
+        <button type="button" class="m-ok danger" id="reset-confirm" onclick="confirmResetSettings()">Сбросить</button>
+      </div>
+    </div>`;
+  overlay.addEventListener('click', e => { if (e.target === overlay) closeResetSettingsModal(); });
+  overlay.addEventListener('keydown', e => { if (e.key === 'Escape') closeResetSettingsModal(); });
+  document.body.appendChild(overlay);
+  modalA11y(overlay);
+}
+
+function closeResetSettingsModal() {
+  const overlay = document.getElementById('reset-overlay');
+  if (overlay) overlay.remove();
+}
+
+function confirmResetSettings() {
+  const btn = document.getElementById('reset-confirm');
+  if (btn) { btn.disabled = true; btn.textContent = 'Сбрасываю…'; }
+  return fetch('/settings/reset', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  })
+    .then(r => r.json())
+    .then(d => {
+      if (!d || !d.ok) {
+        showToast('Сброс не выполнился: ' + ((d && d.error) || 'сервер не ответил'), 'error');
+        if (btn) { btn.disabled = false; btn.textContent = 'Сбросить'; }
+        return;
+      }
+      // Настройки вкладки — в мусор, кроме темы: тёмная тема — личное
+      // предпочтение, сбрасывать его вместе с папками было бы неожиданно.
+      const keep = ['yp_theme_v1'];
+      const gone = [];
+      try {
+        for (let i = localStorage.length - 1; i >= 0; i--) {
+          const k = localStorage.key(i);
+          if (k && k.indexOf('yp_') === 0 && keep.indexOf(k) === -1) {
+            localStorage.removeItem(k); gone.push(k);
+          }
+        }
+      } catch (e) { /* приватный режим — нечего чистить */ }
+      closeResetSettingsModal();
+      showToast('Настройки сброшены (' + (d.reset || []).length + ' на сервере, '
+              + gone.length + ' в браузере) — перезагружаю страницу', 'ok');
+      setTimeout(() => location.reload(), 900);
+    })
+    .catch(() => {
+      showToast('Сброс не выполнился — сервер недоступен', 'error');
+      if (btn) { btn.disabled = false; btn.textContent = 'Сбросить'; }
+    });
+}
+
+// ═══════════════════════════════════════════
+//  Экспорт настроек (перенос на другую машину)
+// ═══════════════════════════════════════════
+// Зеркало «Экспорт данных», но только настройки — и обязательно ДО сброса:
+// сервер отдаёт settings.json, интерфейс добавляет свой снимок localStorage
+// (фильтры, столбцы, тема), и обратно всё это возвращается той же кнопкой
+// «Импорт данных» (/data/import принимает browser.json из архива).
+
+// Снимок настроек вкладок. store — ради тестов: в браузере это localStorage.
+function collectBrowserSettings(store) {
+  const out = {};
+  const s = store || (typeof localStorage !== 'undefined' ? localStorage : null);
+  if (!s) return out;
+  try {
+    for (let i = 0; i < s.length; i++) {
+      const k = s.key(i);
+      if (k && k.indexOf('yp_') === 0) {
+        const v = s.getItem(k);
+        if (typeof v === 'string') out[k] = v;
+      }
+    }
+  } catch (e) { /* приватный режим — отдавать нечего */ }
+  return out;
+}
+
+// Применение настроек вкладок из импортированного архива. Пишется только
+// своё (yp_*) и только строками: содержимое архива — присланные данные.
+function applyImportedBrowserSettings(raw, store) {
+  if (!raw || typeof raw !== 'object') return 0;
+  const s = store || (typeof localStorage !== 'undefined' ? localStorage : null);
+  if (!s) return 0;
+  let n = 0;
+  try {
+    Object.keys(raw).forEach(k => {
+      const v = raw[k];
+      if (k.indexOf('yp_') === 0 && typeof v === 'string') {
+        s.setItem(k, v);
+        n++;
+      }
+    });
+  } catch (e) { /* приватный режим — нечего применять */ }
+  return n;
+}
+
+function exportAppSettings() {
+  const browser = collectBrowserSettings();
+  return fetch('/settings/export', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ browser: browser }),
+  })
+    .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.blob(); })
+    .then(blob => {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'parser-settings-export.zip';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+      showToast('Настройки выгружены — на другой машине импортируйте архив кнопкой «Импорт данных»', 'ok');
+      return true;
+    })
+    .catch(() => {
+      showToast('Экспорт настроек не удался — сервер недоступен', 'error');
+      return false;
+    });
+}

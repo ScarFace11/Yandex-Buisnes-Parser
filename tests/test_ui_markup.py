@@ -1015,10 +1015,16 @@ class TestDiagnosticsPanel:
         assert logs < diag < updates
         assert 'onclick="showDiagnostics()"' in TEMPLATE
 
-    def test_panel_offers_three_scopes(self):
-        for needle in ("runDiagnostics(['keys','files','data','env'], this)",
+    def test_panel_offers_four_scopes(self):
+        """Четыре кнопки: всё, только ключи, без запросов к API, живая проба.
+
+        История прогонов («runs») входит в «всё» и в «без запросов к API»:
+        именно она отвечает на «а вчера сбор шёл?» без чтения логов.
+        """
+        for needle in ("runDiagnostics(['keys','files','data','runs','env'], this)",
                        "runDiagnostics(['keys'], this)",
-                       "runDiagnostics(['files','data','env'], this)"):
+                       "runDiagnostics(['files','data','runs','env'], this)",
+                       "runDiagnostics(['engines'], this, true)"):
             assert needle in APP_JS, needle
 
     def test_live_check_warning_is_shown_before_the_click(self):
@@ -1589,6 +1595,98 @@ class TestDailyDynamics:
         assert '@bp.route("/data/import", methods=["POST"])' in API_PY
         assert "_backup_reviewed" in API_PY
 
+    def test_issue_api_send_and_screenshot_copy_are_in_ui(self):
+        """Окно «Сообщить о проблеме»: отправка через API и копирование скриншота.
+
+        GitHub API не создаёт issue анонимно — в окне обязана быть запасная
+        кнопка формы (она работает и без токена); у картинки, выбранной
+        файлом, есть кнопка «в буфер», иначе вставка в форме GitHub
+        не работает. Поле токена в окне больше НЕТ: его заменил вход
+        по коду — device flow (test_issue_window_offers_github_login_instead_of_token).
+        """
+        for needle in ("sendReportIssue", "rep-issue", "Создать issue",
+                       "has_token", "Открыть форму на GitHub"):
+            assert needle in APP_JS, needle
+        assert "copyReportShot" in APP_JS
+        assert "Скопировать скриншот в буфер" in APP_JS
+        assert "_shotPngBlob" in APP_JS, "для буфера нужен именно PNG"
+        # Серверская сторона того же окна.
+        routes = (ROOT / "routes" / "diagnostics.py").read_text(encoding="utf-8")
+        assert '@bp.route("/report/issue", methods=["POST"])' in routes
+        assert "GITHUB_TOKEN" in routes
+
+    def test_issue_window_offers_github_login_instead_of_token(self):
+        """Поля токена больше нет — вместо него вход в GitHub ссылкой.
+
+        Токен вводить не требуется: его роль приняла авторизация по коду
+        (device flow) на сервере (.env, GITHUB_TOKEN получает сам), а без
+        токена сообщение уходит заполненной формой. Кнопки «Скопировать
+        текст» и «Закрыть» тоже убраны: закрывает крестик и «Отменить»
+        (с подтверждением, если что-то введено).
+        """
+        assert "rep-token" not in APP_JS, "поле токена вернулось в окно"
+        assert "ghp_" not in APP_JS, "плейсхолдер токена вернулся"
+        assert "copyReportBody" not in APP_JS, "«Скопировать текст» убрана"
+        assert "github.com/login" in APP_JS, "нет ссылки на вход в GitHub"
+        assert "rep-gh-login" in APP_JS, "нет блока входа в GitHub"
+        # Вход — device flow: кнопка, показ кода и поллинг сервера.
+        for needle in ("startGitHubDeviceLogin", "rep-gh-login-btn",
+                       "device/start", "device/poll", "rep-gh-usercode"):
+            assert needle in APP_JS, needle
+        # Серверские маршруты того же входа.
+        routes = (ROOT / "routes" / "diagnostics.py").read_text(encoding="utf-8")
+        for route in ('@bp.route("/report/github/device/start", methods=["POST"])',
+                      '@bp.route("/report/github/device/poll", methods=["POST"])'):
+            assert route in routes, route
+        # Кнопка входа показывается только если client_id зашит в сборку:
+        # иначе обычному пользователю предлагают лишь заполненную форму,
+        # без единого упоминания OAuth Apps.
+        assert "can_device" in APP_JS, "нет признака доступности входа"
+        assert "can_device" in routes, "сервер не сообщает can_device"
+        assert "GH_DEVICE_CLIENT_ID_DEFAULT" in routes, "client_id не зашит в сборку"
+        # Выбор меток и контекста запоминается между открытиями окна.
+        for needle in ("yp_report_choices_v1", "_reportSaveChoices",
+                       "_reportRestoreChoices"):
+            assert needle in APP_JS, needle
+        for needle in ("cancelReportModal", "Отменить", "rep-x",
+                       "_reportSnapshot", "_reportDirty"):
+            assert needle in APP_JS, needle
+        # Окно выше экрана не бывает: у базовой модалки есть прокрутка.
+        assert "max-height:calc(100vh - 32px)" in STYLE
+        assert "overflow-y:auto" in STYLE
+
+    def test_issue_window_labels_are_a_colored_dropdown(self):
+        """Метки GitHub — выпадающий список с цветными пилями, как на GitHub.
+
+        Раньше это был список из пяти галочек на всю высоту окна; теперь
+        поле раскрывается в список, а цвета меток берутся из палитры GitHub.
+        """
+        for needle in ("rep-label-field", "rep-label-menu", "rep-label-pills",
+                       "gh-pill", "_ghPillCss", "_repRenderPills",
+                       "aria-multiselectable"):
+            assert needle in APP_JS, needle
+        # Цвета меток заданы и совпадают с палитрой GitHub.
+        for color in ("#d73a49", "#a2eeef", "#d876e3", "#0075ca", "#8250df"):
+            assert color in APP_JS, color
+        assert ".rep-label-menu{" in STYLE
+        assert ".gh-pill{" in STYLE
+
+    def test_settings_export_button_sits_next_to_reset(self):
+        """«Экспорт настроек» — ровно перед «Сбросить настройки» (зеркало справа)."""
+        assert 'id="btn-export-settings"' in TEMPLATE
+        assert "exportAppSettings()" in TEMPLATE
+        assert "Экспорт настроек" in TEMPLATE
+        assert TEMPLATE.index('id="btn-export-settings"') \
+            < TEMPLATE.index('id="btn-reset-settings"'), "экспорт стоит перед сбросом"
+        assert "function exportAppSettings" in APP_JS
+        # И обратный путь: импорт принимает browser.json из архива.
+        assert "browser.json" in API_PY
+        assert "applyImportedBrowserSettings" in APP_JS
+        # Кнопка копирования скриншота живёт вне rep-shot (там роль button —
+        # кнопка внутри была бы вложенным элементом управления).
+        assert ".rep-shot-actions{display:flex" in STYLE
+        assert 'id="rep-shot-actions"' in APP_JS
+
     def test_hidden_attribute_always_wins(self):
         """Оверлеи задают display:flex — без глобального правила для [hidden]
         скрытый экран оставался поверх интерфейса и перехватывал все клики:
@@ -1642,9 +1740,202 @@ class TestParseFieldsAccordion:
                    'updateVkGate', 'socialsEnabled', 'onRetentionChange',
                    'initRetention', 'getExcelCols'):
             assert f'function {fn}(' in APP_JS, fn
-        # fetch_detail теперь следует выбору соцсетей, а не всегда true.
-        assert 'fetch_detail:    socialsEnabled()' in APP_JS
+        # Карточку грузим, если в «Что парсить» отмечено хотя бы одно «карточное»
+        # поле, а не только соцсети: телефон/сайт есть ТОЛЬКО на карточке, и при
+        # выключенных соцсетях они молча пропадали из таблицы.
+        assert 'fetch_detail:    detailFetchEnabled()' in APP_JS
+        assert 'function detailFetchEnabled(' in APP_JS
+        assert 'CARD_FIELDS' in APP_JS and "'phone'" in APP_JS
 
     def test_retention_routes_exist(self):
         assert '@bp.route("/retention/status")' in API_PY
         assert '@bp.route("/retention/set", methods=["POST"])' in API_PY
+
+
+class TestLiveSetupSummary:
+    """Живая сводка настройки: главное видно без раскрытия аккордеонов.
+
+    Сайдбар — длинная форма из пяти разделов, и «что я запускаю» приходилось
+    собирать глазами по всей панели. Сводка показывает запрос, города, тип
+    организаций, соцсети и форматы, а каждый чип ведёт в свой раздел.
+    """
+
+    def test_container_and_script_are_wired(self):
+        assert 'id="setup-summary"' in TEMPLATE
+        assert 'aria-label="Текущие настройки поиска"' in TEMPLATE
+        # Модуль подключён ПОСЛЕ остальных: он пользуется их функциями
+        # (toggleAccordion, escapeHtml) и самодостаточен по инициализации.
+        assert TEMPLATE.index("js/12-setup-summary.js") > TEMPLATE.index("js/11-app-init.js")
+        assert "js/12-setup-summary.js" in APP_JS or "buildSetupSummary" in APP_JS
+
+    def test_module_lists_stay_in_sync_with_the_template(self):
+        """Склейка для тестов обязана включать новые модули.
+
+        Функции из неподключённого модуля не найдёт ни grab() в node-тестах,
+        ни текстовая проверка в pytest — сводка молча «исчезала» бы из
+        покрытия, оставаясь в интерфейсе.
+        """
+        assert "12-setup-summary.js" in (ROOT / "tests" / "_appjs.py").read_text(encoding="utf-8")
+        assert "12-setup-summary.js" in (ROOT / "tests" / "ui" / "_src.mjs").read_text(encoding="utf-8")
+
+    def test_summary_covers_the_five_things(self):
+        for key in ("queries", "cities", "type", "socials", "formats"):
+            assert f"{key}:" in APP_JS, key
+        # Каждый чип знает свой раздел — иначе клик никуда не ведёт.
+        assert "SETUP_SUM_TARGETS" in APP_JS
+        assert "acc-basic" in APP_JS and "acc-formats" in APP_JS
+
+    def test_missing_values_are_marked_not_just_empty(self):
+        """Пустой запрос/город/формат — предупреждение, а не тихий прочерк."""
+        assert "is-missing" in APP_JS
+        assert ".setup-chip.is-missing{" in STYLE
+        assert "var(--warn-bg)" in STYLE[STYLE.index(".setup-chip.is-missing{"):][:200]
+
+    def test_redraw_is_throttled_to_one_frame(self):
+        """Сводка пересобирается раз в кадр, а не на каждое событие формы."""
+        assert "requestAnimationFrame" in APP_JS
+        assert "document.addEventListener('input', schedule, true)" in APP_JS
+
+    def test_chips_are_real_buttons_with_labels(self):
+        """Чип — кнопка: клавиатура и скринридер достаются бесплатно."""
+        start = APP_JS.index("function renderSetupSummary(")
+        body = APP_JS[start:start + 1200]
+        assert '<button type="button" class="setup-chip' in body
+        assert 'aria-label="${escapeHtml(it.label)}' in body
+
+    def test_summary_survives_the_closed_basic_section(self):
+        """Строка раздела больше не дублирует сводку при открытом разделе."""
+        start = APP_JS.index("function updateBasicSummary(")
+        body = APP_JS[start:start + 900]
+        assert "classList.contains('open')" in body
+        assert "summaryHidden || !collapsed" in body
+
+
+class TestSecondaryInformationOnDemand:
+    """Неглавное прячется до наведения — список разделов перестал быть
+    десятью строками текста."""
+
+    def test_accordion_subtitles_reveal_on_hover_and_focus(self):
+        assert "@media (hover:hover) and (pointer:fine)" in STYLE
+        block = STYLE[STYLE.index("@media (hover:hover) and (pointer:fine)"):][:400]
+        assert ".acc-sub{opacity:0" in block
+        assert ".acc-hdr:hover .acc-sub" in block
+        # Клавиатура видит то же, что и мышь.
+        assert ".acc-hdr:focus-visible .acc-sub" in block
+
+    def test_open_section_keeps_its_subtitle(self):
+        assert ".acc.open .acc-sub{opacity:1}" in STYLE
+
+
+class TestInteractivity:
+    """Оживление интерфейса: движения только там, где они что-то сообщают."""
+
+    def test_counter_pops_only_when_the_number_changes(self):
+        start = APP_JS.index("const lsFound = document.getElementById('ls-found-num')")
+        body = APP_JS[start:start + 420]
+        assert "lsFound.textContent !== next" in body, "пульсация должна зависеть от смены значения"
+        assert "classList.add('pop')" in body
+        assert "#ls-found-num.pop{animation:found-pop" in STYLE
+
+    def test_progress_bar_shews_while_the_run_is_live(self):
+        assert "body:has(.live-stats:not(.is-hidden)) #prog-bar::after" in STYLE
+        assert "@keyframes prog-sheen" in STYLE
+
+    def test_panel_and_chip_entrance_animations_exist(self):
+        assert "@keyframes panel-in" in STYLE
+        assert "@keyframes setup-val-pop" in STYLE
+        assert ".setup-chip.bump .setup-chip-val{animation:setup-val-pop" in STYLE
+
+    def test_reduced_motion_turns_the_new_motion_off(self):
+        """Все новые анимации выключаются при prefers-reduced-motion."""
+        tail = STYLE[STYLE.index("/* ── Уважать «уменьшенное движение» ── */"):]
+        for needle in (".setup-sum,", ".setup-chip.bump .setup-chip-val",
+                       "#ls-found-num.pop",
+                       # Волна на полосе прогресса гасится вместе с анимацией.
+                       "#prog-bar::after{animation:none"):
+            assert needle in tail, needle
+
+
+class TestAccessibility:
+    """Доступность: вкладки, скачок к содержимому, читаемые фоны кнопок."""
+
+    def test_tab_bar_follows_the_aria_tablist_pattern(self):
+        start = APP_JS.index("function showTab(")
+        body = APP_JS[start:start + 900]
+        # Класс .active и aria-selected больше не расходятся.
+        assert "b.setAttribute('aria-selected', on ? 'true' : 'false')" in body
+        assert "b.tabIndex = on ? 0 : -1" in body, "roving tabindex: в Tab — только активная вкладка"
+        # Стрелки, Home и End листают вкладки.
+        kb = APP_JS[APP_JS.index("function initTabListKeyboard("):][:1400]
+        for key in ("ArrowRight", "ArrowLeft", "Home", "End"):
+            assert f"'{key}'" in kb, key
+        assert "next.focus()" in kb
+
+    def test_skip_link_goes_to_the_content_region(self):
+        assert 'class="skip-link" href="#main-content"' in TEMPLATE
+        assert 'id="main-content"' in TEMPLATE
+        assert ".skip-link{" in STYLE
+        # Видна только при фокусе с клавиатуры.
+        assert ".skip-link:focus-visible" in STYLE
+        assert "top:-60px" in STYLE
+
+    def test_percentage_padding_has_no_room_for_a_scroll_trap(self):
+        """Сводка не должна вылезать за панель (иначе горизонтальный скролл)."""
+        assert ".setup-sum{" in STYLE
+        block = STYLE[STYLE.index(".setup-sum{"):][:260]
+        assert "grid-template-columns:1fr 1fr" in block
+
+
+class TestOnboardingStepsAreActions:
+    """Шаги «Как это работает» — кнопки, а не картинки.
+
+    У блока-подсказки была тень при наведении, обещавшая клик, которого не
+    было: шаги оставались обычными div'ами. Теперь каждый шаг делает то, о чём
+    говорит (ведёт к полю, запускает поиск, открывает результаты).
+    """
+
+    def test_steps_are_buttons(self):
+        how = TEMPLATE[TEMPLATE.index('class="flow-steps"'):][:1200]
+        assert how.count('class="flow-step"') == 3
+        assert how.count('<button type="button" class="flow-step"') == 3, \
+            "шаг должен быть кнопкой — иначе он не кликается с клавиатуры"
+        assert '<div class="flow-step"' not in how, "вернулся div вместо кнопки"
+        for n in (1, 2, 3):
+            assert f'onclick="onboardingStep({n})"' in how, n
+
+    def test_handler_says_what_is_missing_instead_of_failing_silently(self):
+        start = APP_JS.index("function onboardingStep(")
+        body = APP_JS[start:start + 2200]
+        assert "showToast(" in body, "без подсказки шаг просто ничего не делает"
+        assert "Выберите хотя бы один город" in body
+        assert "btn-run" in body, "шаг 2 обязан запускать тот же поиск, что и кнопка"
+        assert "showTab('table')" in body, "шаг 3 ведёт к результатам"
+
+    def test_focus_lands_after_the_click(self):
+        """Фокус ставится после клика: иначе его съедает нажатая кнопка."""
+        start = APP_JS.index("function _onboardingFocus(")
+        body = APP_JS[start:start + 500]
+        assert "setTimeout(" in body
+        assert "el.focus({ preventScroll: true })" in body
+
+    def test_steps_look_clickable(self):
+        # Правило ищется по началу объявления: `.flow-step{` встречается ещё
+        # и в составном селекторе шрифтов выше по файлу.
+        start = STYLE.index(".flow-step{\n  width:100%;padding:16px")
+        block = STYLE[start:start + 500]
+        assert "cursor:pointer" in block
+        assert "font-family:inherit" in block
+        assert "text-align:left" in block, "текст кнопки не должен центрироваться"
+        assert ".flow-step:focus-visible" in STYLE
+
+
+class TestTemplateHotReloadInDevMode:
+    """Из исходников шаблоны читаются заново — иначе правка UI видна только
+    после перезапуска сервера (Jinja кеширует шаблоны при debug=False)."""
+
+    def test_app_reloads_templates_when_running_from_source(self):
+        app_py = (ROOT / "app.py").read_text(encoding="utf-8")
+        assert 'app.config["TEMPLATES_AUTO_RELOAD"] = True' in app_py
+        assert "app.jinja_env.auto_reload = True" in app_py
+        # В собранном приложении (PyInstaller) это лишний stat на рендер.
+        assert 'getattr(sys, "frozen", False)' in app_py

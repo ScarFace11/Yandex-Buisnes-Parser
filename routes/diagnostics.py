@@ -20,25 +20,29 @@
 * **Ошибки не роняют панель.** Любое падение отдельной проверки становится
   строкой «ошибка» с человеческим объяснением, а не 500.
 
-Эндпоинт один: POST /diagnostics/run {"groups": ["keys", "files", "data", "env"]}.
+Эндпоинт один: POST /diagnostics/run {"groups": ["keys", "files", "data", "runs", "env"]}.
+Ту же проверку без интерфейса запускает `app.py --check` (см. selfcheck.py):
+сервер, браузер и окно для этого не нужны.
 
 Запустить его может только сам интерфейс: проверка токена обращается к
 внешнему сервису от имени пользователя, а окно приложения слушает 127.0.0.1 —
 значит чужая страница в браузере не должна уметь нажать эту кнопку за него
 (см. `_only_from_our_ui`).
 """
+import io
+import json
 import os
 import re
 import shutil
 import time
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, Response, jsonify, request
 
 bp = Blueprint("diagnostics", __name__)
 
 # Группы проверок: раздельно, потому что «ключи» стоят квоту и время, а
 # «файлы/данные/окружение» — бесплатны и мгновенны.
-GROUPS = ("keys", "files", "data", "env", "engines")
+GROUPS = ("keys", "files", "data", "runs", "env", "engines")
 
 _HTTP_TIMEOUT = 8.0                     # живые проверки не должны «висеть»
 _USER_AGENT = "YandexBusinessParser-diagnostics"
@@ -333,6 +337,100 @@ def check_data() -> list[dict]:
     return out
 
 
+# ── Группа «runs»: что было в прошлых запусках ───────────────
+
+def _fmt_when(ts) -> str:
+    """«17.10.2026 14:32» из unix-time; мусор — прочерк, а не исключение."""
+    try:
+        return time.strftime("%d.%m.%Y %H:%M", time.localtime(float(ts)))
+    except Exception:
+        return "—"
+
+
+def _fmt_span(seconds) -> str:
+    """Длительность словами: «48 с», «2 мин 10 с», «1 ч 05 мин»."""
+    try:
+        total = int(float(seconds))
+    except Exception:
+        return ""
+    if total <= 0:
+        return ""
+    if total < 60:
+        return f"{total} с"
+    if total < 3600:
+        return f"{total // 60} мин {total % 60:02d} с" if total % 60 else f"{total // 60} мин"
+    return f"{total // 3600} ч {total % 3600 // 60:02d} мин"
+
+
+def check_runs() -> list[dict]:
+    """Что было в прошлых прогонах: когда, где и чем закончилось.
+
+    Это ответ на «а вчера сбор шёл?» и «почему в выгрузке старые данные»,
+    без открытия логов: история поиска знает дату, города, число найденных
+    организаций, длительность и статус. Здесь же — размер кэша карточек:
+    именно он объясняет, почему повторный прогон идёт быстрее первого.
+    """
+    out: list[dict] = []
+    try:
+        import search_history
+        runs = search_history.get_history(5)
+    except Exception as exc:
+        return [_res("runs", "runs", "warn", "История прогонов не читается",
+                     _exception_note(exc),
+                     "На сбор это не влияет — история нужна только для списка "
+                     "прогонов и подписей сфер.")]
+
+    if not runs:
+        out.append(_res("runs_recent", "runs", "warn", "Прогонов ещё не было",
+                        "История пуста: приложение ещё ни разу не запускало сбор.",
+                        "Запустите поиск — здесь появятся дата, города и число "
+                        "найденных организаций."))
+    else:
+        last = runs[0] or {}
+        cities = [c for c in (last.get("cities") or []) if c]
+        where = ", ".join(cities[:3])
+        if len(cities) > 3:
+            where += f" +{len(cities) - 3}"
+        found = int(last.get("results_count") or 0)
+        span = _fmt_span(last.get("elapsed_sec"))
+        detail = (f"{_fmt_when(last.get('timestamp'))}: {where or 'города не записаны'}"
+                  f" · {found} организаций" + (f" · заняло {span}" if span else ""))
+        out.append(_res("runs_recent", "runs", "ok", "Последний прогон", detail,
+                        "Если дата давняя, данные в выгрузке устарели — соберите заново."))
+
+        failed = [r for r in runs
+                  if str(r.get("status") or "").lower() in ("failed", "error", "interrupted")]
+        if failed:
+            out.append(_res("runs_errors", "runs", "warn",
+                            "В истории есть незавершённые прогоны",
+                            f"{len(failed)} из последних {len(runs)} закончились не штатно.",
+                            "Откройте «Логи запусков»: там причина каждого сбора, "
+                            "а повторный запуск продолжит с места остановки."))
+        else:
+            out.append(_res("runs_errors", "runs", "ok", "История прогонов без сбоев",
+                            f"Последние {len(runs)} запусков завершились штатно." if len(runs) > 1
+                            else "Единственный запуск завершился штатно."))
+
+    # Кэш карточек: страницы организаций живут сутки и заметно ускоряют
+    # повторный сбор. Ноль — не ошибка, просто первый прогон будет дольше.
+    try:
+        import paths
+        cache_dir = os.path.join(paths.output_dir(), ".cache")
+        files, size = _dir_size(cache_dir, "")
+        if files:
+            out.append(_res("page_cache", "runs", "ok", "Кэш карточек",
+                            f"{files} файл(ов), {_fmt_bytes(size)} — повторный сбор "
+                            "по тем же городам пойдёт быстрее."))
+        else:
+            out.append(_res("page_cache", "runs", "ok", "Кэш карточек пуст",
+                            "Это нормально до первого сбора: карточки организаций "
+                            "кэшируются на сутки."))
+    except Exception as exc:
+        out.append(_res("page_cache", "runs", "warn", "Кэш карточек не проверен",
+                        _exception_note(exc)))
+    return out
+
+
 # ── Группа «env»: с чем работаем ──────────────────────────────
 
 # Пробная страница выдачи: сколько карточек успел отрисовать список и
@@ -402,6 +500,19 @@ def _live_search_rows() -> list[dict]:
                      "Проверьте доступ в интернет и запустите проверку ещё раз.")]
     count = len(cards)
     where = f"запрос «{_PROBE_QUERY[0]}», город {_PROBE_QUERY[1]}"
+    try:
+        from yandex_maps_parser import browser_search as _bs
+        blocked = _bs.blocked_reason()
+    except Exception:
+        blocked = ""
+    if blocked == "captcha":
+        # Самая частая причина «пусто всегда» — проверка Яндекса; совет про
+        # интернет и «Яндекс изменил страницу» тут только путал.
+        return [_res("search_live", "engines", "warn",
+                     "Яндекс показал проверку «Вы не робот?»",
+                     f"{where}: вместо выдачи — страница проверки, организаций нет.",
+                     "Браузер и интернет при этом работают. Повторите проверку "
+                     "через несколько минут; если повторяется — обновите приложение.")]
     if count:
         first = str(cards[0].get("name") or "")
         return [_res("search_live", "engines", "ok", "Поиск находит организации",
@@ -449,14 +560,23 @@ def probe_engines(deep: bool = False) -> list[dict]:
 
     try:
         from yandex_maps_parser import cdp_client
-        chrome = cdp_client._find_chrome()
+        binfo = cdp_client.browser_info()
+        chrome = binfo["path"]
+        _browser_name = binfo["name"] or "браузер на Chromium"
         if not chrome:
+            # Прямо говорим, что подойдёт: под Chrome тут понимается любой
+            # Chromium-браузер, и Яндекс Браузер с Firefox уже могут стоять.
+            _unsupported = binfo.get("unsupported") or []
             out.append(_res(
-                "engine_cdp", "engines", "error", "Браузер не найден",
-                "Chrome, Chromium и Edge не обнаружены на этой машине.",
-                "Установите Google Chrome: приложение работает только через"
-                " настоящий браузер — прямые HTTP-запросы к Яндекс.Картам"
-                " убраны из-за антибота."))
+                "engine_cdp", "engines", "error", "Браузер на Chromium не найден",
+                "Не найдены Chrome, Chromium, Edge, Яндекс Браузер, Brave и"
+                " другие Chromium-браузеры."
+                + (f" Найдены {', '.join(_unsupported)} — они не умеют Chrome"
+                   " DevTools Protocol, которым приложение открывает страницы."
+                   if _unsupported else ""),
+                "Поставьте Яндекс Браузер, Google Chrome, Microsoft Edge, Brave"
+                " или Chromium: страницы открывает настоящий браузер — прямые"
+                " HTTP-запросы к Яндекс.Картам убраны из-за антибота."))
         elif deep:
             # Идёт прогон — браузер уже поднят: свою пробу делаем в нём же,
             # но чужой браузер не закрываем ни при каких условиях.
@@ -479,13 +599,14 @@ def probe_engines(deep: bool = False) -> list[dict]:
             else:
                 hint = ""
             out.append(_res("engine_cdp", "engines", status,
-                            "Браузер (Chrome CDP): " + ("работает" if status == "ok" else "с проблемой"),
+                            f"{_browser_name} (Chromium CDP): "
+                            + ("работает" if status == "ok" else "с проблемой"),
                             detail, hint))
             out.extend(_tab_activity_rows(probe, cards))
             out.extend(live_rows)
         else:
             out.append(_res("engine_cdp", "engines", "ok",
-                            "Браузер (Chrome CDP) найден", chrome))
+                            f"Браузер найден: {_browser_name}", chrome))
     except Exception as exc:
         out.append(_res("engine_cdp", "engines", "error",
                         "Браузер (Chrome CDP): сбой проверки", _exception_note(exc)))
@@ -512,19 +633,27 @@ def check_environment() -> list[dict]:
     # Браузер — основной инструмент приложения: из него берутся и выдача
     # поиска, и координаты города, и карточки организаций.
     browser = ""
+    browser_name = ""
+    unsupported: list[str] = []
     try:
         from yandex_maps_parser import cdp_client
-        browser = cdp_client._find_chrome() or ""
+        _bi = cdp_client.browser_info()
+        browser = _bi["path"]
+        browser_name = _bi["name"]
+        unsupported = _bi.get("unsupported") or []
     except Exception:
         browser = ""
     if browser:
-        out.append(_res("browser", "env", "ok", "Браузер для докачки соцсетей найден",
-                        browser))
+        out.append(_res("browser", "env", "ok",
+                        f"Браузер для сбора найден: {browser_name}", browser))
     else:
-        out.append(_res("browser", "env", "error", "Браузер не найден",
-                        "Chrome, Chromium и Edge не обнаружены на этой машине.",
-                        "Установите Google Chrome: без него приложение не может"
-                        " читать Яндекс.Карты — других способов загрузки нет."))
+        out.append(_res("browser", "env", "error", "Браузер на Chromium не найден",
+                        "Не найдены Chrome, Chromium, Edge, Яндекс Браузер, Brave."
+                        + (f" Найдены {', '.join(unsupported)} — они не умеют CDP."
+                           if unsupported else ""),
+                        "Поставьте Яндекс Браузер, Chrome, Edge, Brave или"
+                        " Chromium: без такого браузера приложение не может читать"
+                        " Яндекс.Карты — других способов загрузки нет."))
 
     # severity: core — без этого приложение не работает вообще.
     for module, label, severity, hint, advice in (
@@ -613,6 +742,8 @@ def run_checks(groups=None, deep: bool = False) -> list[dict]:
         _safe("storage", "files", check_storage)
     if "data" in wanted:
         _safe("data", "data", check_data)
+    if "runs" in wanted:
+        _safe("runs", "runs", check_runs)
     if "env" in wanted:
         _safe("env", "env", check_environment)
     if "engines" in wanted:
@@ -630,9 +761,15 @@ def engines_status():
     Reply: {ok, chrome: bool, chrome_path: str, frozen: bool}
     """
     chrome_path = ""
+    browser_name = ""
+    unsupported: list[str] = []
+    _bi: dict = {}
     try:
         from yandex_maps_parser import cdp_client
-        chrome_path = cdp_client._find_chrome() or ""
+        _bi = cdp_client.browser_info()
+        chrome_path = _bi["path"]
+        browser_name = _bi["name"]
+        unsupported = _bi.get("unsupported") or []
     except Exception:
         chrome_path = ""
     try:
@@ -641,7 +778,59 @@ def engines_status():
     except Exception:
         frozen = False
     return jsonify({"ok": True, "chrome": bool(chrome_path),
-                    "chrome_path": chrome_path, "frozen": frozen})
+                    "chrome_path": chrome_path, "frozen": frozen,
+                    # Под «Chrome» бейдж понимает любой Chromium-браузер: имя
+                    # видно пользователю, а unsupported объясняет, почему
+                    # установленный Firefox/Safari поиску не помогает.
+                    "browser_name": browser_name,
+                    "unsupported": unsupported,
+                    # Выбор браузера для сбора: список найденных и текущий
+                    # выбор. Именно эти данные заполняют выпадающий список
+                    # в форме — без них пришлось бы вручную указывать путь
+                    # к chrome.exe, а Яндекс Браузер рядом с Chrome так и
+                    # оставался бы невидимым.
+                    "browsers": _bi.get("browsers") or [] if chrome_path else [],
+                    "selected": _bi.get("selected") or ""})
+
+
+@bp.route("/browser/select", methods=["POST"])
+def browser_select():
+    """Сохранить выбранный браузер для сбора.
+
+    Body: {"path": "C:\\...\\chrome.exe"} | {"path": ""} — авто.
+    Пустой путь и путь не из найденных отклоняем: случайный текст вместо
+    браузера иначе валил бы каждый следующий запуск.
+    Reply: {ok, selected, name, browsers}
+    """
+    from flask import current_app
+    try:
+        from yandex_maps_parser import cdp_client
+        index = {b["path"].lower(): b for b in cdp_client.available_browsers()}
+    except Exception:
+        index = {}
+
+    data = request.get_json(silent=True) or {}
+    path = str(data.get("path") or "").strip()
+    if path and path.lower() not in index:
+        return jsonify({"ok": False,
+                        "error": "Этот браузер не найден на диске — обновите список",
+                        "browsers": list(index.values())}), 400
+
+    try:
+        import paths as _paths
+        _paths.save_settings({"browser_path": path})
+    except Exception as exc:
+        current_app.logger.warning("browser/select: настройка не сохранилась: %s", exc)
+
+    try:
+        cdp_client.set_browser(path)
+        info = cdp_client.browser_info()
+    except Exception:
+        info = {"name": "", "path": path}
+    return jsonify({"ok": True, "selected": path,
+                    "name": (index.get(path.lower()) or {}).get("name", "") if path else "",
+                    "active": info.get("name") or "",
+                    "browsers": list(index.values())})
 
 
 @bp.route("/diagnostics/run", methods=["POST"])
@@ -668,3 +857,480 @@ def diagnostics_run():
         return jsonify({"ok": False, "error": f"Диагностика не смогла выполниться: {_exception_note(exc)}",
                         "results": []}), 200
     return jsonify({"ok": True, "results": results, "ts": int(time.time())})
+
+
+# ═══════════════════════════════════════════════════════════════
+#  Сообщить о проблеме: контекст для issue на GitHub
+# ═══════════════════════════════════════════════════════════════
+#
+# Окно «Сообщить о проблеме» собирает письмо пользователя и открывает
+# форму GitHub с метками и предзаполненным телом. Сервер отдаёт только ту
+# часть контекста, которую браузер собрать не может: версия, система,
+# браузер, прогоны и хвост лога. Секретов в ответе нет — группы «keys»
+# здесь не запускаются, а лог пишется без ключей (как и отчёт «Скопировать
+# отчёт»). Фильтры и настройки вкладки прикладывает сам интерфейс: они
+# живут в localStorage и серверу не видны.
+
+_REPORT_LOG_LINES = 25          # хвост лога в контекст issue
+
+
+def _report_log_tail() -> str:
+    """Последние строки последнего лога — или объяснение, почему их нет."""
+    try:
+        import run_logger
+        logs = run_logger.list_logs()
+        if not logs:
+            return "(логов пока нет)"
+        path = os.path.join(run_logger.LOGS_DIR, logs[0]["name"])
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            lines = fh.readlines()
+        tail = [ln.rstrip() for ln in lines[-_REPORT_LOG_LINES:]]
+        return "\n".join(tail) or "(лог пуст)"
+    except Exception as exc:
+        return f"(хвост лога не прочитан: {_exception_note(exc)})"
+
+
+@bp.route("/report/context", methods=["GET"])
+def report_context():
+    """Контекст для issue: версия, система, браузер, прогоны, хвост лога.
+
+    Reply: {ok, context, has_token, can_device, ts} — context готовым
+    текстом Markdown: интерфейс прикладывает его к телу письма как есть.
+    has_token — есть ли уже токен; can_device — можно ли войти по коду
+    (в сборке зашит client_id). Проверки — только локальные (env + runs),
+    без сетевых запросов и без ключей.
+    """
+    parts: list[str] = []
+    try:
+        rows = run_checks(["env", "runs"])
+        for group, title in (("env", "Версия, система и браузер"),
+                             ("runs", "Прогоны и кэш")):
+            lines = [f"## {title}"]
+            for r in rows:
+                if r.get("group") != group:
+                    continue
+                mark = {"ok": "✔", "warn": "⚠", "error": "✖"}.get(r.get("status"), "·")
+                line = f"{mark} {r.get('title') or ''}"
+                if r.get("detail"):
+                    line += f" — {r['detail']}"
+                lines.append(line)
+            parts.append("\n".join(lines))
+    except Exception as exc:
+        parts.append(f"## Проверки\r\n(не выполнились: {_exception_note(exc)})")
+
+    # Пресеты — только имена: содержимое пресета может содержать личные
+    # формулировки запросов, а issue бывает публичным.
+    try:
+        import paths
+        presets = paths.load_settings().get("presets") or []
+        names = [str(p.get("name") or "").strip() for p in presets
+                 if isinstance(p, dict)]
+        names = [n for n in names if n]
+        parts.append("## Сохранённые пресеты\r\n"
+                     + ("\n".join(f"- {n}" for n in names) if names else "(пресетов нет)"))
+    except Exception:
+        parts.append("## Сохранённые пресеты\r\n(не прочитаны)")
+
+    parts.append("## Последние строки лога\r\n```\r\n" + _report_log_tail() + "\r\n```")
+    # Признаки булевы, токен в ответ не попадает никогда. can_device —
+    # есть ли в сборке client_id: без него окно не показывает кнопку
+    # входа, чтобы пользователю не предлагали создавать OAuth-приложение.
+    return jsonify({"ok": True, "context": "\n\n".join(parts),
+                    "has_token": bool(github_token()),
+                    "can_device": bool(github_oauth_client_id()),
+                    "ts": int(time.time())})
+
+
+# Настройки, которые сбрасываются «до стандартных». Ценное НЕ трогаем:
+# пресеты, шаблоны писем, принятое соглашение и ключи API — это результат
+# работы пользователя, а не настройка окружения.
+_SETTINGS_RESET_KEYS = ("results_root", "raw_dir", "processed_dir",
+                        "archive_dir", "browser_path", "retention_days")
+
+
+@bp.route("/settings/reset", methods=["POST"])
+def settings_reset():
+    """Сброс настроек до стандартных: папки результатов, браузер, хранение.
+
+    Body: {} (принимается только JSON из самого приложения — та же
+    защита, что у /diagnostics/run). Reply: {ok, reset, kept}.
+
+    Интерфейс после успешного ответа чистит свои настройки вкладки
+    (localStorage) и перезагружает страницу — сервер про них не знает.
+    """
+    guard = _only_from_our_ui()
+    if guard is not None:
+        return guard
+    try:
+        import paths
+        data = paths.load_settings()
+        dropped = [k for k in _SETTINGS_RESET_KEYS if k in data]
+        kept = sorted(set(data) - set(dropped))
+        for key in _SETTINGS_RESET_KEYS:
+            data.pop(key, None)
+        paths.replace_settings(data)
+        paths.refresh_output_dirs()
+    except Exception as exc:
+        return jsonify({"ok": False,
+                        "error": f"Сброс не выполнился: {_exception_note(exc)}"}), 500
+    return jsonify({"ok": True, "reset": dropped, "kept": kept})
+
+
+# ═══════════════════════════════════════════════════════════
+#  Отправка issue через GitHub API (необязательный токен)
+# ═══════════════════════════════════════════════════════════
+#
+# Окно «Сообщить о проблеме» умеет два пути: открыть заполненную форму
+# (работает без токена, как раньше) и СОЗДАТЬ issue само — через
+# POST /repos/{repo}/issues. GitHub требует аутентификацию для создания
+# (без токена — 401), поэтому токен в окне необязателен, но без него
+# автоотправка невозможна: сервер читает GITHUB_TOKEN из .env или берёт
+# токен, присланный один раз из формы (и по явной просьбе сохраняет его
+# туда же). Секрет никуда не выдаётся: в ответах — только булев признак.
+
+_ISSUE_TIMEOUT = 20.0                 # GitHub отвечает за секунды
+ISSUE_TITLE_MAX = 256
+ISSUE_BODY_MAX = 60000                # лимит GitHub — 65536
+ISSUE_LABELS_MAX = 10
+
+
+def github_token() -> str:
+    """Токен GitHub из окружения (.env); пустая строка — токена нет."""
+    return (os.environ.get("GITHUB_TOKEN") or "").strip()
+
+
+def _github_create_issue(title: str, labels: list, body: str,
+                         token: str) -> tuple[int, dict | None, str]:
+    """Создать issue → (код, json|None, примечание о сбое сети).
+
+    Отдельная функция, чтобы тесты подменяли её, а не сеть. Токен уходит
+    только в заголовок Authorization — ни в ответ, ни в лог он не попадает.
+    """
+    import httpx
+    try:
+        from routes.api import GITHUB_REPO
+        repo = GITHUB_REPO
+    except Exception:
+        repo = "ScarFace11/Yandex-Buisnes-Parser"
+    payload: dict = {"title": title, "body": body}
+    if labels:
+        payload["labels"] = labels
+    headers = {
+        "User-Agent": _USER_AGENT,
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    try:
+        r = httpx.post(f"https://api.github.com/repos/{repo}/issues",
+                       json=payload, headers=headers, timeout=_ISSUE_TIMEOUT)
+    except Exception as exc:
+        return 0, None, _exception_note(exc)
+    try:
+        data = r.json()
+    except Exception:
+        data = None
+    return r.status_code, (data if isinstance(data, dict) else None), ""
+
+
+def _remember_github_token(token: str) -> tuple[bool, str]:
+    """Сохранить токен в .env (GITHUB_TOKEN) — туда же, куда ключи API."""
+    try:
+        from routes.api import _write_env_keys
+        resp = _write_env_keys({"GITHUB_TOKEN": token})
+        if isinstance(resp, tuple):        # jsonify(…), 400
+            resp = resp[0]
+        data = resp.get_json() or {}
+    except Exception as exc:
+        return False, type(exc).__name__
+    if data.get("ok"):
+        return True, ""
+    return False, str(data.get("error") or "")
+
+
+def _issue_error(status: int, data: dict | None, note: str) -> str:
+    """Причина отказа GitHub человеческим языком — без технического мусора."""
+    detail = _error_message("", data)
+    tail = f": {detail}" if detail else ""
+    if status == 0:
+        return f"Сеть недоступна ({note or 'соединение не установлено'})"
+    if status == 401:
+        return ("GitHub отклонил токен (401) — войдите в GitHub заново "
+                "или проверьте GITHUB_TOKEN в .env")
+    if status == 403:
+        if "rate limit" in detail.lower():
+            return ("GitHub отклонил запрос (403): превышен лимит анонимных "
+                    "запросов — 60 в час, нужен токен")
+        return f"GitHub отклонил запрос (403) — у токена нет прав на issue{tail}"
+    if status == 404:
+        return "GitHub не нашёл репозиторий или у токена нет к нему доступа (404)"
+    if status == 422:
+        return f"GitHub не принял данные (422){tail}"
+    return f"GitHub ответил {status}{tail}"
+
+
+@bp.route("/report/issue", methods=["POST"])
+def report_issue():
+    """Создать issue на GitHub через API — кнопка «Создать issue».
+
+    Body: {title, labels, body, token?, remember?} (только JSON из своего
+    окна — тот же защитник, что у /settings/reset).
+    Reply: {ok: true, url, number, saved} |
+           {ok: false, code: "no_token"|"github", status, error}.
+
+    Без токена сюда стучаться не нужно — GitHub отвечает 401; интерфейс в
+    этом случае сам открывает заполненную форму, как раньше.
+    """
+    guard = _only_from_our_ui()
+    if guard is not None:
+        return guard
+    data = request.get_json(silent=True) or {}
+    title = str(data.get("title") or "").strip() or "Сообщение из приложения"
+    title = title[:ISSUE_TITLE_MAX]
+    body = str(data.get("body") or "")[:ISSUE_BODY_MAX]
+    raw_labels = data.get("labels")
+    labels = [str(x).strip() for x in (raw_labels if isinstance(raw_labels, list) else [])
+              if isinstance(x, str) and x.strip()][:ISSUE_LABELS_MAX]
+
+    sent = str(data.get("token") or "").strip()
+    token = sent or github_token()
+    saved = False
+    save_note = ""
+    if sent and data.get("remember"):
+        saved, save_note = _remember_github_token(sent)
+
+    if not token:
+        # Поле токена в окне больше нет: если вход по коду в этой сборке
+        # возможен — предлагаем его, иначе сразу заполненную форму.
+        how = ("войдите в GitHub по коду или "
+               if github_oauth_client_id() else "")
+        return jsonify({
+            "ok": False, "code": "no_token", "status": 0,
+            "error": "Токен GitHub не задан, а через API issue не создаётся "
+                     "(GitHub требует аутентификацию) — " + how
+                     + "откройте заполненную форму",
+        })
+
+    status, payload, net_note = _github_create_issue(title, labels, body, token)
+    if status == 201 and payload:
+        out = {"ok": True, "url": str(payload.get("html_url") or ""),
+               "number": payload.get("number"), "saved": saved}
+        if save_note:
+            out["save_warning"] = save_note
+        return jsonify(out)
+    return jsonify({"ok": False, "code": "github", "status": status,
+                    "error": _issue_error(status, payload, net_note)})
+
+
+# ── Вход в GitHub без ручного ввода токена: device flow ─────
+#
+# Поле токена в окне сообщения убрано, а GitHub API не работает анонимно.
+# Device flow закрывает эту дыру: приложение показывает короткий код, ведёт
+# на страницу github.com/login/device, где пользователь вводит код и
+# подтверждает доступ — и токен приходит сам, без копирования где-либо.
+#
+# client_id OAuth-приложения проекта ЗАШИТ в сборку (GH_DEVICE_CLIENT_ID_
+# DEFAULT ниже): OAuth-приложение владелец репозитория заводит один раз
+# (Settings → Developer settings → OAuth Apps; callback и секрет для device
+# flow не нужны, а сама опция Enable Device Flow на странице приложения
+# должна быть включена), а обычным пользователям создавать НИЧЕГО не нужно — они
+# лишь вводят код на странице GitHub. GITHUB_OAUTH_CLIENT_ID в окружении —
+# только переопределение при разработке. Если client_id в сборке нет,
+# кнопка «Войти в GitHub» не показывается вовсе (can_device в
+# /report/context) — остаётся заполненная форма, и никаких инструкций
+# про OAuth Apps пользователь не видит.
+#
+# Состояние — stateless: device_code живёт в памяти страницы окна
+# (подтверждение живёт ~15 минут и никуда не пишется), сервер только
+# меняет код на токен и кладёт его в .env тем же путём, что и раньше.
+
+GH_DEVICE_CODE_URL = "https://github.com/login/device/code"
+GH_DEVICE_TOKEN_URL = "https://github.com/login/oauth/access_token"
+GH_DEVICE_AUTH_URL = "https://github.com/login/device"
+# public_repo — минимум прав для создания issue в публичном репозитории;
+# полный «repo» просить у пользователя непропорционально.
+GH_DEVICE_SCOPE = "public_repo"
+
+# client_id OAuth-приложения проекта — зашивается в релизную сборку
+# (одна строка, которую владелец заполняет при выпуске). Не секрет:
+# device flow работает вовсе без client_secret. Пустая строка — вход по
+# коду выключен, окно предлагает только заполненную форму.
+GH_DEVICE_CLIENT_ID_DEFAULT = "Ov23lik2gXnfcFfKtRf0"
+
+
+def github_oauth_client_id() -> str:
+    """client_id OAuth-приложения: окружение (.env) → зашитое значение."""
+    env = (os.environ.get("GITHUB_OAUTH_CLIENT_ID") or "").strip()
+    return env or str(GH_DEVICE_CLIENT_ID_DEFAULT or "").strip()
+
+
+def _gh_form_post(url: str, data: dict) -> tuple[int, dict | None, str]:
+    """POST form → (код, json|None, примечание о сбое сети).
+
+    Отдельная функция, чтобы тесты подменяли её, а не сеть — как
+    у _github_create_issue. Токен и device_code уходят только в тело
+    запроса — ни в ответ, ни в лог они не попадают.
+    """
+    import httpx
+    headers = {
+        "User-Agent": _USER_AGENT,
+        "Accept": "application/json",
+    }
+    try:
+        r = httpx.post(url, data=data, headers=headers, timeout=_ISSUE_TIMEOUT)
+    except Exception as exc:
+        return 0, None, _exception_note(exc)
+    try:
+        payload = r.json()
+    except Exception:
+        payload = None
+    return r.status_code, (payload if isinstance(payload, dict) else None), ""
+
+
+@bp.route("/report/github/device/start", methods=["POST"])
+def github_device_start():
+    """Начать device flow: выдать код пользователю.
+
+    Body: {} (JSON из своего окна — тот же защитник, что у /report/issue).
+    Reply: {ok: true, device_code, user_code, verification_uri, interval,
+            expires_in} | {ok: false, code: "no_client_id"|"github"|"network", …}.
+    """
+    guard = _only_from_our_ui()
+    if guard is not None:
+        return guard
+    client_id = github_oauth_client_id()
+    if not client_id:
+        return jsonify({
+            "ok": False, "code": "no_client_id", "status": 0,
+            "error": "Вход по коду не настроен: в этой сборке не указан "
+                     "client_id проекта (GITHUB_OAUTH_CLIENT_ID или "
+                     "GH_DEVICE_CLIENT_ID_DEFAULT в routes/diagnostics.py). "
+                     "Сообщение можно отправить заполненной формой.",
+        })
+    status, data, note = _gh_form_post(GH_DEVICE_CODE_URL, {
+        "client_id": client_id,
+        "scope": GH_DEVICE_SCOPE,
+    })
+    if status != 200 or not data or not data.get("device_code"):
+        return jsonify({"ok": False, "code": "network" if status == 0 else "github",
+                        "status": status,
+                        "error": note or _issue_error(status, data, note)})
+    return jsonify({
+        "ok": True,
+        "device_code": str(data.get("device_code") or ""),
+        "user_code": str(data.get("user_code") or ""),
+        "verification_uri": str(data.get("verification_uri") or GH_DEVICE_AUTH_URL),
+        "interval": max(1, int(data.get("interval") or 5)),
+        "expires_in": max(60, int(data.get("expires_in") or 900)),
+    })
+
+
+@bp.route("/report/github/device/poll", methods=["POST"])
+def github_device_poll():
+    """Проверить, подтвердил ли пользователь код на GitHub.
+
+    Body: {device_code}.
+    Reply: {ok: true, saved} | {ok: false, pending: true[, slow_down: true]} |
+           {ok: false, code: "expired_token"|"access_denied"|"network"|…}.
+    """
+    guard = _only_from_our_ui()
+    if guard is not None:
+        return guard
+    data = request.get_json(silent=True) or {}
+    client_id = github_oauth_client_id()
+    device_code = str(data.get("device_code") or "")
+    if not client_id or not device_code:
+        return jsonify({"ok": False, "code": "bad_request",
+                        "error": "Нет client_id или device_code — начните вход заново."})
+    status, out, note = _gh_form_post(GH_DEVICE_TOKEN_URL, {
+        "client_id": client_id,
+        "device_code": device_code,
+        "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+    })
+    if status == 0:
+        return jsonify({"ok": False, "code": "network",
+                        "error": f"Сеть недоступна ({note or 'соединение не установлено'})"})
+    if not out:
+        return jsonify({"ok": False, "code": "github", "status": status,
+                        "error": _issue_error(status, None, note)})
+    err = str(out.get("error") or "")
+    if err == "authorization_pending":
+        return jsonify({"ok": False, "pending": True})
+    if err == "slow_down":
+        return jsonify({"ok": False, "pending": True, "slow_down": True})
+    if err == "expired_token":
+        return jsonify({"ok": False, "code": "expired_token",
+                        "error": "Время кода вышло — начните вход заново."})
+    if err == "access_denied":
+        return jsonify({"ok": False, "code": "access_denied",
+                        "error": "Доступ отклонён на странице GitHub."})
+    token = str(out.get("access_token") or "")
+    if not token:
+        return jsonify({"ok": False, "code": "github", "status": status,
+                        "error": _issue_error(status, out, note)})
+    saved, save_note = _remember_github_token(token)
+    # Токен уже живёт в .env и в окружении процесса (_write_env_keys
+    # перезагружает его без перезапуска) — «Создать issue» работает сразу.
+    out = {"ok": True, "saved": saved}
+    if save_note:
+        out["save_warning"] = save_note
+    return jsonify(out)
+
+
+# ── Экспорт настроек (перенос на другую машину) ─────────────
+#
+# Зеркало «Экспорт данных», но только настройки: server-часть
+# (settings.json — папки, браузер, хранение, пресеты, шаблоны) и настройки
+# вкладок этого окна (localStorage — фильтры, столбцы, тема). Сервер
+# localStorage не видит, поэтому снимок присылает сам интерфейс; в архив
+# попадает только своё: ключи с префиксом yp_ и строковые значения.
+# Обратный путь — существующая кнопка «Импорт данных» (/data/import).
+
+BROWSER_SETTINGS_MAX = 500
+BROWSER_VALUE_MAX = 1_000_000
+
+
+def clean_browser_settings(raw) -> dict:
+    """Снимок localStorage → только {yp_*: str} в разумных пределах."""
+    if not isinstance(raw, dict):
+        return {}
+    out: dict = {}
+    for key, value in raw.items():
+        if len(out) >= BROWSER_SETTINGS_MAX:
+            break
+        k = str(key)
+        if not k.startswith("yp_") or not isinstance(value, str):
+            continue
+        out[k] = value[:BROWSER_VALUE_MAX]
+    return out
+
+
+@bp.route("/settings/export", methods=["POST"])
+def settings_export():
+    """Zip со всеми настройками — перенос на другую машину до сброса.
+
+    Body: {browser?: {yp_*: значение}}.
+    Reply: вложение parser-settings-export.zip (settings.json + browser.json).
+    """
+    guard = _only_from_our_ui()
+    if guard is not None:
+        return guard
+    data = request.get_json(silent=True) or {}
+    browser = clean_browser_settings(data.get("browser"))
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        try:
+            from paths import settings_path
+            sp = settings_path()
+            if sp.exists():
+                zf.write(str(sp), "settings.json")
+        except Exception:
+            pass
+        if browser:
+            zf.writestr("browser.json", json.dumps(browser, ensure_ascii=False))
+    buf.seek(0)
+    return Response(buf.getvalue(), mimetype="application/zip",
+                    headers={"Content-Disposition":
+                             "attachment; filename=parser-settings-export.zip"})
