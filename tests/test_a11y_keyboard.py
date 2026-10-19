@@ -184,16 +184,80 @@ def wait_focus_inside(tab, box: str, timeout: float = 5.0) -> bool:
     return False
 
 
-def walk(tab, limit: int = 260):
-    """Пройти вперёд по Tab и собрать все остановки фокуса."""
+def walk(tab, max_presses: int = 3000):
+    """Пройти вперёд по Tab и собрать все остановки фокуса.
+
+    Возвращает (stops, ended, cycled):
+      * ended — фокус дошёл до конца документа (значит, нигде не заперт);
+      * cycled — тот же элемент встретился второй раз: фокус ходит по кругу.
+
+    Число нажатий не задано константой: страница догружает списки на ходу
+    (история файлов, сферы, пресеты), и сколько их — зависит от данных
+    пользователя. Верхняя граница одна на всех: на случай, если фокус заперт
+    и конца не будет вовсе.
+    """
     stops = []
-    for _ in range(limit):
+    seen = set()
+    for _ in range(max_presses):
         tab.press("Tab")
         step = json.loads(tab.evaluate(WALK_STEP))
         if step.get("end"):
-            return stops, True
+            return stops, True, False
+        mark = step.get("mark")
+        if mark in seen:
+            return stops, False, True
+        seen.add(mark)
         stops.append(step)
-    return stops, False
+    return stops, False, False
+
+
+# Сколько на странице элементов, в которые вообще можно уйти с клавиатуры.
+# Их число зависит от данных пользователя: в истории файлов каждая строка —
+# своя звёздочка, и их бывает и полторы сотни. Поэтому лимит обхода считаем
+# от этой величины, а не от константы: иначе проверка зависит от того, сколько
+# файлов лежит в output/ на этой машине.
+FOCUSABLE_COUNT = """
+(() => {
+  const sel = 'a[href], button, input, select, textarea, summary, [tabindex]';
+  let n = 0;
+  for (const el of document.querySelectorAll(sel)) {
+    const cs = getComputedStyle(el);
+    if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+    if (!el.getClientRects().length) continue;
+    if (el.closest('[aria-hidden="true"]')) continue;
+    n++;
+  }
+  return n;
+})()
+"""
+
+
+def focusable_count(tab) -> int:
+    return int(tab.evaluate(FOCUSABLE_COUNT))
+
+
+def wait_settled(tab, timeout: float = 15.0, stable: int = 3, interval: float = 0.3) -> int:
+    """Дождаться, пока страница перестанет меняться, и вернуть число элементов.
+
+    Списки (история файлов, сферы, пресеты) приезжают запросами, и обход Tab,
+    начатый раньше, мерил бы разные страницы: то упирался в лимит нажатий,
+    то проходил мимо подгрузившегося списка. Ждём, пока число фокусируемых
+    элементов перестанет меняться.
+    """
+    deadline = time.monotonic() + timeout
+    last = -1
+    same = 0
+    while time.monotonic() < deadline:
+        count = focusable_count(tab)
+        if count == last:
+            same += 1
+            if same >= stable:
+                return count
+        else:
+            same = 0
+            last = count
+        time.sleep(interval)
+    return focusable_count(tab)
 
 
 def format_stops(stops) -> str:
@@ -210,14 +274,24 @@ def test_tab_walk_starts_at_skip_link_and_finishes(browser_cdp, live_app_url):
     tab = new_tab(browser_cdp)
     try:
         open_page(tab, live_app_url)
-        stops, ended = walk(tab)
+        # Страница должна догрузить списки ДО обхода: иначе обход меряет
+        # промежуточное состояние (см. wait_settled).
+        wait_settled(tab)
+        # Оверлей (соглашение, порог версии) мог приехать вместе со списками —
+        # прячем его ещё раз, иначе он замкнёт фокус в себе.
+        tab.evaluate(HIDE_OVERLAYS)
+        stops, ended, cycled = walk(tab)
         assert stops, "Tab не перевёл фокус ни на один элемент"
         assert stops[0]["path"].startswith("a.skip-link"), (
             f"первым по Tab должно быть «Перейти к содержимому», а не {stops[0]['path']}"
         )
+        assert not cycled, (
+            "фокус ходит по кругу — обход вернулся к уже пройденному элементу:\n"
+            + format_stops(stops[-20:])
+        )
         assert ended, (
-            "обход Tab не дошёл до конца документа за 260 нажатий — "
-            "фокус заперт в интерфейсе:\n" + format_stops(stops)
+            "обход Tab не дошёл до конца документа — фокус заперт в интерфейсе:\n"
+            + format_stops(stops[-40:])
         )
 
         invisible = [s for s in stops if not s["visible"]]
@@ -238,7 +312,7 @@ def test_tab_walk_starts_at_skip_link_and_finishes(browser_cdp, live_app_url):
         )
 
         assert any("btn-run" in s["path"] for s in stops), "главная кнопка не достижима по Tab"
-        assert 25 <= len(stops) <= 260, f"подозрительное число остановок: {len(stops)}"
+        assert len(stops) >= 25, f"подозрительное число остановок: {len(stops)}"
     finally:
         tab.close()
 
