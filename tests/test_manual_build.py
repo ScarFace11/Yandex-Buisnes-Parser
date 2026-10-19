@@ -116,8 +116,19 @@ class TestLocalBuildScripts:
                           "git push", "git tag", "gh release"):
             assert forbidden not in code, f"{path.name}: локальная сборка не должна {forbidden}"
 
-    def test_readme_documents_both_local_commands(self):
+    def test_local_builds_are_documented(self):
+        """Инструкции по локальной сборке должны быть в репозитории.
+
+        README у пользователя короткий, поэтому инструкции живут в
+        docs/build.md — но отсутствовать они не могут: без них собрать
+        приложение у себя нечем.
+        """
+        docs = (ROOT / "docs" / "build.md").read_text(encoding="utf-8")
+        assert "build-mac.sh" in docs
+        assert "build.bat" in docs, "у локальной сборки Windows нет инструкции"
+        assert "build-manual.yml" in docs, "вторая платформа собирается в Actions"
+
+    def test_readme_links_the_build_docs(self):
+        """Из короткого README инструкция по сборке должна быть достижима."""
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        assert "build-mac.sh" in readme
-        assert "build.bat" in readme, "у локальной сборки Windows нет инструкции"
-        assert "build-manual.yml" in readme, "вторая платформа собирается в Actions"
+        assert "docs/build.md" in readme, "README не ссылается на инструкцию по сборке"
