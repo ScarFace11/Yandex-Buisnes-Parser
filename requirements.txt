@@ -29,5 +29,5 @@ folium~=0.20.0
 # Геокодирование города — из той же карты (browser_search.city_center), без API.
 
 # Dev / Testing
-pytest~=8.3
+pytest~=9.1
 pyyaml~=6.0    # тесты парсят workflow-YAML (tests/test_release_draft.py, ci.yml)
