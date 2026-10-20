@@ -245,14 +245,29 @@ jobs:
           ls -lh dist-mac/*.zip
 
       - name: Build the .dmg
+        # hdiutil на раннере падает с «Resource busy», если от предыдущего
+        # запуска (или от смоук-теста приложения) остался неотмонтированный
+        # образ или процесс diskimages-helper — так упала сборка 2.3.4.1:
+        # архив с приложением уже лежал на релизе, а .dmg не создался.
+        # Поэтому три попытки с отмонтированием и паузой между ними; после
+        # третьей — падаем с той же ошибкой, что и раньше, но с логом.
         run: |
           ARCH="${{ matrix.asset_arch }}"
           STAGE="$(mktemp -d)"
           cp -R "dist-mac/YandexBusinessParser.app" "$STAGE/"
           ln -s /Applications "$STAGE/Applications"
-          hdiutil create -volname "YandexBusinessParser" -srcfolder "$STAGE" -ov -format UDZO \
-            "dist-mac/YandexBusinessParser-macos-$ARCH.dmg"
+          OUT="dist-mac/YandexBusinessParser-macos-$ARCH.dmg"
+          ok=0
+          for attempt in 1 2 3; do
+            if hdiutil create -volname "YandexBusinessParser" -srcfolder "$STAGE" -ov \
+                 -format UDZO "$OUT"; then ok=1; break; fi
+            echo "::warning::hdiutil не смог создать $OUT (попытка $attempt) — чищу висящие образы"
+            hdiutil detach "/Volumes/YandexBusinessParser" -force 2>/dev/null || true
+            rm -f "$OUT"
+            sleep 5
+          done
           rm -rf "$STAGE"
+          [ "$ok" = "1" ] || { echo "::error::.dmg не создан за 3 попытки"; exit 1; }
           ls -lh dist-mac/*.dmg
 
       - name: Verify the bundle layout
