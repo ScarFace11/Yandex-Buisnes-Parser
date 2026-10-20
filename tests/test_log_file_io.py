@@ -8,7 +8,8 @@
 переставал быть бесплатным). Ошибку здесь видно только в работе, поэтому
 проверяются свойства записи, а не отдельная строка кода:
 
-* файл открыт один раз на прогон (буфер), а не на строку;
+* файл открыт один раз на прогон (буфер), а не на строку (считаем открытия,
+  а не миллисекунды: счётчик не зависит от файловой системы);
 * буферизованный путь заметно быстрее построчного;
 * содержимое лога не теряется: flush/close/finish выкладывают всё, ANSI снят,
   порядок строк сохранён;
@@ -164,26 +165,115 @@ def _time_lines(log, n: int) -> float:
     return time.perf_counter() - t0
 
 
-def test_buffered_logging_is_faster_than_opening_per_line(tmp_path, monkeypatch):
-    """Буфер против открытия на строку — тот же файл, но в разы быстрее.
+def _track_log_opens(monkeypatch, root: Path) -> list:
+    """Считает, сколько раз открывался файл лога (все *.log внутри root).
 
-    Порог «в 3 раза» взят с запасом: замер на 20 000 строк даёт 130×, а
-    зависит он от файловой системы, не от машины. Проверка нужна, чтобы
-    возврат «открыть файл на каждую строку» не прошёл незамеченным.
+    Счётчик, а не миллисекунды: он одинаков на любой машине, а сравнение
+    времени зависит от того, сколько стоит open() на конкретной файловой
+    системе. На CI-раннере открытие дешёвое, и разница между буфером и
+    построчной записью — два с половиной раза, а не десятки.
     """
-    monkeypatch.setattr(run_logger, "LOGS_DIR", str(tmp_path / "buffered"))
-    buffered = run_logger.RunLogger("fast", ["Уфа"], ["кафе"])
-    t_buffered = _time_lines(buffered, 3000)
-    buffered.close()
+    import builtins
+    import os
 
+    real_open = builtins.open
+    opened: list[str] = []
+
+    def counting_open(file, *args, **kwargs):
+        try:
+            path = os.fspath(file)
+            if (isinstance(path, str) and path.endswith(".log")
+                    and str(path).startswith(str(root))):
+                opened.append(path)
+        except Exception:
+            pass
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", counting_open)
+    return opened
+
+
+def test_the_log_file_is_opened_once_per_run(tmp_path, monkeypatch):
+    """Файл лога открывается ОДИН раз на прогон — в этом весь смысл буфера.
+
+    Именно эта проверка ловит возврат к «открыть файл на каждую строку», и
+    именно она не зависит от машины: счётчик открытий одинаков везде.
+    """
+    opened = _track_log_opens(monkeypatch, tmp_path)
+    monkeypatch.setattr(run_logger, "LOGS_DIR", str(tmp_path / "buffered"))
+    log = run_logger.RunLogger("count", ["Уфа"], ["кафе"])
+    for i in range(200):
+        log.log("sys", f"строка {i}")
+    log.close()
+    assert len(opened) == 1, (
+        f"файл лога открыт {len(opened)} раз вместо одного — буфер не работает"
+    )
+
+
+def test_the_fallback_path_opens_the_file_per_line(tmp_path, monkeypatch):
+    """Запасной путь (дескриптора нет) открывает файл на каждую строку.
+
+    Это страховка, а не дефект: лог не должен ронять поиск, если файл
+    открыть не удалось. Но возврат к построчной записи приходит именно
+    отсюда, поэтому поведение зафиксировано и разница с буфером видна.
+    """
+    opened = _track_log_opens(monkeypatch, tmp_path)
     monkeypatch.setattr(run_logger, "LOGS_DIR", str(tmp_path / "per-line"))
     monkeypatch.setattr(run_logger.RunLogger, "_open_handle",
                         lambda self: setattr(self, "_handle", None))
-    per_line = run_logger.RunLogger("slow", ["Уфа"], ["кафе"])
-    t_per_line = _time_lines(per_line, 3000)
-    per_line.close()
+    log = run_logger.RunLogger("fallback", ["Уфа"], ["кафе"])
+    for i in range(20):
+        log.log("sys", f"строка {i}")
+    log.close()
+    assert len(opened) >= 20, (
+        f"запасной путь открыл файл {len(opened)} раз — он обязан писать построчно"
+    )
 
-    assert t_buffered * 3 < t_per_line, (
+
+def _time_one(tmp_path, monkeypatch, tag: str, n: int, per_line: bool) -> float:
+    """Один замер одного из двух путей (по отдельной папке и файлу)."""
+    monkeypatch.setattr(run_logger, "LOGS_DIR", str(tmp_path / tag))
+    if per_line:
+        monkeypatch.setattr(run_logger.RunLogger, "_open_handle",
+                            lambda self: setattr(self, "_handle", None))
+    log = run_logger.RunLogger("fast", ["Уфа"], ["кафе"])
+    t = _time_lines(log, n)
+    log.close()
+    return t
+
+
+def _compare_paths(tmp_path, monkeypatch, n: int, rounds: int = 3) -> tuple:
+    """Замеряет оба пути по очереди и берёт лучший результат каждого.
+
+    Замеры чередуются (буфер → построчно → буфер → …), чтобы шум машины
+    ложился на оба пути одинаково, а не на один. Из результатов берётся
+    минимум: он меньше всего зависит от того, что в этот момент делала
+    система.
+    """
+    orig_open_handle = run_logger.RunLogger._open_handle
+    best_buffered = best_per_line = None
+    for i in range(rounds):
+        monkeypatch.setattr(run_logger.RunLogger, "_open_handle", orig_open_handle)
+        t_buffered = _time_one(tmp_path, monkeypatch, f"buffered-{i}", n, per_line=False)
+        monkeypatch.setattr(run_logger.RunLogger, "_open_handle", orig_open_handle)
+        t_per_line = _time_one(tmp_path, monkeypatch, f"per-line-{i}", n, per_line=True)
+        best_buffered = t_buffered if best_buffered is None else min(best_buffered, t_buffered)
+        best_per_line = t_per_line if best_per_line is None else min(best_per_line, t_per_line)
+    return best_buffered, best_per_line
+
+
+def test_buffered_logging_is_faster_than_opening_per_line(tmp_path, monkeypatch):
+    """Буфер против открытия на строку — тот же файл, но заметно быстрее.
+
+    Порог здесь скромный («в полтора раза»), а не «в три»: разница между
+    путями зависит от цены open() на конкретной файловой системе. На
+    локальной машине выходит 40–70×, на CI-раннере с дешёвым open() — 2.1×,
+    и порог «в три раза» ронял ВЕРНЫЙ код на всех трёх системах. Гарантию
+    «файл открыт один раз на прогон» проверяет отдельный тест со счётчиком
+    открытий — он от файловой системы не зависит вовсе.
+    """
+    t_buffered, t_per_line = _compare_paths(tmp_path, monkeypatch, 2000)
+    assert t_buffered * 1.5 < t_per_line, (
         f"буферизованный лог не быстрее построчного: {t_buffered:.3f}s "
         f"против {t_per_line:.3f}s"
     )

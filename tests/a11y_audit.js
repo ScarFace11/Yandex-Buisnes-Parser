@@ -27,7 +27,18 @@
   const stats = { scanned: 0, checks: [], theme: st.theme || null };
 
   // ── Подготовка состояния ────────────────────────────────────
-  if (st.theme) document.documentElement.setAttribute('data-theme', st.theme);
+  // Тему фиксируем и в хранилище, не только атрибутом: переключатель темы
+  // читает localStorage, а в режиме «как в системе» (по умолчанию) слушатель
+  // ОС (onSystemTheme) может перебить data-theme по сигналу смены
+  // prefers-color-scheme — на головном Chromium CI-раннера такой сигнал
+  // прилетает во время осаждения кадра, и тёмная тема откатывается в
+  // светлую прямо перед замером контраста. Сохранённый режим делает выбор
+  // авторитетным: слушатель ОС не срабатывает (режим не «system»), и любой
+  // повторный applyTheme ставит уже измеряемую тему.
+  if (st.theme) {
+    try { localStorage.setItem('yp_theme_v1', st.theme); } catch (e) { /* приватный режим */ }
+    document.documentElement.setAttribute('data-theme', st.theme);
+  }
   // Первый вход: оверлеи соглашения/порога версии закрывают интерфейс —
   // в самом приложении их видно только один раз, и они не часть страницы,
   // которую мы проверяем.
@@ -206,6 +217,21 @@
   // Элементы внутри aria-hidden и в служебном спрайте не участвуют в проверках.
   const hiddenFromAT = el => !!el.closest('[aria-hidden="true"], #icon-sprite');
   const isDecorative = el => el.closest('#icon-sprite, svg[aria-hidden="true"]') !== null;
+
+  // Перед замером ещё раз фиксируем тему и сбрасываем кэш вычисленных
+  // стилей. На головном Chromium CI-раннера отдельные элементы успевали
+  // отдать УСТАРЕВШИЙ цвет (светлой темы) при уже применённом
+  // data-theme="dark" — надпись светлой темы на тёмном фоне. Снятие и
+  // повторное применение атрибута инвалидирует все наследуемые
+  // CSS-переменные, а чтение layout (offsetHeight) вынуждает синхронный
+  // пересчёт — getComputedStyle ниже гарантированно видит измеряемую тему.
+  if (st.theme) {
+    document.documentElement.removeAttribute('data-theme');
+    void document.body.offsetHeight;               // пересчёт с «базовой» темой
+    document.documentElement.setAttribute('data-theme', st.theme);
+    void document.body.offsetHeight;               // и с целевой темой
+    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+  }
 
   // ── 1. Контраст текста ──────────────────────────────────────
   // Норма WCAG AA: 4.5:1 для обычного текста, 3:1 для крупного

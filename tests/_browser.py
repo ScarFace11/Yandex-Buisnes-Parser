@@ -223,6 +223,11 @@ class Tab:
         self.call("Page.enable")
         self.call("Emulation.setFocusEmulationEnabled", {"enabled": True})
         self.call("Page.navigate", {"url": url})
+        # Делаем вкладку активной: на головном Chromium CI-раннера фоновая
+        # вкладка не всегда обрабатывает нажатия Tab (Input.dispatchKeyEvent
+        # уходит, но фокус не двигается — обход пуст). bringToFront ставит
+        # вкладку на передний план, и клавиатура ведёт себя как у пользователя.
+        self.call("Page.bringToFront")
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             try:
