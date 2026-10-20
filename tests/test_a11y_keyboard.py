@@ -87,6 +87,20 @@ WALK_STEP = """
 })()
 """
 
+# Почему обход Tab мог не начаться: видно из самой страницы.
+WALK_DIAG = """
+(() => {
+  const el = document.activeElement;
+  return JSON.stringify({
+    active: el ? el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') : null,
+    hasFocus: document.hasFocus(),
+    visibility: document.visibilityState,
+    viewport: [window.innerWidth, window.innerHeight],
+    bodyStart: !!el && el === document.body,
+  });
+})()
+"""
+
 # Состояние модального окна: роль, имя, живой ли фокус внутри.
 MODAL_REPORT = """
 (sel => {
@@ -147,17 +161,11 @@ MODALS = (
 )
 
 
-# Окно одного размера на всех машинах: раскладка (и проверка горизонтального
-# скролла внутри аудита) иначе зависит от того, каким окном запустился браузер
-# на раннере. 1024×800 — самое узкое из обычных окон ноутбука.
-VIEWPORT = (1024, 800)
-
-
 def open_page(tab, url: str, fill_form: bool = True) -> None:
-    tab.call("Emulation.setDeviceMetricsOverride", {
-        "width": VIEWPORT[0], "height": VIEWPORT[1],
-        "deviceScaleFactor": 1, "mobile": False,
-    })
+    # Размер окна здесь НЕ подменяем: страница должна оставаться той же,
+    # что у человека, и клавиатура тоже. Фиксированное окно нужно аудиту
+    # раскладки (tests/test_a11y_browser.py), а здесь на первом месте —
+    # настоящее поведение браузера при нажатиях.
     tab.open(url, wait_expr="document.getElementById('setup-summary')")
     tab.evaluate(HIDE_OVERLAYS)
     if fill_form:
@@ -209,7 +217,10 @@ def walk(tab, max_presses: int = 3000):
     stops = []
     seen = set()
     for _ in range(max_presses):
-        tab.press("Tab")
+        # tab_step, а не press: на macOS системный Tab не переводит фокус на
+        # ссылки и кнопки (так устроена настройка ОС), шаг делается командой
+        # браузера — см. tests/_browser.py.
+        tab.tab_step()
         step = json.loads(tab.evaluate(WALK_STEP))
         if step.get("end"):
             return stops, True, False
@@ -291,7 +302,11 @@ def test_tab_walk_starts_at_skip_link_and_finishes(browser_cdp, live_app_url):
         # прячем его ещё раз, иначе он замкнёт фокус в себе.
         tab.evaluate(HIDE_OVERLAYS)
         stops, ended, cycled = walk(tab)
-        assert stops, "Tab не перевёл фокус ни на один элемент"
+        if not stops:
+            # «Фокус не двигается» — это либо настройка браузера/системы, либо
+            # страница не на переднем плане. Без этих данных диагноз не поставить.
+            diag = json.loads(tab.evaluate(WALK_DIAG))
+            pytest.fail(f"Tab не перевёл фокус ни на один элемент: {diag}")
         assert stops[0]["path"].startswith("a.skip-link"), (
             f"первым по Tab должно быть «Перейти к содержимому», а не {stops[0]['path']}"
         )
