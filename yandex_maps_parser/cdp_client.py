@@ -529,8 +529,16 @@ def _cdp_eval_page(
     expression: str,
     wait_expr: str,
     timeout_s: float,
+    viewport: tuple[int, int] | None = None,
 ) -> str | None:
-    """Навигация + ожидание + замер в одном WebSocket-соединении."""
+    """Навигация + ожидание + замер в одном WebSocket-соединении.
+
+    viewport=(width, height) фиксирует размер окна до навигации. Нужен
+    проверкам интерфейса: без него раскладка (и, например, горизонтальный
+    скролл) зависит от размера окна браузера на конкретной машине — один и
+    тот же код проходил на широком окне и падал на узком. Поиску не нужен:
+    там размер окна не важен, по умолчанию None.
+    """
     try:
         import websocket
     except ImportError:
@@ -554,6 +562,12 @@ def _cdp_eval_page(
         # страницы возвращает вкладке visible+focused — тогда виртуализованный
         # список ведёт себя как у обычного пользователя.
         _send("Emulation.setFocusEmulationEnabled", {"enabled": True})
+        if viewport:
+            width, height = viewport
+            _send("Emulation.setDeviceMetricsOverride", {
+                "width": int(width), "height": int(height),
+                "deviceScaleFactor": 1, "mobile": False,
+            })
         _send("Page.navigate", {"url": url})
 
         # Часть бюджета приберегается на сам замер: ожидание готовности могло

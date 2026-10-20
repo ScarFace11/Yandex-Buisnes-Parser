@@ -208,6 +208,18 @@
   };
   const textOf = el => (el.textContent || '').replace(/\s+/g, ' ').trim();
   const visible = el => {
+    // checkVisibility спрашивает у самого движка, отрисован ли элемент — это
+    // единственный надёжный ответ для содержимого закрытых <details>: их
+    // потомки остаются в DOM, но пользователь их не видит. Прямоугольник
+    // здесь врёт: в свежем Chromium закрытая секция уже получила layout, и
+    // getBoundingClientRect отдаёт размеры ПРОШЛОГО отрисованного состояния —
+    // вместе с цветами прошлой темы (на macOS-раннере аудит находил «серую
+    // надпись на тёмном фоне» у скрытых полей «Дополнительно»). contentVisibility
+    // Auto учитывает именно такие пропущенные поддеревья.
+    if (typeof el.checkVisibility === 'function') {
+      if (!el.checkVisibility({ contentVisibilityAuto: true, opacityProperty: true,
+                               visibilityProperty: true })) return false;
+    }
     const cs = getComputedStyle(el);
     if (cs.display === 'none' || cs.visibility === 'hidden') return false;
     if (Number(cs.opacity) === 0) return false;
@@ -218,19 +230,23 @@
   const hiddenFromAT = el => !!el.closest('[aria-hidden="true"], #icon-sprite');
   const isDecorative = el => el.closest('#icon-sprite, svg[aria-hidden="true"]') !== null;
 
-  // Перед замером ещё раз фиксируем тему и сбрасываем кэш вычисленных
-  // стилей. На головном Chromium CI-раннера отдельные элементы успевали
-  // отдать УСТАРЕВШИЙ цвет (светлой темы) при уже применённом
-  // data-theme="dark" — надпись светлой темы на тёмном фоне. Снятие и
-  // повторное применение атрибута инвалидирует все наследуемые
-  // CSS-переменные, а чтение layout (offsetHeight) вынуждает синхронный
-  // пересчёт — getComputedStyle ниже гарантированно видит измеряемую тему.
+  // Перед замером тема обязана быть уже применённой и неподвижной.
+  // Приложение ставит её само из localStorage при инициализации, а плавные
+  // переходы цвета идут 120–260 мс (класс theme-anim): замер «в полёте»
+  // читал цвет ПРОШЛОЙ темы — «надпись светлой темы на тёмном фоне». Поэтому
+  // снимаем плавность, ставим атрибут заново (это инвалидирует все
+  // унаследованные переменные), вынуждаем пересчёт через чтение layout и
+  // ждём два кадра. Затем проверяем, что тема действительно наша: слушатель
+  // ОС (режим «как в системе») мог вернуть свою — тогда один повтор.
   if (st.theme) {
-    document.documentElement.removeAttribute('data-theme');
-    void document.body.offsetHeight;               // пересчёт с «базовой» темой
-    document.documentElement.setAttribute('data-theme', st.theme);
-    void document.body.offsetHeight;               // и с целевой темой
-    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+    const root = document.documentElement;
+    root.classList.remove('theme-anim');
+    for (let attempt = 0; attempt < 2; attempt++) {
+      root.setAttribute('data-theme', st.theme);
+      void document.body.offsetHeight;
+      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+      if (root.getAttribute('data-theme') === st.theme) break;
+    }
   }
 
   // ── 1. Контраст текста ──────────────────────────────────────
@@ -366,12 +382,26 @@
   });
 
   // ── 5. Страница не должна скроллиться вбок ──────────────────
+  // В находке — КТО вылез за окно: без этого «страница шире окна» не чинится,
+  // потому что виновник бывает в шапке, в панели и в подсказке одновременно,
+  // и на другой системе/шрифте он другой.
   const de = document.documentElement;
   if (de.scrollWidth > window.innerWidth + 1) {
+    const limit = window.innerWidth + 1;
+    const wide = [];
+    document.querySelectorAll('body *').forEach(el => {
+      if (el.closest('#icon-sprite')) return;
+      const r = el.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0 || r.right <= limit) return;
+      wide.push({ sel: path(el), right: Math.round(r.right) });
+    });
+    wide.sort((a, b) => b.right - a.right);
+    const top = wide.slice(0, 3);
     findings.push({
       check: 'overflow',
       sel: 'html',
-      detail: `страница шире окна: ${de.scrollWidth} > ${window.innerWidth} — горизонтальный скролл`,
+      detail: `страница шире окна: ${de.scrollWidth} > ${window.innerWidth} — горизонтальный скролл`
+        + (top.length ? `; шире всех: ${top.map(t => `${t.sel} (${t.right}px)`).join(', ')}` : ''),
     });
   }
 

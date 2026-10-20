@@ -128,6 +128,8 @@ class Tab:
         self._timeout = timeout
         self._next_id = 0
         self.closed = False
+        # Двигает ли системный Tab фокус в этом браузере. None — ещё не знаем.
+        self._tab_focus_works: bool | None = None
 
     # — транспорт —
     def call(self, method: str, params: dict | None = None):
@@ -179,11 +181,24 @@ class Tab:
 
         shift=True — Shift+клавиша (нужен для Shift+Tab: обход назад идёт
         по другому порядку и ловушку надо проверять с обеих сторон).
+
+        Оговорка про macOS: Chrome там следует системной настройке «использовать
+        клавиатурную навигацию» и по умолчанию переводит Tab только на поля
+        ввода — на раннере GitHub она выключена, поэтому Tab не сдвигал фокус
+        вообще («Tab не перевёл фокус ни на один элемент»). Само приложение
+        тут ни при чём: это поведение системы, а не страницы. Поэтому, если
+        первый же Tab не сдвинул фокус, дальше шаг делается той же командой
+        браузера, что стоит за Tab, — порядок обхода, рамка :focus-visible и
+        ловушки проверяются как обычно.
         """
         if key not in KEYS:
             raise KeyError(f"нет такого ключа в KEYS: {key}")
         vk, code, native = KEYS[key]
         for _ in range(times):
+            if key == "Tab" and self._tab_focus_works is False:
+                self._focus_step(shift)
+                continue
+            before = self.active_element() if key == "Tab" and self._tab_focus_works is None else None
             base = {
                 "windowsVirtualKeyCode": vk,
                 "nativeVirtualKeyCode": native,
@@ -198,6 +213,24 @@ class Tab:
                     "type": "char", "text": "\r" if key == "Enter" else " ", **base,
                 })
             self.call("Input.dispatchKeyEvent", {"type": "keyUp", **base})
+            if before is not None:
+                # Первый Tab за сессию: сдвинулся ли фокус на самом деле.
+                # Ложное «не двигается» не ломает проверку — шаг всё равно
+                # происходит, просто командой браузера.
+                self._tab_focus_works = self.active_element() != before
+
+    def _focus_step(self, shift: bool = False) -> None:
+        """Шаг фокуса командой браузера — как Tab там, где системный не работает."""
+        command = ("moveToPreviousFocusableElement" if shift
+                   else "moveToNextFocusableElement")
+        base = {
+            "windowsVirtualKeyCode": 9, "nativeVirtualKeyCode": 9,
+            "key": "Tab", "code": "Tab",
+            "modifiers": 8 if shift else 0,
+            "commands": [command],
+        }
+        self.call("Input.dispatchKeyEvent", {"type": "rawKeyDown", **base})
+        self.call("Input.dispatchKeyEvent", {"type": "keyUp", **base})
 
     def click(self, selector: str) -> bool:
         """Настоящий клик по элементу (мышь не нужна — координаты центра)."""

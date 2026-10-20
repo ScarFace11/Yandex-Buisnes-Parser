@@ -147,7 +147,17 @@ MODALS = (
 )
 
 
+# Окно одного размера на всех машинах: раскладка (и проверка горизонтального
+# скролла внутри аудита) иначе зависит от того, каким окном запустился браузер
+# на раннере. 1024×800 — самое узкое из обычных окон ноутбука.
+VIEWPORT = (1024, 800)
+
+
 def open_page(tab, url: str, fill_form: bool = True) -> None:
+    tab.call("Emulation.setDeviceMetricsOverride", {
+        "width": VIEWPORT[0], "height": VIEWPORT[1],
+        "deviceScaleFactor": 1, "mobile": False,
+    })
     tab.open(url, wait_expr="document.getElementById('setup-summary')")
     tab.evaluate(HIDE_OVERLAYS)
     if fill_form:
