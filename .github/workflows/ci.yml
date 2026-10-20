@@ -46,9 +46,30 @@ jobs:
       - name: Run tests
         # Playwright browsers не ставим: тесты парсера мокают HTTP/CDP, а
         # приложение штатно откатывается на Chrome CDP и httpx.
+        # При падении имя теста уходит в аннотацию коммита и в сводку шага:
+        # логи джоб доступны только с правами админа, а диагноз должен читаться
+        # прямо со страницы проверки — без отдельного токена.
+        # shell: bash на всех трёх ОС: на windows-latest по умолчанию pwsh,
+        # а диагностика ниже — POSIX-скрипт.
+        shell: bash
         env:
           YANDEX_API_KEY: ci-dummy-key
-        run: python -m pytest tests/ -q
+        run: |
+          set -o pipefail
+          code=0
+          python -m pytest tests/ -q 2>&1 | tee pytest_out.txt || code=$?
+          if [ "$code" -ne 0 ]; then
+            fails=$(grep -E '^(FAILED|ERROR) ' pytest_out.txt | head -40 | paste -sd ';' -)
+            totals=$(grep -E '[0-9]+ (failed|passed)' pytest_out.txt | tail -2 | tr '\n' ' ')
+            echo "::error title=pytest failed::$fails — $totals"
+            {
+              echo '### pytest failed'
+              echo '```'
+              grep -E '^(FAILED|ERROR) |[0-9]+ (failed|passed)' pytest_out.txt | tail -60
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$code"
 
       - uses: actions/setup-node@v4
         with:
