@@ -8,6 +8,7 @@
 """
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -17,10 +18,33 @@ import pytest
 from yandex_maps_parser import processing, runner, state
 
 
+class _FrozenClock:
+    """Подмена datetime в processing: now() возвращает фиксированный момент.
+
+    Имя raw-файла несёт минуту (raw_YYYY-MM-DD_HH-MM_…), а тесты пишут и
+    читают файл двумя раздельными вызовами raw_path(). Если между ними
+    минута перекатывается, чтение уходит в чужой (несуществующий) файл, и
+    тест падает с IndexError на пустом списке — такая флека уже падала на
+    CI (test_carries_the_website_column). Время замораживается, чтобы путь
+    считался одинаково на любой машине. Остальные атрибуты класса datetime
+    (strptime, timedelta и др.) отдаются настоящему классу как есть.
+    """
+
+    def __init__(self, when):
+        self._when = when
+
+    def now(self):
+        return self._when
+
+    def __getattr__(self, name):
+        return getattr(datetime, name)
+
+
 @pytest.fixture
 def raw_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(state, "RAW_DIR", str(tmp_path / "raw"))
     os.makedirs(state.RAW_DIR, exist_ok=True)
+    monkeypatch.setattr(processing, "datetime", _FrozenClock(datetime.now()))
     return state.RAW_DIR
 
 
