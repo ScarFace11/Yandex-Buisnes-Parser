@@ -1,0 +1,108 @@
+name: Verify release assets
+
+# Проверка целостности ассетов релиза сразу после публикации и раз в сутки.
+
+on:
+  release:
+    types: [published]
+  schedule:
+    - cron: '41 5 * * *'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Тег релиза для проверки (пусто — последний опубликованный)'
+        required: false
+        type: string
+
+permissions:
+  contents: write    # комментарий к релизу, если проверка не пройдена
+
+concurrency:
+  group: verify-release-assets
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify published assets
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Resolve the tag to check
+        id: target
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          if [ -n "$RELEASE_TAG" ]; then TAG="$RELEASE_TAG"
+          elif [ -n "$INPUT_TAG" ]; then TAG="$INPUT_TAG"
+          else TAG=$(gh release view --json tagName --jq .tagName); fi
+          TAG="$(printf '%s' "$TAG" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+          case "$TAG" in v*) ;; *) TAG="v$TAG" ;; esac
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+(\.[0-9]+){2,}$'; then
+            echo "::error::не понял тег '$TAG' — нужен вид v2.3.4 (можно и без «v»)"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Проверяем релиз $TAG"
+
+      - name: Verify the assets
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python scripts/verify_release_assets.py \
+            --repo "$GITHUB_REPOSITORY" \
+            --tag "${{ steps.target.outputs.tag }}" \
+            --report release-assets-report.md
+
+      - name: Show the report
+        if: always()
+        run: |
+          if [ -f release-assets-report.md ]; then
+            cat release-assets-report.md
+            cat release-assets-report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Отчёт не создан — проверка не дошла до конца (см. лог шага выше)."
+            echo "### Проверка ассетов не выполнена" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Comment on the release when the check fails
+        # Комментарий к релизу: сбой виден там, где ссылка на скачивание.
+        if: failure() && steps.check.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.target.outputs.tag }}
+        run: |
+          {
+            echo "⚠️ **Автоматическая проверка целостности ассетов не пройдена.**"
+            echo
+            echo "Сборка отчиталась об успехе, но скачивание и разбор ассетов"
+            echo "выявили проблему. Подробности:"
+            echo
+            if [ -f release-assets-report.md ]; then cat release-assets-report.md; fi
+          } > comment.md
+          RELEASE_ID=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq .id)
+          gh api -X POST "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/comments" \
+            -F body=@comment.md || \
+            echo "::warning::не удалось оставить комментарий к релизу $TAG"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-assets-report-${{ steps.target.outputs.tag }}
+          path: release-assets-report.md
+          retention-days: 30
+          if-no-files-found: ignore

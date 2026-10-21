@@ -121,6 +121,10 @@ class TestGates:
             "YandexBusinessParser-windows-x64.zip",
             "YandexBusinessParser-macos-arm64.zip",
             "YandexBusinessParser-macos-x64.zip",
+            # Регресс 2.3.4.1: релиз ушёл в публикацию без .dmg — macOS-
+            # установщик обязателен, иначе пользователям ставить нечего.
+            "YandexBusinessParser-macos-arm64.dmg",
+            "YandexBusinessParser-macos-x64.dmg",
             "CHANGELOG.md",
         ]
         # Каждый файл обязан реально появляться в сборке — иначе публикация
@@ -129,6 +133,7 @@ class TestGates:
         assert "CHANGELOG.md" in text(WINDOWS_BUILD)
         macos = text(MACOS_BUILD)
         assert "YandexBusinessParser-macos-$ARCH.zip" in macos
+        assert "YandexBusinessParser-macos-$ARCH.dmg" in macos
         assert 'asset_arch: arm64' in macos and 'asset_arch: x64' in macos
 
     def test_missing_assets_block_the_publication(self):

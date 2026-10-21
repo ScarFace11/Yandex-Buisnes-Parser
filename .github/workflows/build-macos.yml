@@ -270,6 +270,42 @@ jobs:
           [ "$ok" = "1" ] || { echo "::error::.dmg не создан за 3 попытки"; exit 1; }
           ls -lh dist-mac/*.dmg
 
+      - name: Verify the .dmg and the .zip before uploading them
+        # Проверка образа и архива до загрузки на релиз.
+        run: |
+          set -uo pipefail
+          ARCH="${{ matrix.asset_arch }}"
+          DMG="dist-mac/YandexBusinessParser-macos-$ARCH.dmg"
+          ZIP="dist-mac/YandexBusinessParser-macos-$ARCH.zip"
+          VERSION=""
+          case "${GITHUB_REF_NAME:-}" in v*) VERSION="${GITHUB_REF_NAME#v}" ;; esac
+
+          ok=0
+          for attempt in 1 2 3; do
+            if hdiutil verify "$DMG"; then ok=1; break; fi
+            echo "::warning::hdiutil verify не прошёл (попытка $attempt) — проверяю висящие образы"
+            hdiutil detach "/Volumes/YandexBusinessParser" -force 2>/dev/null || true
+            sleep 5
+          done
+          [ "$ok" = "1" ] || { echo "::error::$DMG не прошёл hdiutil verify — на релиз он не пойдёт"; exit 1; }
+
+          MP="$(hdiutil attach "$DMG" -nobrowse -readonly | tail -1 | awk '{print $NF}')"
+          if [ -z "$MP" ] || [ ! -d "$MP" ]; then
+            echo "::error::не удалось смонтировать $DMG"
+            exit 1
+          fi
+          if [ ! -x "$MP/YandexBusinessParser.app/Contents/MacOS/YandexBusinessParser" ]; then
+            echo "::error::в $DMG нет YandexBusinessParser.app — ставить нечего"
+            hdiutil detach "$MP" -force || true
+            exit 1
+          fi
+          echo "OK: образ смонтирован, приложение внутри есть ($MP)"
+          hdiutil detach "$MP" -force || true
+
+          PYARGS=(--check-local "$ZIP")
+          [ -n "$VERSION" ] && PYARGS+=(--version "$VERSION")
+          python3 scripts/verify_release_assets.py "${PYARGS[@]}" || exit 1
+
       - name: Verify the bundle layout
         # Данные (templates/, static/) и библиотеки обязаны лежать внутри
         # бандла: иначе .app заработает только рядом с исходниками.

@@ -51,12 +51,14 @@ jobs:
       # Отдельно — только ручной ввод: он требует внятного отказа, если тег
       # написан не так (см. шаг ниже).
       INPUT_TAG: ${{ inputs.tag }}
-      # Все файлы, которые обязаны лежать на релизе до публикации: без них
-      # обновление (или установка на macOS) просто нечем будет сделать.
+      # Все файлы, которые обязаны лежать на релизе до публикации.
+      # .dmg обязателен: без него на macOS нечего ставить.
       REQUIRED_ASSETS: >-
         YandexBusinessParser-windows-x64.zip
         YandexBusinessParser-macos-arm64.zip
         YandexBusinessParser-macos-x64.zip
+        YandexBusinessParser-macos-arm64.dmg
+        YandexBusinessParser-macos-x64.dmg
         CHANGELOG.md
     steps:
       - name: Check the tag — публикуем только стабильные релизы

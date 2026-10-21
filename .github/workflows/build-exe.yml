@@ -199,6 +199,19 @@ jobs:
           Compress-Archive -Path dist/YandexBusinessParser/* `
             -DestinationPath dist/YandexBusinessParser-windows-x64.zip
 
+      - name: Verify the archive before uploading it
+        # Проверка архива до загрузки на релиз.
+        shell: pwsh
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          $version = ''
+          if ($env:TAG -like 'v*') { $version = $env:TAG.TrimStart('v') }
+          $pyArgs = @('--check-local', 'dist/YandexBusinessParser-windows-x64.zip')
+          if ($version) { $pyArgs += @('--version', $version) }
+          python scripts/verify_release_assets.py @pyArgs
+          if ($LASTEXITCODE -ne 0) { throw 'архив не прошёл проверку целостности' }
+
       - name: Verify no local-build marker and version threshold (release build)
         # Релизная сборка обязана ПОДЧИНЯТЬСЯ порогу минимальной версии: метка
         # .local-build (её ставит build.bat / build-manual.yml, см.
