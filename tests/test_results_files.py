@@ -853,6 +853,41 @@ class TestHelpers:
         client.post("/files/action", json={"action": "archive", "path": "raw/raw_a.xlsx"})
         assert not api_mod._RECORDS_CACHE, "перемещённый файл не должен оставаться в памяти"
 
+    def test_collect_records_hands_out_copies(self, client):
+        """Кэш не меняется запросами: маршруты дописывают в записи балл лида."""
+        from routes import api as api_mod
+        api_mod._clear_file_caches()
+        _make_raw(client, "raw_a.xlsx", [{"name": "Без балла", "city": "Уфа",
+                                          "yandex_maps_url": "https://ya.ru/n"}])
+        recs = api_mod._collect_records("raw")
+        assert recs[0].get("lead_score") not in (None, "")
+        cached = next(iter(api_mod._RECORDS_CACHE.values()))[0]
+        assert cached is not recs[0], "запись отдана из кэша без копии"
+        assert "lead_score" not in cached, "балл дописан в общую запись кэша"
+
+    def test_concurrent_reads_do_not_break_the_cache(self, client):
+        """Flask отвечает в несколько потоков — кэш не должен падать от соседа."""
+        import threading
+        from routes import api as api_mod
+        api_mod._clear_file_caches()
+        for i in range(6):
+            _make_raw(client, f"raw_{i}.xlsx", SAMPLE)
+        errors = []
+
+        def work():
+            try:
+                for _ in range(12):
+                    api_mod._collect_records("raw")
+            except Exception as exc:            # noqa: BLE001 — тест ловит любой сбой
+                errors.append(exc)
+
+        threads = [threading.Thread(target=work) for _ in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert not errors, errors
+
     def test_cities_of_sorted_by_count_then_name(self):
         from routes.api import _cities_of
         recs = [{"city": "А"}, {"city": "Б"}, {"city": "Б"}, {"city": ""}]

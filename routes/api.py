@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from collections import OrderedDict
 from datetime import date, datetime, timedelta
@@ -34,12 +35,17 @@ def _fail(exc: Exception) -> tuple:
 
 
 def _load_reviewed() -> dict:
-    if os.path.exists(REVIEWED_FILE):
+    """Отметки «просмотрено»; при битом основном файле берём прошлую версию."""
+    for path in (REVIEWED_FILE, REVIEWED_FILE + ".bak"):
+        if not os.path.exists(path):
+            continue
         try:
-            with open(REVIEWED_FILE, encoding="utf-8") as f:
-                return json.load(f)
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return data
         except Exception:
-            pass
+            continue
     return {}
 
 
@@ -65,9 +71,32 @@ def _backup_reviewed() -> None:
 
 
 def _save_reviewed(data: dict):
+    """Атомарно сохранить отметки (файл переписывается целиком на каждую пачку).
+
+    Прямая запись в _reviewed.json обнуляла ВСЮ работу по разбору, если процесс
+    убили или диск кончился в момент записи: файл оставался обрезанным, а
+    следующий разбор читал его как пустой словарь и перезаписывал. Поэтому
+    пишем в .tmp и подменяем одним os.replace, а прошлую версию держим в .bak.
+    """
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    with open(REVIEWED_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    tmp = REVIEWED_FILE + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
+            f.flush()
+            os.fsync(f.fileno())
+        if os.path.exists(REVIEWED_FILE):
+            try:
+                os.replace(REVIEWED_FILE, REVIEWED_FILE + ".bak")
+            except OSError:
+                pass
+        os.replace(tmp, REVIEWED_FILE)
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
     try:
         _backup_reviewed()
     except Exception:
@@ -770,6 +799,10 @@ _REC_CACHE_MAX = 512
 _RECORDS_CACHE: "OrderedDict[tuple, list]" = OrderedDict()
 _RECORDS_CACHE_MAX_FILES = 24
 _RECORDS_CACHE_MAX_RECORDS = 20000
+# Flask отвечает в несколько потоков: без замка подсчёт объёма в _read_records_cached
+# падал бы с «dictionary changed size during iteration», когда соседний запрос
+# вставляет свой файл.
+_RECORDS_LOCK = threading.RLock()
 
 
 def _safe_output_file(rel: str) -> str | None:
@@ -861,26 +894,35 @@ def _read_records_cached(path: str) -> list:
     except OSError:
         return []
     key = (os.path.abspath(path), st.st_mtime_ns, st.st_size)
-    hit = _RECORDS_CACHE.get(key)
-    if hit is not None:
-        _RECORDS_CACHE.move_to_end(key)
-        return hit
+    with _RECORDS_LOCK:
+        hit = _RECORDS_CACHE.get(key)
+        if hit is not None:
+            _RECORDS_CACHE.move_to_end(key)
+            return hit
+    # Разбор — вне замка: три секунды на xlsx не должны блокировать остальные
+    # вкладки. Пока считаем, тот же файл мог разобрать соседний запрос — тогда
+    # берём его результат, чтобы не держать две копии в памяти.
     recs = _read_records_file(path)
-    _RECORDS_CACHE[key] = recs
-    # Держим и число файлов, и общее число записей: один огромный xlsx не
-    # должен занимать память двадцатью копиями.
-    total = sum(len(v) for v in _RECORDS_CACHE.values())
-    while _RECORDS_CACHE and (len(_RECORDS_CACHE) > _RECORDS_CACHE_MAX_FILES
-                              or total > _RECORDS_CACHE_MAX_RECORDS):
-        _old_key, old = _RECORDS_CACHE.popitem(last=False)
-        total -= len(old)
+    with _RECORDS_LOCK:
+        hit = _RECORDS_CACHE.get(key)
+        if hit is not None:
+            return hit
+        _RECORDS_CACHE[key] = recs
+        # Держим и число файлов, и общее число записей: один огромный xlsx не
+        # должен занимать память двадцатью копиями.
+        total = sum(len(v) for v in _RECORDS_CACHE.values())
+        while _RECORDS_CACHE and (len(_RECORDS_CACHE) > _RECORDS_CACHE_MAX_FILES
+                                  or total > _RECORDS_CACHE_MAX_RECORDS):
+            _old_key, old = _RECORDS_CACHE.popitem(last=False)
+            total -= len(old)
     return recs
 
 
 def _clear_file_caches() -> None:
     """Сбросить счётчики и разобранные записи файлов (файлы изменились)."""
-    _REC_CACHE.clear()
-    _RECORDS_CACHE.clear()
+    with _RECORDS_LOCK:
+        _REC_CACHE.clear()
+        _RECORDS_CACHE.clear()
 
 
 def _count_records(path: str) -> int | None:
@@ -1231,7 +1273,11 @@ def stats_daily():
 
 
 def _fill_lead_scores(recs: list) -> list:
-    """Give every record a lead score, even when its file carries none."""
+    """Give every record a lead score, even when its file carries none.
+
+    Меняет записи на месте — поэтому вызывать только на СВОИХ копиях (см.
+    _collect_records).
+    """
     missing = [r for r in recs
                if isinstance(r, dict) and r.get("lead_score") in (None, "")]
     if missing:
@@ -1243,15 +1289,26 @@ def _fill_lead_scores(recs: list) -> list:
     return recs
 
 
+def _copy_record(rec):
+    """Копия записи: кэш разобранных файлов не должен меняться запросами."""
+    return dict(rec) if isinstance(rec, dict) else rec
+
+
 def _collect_records(view: str, rel_file: str | None = None,
                      scope: str = "current") -> list:
-    """Records of a view — or of one explicitly requested file."""
+    """Records of a view — or of one explicitly requested file.
+
+    Каждая запись отдаётся копией: маршруты дописывают в неё балл лида и число
+    филиалов, а словари в кэше общие — правка на месте меняла бы кэш и могла
+    падать в соседнем запросе на json.dumps («changed size during iteration»).
+    """
     if rel_file:
         full = _safe_output_file(rel_file)
-        return _fill_lead_scores(list(_read_records_cached(full))) if full else []
+        recs = [_copy_record(r) for r in _read_records_cached(full)] if full else []
+        return _fill_lead_scores(recs)
     recs: list = []
     for f in _view_files(view, scope):
-        recs.extend(_read_records_cached(f))
+        recs.extend(_copy_record(r) for r in _read_records_cached(f))
     if view == "all":
         try:
             from yandex_maps_parser.exporters import dedupe_records
@@ -1634,10 +1691,18 @@ def _persist_reviewed_column(path: str, rev: dict) -> int | None:
                 changed += 1
             cell.value = val
         tmp = path + ".tmp"
-        wb.save(tmp)
+        try:
+            wb.save(tmp)
+        except Exception:
+            # Неудачная запись не должна оставлять .tmp рядом с результатами.
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            raise
     finally:
         wb.close()
-    os.replace(path + ".tmp", path)
+    os.replace(tmp, path)
     return changed
 
 

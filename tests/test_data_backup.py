@@ -87,6 +87,36 @@ class TestBackup:
             (client.dirs["root"] / "_reviewed.json").read_text(encoding="utf-8"))
 
 
+class TestAtomicSave:
+    """Отметки не теряются, если запись оборвалась на середине."""
+
+    def test_failed_write_keeps_the_previous_file(self, client, monkeypatch):
+        from routes import api as api_mod
+        api_mod._save_reviewed({"https://a": {"reviewed_at": 1.0}})
+
+        def boom(obj, fp, **kw):
+            fp.write('{"broken":')          # половина файла уже на диске
+            raise OSError("disk full")
+
+        monkeypatch.setattr(api_mod.json, "dump", boom)
+        with pytest.raises(OSError):
+            api_mod._save_reviewed({"https://b": {"reviewed_at": 2.0}})
+
+        root = client.dirs["root"]
+        assert json.loads((root / "_reviewed.json").read_text(encoding="utf-8")) == {
+            "https://a": {"reviewed_at": 1.0}}
+        assert not (root / "_reviewed.json.tmp").exists(), "временный файл убран"
+
+    def test_corrupt_main_falls_back_to_the_previous_version(self, client):
+        from routes import api as api_mod
+        api_mod._save_reviewed({"https://a": {"reviewed_at": 1.0}})
+        api_mod._save_reviewed({"https://a": {"reviewed_at": 1.0},
+                                "https://b": {"reviewed_at": 2.0}})
+        (client.dirs["root"] / "_reviewed.json").write_text("{broken", encoding="utf-8")
+        # Основной файл битый — отметки читаются из прошлой версии, а не как пусто.
+        assert api_mod._load_reviewed() == {"https://a": {"reviewed_at": 1.0}}
+
+
 # ── Экспорт / импорт ──────────────────────────────────────────
 
 class TestDataTransfer:

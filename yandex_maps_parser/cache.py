@@ -93,11 +93,17 @@ def _approx_size() -> int | None:
 
 
 def _add_size(delta: int) -> None:
-    """Учесть изменение размера, не заглядывая в каталог."""
+    """Учесть изменение размера, не заглядывая в каталог.
+
+    Читают и пишут _approx несколько потоков (пул вкладок), поэтому
+    read-modify-write идёт под замком: иначе параллельные удаления теряют
+    поправки и счётчик уезжает от реальных байт.
+    """
     global _approx
-    current = _approx_size()
-    if current is not None and _approx is not None:
-        _approx = (_approx[0], max(0, current + delta), _approx[2])
+    with _lock:
+        current = _approx_size()
+        if current is not None and _approx is not None:
+            _approx = (_approx[0], max(0, current + delta), _approx[2])
 
 
 def get_cached(biz_id: str) -> str | None:
