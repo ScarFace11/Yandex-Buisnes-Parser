@@ -1,27 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Тело черновика GitHub Release из CHANGELOG.md.
-
-Используется job'ом `release-draft` в .github/workflows/build-exe.yml при пуше
-тега v*:
-
-    title=$(python3 scripts/release_notes.py --tag v2.3.4 \
-            --changelog CHANGELOG.md --out release_notes.md)
-    gh release create "$TAG" --draft --title "$title" \
-        --notes-file release_notes.md
-
-Поведение:
-  * находит секцию «## [VERSION] — Подзаголовок» (VERSION — тег без «v»),
-    берёт всё до следующего «## » как тело; подзаголовок идёт в заголовок
-    релиза («v2.3.4 — Подзаголовок»);
-  * добавляет ссылку на историю изменений на теге релиза;
-  * секции нет → фолбэк: ссылка на CHANGELOG + список коммитов с предыдущего
-    тега (best-effort, требует fetch-depth: 0 в checkout);
-  * печатает заголовок релиза одной строкой в stdout (когда --out — файл).
-
-История изменений одна — CHANGELOG.md. Отдельного технического дневника в
-проекте больше нет: он не поставлялся и не коммитился.
-"""
+"""Тело черновика GitHub Release из CHANGELOG.md."""
 from __future__ import annotations
 
 import argparse
@@ -34,8 +13,7 @@ from pathlib import Path
 
 def extract_section(text: str, version: str):
     """(подзаголовок, тело) секции «## [version] …» или None."""
-    # [ \t]* а не \s*: пробелы только до конца строки заголовка, иначе жадный
-    # \s* перепрыгивает переводы строк и съедает тело секции.
+    # [ \t]* а не \s*: пробелы только до конца строки заголовка, иначе жадный \s* перепрыгивает переводы строк и съедает тело секции.
     heading = re.search(rf"^##\s*\[{re.escape(version)}\][ \t]*(.*)$", text, re.M)
     if not heading:
         return None
@@ -66,11 +44,7 @@ def changelog_links(version: str, tag: str = "") -> str:
 
 
 def build_body(tag: str, user_changelog) -> tuple:
-    """(заголовок релиза, тело) для тега.
-
-    Тело: раздел CHANGELOG.md версии → ссылка на CHANGELOG на теге. Если
-    раздела версии нет — фолбэк со списком коммитов с прошлого тега.
-    """
+    """(заголовок релиза, тело) для тега."""
     version = strip_tag(tag)
     cl = Path(user_changelog) if user_changelog else None
     text = cl.read_text(encoding="utf-8-sig") if cl and cl.exists() else ""
@@ -81,7 +55,6 @@ def build_body(tag: str, user_changelog) -> tuple:
         body = "\n\n".join(p for p in (body, changelog_links(version, tag)) if p)
     else:
         # Секции для этой версии нет — собираем тело вручную (edge case ТЗ:
-        # «если описаний не было — собрать из коммитов»).
         subtitle = ""
         server = os.environ.get("GITHUB_SERVER_URL", "https://github.com").rstrip("/")
         repo = repo_slug()

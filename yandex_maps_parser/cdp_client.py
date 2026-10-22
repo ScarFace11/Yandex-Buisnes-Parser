@@ -1,15 +1,4 @@
-"""
-Chrome DevTools Protocol (CDP) browser pool — no Playwright dependency.
-
-Launches Chrome via subprocess and controls it through CDP WebSocket.
-Works on Python 3.14 where Playwright's Node.js driver segfaults.
-
-Usage:
-    from .cdp_client import init_browser, fetch_page, close_browser
-    init_browser(pool_size=8)
-    html = fetch_page(url, biz_id="123")
-    close_browser()
-"""
+"""Chrome DevTools Protocol (CDP) browser pool — no Playwright dependency."""
 import json
 import os
 import queue
@@ -26,18 +15,6 @@ from pathlib import Path
 from . import state
 
 # ── Config ──────────────────────────────────────────────────
-# Приложению нужен ЛЮБОЙ браузер на Chromium: страницы открываются по Chrome
-# DevTools Protocol, а его поддерживают Chrome, Edge, Chromium, Яндекс Браузер,
-# Brave, Vivaldi, Opera. Firefox и Safari CDP не умеют вовсе (у первого
-# WebDriver BiDi, у второго WebDriver) — с ними поиск не заработает, и это
-# надо честно сказать пользователю.
-#
-# Порядок — по «похожести на обычного пользователя»: сначала настоящие
-# браузеры машины (Chrome, Edge, Chromium, Яндекс Браузер) — они обновляются,
-# имеют обычные версии и профиль, и именно так страницы открывает человек.
-# Сборка Chromium из кеша Playwright идёт последней: она осталась у тех, кто
-# ставил прежние версии приложения, и нужна только как запасной вариант —
-# встроенный Chromium отстаёт по версии и его автоматизация виднее антиботу.
 _MAC_BUNDLES = (
     # (имя бандла, имя бинарника в Contents/MacOS)
     ("Google Chrome", "Google Chrome"),
@@ -51,8 +28,7 @@ _MAC_BUNDLES = (
     ("Opera GX", "Opera GX"),
 )
 
-# Исполняемые файлы бандлов macOS: по ним бандл узнаётся даже под чужим
-# именем папки (Яндекс.app, «Yandex Browser.app» и т. п.).
+# Исполняемые файлы бандлов macOS: по ним бандл узнаётся даже под чужим именем папки (Яндекс.app, «Yandex Browser.app» и т. п.).
 _MAC_EXECUTABLES = (
     "Yandex", "Google Chrome", "Chromium", "Microsoft Edge",
     "Brave Browser", "Vivaldi", "Opera", "Opera GX",
@@ -66,15 +42,10 @@ _PATH_BROWSERS = (
     "brave", "brave-browser", "vivaldi", "opera",
 )
 
-# Браузер, выбранный пользователем в настройках. Пусто — «первый найденный»
-# (прежнее поведение). Путь проверяется при каждом запуске: браузер могли
-# удалить или перенести, и тогда выбор тихо откатывается на автоматический,
-# а не ломает сбор «браузер не найден» при живом Chrome рядом.
+# Браузер, выбранный пользователем в настройках.
 _configured_browser = ""
 
 # Кеш Chromium от Playwright — у старых установок приложения он уже есть.
-# Версии не хардкодим (`chromium-1234` из прежнего кода не существует
-# ни у кого): ищем все папки и берём самую свежую.
 _PLAYWRIGHT_GLOBS = (
     "chromium-*/chrome-mac*/Chromium.app/Contents/MacOS/Chromium",
     "chromium-*/chrome-win*/chrome.exe",
@@ -84,13 +55,10 @@ _PLAYWRIGHT_GLOBS = (
     "chromium_headless_shell-*/chrome-linux*/chrome-headless-shell",
 )
 
-# Режимы запуска по очереди: сначала новый headless, потом старый (старые
-# сборки Яндекс Браузера не знают --headless=new и просто не поднимаются),
-# и в самом конце — обычное окно (оно работает всегда, но видно пользователю).
+# Режимы запуска по очереди: сначала новый headless, потом старый (старые сборки Яндекс Браузера не знают --headless=new и просто не поднимаются), и в самом конце — обычное окно (оно работает всегда, но видно пользователю).
 _HEADLESS_VARIANTS = ("--headless=new", "--headless", "")
 
-# Система вынесена в переменную: набор путей зависит от неё, а тесты
-# подменяют её, чтобы проверить все три платформы на одной машине.
+# Система вынесена в переменную: набор путей зависит от неё, а тесты подменяют её, чтобы проверить все три платформы на одной машине.
 _PLATFORM = sys.platform
 
 _CDP_PORT = 0  # 0 = auto-detect free port
@@ -108,9 +76,7 @@ _browser_lock = threading.Lock()
 _debug_proc = None
 _debug_port: int = 0
 _debug_profile_dir: str | None = None
-# Собственный временный профиль основного браузера: сессии, куки и история
-# пользователя остаются нетронутыми, а вкладки приложения не видят его
-# аккаунтов (а он — наших). Папка удаляется при закрытии браузера.
+# Собственный временный профиль основного браузера: сессии, куки и история пользователя остаются нетронутыми, а вкладки приложения не видят его аккаунтов (а он — наших).
 _pool_profile_dir: str | None = None
 # RLock: open_debug_window() may call close_debug_window() on failure.
 _debug_lock = threading.RLock()
@@ -126,12 +92,7 @@ _stats_lock = threading.Lock()
 _stats = {"pages_fetched": 0, "pages_error": 0, "total_time": 0.0,
           "restarts": 0}
 
-# Почему страница не отдалась — отдельно на каждый поток (коллектор читает
-# карточки параллельно, общая переменная показала бы причину чужого запроса).
-# Нужна, чтобы «карточка не открылась» в итоговом счётчике (state.read_failure)
-# различалось по причине: заглушка антибота, документ без содержимого карточки
-# или навигация, которая вообще не состоялась. Без этого все потери выглядели
-# одинаково, и по логу нельзя было понять, что чинить.
+# Почему страница не отдалась — отдельно на каждый поток (коллектор читает карточки параллельно, общая переменная показала бы причину чужого запроса).
 _failure_reason = threading.local()
 
 
@@ -188,17 +149,12 @@ def _browser_candidates() -> list[tuple[str, Path]]:
     prog = os.environ.get("PROGRAMFILES") or "C:/Program Files"
     prog86 = os.environ.get("PROGRAMFILES(X86)") or "C:/Program Files (x86)"
 
-    # macOS: бандлы из /Applications и ~/Applications. Яндекс Браузер
-    # (Yandex.app) — обычный Chromium и работает через CDP так же, как Chrome:
-    # это и есть выход для тех, у кого из браузеров только Safari и Яндекс.
+    # macOS: бандлы из /Applications и ~/Applications.
     if _PLATFORM == "darwin":
         for base in ("/Applications", str(home / "Applications")):
             for bundle, exe in _MAC_BUNDLES:
                 out.append((bundle, Path(base) / f"{bundle}.app/Contents/MacOS/{exe}"))
-            # Плюс любой бандл с известным бинарником Chromium: у Яндекс
-            # Браузера имя бандла встречается и латиницей (Yandex.app), и
-            # кириллицей (Яндекс.app) — привязываться к имени папки нельзя,
-            # иначе «браузер не найден» у тех, у кого он есть.
+            # Плюс любой бандл с известным бинарником Chromium: у Яндекс Браузера имя бандла встречается и латиницей (Yandex.app), и кириллицей (Яндекс.app) — привязываться к имени папки нельзя, иначе «браузер не найден» у тех, у кого он есть.
             out.extend(_mac_bundles_by_executable(base))
 
     # Windows: Яндекс Браузер, Chrome, Edge, Brave, Vivaldi, Opera, Chromium.
@@ -237,13 +193,7 @@ def _browser_candidates() -> list[tuple[str, Path]]:
 
 
 def set_browser(path: str | None) -> str:
-    """Выбрать браузер для сбора. Пустая строка — выбирать автоматически.
-
-    Настройка живёт в памяти процесса (settings.json хранит её между
-    запусками, runner подставляет значение перед init_browser). Отдельный
-    выбор нужен, когда Chrome и Яндекс Браузер установлены рядом: «первый
-    найденный» не всегда тот, которым пользуется человек.
-    """
+    """Выбрать браузер для сбора."""
     global _configured_browser
     _configured_browser = str(path or "").strip()
     return _configured_browser
@@ -260,13 +210,7 @@ def selected_browser() -> str:
 
 
 def available_browsers() -> list[dict]:
-    """Все найденные Chromium-браузеры — для выбора в интерфейсе.
-
-    Порядок тот же, что у автоматического поиска (Chrome/Edge/Chromium/Яндекс),
-    дубли путей убраны: один и тот же браузер приходит и из кандидатов, и из
-    PATH. В список попадают только существующие файлы — выбор «пустого»
-    браузера иначе выглядел бы рабочим.
-    """
+    """Все найденные Chromium-браузеры — для выбора в интерфейсе."""
     out: list[dict] = []
     seen: set[str] = set()
 
@@ -344,11 +288,7 @@ def _browser_label(path: str) -> str:
 
 
 def _non_chromium_browsers() -> list[str]:
-    """Установленные браузеры без CDP — чтобы объяснить, почему их мало.
-
-    Firefox и Safari не управляются по Chrome DevTools Protocol, поэтому
-    «у меня есть браузер» ≠ «поиск заработает»: это надо сказать прямо.
-    """
+    """Установленные браузеры без CDP — чтобы объяснить, почему их мало."""
     found: list[str] = []
     if _PLATFORM != "darwin":
         return found
@@ -440,13 +380,7 @@ def _cdp_close_tab(port: int, tab_id: str) -> bool:
     return _cdp_put(port, f"/json/close/{tab_id}")
 
 
-# Realistic desktop Chrome UA — Yandex serves an EMPTY anti-bot document to
-# the default "HeadlessChrome" user agent (verified live: 158-byte page body).
-# Pages must be fetched with Network.setUserAgentOverride or the browser path
-# is useless and every fetch falls back to slow, throttled httpx.
-#
-# The default here must stay close to the bundled Chromium's real version;
-# init_browser() re-syncs it with the actual running browser at startup.
+# Realistic desktop Chrome UA — Yandex serves an EMPTY anti-bot document to the default "HeadlessChrome" user agent (verified live: 158-byte page body).
 _CDP_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
@@ -460,17 +394,7 @@ def eval_in_page(
     timeout_s: float = 45.0,
     biz_id: str = "",
 ) -> str | None:
-    """Открыть `url` в настоящем Chrome и выполнить JS-выражение на странице.
-
-    Единственный способ сбора данных в приложении — реальный браузер:
-      * `wait_expr` — выражение, которое должно стать истинным до замера
-        (например, «карточки поиска появились»).
-      * `expression` — что вернуть; это может быть async-функция, тогда
-        браузер сам прокрутит список и отдаст готовый JSON.
-
-    Возвращает строку-результат или None (страница/браузер недоступны,
-    сработала остановка). Вкладка возвращается в пул в любом случае.
-    """
+    """Открыть `url` в настоящем Chrome и выполнить JS-выражение на странице."""
     global _museum_warned
     try:
         import websocket
@@ -485,9 +409,7 @@ def eval_in_page(
     try:
         if _rate_semaphore:
             if not _poll_acquire(_rate_semaphore, 5.0):
-                # Молчаливый None — это «0 записей» без причины: так выглядел
-                # второй прогон, запущенный параллельно первому при пуле в одну
-                # вкладку (в живом логе — 10 секунд и «выдача не открылась»).
+                # Молчаливый None — это «0 записей» без причины: так выглядел второй прогон, запущенный параллельно первому при пуле в одну вкладку (в живом логе — 10 секунд и «выдача не открылась»).
                 state.syslog("cdp_client: все вкладки заняты дольше 5 с — "
                              "страница не открыта")
                 return None
@@ -531,14 +453,7 @@ def _cdp_eval_page(
     timeout_s: float,
     viewport: tuple[int, int] | None = None,
 ) -> str | None:
-    """Навигация + ожидание + замер в одном WebSocket-соединении.
-
-    viewport=(width, height) фиксирует размер окна до навигации. Нужен
-    проверкам интерфейса: без него раскладка (и, например, горизонтальный
-    скролл) зависит от размера окна браузера на конкретной машине — один и
-    тот же код проходил на широком окне и падал на узком. Поиску не нужен:
-    там размер окна не важен, по умолчанию None.
-    """
+    """Навигация + ожидание + замер в одном WebSocket-соединении. viewport=(width, height) фиксирует размер окна до навигации."""
     try:
         import websocket
     except ImportError:
@@ -556,11 +471,7 @@ def _cdp_eval_page(
 
         _send("Page.enable")
         _send("Network.setUserAgentOverride", {"userAgent": _CDP_USER_AGENT})
-        # Вкладка из пула — фоновая: Chrome отдаёт ей visibilityState="hidden",
-        # а страница Яндекс.Карт в скрытой вкладке НЕ догружает продолжение
-        # списка (в живом замере 5 карточек вместо 25). Эмуляция активной
-        # страницы возвращает вкладке visible+focused — тогда виртуализованный
-        # список ведёт себя как у обычного пользователя.
+        # Вкладка из пула — фоновая: Chrome отдаёт ей visibilityState="hidden", а страница Яндекс.Карт в скрытой вкладке НЕ догружает продолжение списка (в живом замере 5 карточек вместо 25).
         _send("Emulation.setFocusEmulationEnabled", {"enabled": True})
         if viewport:
             width, height = viewport
@@ -570,12 +481,7 @@ def _cdp_eval_page(
             })
         _send("Page.navigate", {"url": url})
 
-        # Часть бюджета приберегается на сам замер: ожидание готовности могло
-        # съесть весь дедлайн, и тогда `_cdp_eval` ниже не успевал выполниться
-        # вовсе — вызывающий получал None, хотя страница открылась и была
-        # готова (живой случай: аудит интерфейса в общем прогоне тестов без
-        # этого запаса падал на «аудит не вернул результат», а в одиночку —
-        # проходил за 6 с).
+        # Часть бюджета приберегается на сам замер: ожидание готовности могло съесть весь дедлайн, и тогда `_cdp_eval` ниже не успевал выполниться вовсе — вызывающий получал None, хотя страница открылась и была готова (живой случай: аудит интерфейса в общем прогоне тестов без этого запаса падал на «аудит не вернул результат», а в одиночку — проходил за 6 с).
         reserve = min(20.0, max(5.0, timeout_s * 0.25))
         wait_deadline = deadline - reserve
 
@@ -613,12 +519,7 @@ _CDP_EVAL_ID = 90001  # id for Runtime.evaluate responses on a fresh WS
 
 
 def _cdp_eval(ws, expression: str, deadline: float, await_promise: bool = False) -> str | None:
-    """Evaluate `expression` via Runtime.evaluate, bounded by `deadline`.
-
-    await_promise=True — дожидаемся результата async-функции в самой странице
-    (нужно для поиска: прокрутка и сбор карточек идут внутри браузера, чтобы
-    наружу уходил один готовый JSON, а не десятки запросов к странице).
-    """
+    """Evaluate `expression` via Runtime.evaluate, bounded by `deadline`. await_promise=True — дожидаемся результата async-функции в самой странице (нужно для поиска: прокрутка и сбор карточек идут внутри браузера, чтобы наружу уходил один готовый JSON, а не десятки запросов к странице)."""
     try:
         ws.send(json.dumps({
             "id": _CDP_EVAL_ID,
@@ -634,13 +535,7 @@ def _cdp_eval(ws, expression: str, deadline: float, await_promise: bool = False)
             if remaining <= 0:
                 break
             try:
-                # Тишина в сокете — не ошибка, а ожидание: обещание в
-                # странице может считаться дольше пяти секунд (сбор выдачи
-                # Яндекс.Карт с прокруткой — 6–10 с, до 250 карточек —
-                # дольше). Раньше здесь стоял break, поэтому такой замер
-                # обрывался на пятой секунде и возвращал None, хотя дедлайн
-                # (до 90 с) был ещё далеко: поиск «иногда» не находил ни
-                # одной карточки и показывал «выдача не открылась».
+                # Тишина в сокете — не ошибка, а ожидание: обещание в странице может считаться дольше пяти секунд (сбор выдачи Яндекс.Карт с прокруткой — 6–10 с, до 250 карточек — дольше).
                 ws.settimeout(min(remaining, 5.0))
                 data = json.loads(ws.recv())
             except Exception as exc:
@@ -672,13 +567,7 @@ def _is_socket_timeout(exc: BaseException) -> bool:
 
 
 def _navigation_target(url: str) -> tuple[str, str, str]:
-    """(host, path, token) цели навигации — для проверки, что переход состоялся.
-
-    `token` — последний сегмент пути, если он числовой: Яндекс переписывает
-    `/maps/org/123456` в `/maps/org/<название>/123456/`, и по id организацию
-    узнать надёжнее всего. `path` — путь без хвостового слэша (для страниц
-    без id, например агрегаторов вида taplink.cc/<ник>).
-    """
+    """(host, path, token) цели навигации — для проверки, что переход состоялся. `token` — последний сегмент пути, если он числовой: Яндекс переписывает `/maps/org/123456` в `/maps/org/<название>/123456/`, и по id организацию узнать надёжнее всего. `path` — путь без хвостового слэша (для страниц без id, например агрегаторов вида taplink.cc/<ник>)."""
     from urllib.parse import urlparse
     try:
         parsed = urlparse(url)
@@ -692,13 +581,12 @@ def _navigation_target(url: str) -> tuple[str, str, str]:
 def _href_committed(href: str, target) -> bool:
     """True, если фактический адрес — это ЦЕЛЬ, а не прежняя страница вкладки.
 
-    Вкладка берётся из пула и уже показывает ПРЕДЫДУЩУЮ страницу с
-    readyState=complete. Если принять её за результат, прилетит HTML другой
-    организации — отсюда «одна и та же ссылка на ВК у десятка организаций» и
-    телефон чужой фирмы. Поэтому требуем: хост совпал И либо в адресе есть
-    числовой id цели (переживает переписывание URL), либо путь совпал точно
-    (страницы без id: `taplink.cc/<ник>`). Пустой href или чужой хост — не
-    коммит: лучше вернуть None, чем чужой документ.
+    Вкладка берётся из пула и уже показывает чужую страницу с readyState=complete.
+    Принять её за результат — значит отдать HTML другой организации (отсюда
+    «одна и та же ссылка на ВК у десятка организаций» и телефон чужой фирмы).
+    Поэтому требуем: хост совпал И либо в адресе есть числовой id цели (переживает
+    переписывание URL), либо путь совпал точно (`taplink.cc/<ник>`). Пустой href
+    или чужой хост — не коммит: лучше вернуть None, чем чужой документ.
     """
     host, path, token = target
     if not href:
@@ -723,19 +611,9 @@ def _split_status(status: str) -> tuple[str, str]:
 
 
 # ── Прочитанность карточки организации ─────────────────────────
-# readyState=complete значит лишь «документ догрузился», а не «карточка
-# прочитана»: блок контактов и встроенное состояние страницы рисуются позже,
-# а антибот-заглушка приходит «готовой» и похожа на пустую страницу. Раньше
-# признаком успеха был только размер документа (>800 байт), поэтому
-# промежуточная отрисовка уходила в конвейер как карточка — и организация
-# попадала в выгрузку без телефона, сайта и соцсетей либо «пропускалась».
 _MIN_CONTENT_BYTES = 800
 
-# Что считаем содержимым карточки. Набор намеренно широкий: сюда входит и
-# встроенное состояние страницы (из него извлекаются соцсети и рейтинг),
-# и блоки контактов, и микроразметка. Так проверка не зависит от одной
-# вёрстки, но заглушку и обгрызенный документ всё равно отсекает: у них нет
-# ни одного из этих признаков.
+# Что считаем содержимым карточки.
 _CARD_MARKERS = (
     "card-section-header",          # заголовок раздела («Контакты»)
     "business-contacts-view",       # блок контактов организации
@@ -767,20 +645,7 @@ def _looks_like_org_card(html: str) -> bool:
 
 
 def _cdp_navigate_and_get_html(ws_url: str, url: str, timeout_s: float = 40) -> str | None:
-    """Navigate to URL via CDP WebSocket and return page HTML.
-
-    Why polling instead of waiting on load events:
-      - A desktop Chrome User-Agent override is REQUIRED — Yandex serves an
-        empty anti-bot document (158 bytes) to the default HeadlessChrome UA.
-      - Load events only arrive after Page.enable, and some pages never fire
-        them — waiting on events burns the whole deadline for nothing.
-      - Tabs are reused across fetches, so we must confirm the navigation has
-        actually committed (the org id appears in location.href) before
-        harvesting, otherwise we'd return the PREVIOUS business's HTML.
-
-    Returns the HTML once meaningful content is available, or None on real
-    failures / empty anti-bot stubs so the caller can fall back to httpx.
-    """
+    """Navigate to URL via CDP WebSocket and return page HTML."""
     try:
         import websocket
     except ImportError:
@@ -805,15 +670,10 @@ def _cdp_navigate_and_get_html(ws_url: str, url: str, timeout_s: float = 40) -> 
 
         _send("Page.enable")
         _send("Network.setUserAgentOverride", {"userAgent": _CDP_USER_AGENT})
-        # См. _cdp_eval_page: фоновая вкладка пула должна считать себя
-        # активной, иначе страница тормозит ленивую догрузку (соцсети и
-        # блоки карточки рисуются по мере появления на экране).
+        # См. _cdp_eval_page: фоновая вкладка пула должна считать себя активной, иначе страница тормозит ленивую догрузку (соцсети и блоки карточки рисуются по мере появления на экране).
         _send("Emulation.setFocusEmulationEnabled", {"enabled": True})
 
-        # Куда именно обязана привести навигация. Раньше это проверялось
-        # только когда в URL был числовой organisation id: для слагов и
-        # страниц-агрегаторов `committed` сразу считался истинным, и вкладка
-        # из пула отдавала HTML ПРЕДЫДУЩЕЙ организации.
+        # Куда именно обязана привести навигация.
         target = _navigation_target(url)
         _send("Page.navigate", {"url": url})
 
@@ -825,17 +685,10 @@ def _cdp_navigate_and_get_html(ws_url: str, url: str, timeout_s: float = 40) -> 
         needs_card = _is_org_card_url(url)
 
         # Poll until the navigation commits AND readyState == "complete".
-        # Harvesting earlier (e.g. once the doc is merely large) returns a
-        # PARTIAL document — the socials block sits near the end of the
-        # server HTML and was missing in live tests (125KB no-links page).
-        # Сам harvest ниже ещё раз проверит, что в документе есть содержимое
-        # карточки: readyState=complete значит только «документ догрузился».
         started = time.monotonic()
         committed = False
         while time.monotonic() < overall_deadline:
-            # Stop/skip must abort a page mid-load, not burn the whole
-            # deadline — otherwise run()'s detail_pool.shutdown(wait=True)
-            # blocks the stop/skip response for up to 40s per in-flight page.
+            # Stop/skip must abort a page mid-load, not burn the whole deadline — otherwise run()'s detail_pool.shutdown(wait=True) blocks the stop/skip response for up to 40s per in-flight page.
             if (state._STOP_EVENT and state._STOP_EVENT.is_set()) or state.is_skip_city():
                 return None
             remaining = overall_deadline - time.monotonic()
@@ -848,8 +701,7 @@ def _cdp_navigate_and_get_html(ws_url: str, url: str, timeout_s: float = 40) -> 
                     committed = True
                 if committed and ready == "complete":
                     break
-                # Tail of the deadline — harvest whatever exists instead of
-                # burning the whole budget on a page that never reports ready.
+                # Tail of the deadline — harvest whatever exists instead of burning the whole budget on a page that never reports ready.
                 waited = time.monotonic() - started
                 if remaining <= 8.0 and waited >= timeout_s * 0.6:
                     break
@@ -857,16 +709,12 @@ def _cdp_navigate_and_get_html(ws_url: str, url: str, timeout_s: float = 40) -> 
 
         if not committed:
             # Навигация не подтвердилась — вкладка всё ещё на прежней странице.
-            # Отдавать её содержимое нельзя (это чужая организация): пусть
-            # вызывающий возьмёт свежую вкладку и попробует ещё раз.
             state.syslog(f"cdp_client: навигация не подтвердилась ({url}) — "
                          "страница не отдана, чтобы не вернуть чужую организацию")
             set_failure_reason("no_page")
             return None
 
-        # Harvest outerHTML. Retry a few times — content can render just after
-        # the document commits. Bounded by the overall deadline. Stop/skip
-        # aborts here too so a stuck page never delays run shutdown.
+        # Harvest outerHTML.
         attempts = 0
         saw_content = False
         while attempts < 3 and time.monotonic() < overall_deadline - 1.0:
@@ -881,18 +729,13 @@ def _cdp_navigate_and_get_html(ws_url: str, url: str, timeout_s: float = 40) -> 
             if html and len(html) > _MIN_CONTENT_BYTES:
                 if not needs_card or _looks_like_org_card(html):
                     return html
-                # Документ готов, а содержимого карточки в нём нет: SPA ещё
-                # дорисовывает блоки либо Яндекс отдал заглушку. Замеряем
-                # ещё раз, и только потом отдаём None — тогда вызывающий
-                # повторит со свежей вкладкой, а карточка не потеряется молча.
+                # Документ готов, а содержимого карточки в нём нет: SPA ещё дорисовывает блоки либо Яндекс отдал заглушку.
                 saw_content = True
                 state.syslog(f"cdp_client: страница без содержимого карточки "
                              f"({len(html)} Б), повторный замер: {url}")
             attempts += 1
             time.sleep(1.0)
-        # Документ был, а карточки в нём не оказалось (SPA не дорисовала или
-        # заглушка) — это отдельная причина для счётчика потерь, а не то же
-        # самое, что «страница вообще не открылась».
+        # Документ был, а карточки в нём не оказалось (SPA не дорисовала или заглушка) — это отдельная причина для счётчика потерь, а не то же самое, что «страница вообще не открылась».
         set_failure_reason("no_content" if saw_content else "antibot")
         return None
     except ImportError:
@@ -917,19 +760,13 @@ def _create_tab() -> str | None:
     """Create a new Chrome tab and return its WebSocket URL."""
     ws_url = _cdp_new_tab(_base_port)
     if ws_url:
-        # Convert ws://127.0.0.1:PORT/devtools/page/ID to use our port
-        # The WS URL from Chrome already has the correct port
+        # Convert ws://127.0.0.1:PORT/devtools/page/ID to use our port The WS URL from Chrome already has the correct port
         pass
     return ws_url
 
 
 def _close_dead_tab(ws_url: str) -> None:
-    """Close a Chrome tab that failed the health check so it does not leak.
-
-    Dead/unresponsive tabs previously stayed open in Chrome forever (each
-    holding a renderer process); over a long run they accumulate. The tab id
-    is the trailing path segment of the WebSocket debugger URL.
-    """
+    """Close a Chrome tab that failed the health check so it does not leak."""
     try:
         tab_id = ws_url.rstrip("/").rsplit("/", 1)[-1]
         if tab_id:
@@ -966,19 +803,7 @@ def is_available() -> bool:
 
 
 def open_debug_window(start_url: str = "about:blank") -> int | None:
-    """Отдельное ВИДИМОЕ окно Chrome с открытым CDP-портом.
-
-    start_url — что открыть в первом окне (по умолчанию about:blank;
-        приложение передаёт свой UI, чтобы не открывать его вручную).
-
-    Запускается на собственном временном профиле (--user-data-dir), поэтому
-    работает даже если системный Chrome сломан или уже запущен: новый
-    процесс не перепривязывается к существующему экземпляру и CDP-порт
-    действительно открывается. Бинарник берётся из _find_chrome() — сначала
-    Chromium из Playwright, затем системный Chrome/Edge.
-
-    Возвращает CDP-порт или None, если окно открыть не удалось.
-    """
+    """Отдельное ВИДИМОЕ окно Chrome с открытым CDP-портом. start_url — что открыть в первом окне (по умолчанию about:blank; приложение передаёт свой UI, чтобы не открывать его вручную)."""
     global _debug_proc, _debug_port, _debug_profile_dir
     with _debug_lock:
         if _debug_proc is not None and _debug_proc.poll() is None:
@@ -990,9 +815,7 @@ def open_debug_window(start_url: str = "about:blank") -> int | None:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind(("", 0))
             _debug_port = s.getsockname()[1]
-        # Свежий временный профиль: изолирует окно от запущенного Chrome
-        # пользователя (иначе новый процесс просто откроет вкладку в нем
-        # и завершится, а CDP-порт так и не откроется).
+        # Свежий временный профиль: изолирует окно от запущенного Chrome пользователя (иначе новый процесс просто откроет вкладку в нем и завершится, а CDP-порт так и не откроется).
         import tempfile as _tempfile
         try:
             _debug_profile_dir = _tempfile.mkdtemp(prefix="yp-cdp-debug-")
@@ -1079,12 +902,7 @@ def is_installed() -> bool:
 
 
 def init_browser(pool_size: int = 8, visible: bool = False) -> bool:
-    """Launch Chrome and create a pool of tabs for parallel fetching.
-
-    pool_size — number of tabs in the pool (each tab is a renderer process).
-    visible — if True, launch a regular Chrome WINDOW instead of headless;
-        the CDP tab pool works the same way, you just see it happening.
-    """
+    """Launch Chrome and create a pool of tabs for parallel fetching. pool_size — number of tabs in the pool (each tab is a renderer process). visible — if True, launch a regular Chrome WINDOW instead of headless; the CDP tab pool works the same way, you just see it happening."""
     global _proc, _base_port, _tab_pool, _pool_size, _rate_semaphore, _CDP_USER_AGENT
     global _museum_warned, _pool_profile_dir
     _museum_warned = False  # fresh run — allow the block-page warning again
@@ -1092,9 +910,7 @@ def init_browser(pool_size: int = 8, visible: bool = False) -> bool:
     info = browser_info()
     chrome_path = info["path"]
     if not chrome_path:
-        # Говорим прямо, чего не хватает: пользователь может ставить «нужен
-        # Chrome», уже имея Яндекс Браузер и Firefox, и не понимать, почему
-        # ничего не работает.
+        # Говорим прямо, чего не хватает: пользователь может ставить «нужен Chrome», уже имея Яндекс Браузер и Firefox, и не понимать, почему ничего не работает.
         unsupported = info.get("unsupported") or []
         hint = (f" Найдены {', '.join(unsupported)} — они не умеют Chrome DevTools "
                 "Protocol." if unsupported else "")
@@ -1103,10 +919,7 @@ def init_browser(pool_size: int = 8, visible: bool = False) -> bool:
                    "Brave, Vivaldi или Chromium." + hint)
         return False
 
-    # Cap the tab pool: each tab is a separate renderer process (30-250 MB).
-    # 20 tabs ≈ 2.3 GB RAM and 20 simultaneous navigations to the same host
-    # also raise Yandex's bot-detection rate — 12 is a good speed/RAM/
-    # anti-bot balance. 12 tabs ≈ 1.2-1.5 GB.
+    # Cap the tab pool: each tab is a separate renderer process (30-250 MB). 20 tabs ≈ 2.3 GB RAM and 20 simultaneous navigations to the same host also raise Yandex's bot-detection rate — 12 is a good speed/RAM/ anti-bot balance. 12 tabs ≈ 1.2-1.5 GB.
     pool_size = min(pool_size, 12)
 
     state.syslog(f"cdp_client: found {info['name']} at {chrome_path}")
@@ -1117,10 +930,7 @@ def init_browser(pool_size: int = 8, visible: bool = False) -> bool:
                 return True  # already running
 
             try:
-                # Режимы перебираются по очереди: новый headless → старый
-                # headless → видимое окно. Старые сборки Яндекс Браузера не
-                # знают `--headless=new` и просто не поднимаются, а раньше
-                # это выглядело как «браузер не отвечает».
+                # Режимы перебираются по очереди: новый headless → старый headless → видимое окно.
                 variants = ("",) if visible else _HEADLESS_VARIANTS
                 version = None
                 used_variant = ""
@@ -1134,11 +944,7 @@ def init_browser(pool_size: int = 8, visible: bool = False) -> bool:
                             s.bind(("", 0))
                             _base_port = s.getsockname()[1]
 
-                    # Свой временный профиль. Без него Chrome берёт профиль
-                    # пользователя: вкладки приложения получили бы доступ к
-                    # его сессиям, а сам запуск конфликтовал бы с уже открытым
-                    # браузером. С отдельным профилем приложение не касается
-                    # ни аккаунтов, ни истории — и «подставлять» тут нечего.
+                    # Свой временный профиль.
                     if not _pool_profile_dir:
                         try:
                             import tempfile as _tempfile
@@ -1152,30 +958,18 @@ def init_browser(pool_size: int = 8, visible: bool = False) -> bool:
                         "--remote-allow-origins=*",
                         "--no-first-run",
                         "--no-default-browser-check",
-                        # Не помечаем вкладки как «автоматизированные»: флаг
-                        # поднимает ровно тот признак, от которого антибот и
-                        # защищается, а его отсутствие — обычный браузер.
+                        # Не помечаем вкладки как «автоматизированные»: флаг поднимает ровно тот признак, от которого антибот и защищается, а его отсутствие — обычный браузер.
                         "--disable-blink-features=AutomationControlled",
-                        # TLS 1.3 в Chrome 155 Яндекс встречает страницей проверки
-                        # «Вы не робот?» (замер 17.10.2026: TLS 1.3 → 15 КБ капчи,
-                        # TLS 1.2 → 1.6 МБ нормальной выдачи на тот же URL, тем же
-                        # Chrome и профилем). Это не обход проверки: страница и
-                        # запросы те же, браузер просто здоровается по-старому —
-                        # до тех пор, пока край Яндекса не полюбит 1.3.
+                        # TLS 1.3 в Chrome 155 Яндекс встречает страницей проверки «Вы не робот?» (замер 17.10.2026: TLS 1.3 → 15 КБ капчи, TLS 1.2 → 1.6 МБ нормальной выдачи на тот же URL, тем же Chrome и профилем).
                         "--ssl-version-max=tls1.2",
                         "--disable-gpu",
                         "--disable-dev-shm-usage",
                         "--disable-features=VizDisplayCompositor",
-                        # Фоновая вкладка не должна «засыпать»: списки на
-                        # Яндекс.Картах догружаются только у активной страницы
-                        # (таймеры, анимации и IntersectionObserver в фоне
-                        # Chrome тормозит).
+                        # Фоновая вкладка не должна «засыпать»: списки на Яндекс.Картах догружаются только у активной страницы (таймеры, анимации и IntersectionObserver в фоне Chrome тормозит).
                         "--disable-background-timer-throttling",
                         "--disable-backgrounding-occluded-windows",
                         "--disable-renderer-backgrounding",
-                        # Memory trim: kill background work (updates, sync,
-                        # extensions, crash dumps) that otherwise adds
-                        # processes and RAM for no benefit in headless.
+                        # Memory trim: kill background work (updates, sync, extensions, crash dumps) that otherwise adds processes and RAM for no benefit in headless.
                         "--disable-extensions",
                         "--disable-background-networking",
                         "--disable-component-update",
@@ -1190,9 +984,7 @@ def init_browser(pool_size: int = 8, visible: bool = False) -> bool:
                         _cmd.append(f"--user-data-dir={_pool_profile_dir}")
                     _cmd.append("about:blank")
                     if headless_flag:
-                        # Headless: окна нет. visible=True и последний вариант
-                        # оставляют окно браузера открытым — CDP-пул внутри
-                        # работает так же.
+                        # Headless: окна нет. visible=True и последний вариант оставляют окно браузера открытым — CDP-пул внутри работает так же.
                         _cmd.insert(3, headless_flag)
                     _proc = subprocess.Popen(
                         _cmd,
@@ -1230,8 +1022,7 @@ def init_browser(pool_size: int = 8, visible: bool = False) -> bool:
                 state.syslog(f"cdp_client: {info['name']} started ({_mode}), "
                              f"version={version.get('Browser', '?')}")
 
-                # Sync the UA override with the REAL browser version — a
-                # stale UA is one of the hollowest bot signals there is.
+                # Sync the UA override with the REAL browser version — a stale UA is one of the hollowest bot signals there is.
                 try:
                     m_ver = re.search(r"Chrome/(\d+)", str(version.get("Browser") or ""))
                     if m_ver:
@@ -1285,12 +1076,7 @@ def _stop_requested() -> bool:
 
 
 def _poll_acquire(semaphore, timeout: float) -> bool:
-    """Acquire a semaphore, polling stop/skip every 0.5s.
-
-    Returns True when acquired. False means the caller should re-check
-    stop/skip (and may retry) — the full timeout was NOT necessarily spent
-    when stop is set, so stop/skip interrupts this wait within ~0.5s.
-    """
+    """Acquire a semaphore, polling stop/skip every 0.5s."""
     deadline = time.monotonic() + timeout
     while True:
         if _stop_requested():
@@ -1325,8 +1111,7 @@ def fetch_page(url: str, timeout_ms: int = 40000, biz_id: str = "") -> str | Non
         return None
 
     t0 = time.monotonic()
-    # Причина перезаписывается каждой попыткой: в счётчик потерь попадает та,
-    # из-за которой сдалась последняя.
+    # Причина перезаписывается каждой попыткой: в счётчик потерь попадает та, из-за которой сдалась последняя.
     set_failure_reason("no_page")
 
     for attempt in range(_MAX_RETRIES):
@@ -1339,8 +1124,7 @@ def fetch_page(url: str, timeout_ms: int = 40000, biz_id: str = "") -> str | Non
         _rate_acquired = False
         try:
             if _rate_semaphore:
-                # Poll in short slices so a stop/skip is noticed within ~0.5s
-                # even while the pool is fully saturated.
+                # Poll in short slices so a stop/skip is noticed within ~0.5s even while the pool is fully saturated.
                 if not _poll_acquire(_rate_semaphore, 5.0):
                     if state._STOP_EVENT and state._STOP_EVENT.is_set():
                         return None
@@ -1383,10 +1167,7 @@ def fetch_page(url: str, timeout_ms: int = 40000, biz_id: str = "") -> str | Non
 
             if html:
                 return html
-            # Пустая страница — не приговор: таймаут навигации или заглушка
-            # антибота часто снимаются со свежей вкладкой. Раньше пустой
-            # ответ возвращался сразу, и карточка терялась без повторной
-            # попытки — отсюда жалоба «Карточка не открылась в браузере».
+            # Пустая страница — не приговор: таймаут навигации или заглушка антибота часто снимаются со свежей вкладкой.
             state.syslog(f"cdp_client: empty page (attempt {attempt + 1}/{_MAX_RETRIES}) {url}")
             if attempt < _MAX_RETRIES - 1:
                 try:
@@ -1401,9 +1182,7 @@ def fetch_page(url: str, timeout_ms: int = 40000, biz_id: str = "") -> str | Non
         except Exception as e:
             with _stats_lock:
                 _stats["pages_error"] += 1
-            # Surface the failure in get_analytics()'s «errors» counter too
-            # (it used to stay 0 forever, because the HTTP engine that fed it
-            # is gone). Import locally: this handler may run before line 980.
+            # Surface the failure in get_analytics()'s «errors» counter too (it used to stay 0 forever, because the HTTP engine that fed it is gone).
             try:
                 from .http_client import _count_error
                 _count_error()
@@ -1460,8 +1239,7 @@ def close_browser() -> None:
             _proc = None
             state.syslog("cdp_client: Chrome terminated")
 
-        # Временный профиль живёт только до конца прогона: ни файлов
-        # пользователя, ни следов между запусками в нём не остаётся.
+        # Временный профиль живёт только до конца прогона: ни файлов пользователя, ни следов между запусками в нём не остаётся.
         profile = _pool_profile_dir
         _pool_profile_dir = None
         if profile:

@@ -1,11 +1,4 @@
-"""
-Search history manager.
-
-Stores search history in a JSON file for browsing past searches,
-re-running with same parameters, and viewing results.
-
-History file: output/.search_history.json
-"""
+"""Search history manager."""
 
 import json
 import os
@@ -38,12 +31,7 @@ def _load() -> list[dict]:
 
 
 def _save() -> None:
-    """Save history to disk.
-
-    Atomic (tmp + os.replace), like paths.save_settings: a crash in the middle
-    of json.dump must never leave a truncated file that the next _load()
-    silently turns into an empty history.
-    """
+    """Save history to disk."""
     if _cache is None:
         return
     os.makedirs(OUTPUT_DIR, exist_ok=True)

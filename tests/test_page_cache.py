@@ -119,6 +119,28 @@ class TestExpiryAndLimits:
         assert cache.get_cached("second") == PAGE
         assert not (cache_dir / "first.html").exists()
 
+    def test_store_does_not_rescan_the_whole_directory(self, cache_dir, monkeypatch):
+        """Лимит объёма проверяется по памяти: каталог перебирается не на каждой записи."""
+        scans = []
+        real = cache._page_files
+
+        def counting():
+            scans.append(1)
+            return real()
+
+        monkeypatch.setattr(cache, "_page_files", counting)
+        for i in range(20):
+            cache.set_cached(str(i), PAGE)
+        assert len(scans) <= 2, f"каталог перебран {len(scans)} раз вместо одного"
+
+    def test_failed_write_leaves_no_temp_file(self, cache_dir, monkeypatch):
+        """Неудачное переименование (файл занят) не оставляет мусор на диске."""
+        monkeypatch.setattr(cache.os, "replace",
+                            lambda *a: (_ for _ in ()).throw(OSError("locked")))
+        cache.set_cached("123", PAGE)
+        assert list(cache_dir.glob("*.tmp")) == []
+        assert not (cache_dir / "123.html").exists()
+
     def test_stats_report_size_and_counters(self, cache_dir):
         cache.set_cached("123", PAGE)
         cache.get_cached("123")

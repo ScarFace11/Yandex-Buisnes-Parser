@@ -1,34 +1,4 @@
-"""🩺 Диагностика: самопроверка приложения без чтения логов.
-
-Зачем это нужно. Приложение — десктопное: у пользователя нет консоли перед
-глазами, и почти все обращения «ничего не работает» сводятся к четырём
-причинам: ключ не тот или исчерпан, нет прав на папку результатов, сбор
-сделан старой версией (в raw нет новых колонок) или на машине нет браузера
-для докачки соцсетей с карточек. Панель отвечает на это одним нажатием.
-
-Правила, по которым она сделана:
-
-* **Ничего не трогает в рабочем состоянии.** Живые проверки две: токен
-  ВКонтакте (отдельный клиент httpx, без ретраев и общего rate-limiter) и
-  проба браузера — она открывает свой Chrome приложением и закрывает его
-  сразу после проверки, поэтому идущий поиск не ускорить и не остановить.
-* **Секреты наружу не отдаются.** В ответе только булевы признаки и словами
-  описанный результат; текст исключений целиком не пересказывается — в нём
-  мог бы оказаться токен из URL запроса.
-* **Токен проверяется только по нажатию.** Живая проверка — сетевой запрос,
-  поэтому она отделена от локальных и запускается осознанно.
-* **Ошибки не роняют панель.** Любое падение отдельной проверки становится
-  строкой «ошибка» с человеческим объяснением, а не 500.
-
-Эндпоинт один: POST /diagnostics/run {"groups": ["keys", "files", "data", "runs", "env"]}.
-Ту же проверку без интерфейса запускает `app.py --check` (см. selfcheck.py):
-сервер, браузер и окно для этого не нужны.
-
-Запустить его может только сам интерфейс: проверка токена обращается к
-внешнему сервису от имени пользователя, а окно приложения слушает 127.0.0.1 —
-значит чужая страница в браузере не должна уметь нажать эту кнопку за него
-(см. `_only_from_our_ui`).
-"""
+"""🩺 Диагностика: самопроверка приложения без чтения логов."""
 import io
 import json
 import os
@@ -38,10 +8,11 @@ import time
 
 from flask import Blueprint, Response, jsonify, request
 
+from .json_body import json_body
+
 bp = Blueprint("diagnostics", __name__)
 
-# Группы проверок: раздельно, потому что «ключи» стоят квоту и время, а
-# «файлы/данные/окружение» — бесплатны и мгновенны.
+# Группы проверок: раздельно, потому что «ключи» стоят квоту и время, а «файлы/данные/окружение» — бесплатны и мгновенны.
 GROUPS = ("keys", "files", "data", "runs", "env", "engines")
 
 _HTTP_TIMEOUT = 8.0                     # живые проверки не должны «висеть»
@@ -69,13 +40,7 @@ def _res(cid: str, group: str, status: str, title: str,
 
 
 def effective_keys() -> dict:
-    """Ключи, которыми реально пользуется запуск.
-
-    Единственный ключ — токен ВКонтакте (проверка активности сообществ).
-    Яндекс.Карты читаются браузером, поэтому ключа Яндекса в приложении нет:
-    и API организаций, и геокодер платные, а их бесплатные версии запрещают
-    сохранять данные.
-    """
+    """Ключи, которыми реально пользуется запуск."""
     keys = {"vk": ""}
     try:
         from config import VK_TOKEN
@@ -91,21 +56,12 @@ def effective_keys() -> dict:
 
 
 def _exception_note(exc: Exception) -> str:
-    """Короткое описание сбоя БЕЗ текста исключения.
-
-    Тексты httpx иногда содержат полный URL запроса — то есть ключ. Наружу
-    уходит только класс ошибки: этого достаточно, чтобы отличить «нет сети»
-    от «сертификат» и при этом не показать секрет.
-    """
+    """Короткое описание сбоя БЕЗ текста исключения."""
     return type(exc).__name__
 
 
 def _http_get(url: str, params: dict) -> tuple[int, str, dict | None, str]:
-    """GET → (код, тело, json|None, примечание).
-
-    Свой клиент, без ретраев и общего лимитера: диагностика не должна
-    вмешиваться в идущий поиск.
-    """
+    """GET → (код, тело, json|None, примечание)."""
     try:
         import httpx
         r = httpx.get(url, params=params, timeout=_HTTP_TIMEOUT,
@@ -126,12 +82,7 @@ def _http_json(url: str, params: dict) -> tuple[int, dict | None, str]:
 
 
 def _error_message(text: str, data: dict | None) -> str:
-    """Текст ошибки сервиса человеческим языком — и без лишнего мусора.
-
-    Яндекс отдаёт ошибки XML-ом (`<message>Invalid api key</message>`),
-    остальные — готовым JSON. Обрезаем и убираем переводы строк: строка
-    уходит прямо в интерфейс.
-    """
+    """Текст ошибки сервиса человеческим языком — и без лишнего мусора."""
     candidates = []
     if text:
         found = re.search(r"<message>(.*?)</message>", text, re.S)
@@ -303,8 +254,7 @@ def check_data() -> list[dict]:
     out.append(_res("raw_present", "data", "ok", "Сырые данные на месте",
                     f"{raw_files} файл(ов), {_fmt_bytes(raw_size)}."))
 
-    # Новые колонки: без них фильтры «🎯 Тип компании» работают частично —
-    # филиалы досчитываются по сбору, а дату появления карточки взять негде.
+    # Новые колонки: без них фильтры «🎯 Тип компании» работают частично — филиалы досчитываются по сбору, а дату появления карточки взять негде.
     newest = max((os.path.join(raw_dir, f) for f in os.listdir(raw_dir)
                   if f.lower().endswith(".xlsx")),
                  key=lambda p: os.path.getmtime(p), default="")
@@ -363,13 +313,7 @@ def _fmt_span(seconds) -> str:
 
 
 def check_runs() -> list[dict]:
-    """Что было в прошлых прогонах: когда, где и чем закончилось.
-
-    Это ответ на «а вчера сбор шёл?» и «почему в выгрузке старые данные»,
-    без открытия логов: история поиска знает дату, города, число найденных
-    организаций, длительность и статус. Здесь же — размер кэша карточек:
-    именно он объясняет, почему повторный прогон идёт быстрее первого.
-    """
+    """Что было в прошлых прогонах: когда, где и чем закончилось."""
     out: list[dict] = []
     try:
         import search_history
@@ -411,8 +355,7 @@ def check_runs() -> list[dict]:
                             f"Последние {len(runs)} запусков завершились штатно." if len(runs) > 1
                             else "Единственный запуск завершился штатно."))
 
-    # Кэш карточек: страницы организаций живут сутки и заметно ускоряют
-    # повторный сбор. Ноль — не ошибка, просто первый прогон будет дольше.
+    # Кэш карточек: страницы организаций живут сутки и заметно ускоряют повторный сбор.
     try:
         import paths
         cache_dir = os.path.join(paths.output_dir(), ".cache")
@@ -433,10 +376,7 @@ def check_runs() -> list[dict]:
 
 # ── Группа «env»: с чем работаем ──────────────────────────────
 
-# Пробная страница выдачи: сколько карточек успел отрисовать список и
-# активна ли вкладка. Фоновая вкладка — частая причина «мало организаций»:
-# Chrome отдаёт ей visibilityState="hidden", и виртуализованный список
-# Яндекс.Карт не догружает продолжение (см. cdp_client.init_browser).
+# Пробная страница выдачи: сколько карточек успел отрисовать список и активна ли вкладка.
 _SEARCH_PROBE_JS = (
     "JSON.stringify({cards: document.querySelectorAll('%s').length,"
     " visibility: document.visibilityState, focus: document.hasFocus()})"
@@ -444,12 +384,7 @@ _SEARCH_PROBE_JS = (
 
 
 def _search_page_probe(cdp_client, url: str, selector: str) -> dict:
-    """Живой замер страницы выдачи: карточки + состояние вкладки.
-
-    Пустой словарь — страница не ответила. Разбор вёрстки и чтение
-    состояния выдачи требуют активной вкладки, поэтому её состояние —
-    часть отчёта.
-    """
+    """Живой замер страницы выдачи: карточки + состояние вкладки."""
     import json as _json
     raw = cdp_client.eval_in_page(
         url,
@@ -464,8 +399,7 @@ def _search_page_probe(cdp_client, url: str, selector: str) -> dict:
     except (TypeError, ValueError):
         data = None
     if not isinstance(data, dict):
-        # Ответ не объект (например просто число карточек) — читаем как счётчик
-        # и оставляем строку о вкладке за кадром: врать о её состоянии нельзя.
+        # Ответ не объект (например просто число карточек) — читаем как счётчик и оставляем строку о вкладке за кадром: врать о её состоянии нельзя.
         try:
             return {"cards": int(raw)}
         except (TypeError, ValueError):
@@ -479,18 +413,12 @@ def _search_page_probe(cdp_client, url: str, selector: str) -> dict:
             "focus": bool(data.get("focus"))}
 
 
-# Пробный запрос живой выдачи: тот же путь, что у рабочего поиска
-# (состояние страницы → карточки), поэтому проверка ловит и «выдача пуста».
+# Пробный запрос живой выдачи: тот же путь, что у рабочего поиска (состояние страницы → карточки), поэтому проверка ловит и «выдача пуста».
 _PROBE_QUERY = ("кофейня", "Уфа")
 
 
 def _live_search_rows() -> list[dict]:
-    """Строка «Поиск нашёл организации» — живой сбор на боевом пути.
-
-    Координаты не задаются: страницу поиска открывает сам Яндекс.Карты
-    и показывает ближайшие к городу организации. Проверяем главное —
-    выдача возвращается и парсится.
-    """
+    """Строка «Поиск нашёл организации» — живой сбор на боевом пути."""
     from yandex_maps_parser.browser_search import harvest_cards
     try:
         cards = harvest_cards(_PROBE_QUERY[0], _PROBE_QUERY[1], None, None, max_cards=25)
@@ -506,8 +434,7 @@ def _live_search_rows() -> list[dict]:
     except Exception:
         blocked = ""
     if blocked == "captcha":
-        # Самая частая причина «пусто всегда» — проверка Яндекса; совет про
-        # интернет и «Яндекс изменил страницу» тут только путал.
+        # Самая частая причина «пусто всегда» — проверка Яндекса; совет про интернет и «Яндекс изменил страницу» тут только путал.
         return [_res("search_live", "engines", "warn",
                      "Яндекс показал проверку «Вы не робот?»",
                      f"{where}: вместо выдачи — страница проверки, организаций нет.",
@@ -524,11 +451,7 @@ def _live_search_rows() -> list[dict]:
 
 
 def _tab_activity_rows(probe: dict, cards: int) -> list[dict]:
-    """Строка о вкладке браузера: видна ли она и в фокусе ли.
-
-    Пустой список — состояние вкладки прочитать не удалось: тогда лучше
-    промолчать, чем показать выдуманное «всё хорошо».
-    """
+    """Строка о вкладке браузера: видна ли она и в фокусе ли."""
     visibility = str(probe.get("visibility") or "")
     if not visibility:
         return []
@@ -544,16 +467,9 @@ def _tab_activity_rows(probe: dict, cards: int) -> list[dict]:
 
 
 def probe_engines(deep: bool = False) -> list[dict]:
-    """Проверка браузера — единственного способа загрузки страниц в приложении.
-
-    deep=False — мгновенно (есть ли бинарник): для панели «Диагностика».
-    deep=True  — пробная загрузка карточки организации и страницы поиска.
-
-    Отчёт — те же _res-строки: {id, status: ok|warn|error, title, detail}.
-    """
+    """Проверка браузера — единственного способа загрузки страниц в приложении. deep=False — мгновенно (есть ли бинарник): для панели «Диагностика». deep=True — пробная загрузка карточки организации и страницы поиска."""
     out: list[dict] = []
-    # Пробная страница: реальная карточка организации на Яндекс.Картах —
-    # та же геометрия ответа, что у боевых fetch_detail.
+    # Пробная страница: реальная карточка организации на Яндекс.Картах — та же геометрия ответа, что у боевых fetch_detail.
     probe_url = "https://yandex.ru/maps/org/galateya/1025935617/"
     search_url = "https://yandex.ru/maps/?text=%D0%BA%D0%BE%D1%84%D0%B5%20%D0%A3%D1%84%D0%B0"
     from yandex_maps_parser.browser_search import CARD_SELECTOR
@@ -564,8 +480,7 @@ def probe_engines(deep: bool = False) -> list[dict]:
         chrome = binfo["path"]
         _browser_name = binfo["name"] or "браузер на Chromium"
         if not chrome:
-            # Прямо говорим, что подойдёт: под Chrome тут понимается любой
-            # Chromium-браузер, и Яндекс Браузер с Firefox уже могут стоять.
+            # Прямо говорим, что подойдёт: под Chrome тут понимается любой Chromium-браузер, и Яндекс Браузер с Firefox уже могут стоять.
             _unsupported = binfo.get("unsupported") or []
             out.append(_res(
                 "engine_cdp", "engines", "error", "Браузер на Chromium не найден",
@@ -578,8 +493,7 @@ def probe_engines(deep: bool = False) -> list[dict]:
                 " или Chromium: страницы открывает настоящий браузер — прямые"
                 " HTTP-запросы к Яндекс.Картам убраны из-за антибота."))
         elif deep:
-            # Идёт прогон — браузер уже поднят: свою пробу делаем в нём же,
-            # но чужой браузер не закрываем ни при каких условиях.
+            # Идёт прогон — браузер уже поднят: свою пробу делаем в нём же, но чужой браузер не закрываем ни при каких условиях.
             already_running = cdp_client.is_available()
             ok = cdp_client.init_browser(pool_size=1, visible=False)
             card = cdp_client.fetch_page(probe_url) if ok else None
@@ -630,8 +544,7 @@ def check_environment() -> list[dict]:
     out.append(_res("app_version", "env", "ok", f"Версия {version}",
                     f"{mode}, Python {sys.version.split()[0]}."))
 
-    # Браузер — основной инструмент приложения: из него берутся и выдача
-    # поиска, и координаты города, и карточки организаций.
+    # Браузер — основной инструмент приложения: из него берутся и выдача поиска, и координаты города, и карточки организаций.
     browser = ""
     browser_name = ""
     unsupported: list[str] = []
@@ -693,15 +606,7 @@ def _is_local_origin(origin: str) -> bool:
 
 @bp.before_request
 def _only_from_our_ui():
-    """Пускаем только запрос из самого приложения.
-
-    Приложение слушает 127.0.0.1, но привязкой к адресу ограничиться нельзя:
-    любой сайт в браузере может отправить POST на localhost «простым»
-    запросом (обычная HTML-форма — без CORS-preflight) и запустить проверку
-    или иные действия от имени пользователя. Поэтому требуем тело в JSON:
-    такой запрос чужая страница без preflight отправить не может, а preflight
-    мы не разрешаем (ответных CORS-заголовков у сервиса нет).
-    """
+    """Пускаем только запрос из самого приложения."""
     if request.method != "POST":
         return None
     origin = request.headers.get("Origin")
@@ -717,12 +622,7 @@ def _only_from_our_ui():
 # ── Сборка отчёта ─────────────────────────────────────────────
 
 def run_checks(groups=None, deep: bool = False) -> list[dict]:
-    """Отчёт по выбранным группам. Падение одной проверки — строка «ошибка».
-
-    deep=True включает живую пробу браузера (группа «engines»): она открывает
-    настоящий Chrome и грузит страницу выдачи, поэтому запускается отдельной
-    кнопкой, а не вместе с мгновенными проверками.
-    """
+    """Отчёт по выбранным группам."""
     wanted = [g for g in (groups or GROUPS) if g in GROUPS] or list(GROUPS)
     results: list[dict] = []
 
@@ -755,11 +655,7 @@ def run_checks(groups=None, deep: bool = False) -> list[dict]:
 
 @bp.route("/engines/status", methods=["GET"])
 def engines_status():
-    """Мгновенная доступность браузера для бейджа в форме.
-
-    Без сетевых запросов: только поиск бинарника Chrome/Chromium.
-    Reply: {ok, chrome: bool, chrome_path: str, frozen: bool}
-    """
+    """Мгновенная доступность браузера для бейджа в форме."""
     chrome_path = ""
     browser_name = ""
     unsupported: list[str] = []
@@ -779,29 +675,17 @@ def engines_status():
         frozen = False
     return jsonify({"ok": True, "chrome": bool(chrome_path),
                     "chrome_path": chrome_path, "frozen": frozen,
-                    # Под «Chrome» бейдж понимает любой Chromium-браузер: имя
-                    # видно пользователю, а unsupported объясняет, почему
-                    # установленный Firefox/Safari поиску не помогает.
+                    # Под «Chrome» бейдж понимает любой Chromium-браузер: имя видно пользователю, а unsupported объясняет, почему установленный Firefox/Safari поиску не помогает.
                     "browser_name": browser_name,
                     "unsupported": unsupported,
-                    # Выбор браузера для сбора: список найденных и текущий
-                    # выбор. Именно эти данные заполняют выпадающий список
-                    # в форме — без них пришлось бы вручную указывать путь
-                    # к chrome.exe, а Яндекс Браузер рядом с Chrome так и
-                    # оставался бы невидимым.
+                    # Выбор браузера для сбора: список найденных и текущий выбор.
                     "browsers": _bi.get("browsers") or [] if chrome_path else [],
                     "selected": _bi.get("selected") or ""})
 
 
 @bp.route("/browser/select", methods=["POST"])
 def browser_select():
-    """Сохранить выбранный браузер для сбора.
-
-    Body: {"path": "C:\\...\\chrome.exe"} | {"path": ""} — авто.
-    Пустой путь и путь не из найденных отклоняем: случайный текст вместо
-    браузера иначе валил бы каждый следующий запуск.
-    Reply: {ok, selected, name, browsers}
-    """
+    """Сохранить выбранный браузер для сбора."""
     from flask import current_app
     try:
         from yandex_maps_parser import cdp_client
@@ -809,7 +693,7 @@ def browser_select():
     except Exception:
         index = {}
 
-    data = request.get_json(silent=True) or {}
+    data = json_body()
     path = str(data.get("path") or "").strip()
     if path and path.lower() not in index:
         return jsonify({"ok": False,
@@ -835,16 +719,8 @@ def browser_select():
 
 @bp.route("/diagnostics/run", methods=["POST"])
 def diagnostics_run():
-    """Самопроверка по кнопке.
-
-    Body: {"groups": ["keys", "files", "data", "env"]} — по умолчанию все.
-    "deep": true — живая проба браузера (открывает Chrome, грузит страницу
-    выдачи и проверяет, что вкладка активна и список организаций виден).
-    Reply: {ok, results: [{id, group, status, title, detail, hint}], ts}
-
-    Ответ не содержит ключей: только булевы признаки и объяснения словами.
-    """
-    data = request.get_json(silent=True) or {}
+    """Самопроверка по кнопке."""
+    data = json_body()
     groups = data.get("groups")
     if isinstance(groups, str):
         groups = [groups]
@@ -861,15 +737,6 @@ def diagnostics_run():
 
 # ═══════════════════════════════════════════════════════════════
 #  Сообщить о проблеме: контекст для issue на GitHub
-# ═══════════════════════════════════════════════════════════════
-#
-# Окно «Сообщить о проблеме» собирает письмо пользователя и открывает
-# форму GitHub с метками и предзаполненным телом. Сервер отдаёт только ту
-# часть контекста, которую браузер собрать не может: версия, система,
-# браузер, прогоны и хвост лога. Секретов в ответе нет — группы «keys»
-# здесь не запускаются, а лог пишется без ключей (как и отчёт «Скопировать
-# отчёт»). Фильтры и настройки вкладки прикладывает сам интерфейс: они
-# живут в localStorage и серверу не видны.
 
 _REPORT_LOG_LINES = 25          # хвост лога в контекст issue
 
@@ -892,14 +759,7 @@ def _report_log_tail() -> str:
 
 @bp.route("/report/context", methods=["GET"])
 def report_context():
-    """Контекст для issue: версия, система, браузер, прогоны, хвост лога.
-
-    Reply: {ok, context, has_token, can_device, ts} — context готовым
-    текстом Markdown: интерфейс прикладывает его к телу письма как есть.
-    has_token — есть ли уже токен; can_device — можно ли войти по коду
-    (в сборке зашит client_id). Проверки — только локальные (env + runs),
-    без сетевых запросов и без ключей.
-    """
+    """Контекст для issue: версия, система, браузер, прогоны, хвост лога."""
     parts: list[str] = []
     try:
         rows = run_checks(["env", "runs"])
@@ -918,8 +778,7 @@ def report_context():
     except Exception as exc:
         parts.append(f"## Проверки\r\n(не выполнились: {_exception_note(exc)})")
 
-    # Пресеты — только имена: содержимое пресета может содержать личные
-    # формулировки запросов, а issue бывает публичным.
+    # Пресеты — только имена: содержимое пресета может содержать личные формулировки запросов, а issue бывает публичным.
     try:
         import paths
         presets = paths.load_settings().get("presets") or []
@@ -932,9 +791,7 @@ def report_context():
         parts.append("## Сохранённые пресеты\r\n(не прочитаны)")
 
     parts.append("## Последние строки лога\r\n```\r\n" + _report_log_tail() + "\r\n```")
-    # Признаки булевы, токен в ответ не попадает никогда. can_device —
-    # есть ли в сборке client_id: без него окно не показывает кнопку
-    # входа, чтобы пользователю не предлагали создавать OAuth-приложение.
+    # Признаки булевы, токен в ответ не попадает никогда. can_device — есть ли в сборке client_id: без него окно не показывает кнопку входа, чтобы пользователю не предлагали создавать OAuth-приложение.
     return jsonify({"ok": True, "context": "\n\n".join(parts),
                     "has_token": bool(github_token()),
                     "can_device": bool(github_oauth_client_id()),
@@ -942,25 +799,13 @@ def report_context():
 
 
 # Настройки, которые сбрасываются «до стандартных». Ценное НЕ трогаем:
-# пресеты, шаблоны писем, принятое соглашение и ключи API — это результат
-# работы пользователя, а не настройка окружения.
 _SETTINGS_RESET_KEYS = ("results_root", "raw_dir", "processed_dir",
                         "archive_dir", "browser_path", "retention_days")
 
 
 @bp.route("/settings/reset", methods=["POST"])
 def settings_reset():
-    """Сброс настроек до стандартных: папки результатов, браузер, хранение.
-
-    Body: {} (принимается только JSON из самого приложения — та же
-    защита, что у /diagnostics/run). Reply: {ok, reset, kept}.
-
-    Интерфейс после успешного ответа чистит свои настройки вкладки
-    (localStorage) и перезагружает страницу — сервер про них не знает.
-    """
-    guard = _only_from_our_ui()
-    if guard is not None:
-        return guard
+    """Сброс настроек до стандартных: папки результатов, браузер, хранение."""
     try:
         import paths
         data = paths.load_settings()
@@ -978,15 +823,6 @@ def settings_reset():
 
 # ═══════════════════════════════════════════════════════════
 #  Отправка issue через GitHub API (необязательный токен)
-# ═══════════════════════════════════════════════════════════
-#
-# Окно «Сообщить о проблеме» умеет два пути: открыть заполненную форму
-# (работает без токена, как раньше) и СОЗДАТЬ issue само — через
-# POST /repos/{repo}/issues. GitHub требует аутентификацию для создания
-# (без токена — 401), поэтому токен в окне необязателен, но без него
-# автоотправка невозможна: сервер читает GITHUB_TOKEN из .env или берёт
-# токен, присланный один раз из формы (и по явной просьбе сохраняет его
-# туда же). Секрет никуда не выдаётся: в ответах — только булев признак.
 
 _ISSUE_TIMEOUT = 20.0                 # GitHub отвечает за секунды
 ISSUE_TITLE_MAX = 256
@@ -1001,11 +837,7 @@ def github_token() -> str:
 
 def _github_create_issue(title: str, labels: list, body: str,
                          token: str) -> tuple[int, dict | None, str]:
-    """Создать issue → (код, json|None, примечание о сбое сети).
-
-    Отдельная функция, чтобы тесты подменяли её, а не сеть. Токен уходит
-    только в заголовок Authorization — ни в ответ, ни в лог он не попадает.
-    """
+    """Создать issue → (код, json|None, примечание о сбое сети)."""
     import httpx
     try:
         from routes.api import GITHUB_REPO
@@ -1072,20 +904,8 @@ def _issue_error(status: int, data: dict | None, note: str) -> str:
 
 @bp.route("/report/issue", methods=["POST"])
 def report_issue():
-    """Создать issue на GitHub через API — кнопка «Создать issue».
-
-    Body: {title, labels, body, token?, remember?} (только JSON из своего
-    окна — тот же защитник, что у /settings/reset).
-    Reply: {ok: true, url, number, saved} |
-           {ok: false, code: "no_token"|"github", status, error}.
-
-    Без токена сюда стучаться не нужно — GitHub отвечает 401; интерфейс в
-    этом случае сам открывает заполненную форму, как раньше.
-    """
-    guard = _only_from_our_ui()
-    if guard is not None:
-        return guard
-    data = request.get_json(silent=True) or {}
+    """Создать issue на GitHub через API — кнопка «Создать issue»."""
+    data = json_body()
     title = str(data.get("title") or "").strip() or "Сообщение из приложения"
     title = title[:ISSUE_TITLE_MAX]
     body = str(data.get("body") or "")[:ISSUE_BODY_MAX]
@@ -1101,8 +921,7 @@ def report_issue():
         saved, save_note = _remember_github_token(sent)
 
     if not token:
-        # Поле токена в окне больше нет: если вход по коду в этой сборке
-        # возможен — предлагаем его, иначе сразу заполненную форму.
+        # Поле токена в окне больше нет: если вход по коду в этой сборке возможен — предлагаем его, иначе сразу заполненную форму.
         how = ("войдите в GitHub по коду или "
                if github_oauth_client_id() else "")
         return jsonify({
@@ -1124,38 +943,14 @@ def report_issue():
 
 
 # ── Вход в GitHub без ручного ввода токена: device flow ─────
-#
-# Поле токена в окне сообщения убрано, а GitHub API не работает анонимно.
-# Device flow закрывает эту дыру: приложение показывает короткий код, ведёт
-# на страницу github.com/login/device, где пользователь вводит код и
-# подтверждает доступ — и токен приходит сам, без копирования где-либо.
-#
-# client_id OAuth-приложения проекта ЗАШИТ в сборку (GH_DEVICE_CLIENT_ID_
-# DEFAULT ниже): OAuth-приложение владелец репозитория заводит один раз
-# (Settings → Developer settings → OAuth Apps; callback и секрет для device
-# flow не нужны, а сама опция Enable Device Flow на странице приложения
-# должна быть включена), а обычным пользователям создавать НИЧЕГО не нужно — они
-# лишь вводят код на странице GitHub. GITHUB_OAUTH_CLIENT_ID в окружении —
-# только переопределение при разработке. Если client_id в сборке нет,
-# кнопка «Войти в GitHub» не показывается вовсе (can_device в
-# /report/context) — остаётся заполненная форма, и никаких инструкций
-# про OAuth Apps пользователь не видит.
-#
-# Состояние — stateless: device_code живёт в памяти страницы окна
-# (подтверждение живёт ~15 минут и никуда не пишется), сервер только
-# меняет код на токен и кладёт его в .env тем же путём, что и раньше.
 
 GH_DEVICE_CODE_URL = "https://github.com/login/device/code"
 GH_DEVICE_TOKEN_URL = "https://github.com/login/oauth/access_token"
 GH_DEVICE_AUTH_URL = "https://github.com/login/device"
-# public_repo — минимум прав для создания issue в публичном репозитории;
-# полный «repo» просить у пользователя непропорционально.
+# public_repo — минимум прав для создания issue в публичном репозитории; полный «repo» просить у пользователя непропорционально.
 GH_DEVICE_SCOPE = "public_repo"
 
-# client_id OAuth-приложения проекта — зашивается в релизную сборку
-# (одна строка, которую владелец заполняет при выпуске). Не секрет:
-# device flow работает вовсе без client_secret. Пустая строка — вход по
-# коду выключен, окно предлагает только заполненную форму.
+# client_id OAuth-приложения проекта — зашивается в релизную сборку (одна строка, которую владелец заполняет при выпуске).
 GH_DEVICE_CLIENT_ID_DEFAULT = "Ov23lik2gXnfcFfKtRf0"
 
 
@@ -1166,12 +961,7 @@ def github_oauth_client_id() -> str:
 
 
 def _gh_form_post(url: str, data: dict) -> tuple[int, dict | None, str]:
-    """POST form → (код, json|None, примечание о сбое сети).
-
-    Отдельная функция, чтобы тесты подменяли её, а не сеть — как
-    у _github_create_issue. Токен и device_code уходят только в тело
-    запроса — ни в ответ, ни в лог они не попадают.
-    """
+    """POST form → (код, json|None, примечание о сбое сети)."""
     import httpx
     headers = {
         "User-Agent": _USER_AGENT,
@@ -1190,15 +980,7 @@ def _gh_form_post(url: str, data: dict) -> tuple[int, dict | None, str]:
 
 @bp.route("/report/github/device/start", methods=["POST"])
 def github_device_start():
-    """Начать device flow: выдать код пользователю.
-
-    Body: {} (JSON из своего окна — тот же защитник, что у /report/issue).
-    Reply: {ok: true, device_code, user_code, verification_uri, interval,
-            expires_in} | {ok: false, code: "no_client_id"|"github"|"network", …}.
-    """
-    guard = _only_from_our_ui()
-    if guard is not None:
-        return guard
+    """Начать device flow: выдать код пользователю."""
     client_id = github_oauth_client_id()
     if not client_id:
         return jsonify({
@@ -1228,16 +1010,8 @@ def github_device_start():
 
 @bp.route("/report/github/device/poll", methods=["POST"])
 def github_device_poll():
-    """Проверить, подтвердил ли пользователь код на GitHub.
-
-    Body: {device_code}.
-    Reply: {ok: true, saved} | {ok: false, pending: true[, slow_down: true]} |
-           {ok: false, code: "expired_token"|"access_denied"|"network"|…}.
-    """
-    guard = _only_from_our_ui()
-    if guard is not None:
-        return guard
-    data = request.get_json(silent=True) or {}
+    """Проверить, подтвердил ли пользователь код на GitHub."""
+    data = json_body()
     client_id = github_oauth_client_id()
     device_code = str(data.get("device_code") or "")
     if not client_id or not device_code:
@@ -1270,8 +1044,7 @@ def github_device_poll():
         return jsonify({"ok": False, "code": "github", "status": status,
                         "error": _issue_error(status, out, note)})
     saved, save_note = _remember_github_token(token)
-    # Токен уже живёт в .env и в окружении процесса (_write_env_keys
-    # перезагружает его без перезапуска) — «Создать issue» работает сразу.
+    # Токен уже живёт в .env и в окружении процесса (_write_env_keys перезагружает его без перезапуска) — «Создать issue» работает сразу.
     out = {"ok": True, "saved": saved}
     if save_note:
         out["save_warning"] = save_note
@@ -1279,13 +1052,6 @@ def github_device_poll():
 
 
 # ── Экспорт настроек (перенос на другую машину) ─────────────
-#
-# Зеркало «Экспорт данных», но только настройки: server-часть
-# (settings.json — папки, браузер, хранение, пресеты, шаблоны) и настройки
-# вкладок этого окна (localStorage — фильтры, столбцы, тема). Сервер
-# localStorage не видит, поэтому снимок присылает сам интерфейс; в архив
-# попадает только своё: ключи с префиксом yp_ и строковые значения.
-# Обратный путь — существующая кнопка «Импорт данных» (/data/import).
 
 BROWSER_SETTINGS_MAX = 500
 BROWSER_VALUE_MAX = 1_000_000
@@ -1308,15 +1074,8 @@ def clean_browser_settings(raw) -> dict:
 
 @bp.route("/settings/export", methods=["POST"])
 def settings_export():
-    """Zip со всеми настройками — перенос на другую машину до сброса.
-
-    Body: {browser?: {yp_*: значение}}.
-    Reply: вложение parser-settings-export.zip (settings.json + browser.json).
-    """
-    guard = _only_from_our_ui()
-    if guard is not None:
-        return guard
-    data = request.get_json(silent=True) or {}
+    """Zip со всеми настройками — перенос на другую машину до сброса."""
+    data = json_body()
     browser = clean_browser_settings(data.get("browser"))
     import zipfile
     buf = io.BytesIO()

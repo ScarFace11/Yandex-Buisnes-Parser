@@ -54,7 +54,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(api_mod, "_raw_dir", lambda: str(raw))
     monkeypatch.setattr(api_mod, "_processed_dir", lambda: str(proc))
     monkeypatch.setattr(api_mod, "_archive_root", lambda: str(arch))
-    api_mod._REC_CACHE.clear()
+    api_mod._clear_file_caches()
 
     app = Flask(__name__)
     app.register_blueprint(api_mod.bp)

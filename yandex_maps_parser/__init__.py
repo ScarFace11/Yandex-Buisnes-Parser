@@ -1,10 +1,4 @@
-"""
-Yandex Maps business parser.
-
-Public API:
-    run()      — CLI entry point (reads config from state module)
-    run_web()  — Web entry point called by app.py
-"""
+"""Yandex Maps business parser."""
 from .runner import run, run_web
 
 __all__ = ["run", "run_web"]

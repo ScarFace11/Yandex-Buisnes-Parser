@@ -1,10 +1,4 @@
-"""
-Per-run file logger.
-
-Creates a timestamped log file for each search run in the logs/ directory.
-All info/warn/ok messages and results are written to the file for later analysis.
-Thread-safe: multiple enrichment threads can write concurrently.
-"""
+"""Per-run file logger."""
 import os
 import re
 import sys
@@ -22,16 +16,6 @@ MAX_LOG_DAYS = 30      # auto-cleanup logs older than this
 MAX_LOG_FILES = 200    # keep at most this many log files (newest wins)
 
 # ── Как лог попадает на диск ───────────────────────────────────
-# Раньше файл ОТКРЫВАЛСЯ на каждую строку: 0.45 мс на строку (замер на
-# 20 000 строк — 6.3 с против 0.05 с у одного открытого дескриптора, 130×),
-# и это под общим замком, то есть двадцать потоков сбора выстраивались в
-# очередь на каждый syslog. Открытый дескриптор и сброс буфера пачкой дают
-# тот же файл, но перестают быть узким местом прогона.
-#
-# Сброс — по числу строк ИЛИ по времени (что сработает раньше): пачка
-# быстрая, а файл на диске отстаёт не больше чем на FLUSH_SECONDS.
-# Записи поиска живут в JSONL-сайдкаре (state._emit_result) — лог это
-# диагностика, поэтому «не больше секунд» здесь честная цена за скорость.
 FLUSH_EVERY_LINES = 200
 FLUSH_SECONDS = 5.0
 
@@ -43,8 +27,7 @@ class RunLogger:
 
     def __init__(self, run_id: str, cities: list[str], queries: list[str]):
         os.makedirs(LOGS_DIR, exist_ok=True)
-        # Prune old logs at the start of every run (not only at app boot),
-        # so a long-lived server doesn't accumulate logs forever.
+        # Prune old logs at the start of every run (not only at app boot), so a long-lived server doesn't accumulate logs forever.
         try:
             cleanup_old_logs()
         except Exception:
@@ -77,12 +60,7 @@ class RunLogger:
         return self._path
 
     def _open_handle(self) -> None:
-        """Открыть файл на дозапись — один раз на прогон.
-
-        Не удалось открыть (папка только для чтения, файл занят) — работаем
-        прежним путём: каждая строка открывает файл сама. Лог не должен
-        ронять поиск ни в каком случае.
-        """
+        """Открыть файл на дозапись — один раз на прогон."""
         try:
             self._handle = open(self._path, "a", encoding="utf-8",
                                 buffering=64 * 1024)
@@ -156,20 +134,11 @@ class RunLogger:
             self._note_write_error()
 
     def log(self, level: str, msg: str) -> None:
-        """Log a message from the search pipeline.
-
-        Levels:
-          info/warn/ok — user-facing messages (also sent to browser)
-          sys          — system/developer traces (file only)
-          result       — single enriched record summary
-        """
-        # Structured statistics are a UI payload (JSON), not a log line — the
-        # file gets a compact «stats: …» record from state.syslog instead.
+        """Log a message from the search pipeline."""
+        # Structured statistics are a UI payload (JSON), not a log line — the file gets a compact «stats: …» record from state.syslog instead.
         if level == "stats":
             return
-        # Absolute wall-clock stamp [HH:MM:SS] — it survives restarts and
-        # resume; the elapsed delta from the run start rides along in the
-        # sys record so timings stay reconstructable.
+        # Absolute wall-clock stamp [HH:MM:SS] — it survives restarts and resume; the elapsed delta from the run start rides along in the sys record so timings stay reconstructable.
         ts = time.time() - self._started_at
         mins, secs = divmod(int(ts), 60)
         timestamp = f"[{datetime.now().strftime('%H:%M:%S')} +{mins}:{secs:02d}]"
@@ -208,13 +177,7 @@ class RunLogger:
 
     def finish(self, total_results: int, files: list[str], stopped: bool = False,
                paused: bool = False) -> None:
-        """Write final summary.
-
-        A pause unwinds through the same graceful path as a stop, but its
-        summary must not read «Остановлено пользователем»: the run is waiting
-        to be continued, and the wrong wording made the pause look like the
-        end of the search.
-        """
+        """Write final summary."""
         elapsed = time.time() - self._started_at
         mins, secs = divmod(int(elapsed), 60)
         self._write("")
@@ -234,10 +197,7 @@ class RunLogger:
 
 
 def cleanup_old_logs() -> int:
-    """Remove old log files: older than MAX_LOG_DAYS, or beyond MAX_LOG_FILES.
-
-    Returns count of deleted files.
-    """
+    """Remove old log files: older than MAX_LOG_DAYS, or beyond MAX_LOG_FILES."""
     if not os.path.isdir(LOGS_DIR):
         return 0
     cutoff = time.time() - MAX_LOG_DAYS * 86400

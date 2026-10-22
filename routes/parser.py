@@ -11,10 +11,7 @@ bp = Blueprint("parser", __name__)
 
 @bp.route("/run", methods=["POST"])
 def run_parser():
-    # Минимально допустимая версия: на устаревшей сборке поиск не стартует
-    # вовсе. Окно обновления показывает то же самое, но UI можно закрыть —
-    # поэтому отказ есть и на сервере (см. routes/update.minimum_state).
-    # Локальные сборки и запуск из исходников порог не соблюдают.
+    # Минимально допустимая версия: на устаревшей сборке поиск не стартует вовсе.
     try:
         from routes.update import minimum_state
         state = minimum_state()
@@ -50,9 +47,7 @@ def run_parser():
 
     active = run_manager.active_run_id()
     if active and active != entry["id"]:
-        # «Продолжить» after a pause: the paused run already delivered its
-        # results and is being finalized — it must not block the resume, or
-        # the continuation would sit in the queue forever (see clear_paused_run).
+        # «Продолжить» after a pause: the paused run already delivered its results and is being finalized — it must not block the resume, or the continuation would sit in the queue forever (see clear_paused_run).
         resumable = params.get("resume") and run_manager.clear_paused_run(active)
         if not resumable:
             with run_manager._lock:
@@ -68,13 +63,10 @@ def run_parser():
 @bp.route("/stop", methods=["POST"])
 def stop_parser():
     run_id = request.args.get("run_id", "")
-    # ?pause=1 → graceful unwind that REMEMBERS the run: the frontend gets
-    # a done message with paused=true + resume payload and offers «Продолжить».
+    # ?pause=1 → graceful unwind that REMEMBERS the run: the frontend gets a done message with paused=true + resume payload and offers «Продолжить».
     pause = request.args.get("pause", "") in ("1", "true", "yes")
     affected = run_manager.stop_run(run_id, pause=pause)
-    # `targets` says whether anything was actually stopped: a pause request
-    # that arrives after the run already finished used to answer «ok, paused»
-    # and the UI kept waiting for a done message that was never coming.
+    # `targets` says whether anything was actually stopped: a pause request that arrives after the run already finished used to answer «ok, paused» and the UI kept waiting for a done message that was never coming.
     return jsonify({"ok": True, "paused": pause, "targets": affected,
                     "target": affected[0] if affected else None})
 
@@ -133,8 +125,7 @@ def logs():
 @bp.route("/status")
 def status():
     s = run_manager.status()
-    # Браузер — единственный движок сбора; фронтенд по этому флагу показывает
-    # предупреждение «Chrome не найден», если он отсутствует.
+    # Браузер — единственный движок сбора; фронтенд по этому флагу показывает предупреждение «Chrome не найден», если он отсутствует.
     try:
         from yandex_maps_parser.cdp_client import is_installed as browser_installed
         s["browser_available"] = browser_installed()

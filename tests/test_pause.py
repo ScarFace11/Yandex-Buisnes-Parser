@@ -223,6 +223,39 @@ def test_bridge_crash_done_keeps_pause(tmp_path, monkeypatch):
 # that is never started again, and /logs kept streaming the dead run — the
 # search appeared not to resume at all.
 
+def test_bridge_does_not_stall_when_nobody_reads_logs(tmp_path, monkeypatch):
+    """Окно закрыто — очередь логов полна, а мост обязан дочитать прогон.
+
+    Раньше `reg_queue.put()` блокировался навсегда: нитка моста, очередь
+    и запись прогона оставались в памяти до конца сеанса, а `done` так и не
+    приходил — статус навсегда оставался «идёт».
+    """
+    import queue as _queue
+    import threading as _threading
+
+    monkeypatch.setattr(rm, "_FINISH_DELAY", 0.01)
+    entry = _entry_with_stop_files(tmp_path)
+    reg = _queue.Queue(maxsize=1)
+    reg.put({"type": "log", "level": "info", "msg": "старая строка"})
+    mp = _queue.Queue()
+    for i in range(5):
+        mp.put({"type": "log", "level": "info", "msg": f"строка {i}"})
+    mp.put(None)                       # дочерний процесс закончил
+
+    finished = _threading.Event()
+
+    def run():
+        _bridge_reader(mp, reg, entry)
+        finished.set()
+
+    th = _threading.Thread(target=run, daemon=True)
+    th.start()
+    assert finished.wait(timeout=3.0), "мост встал на полной очереди логов"
+    assert entry["_done"] is True
+    # Свежее сообщение (done) важнее прочитанных строк — оно должно дойти.
+    assert reg.get_nowait()["type"] == "done"
+
+
 def test_clear_paused_run_finalizes_it(tmp_path):
     entry = _entry_with_stop_files(tmp_path)
     entry["paused"] = True

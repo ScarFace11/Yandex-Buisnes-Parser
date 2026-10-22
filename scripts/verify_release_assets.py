@@ -1,12 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Проверка целостности ассетов релиза и локальных сборок.
-
-    python scripts/verify_release_assets.py --tag v2.3.4.1
-    python scripts/verify_release_assets.py --check-local dist/app.zip --version 2.3.4.1
-
-Код возврата: 0 — всё цело, 1 — есть проблемы.
-"""
+"""Проверка целостности ассетов релиза и локальных сборок. python scripts/verify_release_assets.py --tag v2.3.4.1 python scripts/verify_release_assets.py --check-local dist/app.zip --version 2.3.4.1 Код возврата: 0 — всё цело, 1 — есть проблемы."""
 from __future__ import annotations
 
 import argparse

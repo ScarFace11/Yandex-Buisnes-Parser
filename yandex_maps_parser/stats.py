@@ -1,6 +1,4 @@
-"""
-Console statistics summary.
-"""
+"""Console statistics summary."""
 from collections import Counter
 
 from .constants import KNOWN_PLATFORMS
@@ -25,8 +23,7 @@ def print_limit_stats() -> None:
     }
     for kind, label in kind_labels.items():
         n = s["by_kind"].get(kind, 0)
-        # «Прочие запросы: 55» right under «Запросы: 55» says nothing new —
-        # skip the redundant line when «other» is the only kind.
+        # «Прочие запросы: 55» right under «Запросы: 55» says nothing new — skip the redundant line when «other» is the only kind.
         if n and not (kind == "other" and n >= s["requests"]):
             state.info(f"    {label}: {n}")
         if n:
@@ -43,8 +40,7 @@ def print_limit_stats() -> None:
         from .cache import cache_stats
         bs = browser_stats()
         total_browser = int(bs.get("pages_fetched") or 0)
-        # Попадания в кэш страниц: при повторном прогоне браузер не открывает
-        # карточку вообще, так что без этой цифры выигрыш не видно.
+        # Попадания в кэш страниц: при повторном прогоне браузер не открывает карточку вообще, так что без этой цифры выигрыш не видно.
         try:
             hits = int(cache_stats().get("hits") or 0)
         except Exception:
@@ -57,13 +53,7 @@ def print_limit_stats() -> None:
 
 
 def _print_read_failure_stats() -> None:
-    """Сколько карточек прочитать не удалось — и почему.
-
-    Такие организации в выгрузке есть, но без телефона, сайта и соцсетей: не
-    потому, что их нет, а потому что страница не открылась. Печатаем дельту
-    с прошлого вывода — строка встаёт в лог конца каждого города, а не только
-    в итог за прогон.
-    """
+    """Сколько карточек прочитать не удалось — и почему."""
     try:
         delta = state.read_failure_take_delta()
     except Exception:
@@ -77,13 +67,7 @@ def _print_read_failure_stats() -> None:
 
 
 def _print_prefilter_stats() -> None:
-    """Сколько записей отбросил предфильтр сбора и почему.
-
-    Сбор выкидывает то, что всё равно сняли бы фильтры (чёрный список,
-    «только без сайтов», соцсети), поэтому эти записи не появляются в живой
-    таблице и не попадают в raw. Печатаем дельту с прошлого вызова — строка
-    попадает в лог конца каждого города, а не только в итог за прогон.
-    """
+    """Сколько записей отбросил предфильтр сбора и почему."""
     try:
         delta = state.crawl_skip_take_delta()
     except Exception:

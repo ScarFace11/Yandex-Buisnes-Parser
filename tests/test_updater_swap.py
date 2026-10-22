@@ -174,6 +174,16 @@ class TestRealSwap:
         assert raw.count(b"\n") == raw.count(b"\r\n"), "у каждой строки ровно один CR"
         assert raw.startswith(b"@echo off\r\n")
         assert str(spawned["cmd"][-1]).endswith("updater.bat")
+        # Дождаться потока ЖЁСТКОГО завершения, пока os._exit ещё подменён.
+        # view спит 1 с и зовёт os._exit(0): к моменту teardown фикстуры
+        # подмена снята — и через секунду после теста НАСТОЯЩИЙ os._exit
+        # убивал процесс pytest с кодом 0. Прогон обрывался на середине
+        # без итогов, а CI видел «зелёный»: проверка целостности релиза
+        # и хвост набора молча не выполнялись.
+        deadline = time.time() + 3
+        while time.time() < deadline and not env["state"]["exited"]:
+            time.sleep(0.05)
+        assert env["state"]["exited"], "view must schedule the hard exit"
 
     def test_stale_zip_is_refused_and_deleted(self, env, tmp_path, monkeypatch):
         client = env["client"]

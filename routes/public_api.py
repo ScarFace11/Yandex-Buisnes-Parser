@@ -1,72 +1,40 @@
-"""
-Public REST API for programmatic access to the parser.
+"""Public REST API for programmatic access to the parser.
 
-Сервер слушает ТОЛЬКО 127.0.0.1 (см. app.run(host="127.0.0.1") в app.py),
-поэтому API доступно с этого же компьютера и ключа не требует: со стороны
-сети наружу ничего не выходит.
+Сервер слушает только 127.0.0.1, поэтому API доступно с этого же компьютера
+и ключа не требует: наружу ничего не выходит.
 
-Endpoints:
-  GET  /api/v1/health        — health check
-  POST /api/v1/search        — start a search job (asynchronous)
-  POST /api/v1/batch         — запустить ПАЧКУ прогонов списком записей
-  GET  /api/v1/batch/<id>    — сводка и прогресс пачки
-  GET  /api/v1/batch/<id>/results — организации всей пачки одним списком
-  GET  /api/v1/runs          — runs of this session (id, статус, файлы)
-  GET  /api/v1/status        — status of one run or the whole queue
-  GET  /api/v1/results       — records as JSON; ?wait=120 дождаться конца,
-                               ?limit=50&offset=0 — страница больших ответов
-  POST /api/v1/stop          — stop a running search (?run_id=…&pause=1)
-  POST /api/v1/skip-city     — skip the current city of a run
-  GET  /api/v1/openapi.json  — OpenAPI-спецификация (для Postman, n8n, кодогенерации)
+    GET  /api/v1/health                  — health check
+    POST /api/v1/search                  — запустить поиск (асинхронно)
+    POST /api/v1/batch                   — ПАЧКА прогонов списком записей
+    GET  /api/v1/batch/<id>              — сводка и прогресс пачки
+    GET  /api/v1/batch/<id>/results      — организации всей пачки списком
+    GET  /api/v1/runs                    — прогоны сеанса (id, статус, файлы)
+    GET  /api/v1/status                  — статус прогона или всей очереди
+    GET  /api/v1/results                 — записи JSON; ?wait=120 дождаться
+                                           конца, ?limit/&offset — страница
+    POST /api/v1/stop                    — остановить/приостановить прогон
+    POST /api/v1/skip-city               — пропустить город прогона
+    GET  /api/v1/openapi.json            — OpenAPI (Postman, n8n, кодогенерация)
 
-Статус прогона (`status`): queued | running | paused | done | failed.
-`failed` приходит вместе с полем `error` — «сломалось» и «ничего не нашлось»
-это разные вещи, и автоматизация должна их различать. У идущих прогонов есть
-`progress` {cities_done, cities_total, records_so_far}.
+Статус прогона: queued | running | paused | done | failed. `failed` приходит
+с полем `error` — «сломалось» и «ничего не нашлось» разные вещи, автоматизации
+их различают. У идущих прогонов есть progress {cities_done, cities_total,
+records_so_far}.
 
-Интеграция с n8n / без опроса: в /search (и в каждой записи /batch) можно
-передать "callback_url" — URL (обычно Webhook-нода n8n). Когда прогон
-завершится, приложение отправит туда POST {event:"run.finished", run_id,
-status, count, files, error, progress}. Опрос /status и /results при этом
-работает как раньше — callback это заменяет, но не обязателен.
+Без опроса: в /search (и в каждой записи /batch) можно передать
+"callback_url" (обычно Webhook-нода n8n) — по завершении туда уйдёт POST
+{event:"run.finished", run_id, status, count, files, error, progress}.
 
-Записи вместо консоли: /batch принимает массив записей-заданий (как строки
-таблицы), первый прогон стартует сразу, остальные встают в очередь, а прогресс
-и результаты пачки забираются двумя адресами — так n8n/Sheets/CRM отдают
-список задач одним запросом, а не набором текста руками.
+Пример (curl):
+    curl -X POST http://127.0.0.1:5000/api/v1/search \
+         -H "Content-Type: application/json" \
+         -d '{"queries": ["кафе"], "cities": ["Москва"], "social_mode": "with_socials"}'
+    → {"ok": true, "queued": false, "run_id": "…", "warnings": []}
 
-Typical automation flow (curl):
-  # 1. Запустить поиск — вернётся run_id, поиск идёт в фоне
-  curl -X POST http://127.0.0.1:5000/api/v1/search \\
-       -H "Content-Type: application/json" \\
-       -d '{"queries": ["кафе"], "cities": ["Москва"], "social_mode": "with_socials"}'
-  → {"ok": true, "queued": false, "run_id": "…", "warnings": []}
+    curl "http://127.0.0.1:5000/api/v1/results?run_id=…&wait=120"
+    → {"status": "done", "count": 137, "files": [...], "results": [...]}
 
-  # 2. Дождаться конца и забрать организации (wait — секунды ожидания)
-  curl "http://127.0.0.1:5000/api/v1/results?run_id=…&wait=120"
-  → {"status": "done", "count": 137, "files": [...], "results": [...]}
-
-  # 3. Пачка записей одним запросом (вместо набора задач по одной)
-  curl -X POST http://127.0.0.1:5000/api/v1/batch \\
-       -H "Content-Type: application/json" \\
-       -d '{"records": [{"query": "кафе", "city": "Москва"},
-                        {"query": "автосервис", "city": "Казань"}]}'
-  → {"ok": true, "batch_id": "…", "count": 2, "runs": [...]}
-  curl "http://127.0.0.1:5000/api/v1/batch/…/results?wait=300"
-
-  # И то же самое из Python
-  import requests
-  BASE = "http://127.0.0.1:5000/api/v1"
-  r = requests.post(f"{BASE}/search", json={"queries": ["кафе"],
-                                            "cities": ["Москва"]}, timeout=30).json()
-  data = requests.get(f"{BASE}/results", params={"run_id": r["run_id"],
-                                                 "wait": 180}, timeout=200).json()
-  for org in data["results"]:
-      print(org["name"], org.get("phone"), org.get("vk"))
-
-Ответ /results — все организации прогона: JSON-файлы разных городов
-склеиваются в один список, дубли по одной организации (сырые и
-обработанные записи) схлопываются, более поздний файл побеждает.
+Готовый пример на Python — в integrations/n8n и в README.
 """
 
 import json
@@ -82,10 +50,7 @@ from run_manager import run_manager, RESULTS_DIR
 
 bp = Blueprint("public_api", __name__, url_prefix="/api/v1")
 
-# Браузерные клиенты (дашборд на другом порту, расширение, страница на
-# localhost) без CORS получают заблокированный запрос ещё до нашего ответа.
-# Разрешаем только loopback-источники: сервер и так слушает 127.0.0.1 и
-# наружу не смотрит, чужие сайты этому API не нужны.
+# Браузерные клиенты (дашборд на другом порту, расширение, страница на localhost) без CORS получают заблокированный запрос ещё до нашего ответа.
 CORS(bp, origins=[r"^https?://(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$"],
      methods=["GET", "POST", "OPTIONS"])
 
@@ -94,14 +59,9 @@ _WAIT_MAX_S = 300
 _WAIT_POLL_S = 0.5
 
 # Сколько записей-заданий принимает одна пачка. Больше — не «жадность»:
-# прогоны встают в очередь и ищут по одному, а мегабайтный список задач
-# в одном запросе только маскирует, что его надо резать на страницы.
 _BATCH_MAX_RECORDS = 200
 
-# Кэш разбора результатов: /results опрашивают каждые несколько секунд, и
-# без кэша каждый запрос заново читал бы десятки мегабайт JSON (50 городов ×
-# 15 страниц). Ключ — прогон/пачка, список файлов и их mtime+размер: файлы
-# не менялись → отдаём разобранное из памяти.
+# Кэш разбора результатов: /results опрашивают каждые несколько секунд, и без кэша каждый запрос заново читал бы десятки мегабайт JSON (50 городов × 15 страниц).
 _RESULTS_CACHE: dict[tuple, tuple[float, list[dict]]] = {}
 _RESULTS_CACHE_TTL_S = 60
 _RESULTS_CACHE_MAX = 8
@@ -109,12 +69,7 @@ _RESULTS_CACHE_MAX = 8
 
 def _int_arg(raw, default: int = 0, lo: int = 0, hi: int | None = None,
              warnings: list | None = None, name: str = "") -> int:
-    """Целое из query-параметра; мусор и выход за границы → значение по умолчанию.
-
-    Если передан список warnings, туда попадает предупреждение: клиент
-    должен видеть, что max_pages=999 приехал как 50, а не молча получить
-    совсем другой прогон.
-    """
+    """Целое из query-параметра; мусор и выход за границы → значение по умолчанию."""
     if raw is None or str(raw).strip() == "":
         return default
     try:
@@ -136,12 +91,7 @@ def _int_arg(raw, default: int = 0, lo: int = 0, hi: int | None = None,
 
 
 def _as_str_list(value) -> list[str]:
-    """Список непустых строк из поля запроса.
-
-    Строка считается ОДНИМ элементом: `"queries": "кафе"` (так часто шлют
-    n8n и обычный curl) раньше разбиралось по буквам — получался список из
-    четырёх «запросов» по одной букве.
-    """
+    """Список непустых строк из поля запроса."""
     if value is None:
         return []
     if isinstance(value, str):
@@ -165,13 +115,7 @@ def _pick_entry(run_id: str) -> dict | None:
 
 
 def _entry_status(entry: dict) -> str:
-    """queued | running | paused | done | failed — статус для автоматизации.
-
-    Порядок проверок важен: entry["active"] снимается только через
-    _FINISH_DELAY (6 с) после сообщения «done», а мост выставляет _done
-    сразу — по одному active клиент видел «running» уже закончившегося
-    прогона, и n8n с wait получал пустой список результатов.
-    """
+    """queued | running | paused | done | failed — статус для автоматизации."""
     if entry.get("error"):
         return "failed"
     if entry.get("queued"):
@@ -184,11 +128,7 @@ def _entry_status(entry: dict) -> str:
 
 
 def _progress_payload(entry: dict) -> dict:
-    """Прогресс прогона: сколько городов пройдено и сколько записей уже есть.
-
-    cities_total по умолчанию берётся из списка городов прогона: счётчик
-    моста появляется только когда движок дошёл до первого города.
-    """
+    """Прогресс прогона: сколько городов пройдено и сколько записей уже есть. cities_total по умолчанию берётся из списка городов прогона: счётчик моста появляется только когда движок дошёл до первого города."""
     total = int(entry.get("cities_total") or 0) or len(entry.get("cities") or [])
     return {
         "cities_done":    int(entry.get("cities_done") or 0),
@@ -198,11 +138,7 @@ def _progress_payload(entry: dict) -> dict:
 
 
 def _canon_url(url: str) -> str:
-    """Канонический вид ссылки: без query/fragment, без хвостового «/», хост в нижнем регистре.
-
-    Дубли одной организации приходят и с `?utm_source=…`, и без него: без
-    нормализации они не схлопывались и в ответе появлялись двумя карточками.
-    """
+    """Канонический вид ссылки: без query/fragment, без хвостового «/», хост в нижнем регистре."""
     raw = str(url or "").strip()
     if not raw:
         return ""
@@ -228,10 +164,7 @@ def _record_key(rec: dict) -> str | None:
 
 
 def _files_fingerprint(files: list[str]) -> tuple:
-    """Отпечаток файлов результатов: имя, mtime и размер.
-
-    По нему кэш понимает, что файлы не менялись, и не перечитывает их.
-    """
+    """Отпечаток файлов результатов: имя, mtime и размер."""
     fp = []
     for rel in files:
         path = os.path.join(RESULTS_DIR, rel)
@@ -289,11 +222,7 @@ def _load_results(files: list[str], cache_key: str = "") -> list[dict]:
 
 
 def _build_params(data: dict, warnings: list) -> tuple[dict, list[str]]:
-    """Параметры прогона из тела запроса — общее для /search и /batch.
-
-    Возвращает (params, errors): непустые errors → ответ 400 с прежними
-    текстами ошибок (обратная совместимость для готовых интеграций).
-    """
+    """Параметры прогона из тела запроса — общее для /search и /batch."""
     errors: list[str] = []
     queries = _as_str_list(data.get("queries"))
     if not queries:
@@ -304,8 +233,6 @@ def _build_params(data: dict, warnings: list) -> tuple[dict, list[str]]:
         errors.append("cities is required (array of strings)")
 
     # callback_url — куда стучаться по завершении прогона (Webhook n8n и т.п.).
-    # Принимаем только http(s)-адрес: это не «локальная опечатка», а защита
-    # от случайной записи файла по мусорной строке внутри приложения.
     callback_url = str(data.get("callback_url") or "").strip()
     if callback_url:
         parsed = urlparse(callback_url)
@@ -332,13 +259,11 @@ def _build_params(data: dict, warnings: list) -> tuple[dict, list[str]]:
         "fetch_detail": bool(data.get("fetch_detail", True)),
         "api_key": data.get("api_key", ""),
         "required_socials": _as_str_list(data.get("required_socials")),
-        # Не в params-боевом ключе конфига — свой параметр API; runner его
-        # игнорирует, а _fire_api_callback читает именно отсюда (см. run_manager).
+        # Не в params-боевом ключе конфига — свой параметр API; runner его игнорирует, а _fire_api_callback читает именно отсюда (см. run_manager).
         "callback_url": callback_url,
     }
 
-    # Output formats: явный пустой список означает «файлов не надо», поэтому
-    # подменяем значение по умолчанию только когда поля в запросе нет.
+    # Output formats: явный пустой список означает «файлов не надо», поэтому подменяем значение по умолчанию только когда поля в запросе нет.
     if data.get("output_formats") is None:
         formats = ["excel", "json"]
     else:
@@ -362,12 +287,7 @@ def _build_params(data: dict, warnings: list) -> tuple[dict, list[str]]:
 
 
 def _wait_for_run(entry: dict, wait: int) -> None:
-    """Дождаться конца прогона (не дольше wait секунд).
-
-    Проверяем _done, а не только active: active снимается лишь через
-    _FINISH_DELAY (6 с) после конца прогона — иначе запрос «догонял» бы
-    «running» у уже закончившегося поиска и отдавал пустой список.
-    """
+    """Дождаться конца прогона (не дольше wait секунд)."""
     deadline = time.monotonic() + wait
     while time.monotonic() < deadline:
         if entry.get("_done") or _entry_status(entry) not in ("queued", "running"):
@@ -445,29 +365,7 @@ def health():
 
 @bp.route("/search", methods=["POST"])
 def search():
-    """Start a search job.
-
-    Request body:
-    {
-        "queries": ["кафе", "ресторан"],      // required
-        "cities": ["Москва", "Санкт-Петербург"], // required
-        "social_mode": "with_socials",          // optional STAGE-2 filter:
-        //   all|with_socials|without_socials — applied to the raw records,
-        //   so a different slice needs no re-crawl (collection keeps all)
-        "required_socials": ["vk"],             // optional: business must have ALL of them
-        "fetch_detail": true,                   // optional: collect socials from cards
-        "max_pages": 15,                        // optional: 1-50
-        "max_workers": 10,                      // optional: 1-20
-        "output_formats": ["excel", "json"],    // optional
-        "callback_url": "https://n8n.host/webhook/…", // optional: POST по завершении
-        "api_key": "your-api-key"               // optional: override config key
-    }
-
-    Ответ: {"ok", "queued", "run_id", "position"?, "warnings": [...]}.
-    warnings — то, что пришлось поправить в запросе (например
-    "max_pages=999 clamped to 50"): клиент не должен узнать об этом по
-    результатам другого прогона.
-    """
+    """Start a search job."""
     data = request.get_json(force=True) or {}
     if not isinstance(data, dict):
         return jsonify({"error": "request body must be a JSON object"}), 400
@@ -508,28 +406,7 @@ def search():
 
 @bp.route("/batch", methods=["POST"])
 def batch():
-    """Запустить пачку прогонов списком записей — «воркфлоу с записями».
-
-    Вместо набора задач по одной (в консоли или руками в конструкторе)
-    автоматизация присылает СПИСОК записей — как строки таблицы: одна
-    запись = один прогон. Первый стартует сразу, остальные встают в
-    очередь (движок ищет по одному прогону за раз), поэтому ответ приходит
-    сразу, а прогресс и результаты пачки забираются по batch_id.
-
-    Тело:
-    {
-      "records": [                                   // required, ≤ 200 записей
-        {"queries": ["кафе"], "cities": ["Москва"]},  // полная форма
-        {"query": "автосервис", "city": "Казань"},    // короткая форма
-        {"queries": ["стоматология"], "cities": ["Казань", "Самара"]}
-      ],
-      "defaults": {"max_pages": 5, "social_mode": "all"},   // общее для всех
-      "callback_url": "https://n8n.host/webhook/…"          // событие на каждый прогон
-    }
-
-    Валидация — «всё или ничего»: если хоть одна запись неверна, ни один
-    прогон не запускается, а в ответе перечислены все проблемные адреса.
-    """
+    """Запустить пачку прогонов списком записей — «воркфлоу с записями»."""
     data = request.get_json(force=True) or {}
     if not isinstance(data, dict):
         return jsonify({"error": "request body must be a JSON object"}), 400
@@ -552,7 +429,6 @@ def batch():
                          or defaults.get("callback_url") or "").strip()
 
     # Сначала собираем и проверяем ВСЕ записи, и только потом запускаем:
-    # ошибка в пятой записи не должна запускать первые четыре.
     prepared: list[tuple[int, dict, list]] = []
     all_warnings: list[str] = []
     all_errors: list[str] = []
@@ -574,8 +450,7 @@ def batch():
         if errors:
             all_errors.extend(f"records[{idx}]: {e}" for e in errors)
             continue
-        # Предупреждения нумеруем: в пачке важно, к какой записи относится
-        # «max_pages=999 clamped to 50».
+        # Предупреждения нумеруем: в пачке важно, к какой записи относится «max_pages=999 clamped to 50».
         all_warnings.extend(f"records[{idx}]: {w}" for w in rec_warnings)
         prepared.append((idx, params, rec_warnings))
 
@@ -588,9 +463,7 @@ def batch():
     for idx, params, rec_warnings in prepared:
         params["batch_id"] = batch_id
         params["batch_index"] = idx
-        # Свободен ли движок — смотрим ДО создания записи: new_run() помечает
-        # новую запись активной, и она заняла бы сама себя (первая запись
-        # пачки тогда встала бы в очередь к самой себе и никогда не стартовала).
+        # Свободен ли движок — смотрим ДО создания записи: new_run() помечает новую запись активной, и она заняла бы сама себя (первая запись пачки тогда встала бы в очередь к самой себе и никогда не стартовала).
         busy = run_manager.active_run_id()
         entry = run_manager.new_run()
         entry["params"] = params
@@ -626,11 +499,7 @@ def batch():
 
 @bp.route("/batch/<batch_id>", methods=["GET"])
 def batch_status(batch_id):
-    """Сводка по пачке: статус и прогресс каждого прогона + общий прогресс.
-
-    Query params:
-      wait — сколько секунд ждать конца всей пачки (0…300)
-    """
+    """Сводка по пачке: статус и прогресс каждого прогона + общий прогресс."""
     wait = _int_arg(request.args.get("wait"), 0, 0, _WAIT_MAX_S)
     entries = _batch_entries(batch_id)
     if not entries:
@@ -654,8 +523,7 @@ def batch_status(batch_id):
         "done":     statuses.count("done"),
         "failed":   statuses.count("failed"),
         "progress": progress,
-        # Ошибки отдельным списком: по ним сразу видно, какие записи упали
-        # и почему, не разбирая runs.
+        # Ошибки отдельным списком: по ним сразу видно, какие записи упали и почему, не разбирая runs.
         "errors": [{"index": (e.get("params") or {}).get("batch_index"),
                     "run_id": e.get("id", ""),
                     "error": e.get("error")} for e in entries if e.get("error")],
@@ -665,13 +533,7 @@ def batch_status(batch_id):
 
 @bp.route("/batch/<batch_id>/results", methods=["GET"])
 def batch_results(batch_id):
-    """Организации всей пачки одним списком (склейка городов, без дублей).
-
-    Query params:
-      wait   — дождаться конца всех прогонов пачки (0…300)
-      limit  — максимум записей в ответе (0 = все)
-      offset — сколько записей пропустить
-    """
+    """Организации всей пачки одним списком (склейка городов, без дублей)."""
     wait = _int_arg(request.args.get("wait"), 0, 0, _WAIT_MAX_S)
     limit = _int_arg(request.args.get("limit"), 0, 0)      # 0 = без лимита
     offset = _int_arg(request.args.get("offset"), 0, 0)
@@ -703,24 +565,13 @@ def batch_results(batch_id):
 
 @bp.route("/runs", methods=["GET"])
 def runs():
-    """Runs of this session: id, статус, города и файлы.
-
-    По run_id из ответа дальше спрашивается /status и /results.
-    """
+    """Runs of this session: id, статус, города и файлы."""
     return jsonify({"runs": run_manager.list_runs()})
 
 
 @bp.route("/status", methods=["GET"])
 def status():
-    """Get status of a run or all runs.
-
-    Query params:
-      run_id — optional, specific run to check
-
-    Ответ по прогону: run_id, active, queued, status, cities, files,
-    started_at + count, error, progress, finished_at. `error` заполнен у
-    status="failed", progress — у идущих прогонов.
-    """
+    """Get status of a run or all runs."""
     run_id = request.args.get("run_id", "")
     if run_id:
         entry = run_manager.get(run_id)
@@ -744,22 +595,7 @@ def status():
 
 @bp.route("/results", methods=["GET"])
 def results():
-    """Get the organisations of a run as JSON.
-
-    Query params:
-      run_id — optional; без него берётся активный/стоящий в очереди прогон
-      wait   — сколько секунд ждать конца прогона (0…300, по умолчанию 0):
-               запрос «висит», пока поиск идёт, и отдаёт готовые записи
-      limit  — максимум записей в ответе (0 = все, по умолчанию)
-      offset — сколько записей пропустить (для страниц больших ответов)
-
-    Ответ: {run_id, status, count, total, offset, limit, files, error,
-    progress, results}.
-    status — queued | running | paused | done | failed; count — записей в
-    ЭТОМ ответе, total — всего после склейки и схлопывания дублей;
-    results — страница организаций всех JSON-файлов прогона. У failed в
-    error лежит причина, а results пуст: это не «ничего не найдено».
-    """
+    """Get the organisations of a run as JSON."""
     run_id = request.args.get("run_id", "")
     wait = _int_arg(request.args.get("wait"), 0, 0, _WAIT_MAX_S)
     limit = _int_arg(request.args.get("limit"), 0, 0)      # 0 = без лимита
@@ -795,12 +631,7 @@ def results():
 
 @bp.route("/stop", methods=["POST"])
 def stop():
-    """Stop a running search.
-
-    Query params:
-      run_id — optional, specific run to stop
-      pause  — 1: не стоп, а пауза (прогон можно будет продолжить)
-    """
+    """Stop a running search."""
     run_id = request.args.get("run_id", "")
     pause = bool(_int_arg(request.args.get("pause"), 0, 0, 1))
     run_manager.stop_run(run_id, pause=pause)
@@ -809,11 +640,7 @@ def stop():
 
 @bp.route("/skip-city", methods=["POST"])
 def skip_city():
-    """Skip the current city in a multi-city run.
-
-    Query params:
-      run_id — optional
-    """
+    """Skip the current city in a multi-city run."""
     run_id = request.args.get("run_id", "")
     info = run_manager.skip_city_info(run_id)
     run_manager.skip_city(run_id)
@@ -826,10 +653,6 @@ def skip_city():
 
 
 # ── OpenAPI ────────────────────────────────────────────────────────
-# Спецификация отдаётся самим приложением, чтобы сторонние инструменты
-# (Postman, n8n «Import from OpenAPI», генераторы клиентов) могли подключиться
-# без ручного описания. Порт может отличаться (5000/5010/5050) — в servers
-# указан дефолт, а в описании сказано смотреть консоль при старте.
 
 def _openapi_spec() -> dict:
     """OpenAPI 3.0-описание /api/v1 — держится рядом с кодом эндпоинтов."""

@@ -1,6 +1,4 @@
-"""
-Checkpoint / resume: save and restore parser progress across runs.
-"""
+"""Checkpoint / resume: save and restore parser progress across runs."""
 import json
 import os
 
@@ -55,9 +53,6 @@ def clear_checkpoint(base: str) -> None:
 
 
 # ── Global seen-store ─────────────────────────────────────────
-# Unlike the per-base checkpoint, this one persists across ALL runs and all
-# output files, so re-running the parser (e.g. from the web UI, which always
-# uses a fresh timestamped filename) never touches a business twice.
 
 def _global_seen_path() -> str:
     return os.path.join(state.OUTPUT_DIR, "_seen.json")

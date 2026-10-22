@@ -8,12 +8,14 @@ import shutil
 import subprocess
 import sys
 import time
+from collections import OrderedDict
 from datetime import date, datetime, timedelta
 
 from flask import Blueprint, request, Response, send_from_directory, jsonify
 
-# OUTPUT_DIR — служебные файлы приложения (отметки, маркер текущего поиска),
-# RESULTS_DIR — папка результатов (raw/processed/_archive), настраиваемая.
+from .json_body import json_body as _json_body
+
+# OUTPUT_DIR — служебные файлы приложения (отметки, маркер текущего поиска), RESULTS_DIR — папка результатов (raw/processed/_archive), настраиваемая.
 try:
     import paths as _paths
     OUTPUT_DIR = _paths.output_dir()
@@ -26,25 +28,9 @@ REVIEWED_FILE = os.path.join(OUTPUT_DIR, "_reviewed.json")
 bp = Blueprint("api", __name__)
 
 
-def _json_body() -> dict:
-    """JSON body of a request — including the beacon form.
-
-    `navigator.sendBeacon` (used when the tab closes, so the reviewed marks
-    are not lost) may arrive as text/plain; Flask then leaves get_json()
-    empty, and the request would silently fall back to the default view.
-    """
-    data = request.get_json(silent=True)
-    if isinstance(data, dict):
-        return data
-    raw = request.get_data(as_text=True) or ""
-    if raw.strip():
-        try:
-            parsed = json.loads(raw)
-            if isinstance(parsed, dict):
-                return parsed
-        except Exception:
-            pass
-    return {}
+def _fail(exc: Exception) -> tuple:
+    """Ответ «операция не выполнилась» с текстом причины (500)."""
+    return jsonify({"ok": False, "error": str(exc)}), 500
 
 
 def _load_reviewed() -> dict:
@@ -58,13 +44,7 @@ def _load_reviewed() -> dict:
 
 
 def _backup_reviewed() -> None:
-    """Тихая дневная копия отметок в output/_backup/ (последние 7 дней).
-
-    _reviewed.json — вся работа по разбору результатов: его потеря
-    (сбой диска, случайное удаление output/) невосстановима. Копия пишется
-    не чаще раза в день при каждой записи отметок и никогда не ломает
-    основной запрос: сбой бэкапа не должен отменять отметку.
-    """
+    """Тихая дневная копия отметок в output/_backup/ (последние 7 дней). _reviewed.json — вся работа по разбору результатов: его потеря (сбой диска, случайное удаление output/) невосстановима."""
     try:
         bdir = os.path.join(OUTPUT_DIR, "_backup")
         os.makedirs(bdir, exist_ok=True)
@@ -95,24 +75,12 @@ def _save_reviewed(data: dict):
 
 
 def _mark(key: str, ts: float | None = None) -> dict:
-    """Значение отметки «просмотрено» — с моментом отметки.
-
-    Раньше значением было `true`, и дата отметки нигде не сохранялась: по
-    ней нельзя было построить динамику («сколько просмотрено за день»).
-    Формат — `{"reviewed_at": <unix>}`; старые `true` читаются как раньше
-    (любой непустой объект истинен), просто без даты.
-    """
+    """Значение отметки «просмотрено» — с моментом отметки."""
     return {"reviewed_at": float(ts if ts is not None else time.time())}
 
 
 def _reviewed_ts(value) -> float:
-    """Момент отметки из значения `_reviewed.json`; 0.0 — даты нет.
-
-    Порядок ключей — от нового формата к переносам из других сборок:
-    `reviewed_at` → `updated_at` (так поле называется в выгрузках) → `at`/`ts`.
-    Легаси-значение `true` даты не несёт, и выдумывать её нельзя: такая
-    отметка в график не попадает.
-    """
+    """Момент отметки из значения `_reviewed.json`; 0.0 — даты нет."""
     if isinstance(value, dict):
         for k in ("reviewed_at", "updated_at", "at", "ts"):
             try:
@@ -128,11 +96,7 @@ def _reviewed_ts(value) -> float:
 
 
 def _set_mark(rev: dict, key: str, marked: bool) -> bool:
-    """Пометить/снять отметку. Возвращает True, если состояние изменилось.
-
-    Повторная отметка дату НЕ сдвигает: двойной клик по чекбоксу не должен
-    «переносить» запись из дня первого просмотра в сегодняшний.
-    """
+    """Пометить/снять отметку."""
     if marked:
         if rev.get(key):
             return False
@@ -151,19 +115,12 @@ def index():
 
 
 # ── Пользовательское соглашение ──────────────────────────────
-# 2.0: полный текст пользовательского соглашения (21 раздел + FAQ) вместо
-# краткого изложения — новая редакция, поэтому она спрашивается заново.
 TERMS_VERSION = "2.0"
 
 
 @bp.route("/terms/status")
 def terms_status():
-    """Принято ли пользовательское соглашение текущей версии.
-
-    Хранится в settings.json (ключ terms) — переживает смену браузера,
-    в отличие от localStorage.
-    Reply: {accepted: bool, version: str}
-    """
+    """Принято ли пользовательское соглашение текущей версии."""
     import paths as _paths
     terms = (_paths.load_settings().get("terms") or {})
     accepted = (terms.get("accepted") is True
@@ -260,16 +217,10 @@ def set_reviewed():
 
 # ═══════════════════════════════════════════════════════════
 #  Экспорт / импорт пользовательских данных (отметки + настройки)
-# ═══════════════════════════════════════════════════════════
 
 @bp.route("/data/export")
 def data_export():
-    """Zip с отметками «просмотрено» и настройками (включая шаблоны).
-
-    Перенос работы между машинами или запасная копия руками. Файлы
-    результатов не включаются: они большие и их можно выгрузить из
-    «Истории файлов» по одному.
-    """
+    """Zip с отметками «просмотрено» и настройками (включая шаблоны)."""
     import zipfile
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -293,17 +244,7 @@ def data_export():
 
 @bp.route("/data/import", methods=["POST"])
 def data_import():
-    """Импорт zip из /data/export и /settings/export: отметки, настройки,
-    настройки вкладок.
-
-    Файлы берутся только из архива (пути внутри игнорируются), отметки
-    объединяются с существующими: отметка ставится, если её ещё нет, —
-    импорт не может стереть работу, сделанную после экспорта. Настройки
-    замещают ключи целиком (это состояние, а не журнал). Существующий
-    settings.json копируется в _backup перед записью. browser.json —
-    настройки вкладок (localStorage) из «Экспорта настроек»: они не
-    пишутся на сервере, а возвращаются интерфейсу для применения.
-    """
+    """Импорт zip из /data/export и /settings/export: отметки, настройки, настройки вкладок."""
     import zipfile
     file = request.files.get("file")
     if not file or not file.filename:
@@ -366,7 +307,6 @@ def data_import():
             return jsonify({"ok": False,
                             "error": "browser.json в архиве повреждён"}), 400
         # Архив — присланный файл, чужим ключам localStorage не верим:
-        # только свои (yp_) и только строки.
         imported["browser"] = {
             str(k): v for k, v in incoming.items()
             if isinstance(k, str) and k.startswith("yp_") and isinstance(v, str)
@@ -400,8 +340,7 @@ def download(filename):
 
 @bp.route("/download-zip")
 def download_zip():
-    """Bundle several output files into one ZIP archive on the fly.
-    Usage: /download-zip?files=name1.xlsx|name2.json (| separated)."""
+    """Bundle several output files into one ZIP archive on the fly."""
     import zipfile
     from flask import send_file
     raw = request.args.get("files", "")
@@ -429,11 +368,7 @@ def download_zip():
 
 @bp.route("/save-api-keys", methods=["POST"])
 def save_api_keys():
-    """Save VK_TOKEN to .env and hot-reload it.
-
-    Ключа Яндекса в приложении больше нет: поиск, координаты города и
-    карточки организаций читает браузер, платные API не используются.
-    """
+    """Save VK_TOKEN to .env and hot-reload it."""
     data = request.get_json(force=True) or {}
     return _write_env_keys({
         "VK_TOKEN": data.get("vk_token", ""),
@@ -441,13 +376,10 @@ def save_api_keys():
 
 
 def _write_env_keys(keys: dict):
-    """Write the given non-empty KEY=value pairs into .env (create/replace
-    per key), reload them into config so a restart isn't needed.
-    Returns a Flask response."""
+    """Write the given non-empty KEY=value pairs into .env (create/replace per key), reload them into config so a restart isn't needed."""
     from pathlib import Path
 
-    # Sanitize: strip quotes/whitespace, forbid characters that would corrupt
-    # the 'KEY = "value"' line format (quotes, #, newlines).
+    # Sanitize: strip quotes/whitespace, forbid characters that would corrupt the 'KEY = "value"' line format (quotes, #, newlines).
     import re as _re_sanitize
     clean = {}
     for env_name, raw in keys.items():
@@ -506,8 +438,7 @@ def _write_env_keys(keys: dict):
         try:
             from yandex_maps_parser import vk_stats
             if "VK_TOKEN" in clean:
-                # Токен уже прочитан модулем при импорте — без этого он
-                # вступит в силу только после перезапуска приложения.
+                # Токен уже прочитан модулем при импорте — без этого он вступит в силу только после перезапуска приложения.
                 vk_stats.reload_token()
         except Exception:
             pass
@@ -516,7 +447,7 @@ def _write_env_keys(keys: dict):
         return jsonify({"ok": True, "message": f"Сохранено в {env_path.name}: {saved}",
                         "path": str(env_path)})
     except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
+        return _fail(exc)
 
 
 @bp.route("/export-filtered", methods=["POST"])
@@ -525,16 +456,11 @@ def export_filtered():
     from openpyxl.styles import Font, PatternFill, Alignment
     from yandex_maps_parser.social_normalize import normalize_record
     data = request.get_json(force=True) or {}
-    # Та же нормализация, что в save_csv/save_excel: выборка выгружается
-    # теми же каноническими значениями (без дублей телефонов, с рабочим
-    # wa.me и единым доменом vk.com), что и полные файлы.
+    # Та же нормализация, что в save_csv/save_excel: выборка выгружается теми же каноническими значениями (без дублей телефонов, с рабочим wa.me и единым доменом vk.com), что и полные файлы.
     rows = [normalize_record(r) for r in data.get("rows", [])]
     fmt  = data.get("format", "csv")
 
     # Колонки повторяют таблицу результатов: тот же порядок, те же названия.
-    # «Сайт / Таплинк» — это ключ aggregator_url (обычный сайт и taplink
-    # сливаются в одну колонку нормализацией выше), «Рейтинг»/«Отзывов» —
-    # данные карточки Яндекс.Карт.
     HEADERS = ["#", "✓ Просмотрено", "Название", "Категория", "Адрес", "Телефон",
                "Рейтинг", "Отзывов",
                "VK", "Instagram", "Telegram", "WhatsApp",
@@ -544,8 +470,7 @@ def export_filtered():
               "vk", "instagram", "telegram", "whatsapp",
               "aggregator_url", "yandex_maps_url", "query"]
 
-    # Marks live in _reviewed.json — merge them into the export so the
-    # «Просмотрено» column is never empty (mirrors the table checkboxes).
+    # Marks live in _reviewed.json — merge them into the export so the «Просмотрено» column is never empty (mirrors the table checkboxes).
     _rev = _load_reviewed()
 
     def _val(row, f):
@@ -639,11 +564,7 @@ def download_log(filename):
 
 @bp.route("/api-keys/status")
 def api_keys_status():
-    """Which API keys are configured (.env / config) — for the sidebar badge.
-
-    Единственный ключ — токен ВКонтакте (проверка активности сообществ).
-    Returns booleans only, never the keys themselves.
-    """
+    """Which API keys are configured (.env / config) — for the sidebar badge."""
     from config import VK_TOKEN
     vk = (VK_TOKEN or "").strip()
     try:
@@ -748,14 +669,9 @@ def seen_status():
 
 # ═══════════════════════════════════════════════════════════════
 #  Two-stage pipeline: raw / processed views + re-filtering
-# ═══════════════════════════════════════════════════════════════
 
 def _results_dir() -> str:
-    """Папка результатов, куда пишут raw/processed/_archive.
-
-    Значение актуализирует paths.refresh_output_dirs() — он же вызывается
-    после смены настройки «Папка для сохранения» и на границе города.
-    """
+    """Папка результатов, куда пишут raw/processed/_archive."""
     return RESULTS_DIR
 
 
@@ -838,8 +754,7 @@ def _unique_path(path: str) -> str:
         i += 1
 
 
-# Only these top-level folders under output/ may be read, archived or deleted
-# through the file browser / results routes.
+# Only these top-level folders under output/ may be read, archived or deleted through the file browser / results routes.
 _PUBLIC_DIRS = ("raw", "processed", "_archive")
 
 SOCIAL_KEYS = ("vk", "telegram", "whatsapp", "instagram")
@@ -850,11 +765,15 @@ VIEWS = ("raw", "processed", "all")
 _REC_CACHE: dict = {}
 _REC_CACHE_MAX = 512
 
+# Разобранные записи файлов: самый дорогой шаг чтения (xlsx на тысячи строк).
+# Ключ — тот же отпечаток файла, поэтому правка файла сама вытесняет старую запись.
+_RECORDS_CACHE: "OrderedDict[tuple, list]" = OrderedDict()
+_RECORDS_CACHE_MAX_FILES = 24
+_RECORDS_CACHE_MAX_RECORDS = 20000
+
 
 def _safe_output_file(rel: str) -> str | None:
-    """Resolve a client-given relative path to a real file inside output/{raw,
-    processed,_archive}. Returns None for anything else (traversal, absolute
-    paths, internal files like _seen.json, other top-level folders)."""
+    """Resolve a client-given relative path to a real file inside output/{raw, processed,_archive}."""
     rel = (rel or "").strip().replace("\\", "/")
     if not rel or rel.startswith("/") or ".." in rel.split("/"):
         return None
@@ -868,17 +787,38 @@ def _safe_output_file(rel: str) -> str | None:
     return full
 
 
+def _view_scope(src, *, strict: bool = False):
+    """(view, scope, error) из query/JSON. `strict` — неизвестный view это ошибка 400, иначе откат на raw."""
+    view = str(src.get("view") or "raw").lower()
+    error = None
+    if view not in VIEWS:
+        if strict:
+            error = (jsonify({"error": "invalid view"}), 400)
+        view = "raw"
+    scope = str(src.get("scope") or "current").lower()
+    if scope not in ("current", "all"):
+        scope = "current"
+    return view, scope, error
+
+
+def _output_file(src, key: str = "file"):
+    """(rel, full, error): путь из запроса, если он ведёт к файлу внутри папки результатов."""
+    rel = str(src.get(key) or "").strip() or None
+    if not rel:
+        return None, None, None
+    full = _safe_output_file(rel)
+    if not full:
+        return None, None, (jsonify({"error": "file not found"}), 404)
+    return rel, full, None
+
+
 def _rel_output(path: str) -> str:
     """Posix-style path relative to the results folder (for the API + UI)."""
     return os.path.relpath(path, _results_dir()).replace(os.sep, "/")
 
 
 def _review_key(rec: dict) -> str:
-    """Stable identity of a record for the «просмотрено» mark.
-
-    Card URL first, then a name|city|address composite for rows without a
-    card. Mirrored by reviewKey() in static/js/05-results-bulk.js — keep in sync.
-    """
+    """Stable identity of a record for the «просмотрено» mark."""
     for field in ("yandex_maps_url",):
         val = str(rec.get(field) or "").strip()
         if val:
@@ -914,6 +854,35 @@ def _read_records_file(path: str) -> list:
         return []
 
 
+def _read_records_cached(path: str) -> list:
+    """Записи файла с кэшем по отпечатку (path, mtime, size)."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return []
+    key = (os.path.abspath(path), st.st_mtime_ns, st.st_size)
+    hit = _RECORDS_CACHE.get(key)
+    if hit is not None:
+        _RECORDS_CACHE.move_to_end(key)
+        return hit
+    recs = _read_records_file(path)
+    _RECORDS_CACHE[key] = recs
+    # Держим и число файлов, и общее число записей: один огромный xlsx не
+    # должен занимать память двадцатью копиями.
+    total = sum(len(v) for v in _RECORDS_CACHE.values())
+    while _RECORDS_CACHE and (len(_RECORDS_CACHE) > _RECORDS_CACHE_MAX_FILES
+                              or total > _RECORDS_CACHE_MAX_RECORDS):
+        _old_key, old = _RECORDS_CACHE.popitem(last=False)
+        total -= len(old)
+    return recs
+
+
+def _clear_file_caches() -> None:
+    """Сбросить счётчики и разобранные записи файлов (файлы изменились)."""
+    _REC_CACHE.clear()
+    _RECORDS_CACHE.clear()
+
+
 def _count_records(path: str) -> int | None:
     """Row count of a results file, cached by (path, mtime, size)."""
     try:
@@ -930,19 +899,27 @@ def _count_records(path: str) -> int | None:
                 data = json.load(fh)
             n: int | None = len(data) if isinstance(data, list) else 0
         elif low.endswith(".xlsx"):
-            # Validate the workbook first: _records_from_xlsx swallows read
-            # errors, so a corrupt/partial file would otherwise look like an
-            # empty table instead of a problem the user should see.
+            # Validate the workbook first: _records_from_xlsx swallows read errors, so a corrupt/partial file would otherwise look like an empty table instead of a problem the user should see.
             with open(path, "rb") as fh:
                 if fh.read(2) != b"PK":
                     raise ValueError("не похоже на xlsx")
             import openpyxl
+            from yandex_maps_parser.exporters import _LABEL_TO_FIELD
+
+            # Считаем строки потоком, не собирая записи: раньше здесь файл
+            # разбирался целиком ради одного числа.
             wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
             try:
-                next(wb.active.iter_rows(values_only=True))
+                rows = wb.active.iter_rows(values_only=True)
+                header = [str(c or "").strip() for c in next(rows)]
+                fields = [_LABEL_TO_FIELD.get(h, h) for h in header]
+                keys = [i for i, f in enumerate(fields)
+                        if f in ("name", "yandex_maps_url")]
+                n = sum(1 for row in rows
+                        if any(row[i] is not None and str(row[i]).strip()
+                               for i in keys if i < len(row)))
             finally:
                 wb.close()
-            n = len(_read_records_file(path))
         else:  # csv — header + data lines
             with open(path, encoding="utf-8", errors="ignore") as fh:
                 n = max(0, sum(1 for _ in fh) - 1)
@@ -965,12 +942,7 @@ _CURRENT_SEARCH_FILE = ".current_search.json"
 
 
 def _current_search() -> dict:
-    """{run_id, started_at, cities, queries} of the current (last) search.
-
-    Empty dict when this installation never ran a search (first launch of the
-    .exe, files copied into output/ by hand). Callers then fall back to the
-    whole folder so nothing disappears from the UI.
-    """
+    """{run_id, started_at, cities, queries} of the current (last) search."""
     try:
         with open(os.path.join(OUTPUT_DIR, _CURRENT_SEARCH_FILE), encoding="utf-8") as fh:
             data = json.load(fh)
@@ -989,13 +961,7 @@ def _file_mtime(path: str) -> float:
 
 
 def _view_files(view: str, scope: str = "current") -> list[str]:
-    """Absolute paths of every file backing a results view (raw / processed).
-
-    scope="current" (default) keeps only the files of the current search —
-    everything written after it started, so a later «Применить фильтры заново»
-    is included too. Older searches stay reachable through «История файлов»
-    (open a single file) or `scope=all`.
-    """
+    """Absolute paths of every file backing a results view (raw / processed). scope="current" (default) keeps only the files of the current search — everything written after it started, so a later «Применить фильтры заново» is included too."""
     out: list[str] = []
     if view in ("raw", "all"):
         raw_d = _raw_dir()
@@ -1020,12 +986,10 @@ def _view_files(view: str, scope: str = "current") -> list[str]:
 
 # ═══════════════════════════════════════════════════════════════
 #  «Динамика по дням» — дашборд вкладки «Статистика»
-# ═══════════════════════════════════════════════════════════════
 
 # Дата в имени raw-файла: raw_2026-09-26_14-30_кафе_москва.xlsx
 _DATE_IN_NAME = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
-# Дата и время в имени raw-файла (имя пишет RunManager в момент старта
-# поиска): час из него — источник почасового графика «Сегодня».
+# Дата и время в имени raw-файла (имя пишет RunManager в момент старта поиска): час из него — источник почасового графика «Сегодня».
 _DATETIME_IN_NAME = re.compile(r"(\d{4})-(\d{2})-(\d{2})[ _T](\d{2})-(\d{2})")
 
 DAILY_DEFAULT_DAYS = 7
@@ -1034,13 +998,7 @@ DAILY_MAX_SPAN = 366       # предел для явного периода (с
 
 
 def _file_parse_date(path: str) -> str | None:
-    """День, к которому относится файл результатов, в виде YYYY-MM-DD.
-
-    У raw-файлов дата есть прямо в имени. У processed её нет
-    (`кафе_казань_filtered.xlsx`) — такие (и любые скопированные руками)
-    файлы датируются временем изменения: иначе день, за который они собраны,
-    из графика просто выпал бы.
-    """
+    """День, к которому относится файл результатов, в виде YYYY-MM-DD."""
     m = _DATE_IN_NAME.search(os.path.basename(path))
     if m:
         try:
@@ -1054,11 +1012,7 @@ def _file_parse_date(path: str) -> str | None:
 
 
 def _all_result_files() -> list[str]:
-    """Файлы результатов для графика: raw/, processed/ и архив.
-
-    Архив тоже: файлы прошлых дней переезжают в `_archive/<дата>`, и без них
-    график «забывал» бы вчерашний день сразу после архивации.
-    """
+    """Файлы результатов для графика: raw/, processed/ и архив."""
     out = list(_view_files("all", scope="all"))
     arch = _archive_root()
     if os.path.isdir(arch):
@@ -1074,12 +1028,7 @@ def _is_raw_file(path: str) -> bool:
 
 
 def _file_parse_hour(path: str) -> int | None:
-    """Час запуска поиска (0–23) из имени raw-файла; None, если часа нет.
-
-    У processed-файлов времени в имени нет, а mtime — время фильтрации, а не
-    поиска, поэтому почасовой ряд честно строится только по raw: дата и
-    время поиска всегда есть в их имени. 14:01 и 14:50 — оба в колонку «14».
-    """
+    """Час запуска поиска (0–23) из имени raw-файла; None, если часа нет."""
     if not _is_raw_file(path):
         return None
     m = _DATETIME_IN_NAME.search(os.path.basename(path))
@@ -1094,15 +1043,7 @@ def _file_parse_hour(path: str) -> int | None:
 
 
 def _daily_found_in_window(window: set[str]) -> dict[str, dict]:
-    """Сколько организаций найдено в каждый день окна: {день: {found, files}}.
-
-    raw и processed содержат ОДНИ И ТЕ ЖЕ организации — processed это уже
-    отфильтрованные raw, — поэтому их нельзя складывать: число удвоилось бы.
-    За день отвечают raw-файлы; processed берётся только тогда, когда raw за
-    этот день уже нет (архив, ручная чистка папки). Внутри processed/json и
-    processed/excel лежат два экспорта одних и тех же записей, так что из
-    подпапок берётся большая, а не их сумма.
-    """
+    """Сколько организаций найдено в каждый день окна: {день: {found, files}}. raw и processed содержат ОДНИ И ТЕ ЖЕ организации — processed это уже отфильтрованные raw, — поэтому их нельзя складывать: число удвоилось бы."""
     raw: dict[str, dict] = {}
     proc: dict[str, dict[str, dict]] = {}
     for path in _all_result_files():
@@ -1129,17 +1070,7 @@ def _daily_found_in_window(window: set[str]) -> dict[str, dict]:
 
 
 def _daily_hours_for_day(day: str) -> list[dict] | None:
-    """Почасовой ряд за один день: 24 корзины {hour, found, files, reviewed}.
-
-    Считается по raw-файлам этого дня: час берётся из имени
-    (`raw_2026-09-30_14-01_…` → колонка «14»), строки — _count_records.
-    processed-файлы не участвуют: времени поиска у них в имени нет. Дни без
-    единого файла с часом возвращают None — интерфейс рисует обычный
-    дневной столбец, а не пустые сутки.
-
-    «Просмотрено» раскладывается по часам по времени отметки из
-    `_reviewed.json` (reviewed_at); легаси-значения без даты не участвуют.
-    """
+    """Почасовой ряд за один день: 24 корзины {hour, found, files, reviewed}."""
     found: dict[int, dict] = {}
     seen = 0
     for path in _all_result_files():
@@ -1181,13 +1112,7 @@ def _daily_hours_for_day(day: str) -> list[dict] | None:
 
 
 def _daily_reviewed_in_window(window: set[str]) -> tuple[dict[str, int], int]:
-    """Сколько отметок «просмотрено» сделано в каждый день окна.
-
-    Считаются только отметки с датой (новый формат `_reviewed.json`).
-    Легаси-значения `true` даты не несут — выдумывать её нельзя, поэтому
-    они в графике не участвуют; их число возвращается вторым значением,
-    чтобы интерфейс мог объяснить «просмотрено 0» при сотне отмеченных строк.
-    """
+    """Сколько отметок «просмотрено» сделано в каждый день окна."""
     out = {d: 0 for d in window}
     undated = 0
     for value in _load_reviewed().values():
@@ -1224,19 +1149,7 @@ def _month_start(value) -> date | None:
 
 
 def _daily_window(days=None, month=None, start=None, end=None) -> tuple[list[str], bool, str]:
-    """Окно графика: список дат, признак обрезки и режим периода.
-
-    Три способа задать период, в порядке приоритета:
-
-    * `start`/`end` — явный диапазон «с … по …» любые даты;
-    * `month` = YYYY-MM — календарный месяц целиком;
-    * `days` = N — последние N дней (переключатель 7/14/30).
-
-    Будущее срезается по сегодняшний день: файлов «за завтра» не бывает, а
-    хвост из нулей растянул бы шкалу на пустые месяцы. Слишком длинный
-    диапазон обрезается сверху (DAILY_MAX_SPAN) и об этом сообщает флаг
-    `truncated`: молча показать не тот период хуже, чем признаться.
-    """
+    """Окно графика: список дат, признак обрезки и режим периода."""
     today = date.today()
 
     if start or end:
@@ -1267,7 +1180,6 @@ def _daily_window(days=None, month=None, start=None, end=None) -> tuple[list[str
     except (TypeError, ValueError):
         days = DAILY_DEFAULT_DAYS
     # Мусорный период (0, отрицательный, не число) — это «не задано»:
-    # показать один день или упасть было бы хуже, чем дефолт.
     if days <= 0:
         days = DAILY_DEFAULT_DAYS
     days = min(days, DAILY_MAX_DAYS)
@@ -1277,14 +1189,7 @@ def _daily_window(days=None, month=None, start=None, end=None) -> tuple[list[str
 
 def _daily_series(days=None, month=None, start=None, end=None,
                   hours=False) -> dict:
-    """Ряд «найдено / просмотрено» по окну периода (с нулями за пустые дни).
-
-    При hours=True и окне в один день (`days=1`) ряд разворачивается в
-    почасовой за сегодня: 24 корзины, где 14:01 и 14:50 попадают в колонку
-    «14». `hours` в ответе — список корзин; если файлы за день не несут
-    часа (только processed, архив с очищенными именами), он None — клиент
-    рисует дневной столбец, а не пустые сутки.
-    """
+    """Ряд «найдено / просмотрено» по окну периода (с нулями за пустые дни)."""
     window, truncated, mode = _daily_window(days, month, start, end)
 
     found = _daily_found_in_window(set(window))
@@ -1314,12 +1219,7 @@ def _daily_series(days=None, month=None, start=None, end=None,
 
 @bp.route("/stats/daily")
 def stats_daily():
-    """Дашборд «Динамика по дням» — сколько найдено и просмотрено за день.
-
-    Период задаётся одним из трёх способов: `?days=7`, `?month=2026-09`
-    или `?from=2026-09-01&to=2026-09-30`. `&hours=1` при окне в один день
-    разворачивает его в почасовой ряд за сегодня.
-    """
+    """Дашборд «Динамика по дням» — сколько найдено и просмотрено за день."""
     a = request.args
     return jsonify(_daily_series(
         days=a.get("days", type=int),
@@ -1331,14 +1231,7 @@ def stats_daily():
 
 
 def _fill_lead_scores(recs: list) -> list:
-    """Give every record a lead score, even when its file carries none.
-
-    The score is derived from fields the record already has (нет сайта,
-    рейтинг, отзывы, телефон, категория), so a file written before scoring
-    existed — or by stage 1 — still scores correctly in the table. A score
-    already stored in the file always wins: stage 2 raises it further with
-    the VK activity check.
-    """
+    """Give every record a lead score, even when its file carries none."""
     missing = [r for r in recs
                if isinstance(r, dict) and r.get("lead_score") in (None, "")]
     if missing:
@@ -1355,10 +1248,10 @@ def _collect_records(view: str, rel_file: str | None = None,
     """Records of a view — or of one explicitly requested file."""
     if rel_file:
         full = _safe_output_file(rel_file)
-        return _fill_lead_scores(_read_records_file(full)) if full else []
+        return _fill_lead_scores(list(_read_records_cached(full))) if full else []
     recs: list = []
     for f in _view_files(view, scope):
-        recs.extend(_read_records_file(f))
+        recs.extend(_read_records_cached(f))
     if view == "all":
         try:
             from yandex_maps_parser.exporters import dedupe_records
@@ -1368,19 +1261,12 @@ def _collect_records(view: str, rel_file: str | None = None,
     return _fill_lead_scores(recs)
 
 
-# Колонки таблицы результатов, по которым «Массовый обход» умеет повторять
-# порядок строк (см. sortTable() в static/js/04-results-table.js): 2 —
-# название, 3 — категория,
-# 4 — адрес, 5 — телефон. 6 — оценка лида, её считаем отдельно (числом).
+# Колонки таблицы результатов, по которым «Массовый обход» умеет повторять порядок строк (см. sortTable() в static/js/04-results-table.js): 2 — название, 3 — категория, 4 — адрес, 5 — телефон. 6 — оценка лида, её считаем отдельно (числом).
 _VIEW_SORT_KEYS = {2: "name", 3: "category", 4: "address", 5: "phone"}
 
 
 def _lead_score_num(rec: dict) -> float:
-    """Оценка лида числом для сортировки.
-
-    Порядок должен совпадать с таблицей, где строки сравниваются как
-    `+r.lead_score || 0`: нечисловое и пустое значение — ноль.
-    """
+    """Оценка лида числом для сортировки."""
     raw = rec.get("lead_score")
     if isinstance(raw, bool) or raw in (None, ""):
         return 0.0
@@ -1391,14 +1277,7 @@ def _lead_score_num(rec: dict) -> float:
 
 
 def _sort_like_table(recs: list, sort_col, sort_asc: bool = True) -> list:
-    """Копия записей в том порядке, в каком их показывает таблица.
-
-    Сортировка нужна «Массовому обходу»: раньше профили открывались в порядке
-    файла, а таблица по умолчанию отсортирована по оценке лида — пользователь
-    видел один порядок, а вкладки открывались в другом. Python-сортировка
-    устойчивая, как и Array.sort в браузере, поэтому записи с одинаковым
-    ключом идут в порядке файла — как и строки таблицы.
-    """
+    """Копия записей в том порядке, в каком их показывает таблица."""
     if sort_col == 6:
         return sorted(recs, key=_lead_score_num, reverse=not sort_asc)
     key = _VIEW_SORT_KEYS.get(sort_col)
@@ -1435,27 +1314,13 @@ def _unviewed_stats(recs: list) -> dict:
 
 @bp.route("/results-view")
 def results_view():
-    """Merged records for the «Текущий результат» sub-tab.
-
-    view=raw       → records from output/raw/ (unfiltered)
-    view=processed → records from output/processed/{json,excel}/ (filtered)
-    view=all       → both, raw first (the live-streamed table equivalent)
-    file=<rel>     → only that file (used by the «История файлов» browser)
-    scope=current  → only files of the current search (default) — the tab is
-                     a view of the *last* search, not of the whole folder
-    scope=all      → every file in the folder («Все поиски» toggle)
-
-    `cities` drives the city tabs, `unviewed` the bulk-outreach counters.
-    """
-    view = (request.args.get("view") or "raw").lower()
-    if view not in VIEWS:
-        view = "raw"
-    scope = (request.args.get("scope") or "current").lower()
-    if scope not in ("current", "all"):
-        scope = "current"
-    rel_file = (request.args.get("file") or "").strip() or None
-    if rel_file and not _safe_output_file(rel_file):
-        return jsonify({"error": "file not found"}), 404
+    """Merged records for the «Текущий результат» sub-tab. view=raw → records from output/raw/ (unfiltered) view=processed → records from output/processed/{json,excel}/ (filtered) view=all → both, raw first (the live-streamed table equivalent) file=<rel> → only that file (used by the «История файлов» browser) scope=current → only files of the current search (default) — the tab is a view of the *last* search, not of the whole folder scope=all → every file in the folder («Все поиски» toggle) `cities` drives the city tabs, `unviewed` the bulk-outreach counters."""
+    view, scope, error = _view_scope(request.args)
+    if error:
+        return error
+    rel_file, _full, error = _output_file(request.args)
+    if error:
+        return error
     recs = _collect_records(view, rel_file, scope)
     return jsonify({
         "view": view,
@@ -1472,7 +1337,7 @@ def results_view():
 @bp.route("/process-filters", methods=["POST"])
 def process_filters():
     """Stage 2 on demand: re-filter existing raw files without a new crawl."""
-    data = request.get_json(silent=True) or {}
+    data = _json_body()
     formats = data.get("formats") or ["excel"]
     filters = {
         "collapse_chains": bool(data.get("collapse_chains", False)),
@@ -1505,11 +1370,9 @@ def process_filters():
             "count": res.get("count", 0),
             "empty": res.get("empty", False),
             "files": [os.path.relpath(f, _results_dir()) for f in res.get("files", [])],
-            # Полный путь — фронтенд показывает его в журнале (папка может
-            # быть пользовательской, «output/processed/» уже не всегда правда).
+            # Полный путь — фронтенд показывает его в журнале (папка может быть пользовательской, «output/processed/» уже не всегда правда).
             "out_dir": _results_dir(),
-            # Сколько записей снял blacklist — клиент пишет это в свой журнал
-            # (у рефильтра нет потоковых логов, но счётчик должен быть виден).
+            # Сколько записей снял blacklist — клиент пишет это в свой журнал (у рефильтра нет потоковых логов, но счётчик должен быть виден).
             "blacklist_excluded": int(res.get("blacklist_excluded") or 0),
             # То же для «🎯 Тип компании»: сколько сняли одиночки и новые.
             "company_type_excluded": int(res.get("company_type_excluded") or 0),
@@ -1517,30 +1380,20 @@ def process_filters():
             "new_excluded": int(res.get("new_excluded") or 0),
         })
     except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
+        return _fail(exc)
 
 
 @bp.route("/preview-blacklist", methods=["POST"])
 def preview_blacklist():
-    """Сколько компаний отсечёт список слов — без запуска этапа 2.
-
-    Body: {words: ["франшиза", "vip"]}
-    Reply: {ok, words, total, excluded, remaining}
-
-    Считаем по СЫРЫМ данным текущего поиска: именно их перефильтровывает
-    этап 2, и счётчик должен отвечать на вопрос «что будет, если я нажму
-    применить». Логика та же, что в apply_filters (общие
-    parse_blacklist_words/blacklist_matcher), — цифра в подсказке не может
-    разойтись с результатом обработки.
-    """
+    """Сколько компаний отсечёт список слов — без запуска этапа 2. Body: {words: ["франшиза", "vip"]} Reply: {ok, words, total, excluded, remaining} Считаем по СЫРЫМ данным текущего поиска: именно их перефильтровывает этап 2, и счётчик должен отвечать на вопрос «что будет, если я нажму применить»."""
     from yandex_maps_parser.processing import blacklist_matcher, parse_blacklist_words
 
-    data = request.get_json(silent=True) or {}
+    data = _json_body()
     words = parse_blacklist_words(data.get("words"))
     try:
         recs = _collect_records("raw", None, "current")
     except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
+        return _fail(exc)
     hit = blacklist_matcher(words)
     excluded = sum(1 for r in recs if hit and hit(r)) if hit else 0
     return jsonify({
@@ -1554,37 +1407,21 @@ def preview_blacklist():
 
 # ═══════════════════════════════════════════════════════════════
 #  Шаблоны сообщений («📝 Шаблоны»)
-#  Хранятся в settings.json — общие для всей команды, а не в браузере:
-#  цель — единый tone of voice. Подстановка переменных живёт в
-#  yandex_maps_parser.message_templates и переиспользуется массовым копированием
-#  и /bulk/urls, чтобы текст не расходился.
-# ═══════════════════════════════════════════════════════════════
 
 @bp.route("/preview-company-type", methods=["POST"])
 def preview_company_type():
-    """Сколько компаний подойдёт под «🎯 Тип компании» — без запуска этапа 2.
-
-    Body: {only_single_branch: bool, only_new_months: 1|3|6|12|24|null}
-    Reply: {ok, total, single, new, both, with_date, months}
-
-    Считаем по СЫРЫМ данным текущего поиска той же функцией
-    (processing.company_type_breakdown), что и сам фильтр, — иначе цифра в
-    подсказке разошлась бы с результатом «Применить фильтры заново».
-    `with_date` — у скольких записей есть дата добавления: без неё видно,
-    что «только новые» не отсеивает не потому, что все компании новые.
-    """
+    """Сколько компаний подойдёт под «🎯 Тип компании» — без запуска этапа 2. Body: {only_single_branch: bool, only_new_months: 1|3|6|12|24|null} Reply: {ok, total, single, new, both, with_date, months} Считаем по СЫРЫМ данным текущего поиска той же функцией (processing.company_type_breakdown), что и сам фильтр, — иначе цифра в подсказке разошлась бы с результатом «Применить фильтры заново». `with_date` — у скольких записей есть дата добавления: без неё видно, что «только новые» не отсеивает не потому, что все компании новые."""
     from yandex_maps_parser.processing import (
         annotate_branch_counts,
         company_type_breakdown,
     )
 
-    data = request.get_json(silent=True) or {}
+    data = _json_body()
     try:
         recs = _collect_records("raw", None, "current")
     except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
-    # Старые сборы не знают branch_count — досчитываем филиалы по названию
-    # и городу, как это делает apply_filters (цифры обязаны совпадать).
+        return _fail(exc)
+    # Старые сборы не знают branch_count — досчитываем филиалы по названию и городу, как это делает apply_filters (цифры обязаны совпадать).
     annotate_branch_counts(recs)
     info = company_type_breakdown(recs, data.get("only_new_months"))
     return jsonify({"ok": True, **info})
@@ -1592,23 +1429,14 @@ def preview_company_type():
 
 @bp.route("/templates", methods=["GET"])
 def get_templates():
-    """Шаблоны, активные по категориям, режимы выбора и флаг «показывать {var}».
-
-    Вместе с ними отдаются и пользовательские переменные (custom_variables).
-    """
+    """Шаблоны, активные по категориям, режимы выбора и флаг «показывать {var}»."""
     from yandex_maps_parser.message_templates import load_templates
     return jsonify({"ok": True, **load_templates()})
 
 
 @bp.route("/templates", methods=["POST"])
 def set_templates():
-    """Сохранить шаблоны (полный набор) и выбор активных.
-
-    Body: {templates: [...], active_template_ids?, bulk_active_template_ids?,
-           show_missing_as_var?, template_modes?, random_template_ids?,
-           avoid_repeats?, custom_variables?}
-    Пустой список допустим (заглушка «нет шаблонов»), но не-список — 400.
-    """
+    """Сохранить шаблоны (полный набор) и выбор активных."""
     from yandex_maps_parser import message_templates as mt
     data = _json_body()
     raw = data.get("templates")
@@ -1636,27 +1464,14 @@ def reset_templates():
 
 # ═══════════════════════════════════════════════════════════════
 #  Bulk social outreach (manual) — «Массовый обход»
-#  The server decides *what* to open (view + city + social + unviewed),
-#  the client never sends file paths.
-# ═══════════════════════════════════════════════════════════════
 
 @bp.route("/bulk/urls", methods=["POST"])
 def bulk_urls():
-    """Next batch of social profile URLs to open manually.
-
-    Body: {view, city?, social, count, skip_viewed, sort_col?, sort_asc?,
-           template?, show_missing_as_var?}
-    Reply: {urls:[{url,key,name,text?}], returned, total, remaining}
-
-    Порядок выдачи повторяет порядок строк в таблице: клиент присылает
-    колонку и направление своей сортировки (sort_col = 6 — оценка лида).
-    Если передан `template`, каждая запись получает `text` — сообщение с
-    подставленными переменными (та же подстановка, что в таблице результатов).
-    """
-    data = request.get_json(silent=True) or {}
-    view = str(data.get("view") or "raw").lower()
-    if view not in VIEWS:
-        return jsonify({"error": "invalid view"}), 400
+    """Next batch of social profile URLs to open manually."""
+    data = _json_body()
+    view, scope, error = _view_scope(data, strict=True)
+    if error:
+        return error
     social = str(data.get("social") or "").lower()
     if social not in SOCIAL_KEYS:
         return jsonify({"error": "invalid social"}), 400
@@ -1668,15 +1483,11 @@ def bulk_urls():
     city = str(data.get("city") or "").strip()[:100]
     skip_viewed = bool(data.get("skip_viewed", True))
     skip_keys = {str(k) for k in (data.get("exclude_keys") or []) if k}
-    # Обход идёт по тому же срезу, что и таблица: файл из «Истории файлов»
-    # либо текущий поиск (scope=all — вся папка).
-    scope = str(data.get("scope") or "current").lower()
-    if scope not in ("current", "all"):
-        scope = "current"
+    # Обход идёт по тому же срезу, что и таблица: файл из «Истории файлов» либо текущий поиск (scope=all — вся папка).
     # The bulk panel follows the file opened from «История файлов».
-    rel_file = str(data.get("file") or "").strip() or None
-    if rel_file and not _safe_output_file(rel_file):
-        return jsonify({"error": "file not found"}), 404
+    rel_file, _full, error = _output_file(data)
+    if error:
+        return error
     # Колонка сортировки таблицы; без неё — порядок файла (как было раньше).
     try:
         sort_col = int(data["sort_col"]) if data.get("sort_col") not in (None, "") else None
@@ -1685,8 +1496,7 @@ def bulk_urls():
 
     template = str(data.get("template") or "")
     show_missing = bool(data.get("show_missing_as_var", False))
-    # Свои переменные — общий с шаблонами хелпер: подставляются и в одиночный
-    # текст, и в случайный выбор, как и встроенные {name}, {city} и т.д.
+    # Свои переменные — общий с шаблонами хелпер: подставляются и в одиночный текст, и в случайный выбор, как и встроенные {name}, {city} и т.д.
     from yandex_maps_parser.message_templates import load_templates as _load_tpls
     custom_vars = _load_tpls().get("custom_variables") or []
     substitute = None
@@ -1694,9 +1504,7 @@ def bulk_urls():
         from yandex_maps_parser.message_templates import substitute as _subst
         substitute = lambda *a, **k: _subst(*a, custom_variables=custom_vars, **k)
 
-    # Составные шаблоны: клиент передаёт template_ids и для одиночного выбора —
-    # template_id; выбранный шаблон с вариантами раскрывается в случайный
-    # вложенный текст до подстановки переменных.
+    # Составные шаблоны: клиент передаёт template_ids и для одиночного выбора — template_id; выбранный шаблон с вариантами раскрывается в случайный вложенный текст до подстановки переменных.
     def _expand_template_text(text: str, tpl_id: str) -> str:
         if not tpl_id:
             return text
@@ -1708,9 +1516,7 @@ def bulk_urls():
             return text
         return _rvt(tpl, state.get("templates") or []) or text
 
-    # Случайный выбор: клиент передаёт id шаблонов своей соцсети, сервер
-    # резолвит их по общему хранилищу и выбирает на КАЖДУЮ запись — так
-    # очередь обхода получает разные тексты без передачи самих текстов.
+    # Случайный выбор: клиент передаёт id шаблонов своей соцсети, сервер резолвит их по общему хранилищу и выбирает на КАЖДУЮ запись — так очередь обхода получает разные тексты без передачи самих текстов.
     def _make_random_picker(ids: list, avoid: bool):
         from yandex_maps_parser.message_templates import (
             load_templates,
@@ -1778,7 +1584,7 @@ def bulk_urls():
 @bp.route("/reviewed/batch", methods=["POST"])
 def reviewed_batch():
     """Mark up to 500 records at once (one disk write)."""
-    data = request.get_json(silent=True) or {}
+    data = _json_body()
     raw_keys = data.get("keys")
     if not isinstance(raw_keys, list):
         return jsonify({"error": "keys must be a list"}), 400
@@ -1799,13 +1605,7 @@ def reviewed_batch():
 
 
 def _persist_reviewed_column(path: str, rev: dict) -> int | None:
-    """Write the «✓ Просмотрено» column of one xlsx from the marks store.
-
-    Returns the number of changed rows, or None when the file has no such
-    column (e.g. the column is switched off in «Форматы вывода»).
-    A running file is replaced atomically, so a crash can't leave a half
-    written workbook behind.
-    """
+    """Write the «✓ Просмотрено» column of one xlsx from the marks store."""
     import openpyxl
     from yandex_maps_parser.constants import HEADER_LABELS
 
@@ -1843,18 +1643,9 @@ def _persist_reviewed_column(path: str, rev: dict) -> int | None:
 
 @bp.route("/reviewed/persist", methods=["POST"])
 def reviewed_persist():
-    """Write the marks of one view into its xlsx files.
-
-    Called automatically by the UI (debounced after a click, on leaving the
-    page, before exporting) and by the «Сохранить сейчас» button.
-    """
+    """Write the marks of one view into its xlsx files."""
     data = _json_body()
-    view = str(data.get("view") or "raw").lower()
-    if view not in VIEWS:
-        view = "raw"
-    scope = str(data.get("scope") or "current").lower()
-    if scope not in ("current", "all"):
-        scope = "current"
+    view, scope, _error = _view_scope(data)
     rev = _load_reviewed()
     files = [f for f in _view_files(view, scope) if f.lower().endswith(".xlsx")]
     updated = 0
@@ -1870,14 +1661,13 @@ def reviewed_persist():
             skipped += 1
         else:
             updated += changed
-    _REC_CACHE.clear()
+    _clear_file_caches()
     return jsonify({"ok": True, "files": len(files), "updated": updated,
                     "skipped": skipped, "errors": errors})
 
 
 # ═══════════════════════════════════════════════════════════════
 #  File browser — «История файлов» (RAW / PROCESSED / ARCHIVE)
-# ═══════════════════════════════════════════════════════════════
 
 @bp.route("/files/list")
 def files_list():
@@ -1892,8 +1682,7 @@ def files_list():
         for dirpath, _dirs, files in walker:
             for name in files:
                 low = name.lower()
-                # `_`-prefixed files are internal (e.g. _archive/_index.json),
-                # `~$…` are Excel lock files left by Excel itself.
+                # `_`-prefixed files are internal (e.g. _archive/_index.json), `~$…` are Excel lock files left by Excel itself.
                 if not low.endswith((".xlsx", ".json", ".csv")) or name[:1] in ("_", "~") or name.startswith("~$"):
                     continue
                 full = os.path.join(dirpath, name)
@@ -1929,17 +1718,10 @@ def files_list():
 
 @bp.route("/files/action", methods=["POST"])
 def files_action():
-    """Move results files to the dated archive, or delete them for good.
-
-    Body: {path | paths: [..], action: "archive"|"delete"|"restore",
-    confirm?} — `delete` needs confirm:true (the UI asks first). The batch
-    form (`paths`) powers «Удалить выбранные» in «История файлов»; every
-    path is processed independently so one bad file never blocks the rest.
-    Only files under output/{raw, processed,_archive} are accepted.
-    """
+    """Move results files to the dated archive, or delete them for good."""
     import shutil
 
-    data = request.get_json(silent=True) or {}
+    data = _json_body()
     action = str(data.get("action") or "").lower()
     if action not in ("archive", "restore", "delete"):
         return jsonify({"error": "invalid action"}), 400
@@ -1957,9 +1739,9 @@ def files_action():
         return _files_action_batch(rels, action, bool(data.get("confirm", False)))
 
     rel = rels[0]
-    full = _safe_output_file(rel)
-    if not full:
-        return jsonify({"error": "file not found"}), 404
+    _rel, full, error = _output_file({"file": rel})
+    if error:
+        return error
 
     root = os.path.realpath(_results_dir())
     top_dir = os.path.relpath(full, root).split(os.sep)[0]
@@ -1976,7 +1758,7 @@ def files_action():
         index = _load_archive_index()
         index[_rel_output(target)] = original_rel
         _save_archive_index(index)
-        _REC_CACHE.clear()
+        _clear_file_caches()
         return jsonify({"ok": True, "moved_to": _rel_output(target)})
 
     if action == "restore":
@@ -2002,7 +1784,7 @@ def files_action():
             return jsonify({"error": str(exc)}), 500
         index.pop(archived_rel, None)
         _save_archive_index(index)
-        _REC_CACHE.clear()
+        _clear_file_caches()
         return jsonify({"ok": True, "restored_to": _rel_output(dest)})
 
     if not bool(data.get("confirm", False)):
@@ -2011,16 +1793,12 @@ def files_action():
         os.remove(full)
     except OSError as exc:
         return jsonify({"error": str(exc)}), 500
-    _REC_CACHE.clear()
+    _clear_file_caches()
     return jsonify({"ok": True, "deleted": _rel_output(full)})
 
 
 def _files_action_batch(rels: list, action: str, confirm: bool):
-    """Run /files/action over several paths, reporting per-file results.
-
-    A missing file counts as already gone (the list may be stale) rather
-    than an error; real failures (OSError, unsafe path) land in `errors`.
-    """
+    """Run /files/action over several paths, reporting per-file results."""
     moved: list[str] = []
     deleted: list[str] = []
     errors: list[dict] = []
@@ -2078,7 +1856,7 @@ def _files_action_batch(rels: list, action: str, confirm: bool):
     if index:
         _save_archive_index(index)
     if moved or deleted:
-        _REC_CACHE.clear()
+        _clear_file_caches()
     return jsonify({
         "ok": not errors or bool(moved or deleted),
         "moved": moved,
@@ -2089,9 +1867,6 @@ def _files_action_batch(rels: list, action: str, confirm: bool):
 
 # ═══════════════════════════════════════════════════════════════
 #  «Папка для сохранения» — где лежат raw / processed / _archive
-#  Кэш найденного, чекпоинты паузы, история поиска и отметки остаются
-#  в папке данных приложения: смена папки не должна их обнулять.
-# ═══════════════════════════════════════════════════════════════
 
 _STAGE_FIELDS = {"raw": "raw_dir", "processed": "processed_dir", "archive": "archive_dir"}
 PICKER_TIMEOUT = 300          # секунд: столько пользователь может выбирать папку
@@ -2144,14 +1919,7 @@ def get_output_dir():
 
 @bp.route("/output-dir", methods=["POST"])
 def set_output_dir():
-    """Сохранить папку результатов.
-
-    Body: {root, raw, processed, archive, advanced} | {reset: true}
-    Каждый непустой путь проверяется на запись ДО сохранения: пользователь
-    должен увидеть ошибку в форме, а не узнать о ней при сохранении файла.
-    Поиск идёт → настройка вступает в силу со следующего города (parser
-    перечитывает её на границе города), о чём честно сказано в ответе.
-    """
+    """Сохранить папку результатов."""
     p = _paths_module()
     if p is None:
         return jsonify({"ok": False, "error": "Настройка папки недоступна в этой сборке"}), 500
@@ -2194,16 +1962,7 @@ def set_output_dir():
 
 
 def picker_command(platform: str = "") -> list[str] | None:
-    """Команда системного диалога выбора папки (None — системы без диалога).
-
-    Windows: современный диалог IFileDialog (кнопка «Выбор папки») — через
-    OpenFileDialog с фиктивным именем файла; FolderBrowserDialog даёт
-    устаревшее дерево и открывается за окном браузера, поэтому невидимая
-    TopMost-форма-владелец выводит диалог на передний план. macOS: choose
-    folder через osascript. Браузер не отдаёт серверу абсолютный путь из
-    обычного поля выбора файлов, поэтому диалог открывает сам сервер — как
-    апдейтер запускает свой скрипт.
-    """
+    """Команда системного диалога выбора папки (None — системы без диалога)."""
     platform = platform or sys.platform
     if platform.startswith("win"):
         script = (
@@ -2244,14 +2003,7 @@ def _run_picker(cmd: list[str]) -> str:
 
 @bp.route("/spheres", methods=["GET"])
 def spheres_list():
-    """Сферы бизнеса для выпадающего списка у поля «Кого будем искать?».
-
-    Reply: {ok, spheres: [{id, name, icon, queries}], history: [{id, last_ts,
-    cities, runs, results, queries}]}
-
-    История берётся из search_history и не хранится отдельно: очистка
-    истории во вкладке «История» автоматически убирает и подписи сфер.
-    """
+    """Сферы бизнеса для выпадающего списка у поля «Кого будем искать?»."""
     try:
         from yandex_maps_parser import spheres as _spheres
         import search_history
@@ -2264,28 +2016,15 @@ def spheres_list():
 
 @bp.route("/presets", methods=["GET", "POST"])
 def presets_store_api():
-    """Серверная копия пресетов поиска.
-
-    Пресеты живут в localStorage интерфейса, но консольный запуск
-    (`app.py --run --preset «Имя»`) браузера не видит — поэтому интерфейс
-    дублирует список в settings.json. GET — что сохранено, POST — заменить
-    список целиком (его присылает интерфейс после каждого изменения).
-
-    Body POST: {"presets": [{"name": "Уфа стоматология", "settings": {...}}]}
-    Reply: {ok, presets, count}
-
-    Ничего не запускает и никуда не ходит: только чтение/запись настроек.
-    Форма на чужой странице такой запрос отправить не может — нужен JSON,
-    а CORS-заголовков у сервиса нет.
-    """
+    """Серверная копия пресетов поиска."""
     import presets_store
 
     if request.method == "GET":
         presets = presets_store.load_presets()
         return jsonify({"ok": True, "presets": presets, "count": len(presets)})
 
-    data = request.get_json(silent=True)
-    if not isinstance(data, dict) or "presets" not in data:
+    data = _json_body()
+    if "presets" not in data:
         return jsonify({"ok": False, "presets": [],
                         "error": 'Ожидался JSON {"presets": [...]}'}), 400
     presets = presets_store.save_presets(data.get("presets"))
@@ -2312,16 +2051,7 @@ def folder_picker():
 
 @bp.route("/output/open", methods=["POST"])
 def open_output_dir():
-    """Открыть текущую папку результатов в файл-менеджере ОС.
-
-    Body: {} — только JSON из своего окна: маршрут открывает окно
-    проводника на машине пользователя, и чужой странице делать это нельзя
-    (защитник — тот же принцип, что у /report/issue в diagnostics).
-    Путь в запросе НЕ принимается: открывается ровно та папка, что
-    настроена в приложении, поэтому маршрут не умеет открывать произвольные
-    каталоги. macOS → Finder (`open`), Windows → проводник (os.startfile),
-    прочее → xdg-open.
-    """
+    """Открыть текущую папку результатов в файл-менеджере ОС."""
     origin = request.headers.get("Origin")
     if origin:
         try:
@@ -2335,8 +2065,7 @@ def open_output_dir():
         return jsonify({"ok": False,
                         "error": "Открытие папки — только из окна приложения (JSON)."}), 415
     p = _paths_module()
-    # results_root(), а НЕ output_dirs(): тот создаёт подпапки — открывать
-    # корень не должен ради этого порождать raw/processed.
+    # results_root(), а НЕ output_dirs(): тот создаёт подпапки — открывать корень не должен ради этого порождать raw/processed.
     root = str(p.results_root()) if p is not None else RESULTS_DIR
     if not os.path.isdir(root):
         return jsonify({"ok": False,

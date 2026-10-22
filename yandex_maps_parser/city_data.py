@@ -1,11 +1,4 @@
-"""
-City catalog for the «continuation» feature.
-
-Order matters: cities are listed by population (descending), so
-«continue after the last city» always walks the biggest cities first.
-Mirror of the CITIES_DATA list in static/js/01-core-state.js — keep both
-in sync.
-"""
+"""City catalog for the «continuation» feature."""
 
 CITIES_CATALOG: list[dict] = [
     {"name": "Москва", "pop": 13104177}, {"name": "Санкт-Петербург", "pop": 5600044},
@@ -88,12 +81,7 @@ CITIES_CATALOG: list[dict] = [
 
 
 def cities_after(last_city: str, limit: int, exclude: list[str] | None = None) -> list[str]:
-    """Return up to `limit` catalog cities that follow `last_city`.
-
-    Wraps around at the end of the catalog; skips `exclude` (the cities
-    already chosen by the user). If `last_city` is not in the catalog the
-    walk starts from the top.
-    """
+    """Return up to `limit` catalog cities that follow `last_city`."""
     names = [c["name"] for c in CITIES_CATALOG]
     try:
         start = names.index(last_city) + 1

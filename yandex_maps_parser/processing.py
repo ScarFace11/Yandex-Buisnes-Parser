@@ -1,17 +1,4 @@
-"""
-Two-stage pipeline: Сбор (Raw) → Фильтрация (Processed).
-
-Stage 1 (collection, run_web with PIPELINE="raw") exports records to
-output/raw/ as one xlsx per query × city. It applies only the per-record
-filters (`crawl_skip_reason`: чёрный список, «только без сайтов», соцсети) —
-so a record the filters would drop is never streamed to the live table and
-never written to raw. Stage 2 (this module) reads those raw files back,
-applies the full filter set and writes output/processed/{format}/ files.
-
-Benefits: filtering never slows the crawl, the filters that need the whole
-record set (объединение филиалов, «тип компании», оценка лида) stay
-re-runnable, processed output is reproducible.
-"""
+"""Two-stage pipeline: Сбор (Raw) → Фильтрация (Processed)."""
 import os
 import re
 import shutil
@@ -52,12 +39,7 @@ def raw_path(query: str, city: str) -> str:
 # ── Raw I/O ───────────────────────────────────────────────────
 
 def raw_files_for(queries, cities) -> list[str]:
-    """Raw files (any age) belonging to these query × city pairs.
-
-    Used on «Продолжить»: the slice collected before the pause must join the
-    stage-2 input, otherwise the resumed run would export only what it parsed
-    after the pause.
-    """
+    """Raw files (any age) belonging to these query × city pairs."""
     want = {f"_{_slug(q)}_{_slug(c)}.xlsx" for q in (queries or [])
             for c in (cities or [])}
     if not want or not os.path.isdir(state.RAW_DIR):
@@ -71,17 +53,7 @@ def raw_files_for(queries, cities) -> list[str]:
 
 def export_raw_records(records: list[dict], query: str, city: str,
                        merge_existing: bool = False) -> str:
-    """Save the collected records of one query × city as a raw xlsx.
-
-    Raw files carry the website column (INTERNAL_FIELDS) even though it is
-    no longer part of the user-facing report — stage 2 re-applies
-    «только без сайтов» straight from these files.
-
-    `merge_existing` (used on «Продолжить»): the file name only carries
-    minute precision, so the resumed run would otherwise OVERWRITE the slice
-    collected before the pause and the earlier organizations would vanish
-    from the result. Their records are merged in instead (stage 2 dedupes).
-    """
+    """Save the collected records of one query × city as a raw xlsx."""
     os.makedirs(state.RAW_DIR, exist_ok=True)
     path = raw_path(query, city)
     payload = list(records)
@@ -91,9 +63,7 @@ def export_raw_records(records: list[dict], query: str, city: str,
                 payload = dedupe_records(load_raw_records(path) + payload)
         except Exception:
             payload = list(records)
-    # branch_count / added_at — внутренние поля этапа 2, как website: отчёт
-    # их не показывает, но без них фильтры «🎯 Тип компании» не выжили бы
-    # до «Применить фильтры заново» (фильтрация идёт по raw-файлам).
+    # branch_count / added_at — внутренние поля этапа 2, как website: отчёт их не показывает, но без них фильтры «🎯 Тип компании» не выжили бы до «Применить фильтры заново» (фильтрация идёт по raw-файлам).
     save_excel(payload, path, extra_fields=("website", "branch_count", "added_at"))
     return path
 
@@ -112,11 +82,7 @@ def list_raw_files() -> list[str]:
 
 
 def collect_raw_files(since_mtime: float) -> list[str]:
-    """Absolute paths of raw xlsx files created at/after since_mtime.
-
-    Used to attribute raw files to one specific run (file names carry
-    only minute precision, mtime is exact).
-    """
+    """Absolute paths of raw xlsx files created at/after since_mtime."""
     out: list[str] = []
     if os.path.isdir(state.RAW_DIR):
         for fname in sorted(os.listdir(state.RAW_DIR)):
@@ -136,9 +102,6 @@ def _int_or_zero(value) -> int:
 
 
 # ── Blacklist («🚫 Исключить по словам») ──────────────────────
-# Ограничения держим на сервере, а не только в интерфейсе: список приезжает
-# ещё и из пресета/настроек и по сети, а этап 2 не должен падать или
-# тормозить на списке из тысячи слов.
 BLACKLIST_MAX_WORDS = 100   # больше — уже не «исключения», а второй поиск
 BLACKLIST_MAX_LEN = 50      # слово длиннее — опечатка или вставленный абзац
 # Поля, по которым ищем подстроку: название, категория и (если есть) описание.
@@ -146,14 +109,7 @@ BLACKLIST_FIELDS = ("name", "category", "description")
 
 
 def parse_blacklist_words(value) -> list[str]:
-    """«Франшиза, VIP; сеть\nдубль» → ['франшиза', 'vip', 'сеть', 'дубль'].
-
-    Сплит по запятой, точке с запятой и переводу строки; trim; lowercase;
-    пустые выброшены; дубликаты убраны; слова длиннее `BLACKLIST_MAX_LEN`
-    отброшены (это не слово, а вставленный текст); список обрезан до
-    `BLACKLIST_MAX_WORDS`. Идемпотентно: повторный прогон ничего не меняет,
-    поэтому результат можно спокойно сохранять.
-    """
+    """«Франшиза, VIP; сеть\nдубль» → ['франшиза', 'vip', 'сеть', 'дубль']."""
     if value is None:
         return []
     if isinstance(value, str):
@@ -177,13 +133,7 @@ def parse_blacklist_words(value) -> list[str]:
 
 
 def blacklist_matcher(words):
-    """Регистронезависимый поиск подстрок — или None, если список пуст.
-
-    Сила blacklist в том, что он побеждает остальные фильтры: слово
-    снимает запись до проверок по сайтам, соцсетям и оценке. Спецсимволы
-    (`C++`, `[акция]`) экранируются: ищется ровно то, что ввёл пользователь,
-    а не регулярка, которую он не писал.
-    """
+    """Регистронезависимый поиск подстрок — или None, если список пуст."""
     words = [w for w in (words or []) if w]
     if not words:
         return None
@@ -196,11 +146,6 @@ def blacklist_matcher(words):
 
 
 # ── Предфильтр сбора (этап 1) ─────────────────────────────────
-# Три фильтра известны ПО САМОЙ ЗАПИСИ: чёрный список, «только без сайтов»
-# и соцсети (режим + обязательные сети). Такую запись незачем ни показывать
-# в живой таблице, ни писать в output/raw/ — её всё равно снимет этап 2.
-# Остальные фильтры (объединение филиалов, «тип компании», оценка лида,
-# активность ВК) требуют всего набора записей и остаются только на этапе 2.
 
 _CRAWL_MATCHER: tuple[tuple[str, ...], object] | None = None
 
@@ -218,26 +163,7 @@ def crawl_skip_reason(rec: dict, *, words=(), parse_mode: str = "all",
                       social_mode: str = "all", required_socials=(),
                       min_lead_score=0, only_single_branch: bool = False,
                       only_new_months=None, vk_check: bool = False) -> str:
-    """Почему запись не попадает в raw УЖЕ на сборе (``""`` — попадает).
-
-    Этап 1 и этап 2 обязаны решать одинаково: сбор отбрасывает ровно те
-    записи, которые снял бы `apply_filters` по тем же фильтрам. Иначе живая
-    таблица показывала бы записи, которых нет в результате, а «Применить
-    фильтры заново» — другие числа. Общий признак «агрегатор ≠ сайт»
-    (`_has_own_website`) намеренно один на оба этапа.
-
-    Кроме правил по самой записи из выдачи (чёрный список, «без сайта»,
-    соцсети) здесь же работают фильтры, которые тоже решаются по ОДНОЙ
-    готовой записи: «только новые», «только одиночки» (когда число филиалов
-    дал сам источник) и порог оценки лида. Оценка считается без проверки ВК:
-    при `vk_check` этап 2 добавит баллы за активность ВК, и сбор не должен
-    снять запись, которая на этапе 2 осталась бы. Объединение филиалов и сама
-    проверка ВК требуют всего набора/внешнего API — они остаются на этапе 2.
-
-    Возвращает причину: ``blacklist`` | ``website`` | ``no_socials`` |
-    ``has_socials`` | ``missing_socials`` | ``new`` | ``single`` | ``score`` |
-    ``""``.
-    """
+    """Почему запись не попадает в raw УЖЕ на сборе (``""`` — попадает)."""
     hit = _cached_blacklist_matcher(words)
     if hit and hit(rec):
         return "blacklist"
@@ -254,9 +180,7 @@ def crawl_skip_reason(rec: dict, *, words=(), parse_mode: str = "all",
             return "has_socials"
     elif required and not all(rec.get(p) for p in required):
         return "missing_socials"
-    # «🎯 Тип компании»: новые карточки (по дате) и сети, число филиалов
-    # которых назвал сам источник. Нет данных — запись НЕ снимаем: фильтр не
-    # выдумывает факты, а этап 2 может досчитать филиалы по набору.
+    # «🎯 Тип компании»: новые карточки (по дате) и сети, число филиалов которых назвал сам источник.
     months = normalize_only_new_months(only_new_months)
     if months and not is_new_company(rec, months):
         return "new"
@@ -264,9 +188,7 @@ def crawl_skip_reason(rec: dict, *, words=(), parse_mode: str = "all",
         branch = _int_or_none(rec.get("branch_count"))
         if branch is not None and branch >= 2:
             return "single"
-    # Оценка лида — чистая функция доступных полей (сайт, соцсети, рейтинг,
-    # отзывы, телефон, категория). Заполняем её сразу: живая таблица покажет
-    # оценку, а не пустую ячейку до этапа 2.
+    # Оценка лида — чистая функция доступных полей (сайт, соцсети, рейтинг, отзывы, телефон, категория).
     min_score = _int_or_zero(min_lead_score)
     if min_score and not vk_check:
         try:
@@ -281,10 +203,6 @@ def crawl_skip_reason(rec: dict, *, words=(), parse_mode: str = "all",
 
 
 # ── «🎯 Тип компании»: одиночки и новые ──────────────────────
-# Одиночки — сеть из одного филиала: решение принимает владелец.
-# Новые — карточка недавно появилась в 2ГИС: бюджет на запуск уже есть.
-# Оба фильтра консервативны: нет данных — запись НЕ отсеивается. «Неизвестно»
-# не значит «не подходит», а выдуманная дата хуже отсутствия фильтра.
 
 COMPANY_TYPE_MONTHS = (1, 3, 6, 12, 24)   # варианты периода в интерфейсе
 NEW_COMPANY_DEFAULT_MONTHS = 6            # дефолт селекта «за последние … мес.»
@@ -302,11 +220,7 @@ def _int_or_none(value):
 
 
 def normalize_only_new_months(value):
-    """Период «новых» в месяцах: 1/3/6/12/24, иначе 6; 0/None/мусор → выкл.
-
-    Значение приезжает из браузера, пресета и настроек, поэтому проверяем его
-    на сервере: произвольное число не должно превращаться в «за всё время».
-    """
+    """Период «новых» в месяцах: 1/3/6/12/24, иначе 6; 0/None/мусор → выкл."""
     if value in (None, "", False):
         return None
     n = _int_or_none(value)
@@ -318,17 +232,7 @@ def normalize_only_new_months(value):
 
 
 def annotate_branch_counts(records: list[dict]) -> None:
-    """Проставить branch_count всем записям — включая сборы без этого поля.
-
-    2ГИС отдаёт число филиалов сети в items.org.branch_count, но демо-ключи и
-    файлы, собранные до этой версии, поля не знают. Тогда филиалы считаем сами:
-    записи с одинаковым нормализованным названием в одном городе — ветки одной
-    сети (том же ключом работает «Объединять филиалы сетей»). Значение из API
-    важнее нашего: сбор ограничен точками поиска и может недосчитать сеть.
-
-    0 из API — валидное «филиалов нет»; у кого данных нет вообще, поле
-    остаётся пустым, и фильтр такую запись пропускает.
-    """
+    """Проставить branch_count всем записям — включая сборы без этого поля. 2ГИС отдаёт число филиалов сети в items.org.branch_count, но демо-ключи и файлы, собранные до этой версии, поля не знают."""
     found: dict[tuple, int] = {}
     api_max: dict[tuple, int] = {}
     for r in records:
@@ -345,30 +249,20 @@ def annotate_branch_counts(records: list[dict]) -> None:
         name = _norm_name(r.get("name"))
         key = ((r.get("city") or "").strip().lower(), name) if name else None
         ours = found.get(key, 0) if key else 0
-        # Число из API знает всю сеть только у одной из веток — отдаём его
-        # всей группе, иначе «Ваша кофейня» с 7 филиалами выглядела бы
-        # одиночкой только потому, что значение пришло на другой строке.
+        # Число из API знает всю сеть только у одной из веток — отдаём его всей группе, иначе «Ваша кофейня» с 7 филиалами выглядела бы одиночкой только потому, что значение пришло на другой строке.
         api = api_max.get(key) if key else None
         if ours or api is not None:
             r["branch_count"] = max(ours, api or 0)
 
 
 def is_single_branch(rec: dict) -> bool:
-    """Подходит ли запись под «только одиночки».
-
-    Пустое/нечисловое значение → True (пропускаем): компания без данных о
-    филиалах не должна выкидываться из отчёта. 0 и 1 — одиночка, 2+ — сеть.
-    """
+    """Подходит ли запись под «только одиночки»."""
     n = _int_or_none(rec.get("branch_count"))
     return n is None or n <= 1
 
 
 def is_new_company(rec: dict, months) -> bool:
-    """Подходит ли запись под «только новые» (карточка появилась недавно).
-
-    Дата — added_at из items.dates 2ГИС. Даты нет (источник Яндекс, старый
-    сбор, демо-ключ) или она битая — пропускаем: фильтр не выдумывает дату.
-    """
+    """Подходит ли запись под «только новые» (карточка появилась недавно)."""
     if not months:
         return True
     raw = str(rec.get("added_at") or "").strip()
@@ -382,13 +276,7 @@ def is_new_company(rec: dict, months) -> bool:
 
 
 def company_type_breakdown(records: list[dict], only_new_months=None) -> dict:
-    """Сколько компаний подойдёт под фильтры «типа компании» (для счётчика).
-
-    Логика общая с apply_filters — цифра в подсказке не может разойтись с
-    результатом «Применить фильтры заново». `both` — пересечение (фильтры
-    работают по И), `with_date` — у скольких вообще есть дата добавления:
-    без этого непонятно, почему «только новые» ничего не отсеял.
-    """
+    """Сколько компаний подойдёт под фильтры «типа компании» (для счётчика)."""
     months = normalize_only_new_months(only_new_months)
     single = new = both = with_date = 0
     for r in records:
@@ -405,13 +293,7 @@ _AGGREGATOR_RE = re.compile(r"taplink|linktree|linktr\.ee|becons\.ai|illions\.ap
 
 
 def _has_own_website(rec: dict) -> bool:
-    """True, если у записи есть СВОЙ сайт (ссылка-витрина сайтом не считается).
-
-    Один признак на оба этапа: сбор («только без сайтов» режет запись ещё до
-    карточки) и этап 2 обязаны видеть сайт одинаково. Список агрегаторов —
-    общий `LINK_AGGREGATORS` из constants: taplink/linktree ловились и раньше,
-    но vk.cc, bio.link, beacons.ai считались сайтом и в этом режиме терялись.
-    """
+    """True, если у записи есть СВОЙ сайт (ссылка-витрина сайтом не считается)."""
     site = (rec.get("website") or rec.get("aggregator_url") or "").strip()
     if not site:
         return False
@@ -427,41 +309,7 @@ def _has_own_website(rec: dict) -> bool:
 
 
 def apply_filters(raw_files: list[str], filters: dict, log_fn=None) -> dict:
-    """Read raw files, merge chains and apply the stage-2 filters.
-
-    Order (edge case 1): merge chains FIRST («Название + Город»), then
-    the record filters — merging before filtering keeps the merged
-    contacts of branches that a filter would drop.
-
-    filters:
-        collapse_chains  — merge chain branches into one row
-        chain_key        — merge strategy: "name_city" | "name" | "phone" | "email"
-        parse_mode       — "without_website" | "all"
-        social_mode      — "all" | "with_socials" | "without_socials"
-        required_socials — list of platforms the business must ALL have
-        vk_check         — query VK activity (needs a VK token)
-        vk_mode          — "all" | "active" | "active_semi"
-        vk_max_post_days — drop communities idle for longer (0 = off)
-        vk_min_followers — drop smaller communities (0 = off)
-        min_lead_score   — drop leads below this score (0 = off)
-        sort_by_score    — order by lead_score, hottest first
-        blacklist_words  — слова-исключения (название/категория/описание)
-        only_single_branch — оставить компании с 1 филиалом (владелец решает сам)
-        only_new_months  — оставить карточки, появившиеся в 2ГИС за N месяцев
-                           (1/3/6/12/24; None/0 — выключено)
-    Returns {"groups": {query: {city: [records]}}, "count": int}.
-    Empty result → {"groups": {}, "count": 0, "empty": True}.
-
-    Blacklist применяется ПОСЛЕ объединения филиалов и ДО остальных фильтров:
-    если слово исключает компанию, она не вернётся ни соцсетями, ни оценкой
-    лида — иначе «исключено» зависело бы от остальных галочек.
-
-    Blacklist / «только без сайтов» / соцсети срабатывают ещё и на сборе
-    (`crawl_skip_reason` — те же правила): запись не показывается в живой
-    таблице и не тратит загрузку карточки. Здесь они повторяются, потому что
-    raw-файлы бывают старыми и чужими (CLI, архив), а «Применить фильтры
-    заново» обязано считать так же, как считает сбор.
-    """
+    """Read raw files, merge chains and apply the stage-2 filters."""
     records: list[dict] = []
     for rf in raw_files:
         if os.path.isfile(rf):
@@ -473,20 +321,13 @@ def apply_filters(raw_files: list[str], filters: dict, log_fn=None) -> dict:
 
     log = log_fn or (lambda *_: None)
 
-    # «🎯 Тип компании»: число филиалов нужно и фильтру, и объединению сетей —
-    # считаем ДО merge, иначе ветки сети уже схлопнуты в одну строку и сеть
-    # выглядела бы одиночкой. Заодно досчитываем старые сборы без поля.
+    # «🎯 Тип компании»: число филиалов нужно и фильтру, и объединению сетей — считаем ДО merge, иначе ветки сети уже схлопнуты в одну строку и сеть выглядела бы одиночкой.
     annotate_branch_counts(records)
 
     collapse = bool(filters.get("collapse_chains"))
 
     if collapse:
         # Strategy comes from the UI dropdown («Объединять филиалы сетей»):
-        # name_city (default) | name | phone | email. Unknown values fall
-        # back to the documented default instead of crashing stage 2.
-        # «name_city» keeps the strict stage-2 semantics (every same-named
-        # business in a city merges — acceptance criterion); the contact
-        # strategies go through the generic collapse_chains.
         chain_key = str(filters.get("chain_key") or "name_city")
         if chain_key not in collapse_chains_chain_keys():
             chain_key = "name_city"
@@ -496,8 +337,6 @@ def apply_filters(raw_files: list[str], filters: dict, log_fn=None) -> dict:
             records = collapse_chains(records, chain_key)
 
     # ── VK activity + lead score ──────────────────────────────
-    # Order: merge chains first (fewer communities to query), then activity,
-    # then the score (it reads the activity), then the record filters.
     if filters.get("vk_check"):
         try:
             from .vk_stats import annotate_records as _vk_annotate
@@ -526,11 +365,7 @@ def apply_filters(raw_files: list[str], filters: dict, log_fn=None) -> dict:
     new_excluded = 0
 
     def _vk_dropped(r: dict) -> bool:
-        """False when the record passes the VK-activity block.
-
-        Records without VK data pass: we only drop what we have measured,
-        so a missing token never empties the report.
-        """
+        """False when the record passes the VK-activity block."""
         activity = (r.get("vk_activity") or "").lower()
         if not activity or activity == "unknown":
             return False
@@ -608,8 +443,7 @@ def apply_filters(raw_files: list[str], filters: dict, log_fn=None) -> dict:
 
     blacklist_info = {"blacklist_words": blacklist_words,
                       "blacklist_excluded": blacklist_excluded,
-                      # Счётчики «типа компании»: у рефильтра нет потоковых
-                      # логов сервера, фронтенд пишет строку по этому числу.
+                      # Счётчики «типа компании»: у рефильтра нет потоковых логов сервера, фронтенд пишет строку по этому числу.
                       "company_type_excluded": single_excluded + new_excluded,
                       "single_excluded": single_excluded,
                       "new_excluded": new_excluded}
@@ -641,8 +475,7 @@ def processed_filename(fmt: str, query: str, city: str) -> str:
 
 
 def save_processed(data: list[dict], fmt: str, query: str, city: str) -> str:
-    """Save filtered records to output/processed/{format}/ (edge case 4:
-    one filter pass, export to every requested format)."""
+    """Save filtered records to output/processed/{format}/ (edge case 4:"""
     path = os.path.join(_fmt_dir(fmt), processed_filename(fmt, query, city))
     if fmt in ("excel", "xlsx"):
         save_excel(data, path)

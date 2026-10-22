@@ -1,10 +1,4 @@
-"""
-Run state management: process lifecycle, queue bridging, run registry.
-
-Each search runs in its own process (multiprocessing) for true isolation.
-A bridge thread reads from the multiprocessing.Queue and forwards to a
-regular queue.Queue that the SSE endpoint can consume with timeout.
-"""
+"""Run state management: process lifecycle, queue bridging, run registry."""
 import os
 import json
 import queue
@@ -24,40 +18,21 @@ except Exception:
     OUTPUT_DIR = "output"
     RESULTS_DIR = "output"
 
-# Marker telling the web UI which search is «the current one»: the
-# «Текущий результат» tab reads only the files written after started_at, so
-# results of older searches stay in «История файлов» instead of leaking into
-# the live table (and into «Массовый обход», which follows the same view).
+# Marker telling the web UI which search is «the current one»: the «Текущий результат» tab reads only the files written after started_at, so results of older searches stay in «История файлов» instead of leaking into the live table (and into «Массовый обход», which follows the same view).
 _CURRENT_SEARCH_FILE = ".current_search.json"
 
 # Silence before a process is presumed hung and force-killed (seconds).
-# Not a wall-clock limit: the bridge refreshes entry["_last_msg"] on every
-# forwarded message. But state.syslog/tech go to the FILE log, not the queue —
-# a long stretch of points that find nothing can look silent — so the window
-# is generous (15 min) to avoid killing a healthy crawl.
 _PROCESS_TIMEOUT = 900  # 15 minutes
 
 # Delay before calling finish_run() after bridge exits.
-# Gives the frontend time to receive the done message and close the
-# SSE connection before a new queued run starts writing to the same queue.
 _FINISH_DELAY = 6  # seconds: enough for a slow client to read done and close SSE
 
-# Grace period for a graceful stop: after the stop file/event is set, the
-# child is allowed this long to unwind (abort fetches, save checkpoint,
-# finalize Excel, send "done") before a background thread force-kills it.
+# Grace period for a graceful stop: after the stop file/event is set, the child is allowed this long to unwind (abort fetches, save checkpoint, finalize Excel, send "done") before a background thread force-kills it.
 _STOP_GRACE_SEC = 8  # seconds
-# A pause is a graceful stop the user WAITS on: the child must finish the
-# checkpoint + Excel finalize and send its "done" (paused=true) message, or
-# the UI would never offer «Продолжить». In-flight detail fetches can take
-# tens of seconds, so a pause gets a longer grace than a plain stop.
+# A pause is a graceful stop the user WAITS on: the child must finish the checkpoint + Excel finalize and send its "done" (paused=true) message, or the UI would never offer «Продолжить».
 _PAUSE_GRACE_SEC = 45  # seconds
 
 # ── Жизнь записей в реестре прогонов ──────────────────────────
-# finish_run убирает только успешно завершённые прогоны и лишь через 12 ч
-# после старта. Прогон, чей процесс умер (watchdog, kill) или о котором
-# родитель так и не узнал, оставался в _runs навсегда — за долгую сессию
-# реестр накапливал тысячи записей. Теперь уборка идёт ещё и периодически,
-# при каждом new_run(): по сроку жизни и по количеству записей.
 _RUN_TTL_S = 24 * 3600        # завершённые прогоны живут сутки
 _MAX_FINISHED_RUNS = 100      # ... но не больше сотни завершённых за сессию
 _MAX_PAUSED_RUNS = 20         # свежие паузы бережём для «Продолжить», старые — нет
@@ -68,36 +43,20 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 # ── API callback (webhook) ────────────────────────────────────
-# Публичный API (/api/v1/search) принимает callback_url: когда прогон
-# заканчивается, приложение отправляет на этот адрес POST с итогами —
-# n8n/другая автоматизация получает событие вместо опроса статуса.
-# Доставка ненадёжна по определению (сторонний адрес может быть недоступен),
-# поэтому ошибка — это лог, а не сбой прогона: данные уже записаны.
 _CB_TIMEOUT_S = 10   # таймаут одного POST на callback_url
 _CB_RETRIES = 2      # попыток доставки (с паузой между ними)
 _CB_RETRY_DELAY_S = 1.0
 
 
 def _pause_resume_payload(entry: dict) -> dict | None:
-    """Data the frontend needs to continue a paused run later.
-
-    Returned inside the done message: queries + the cities that were NOT
-    finished yet + WHERE the search stopped (city/query/point). The global
-    seen-URL cache and the per-run checkpoint make the resumed pass skip
-    everything already parsed, so no duplicates.
-    """
+    """Data the frontend needs to continue a paused run later."""
     params = entry.get("params") or {}
     cities = params.get("cities") or []
-    # Города, которые осталось обработать, начиная с ТЕКУЩЕГО: завершённые
-    # не должны перепрогоняться при «Продолжить», а недобранный город
-    # стартует заново без дублей (seen-cache пропускает уже спарсенное).
+    # Города, которые осталось обработать, начиная с ТЕКУЩЕГО: завершённые не должны перепрогоняться при «Продолжить», а недобранный город стартует заново без дублей (seen-cache пропускает уже спарсенное).
     remaining_cities: list = list(cities)
     pos = {}
     try:
-        # The child owns the live position — the parent's state.py copy never
-        # sees update_pause_info(), so prefer the position cached from the
-        # child's own done message (set in _bridge_reader) and only fall back
-        # to the parent copy for the crash path.
+        # The child owns the live position — the parent's state.py copy never sees update_pause_info(), so prefer the position cached from the child's own done message (set in _bridge_reader) and only fall back to the parent copy for the crash path.
         cached = entry.get("_position")
         if isinstance(cached, dict) and cached:
             pos = cached
@@ -150,8 +109,7 @@ class RunManager:
             "cities":     [],
             "started_at": time.time(),
             "finished_at": 0.0,      # 0 → прогон ещё не закончился
-            # Ошибка раннера: отличает «сломалось» от «ничего не найдено»
-            # (см. _entry_status в routes/public_api.py).
+            # Ошибка раннера: отличает «сломалось» от «ничего не найдено» (см. _entry_status в routes/public_api.py).
             "error":      None,
             # Прогресс: заполняется мостом из сообщений городов (см. _forward).
             "cities_done": 0,
@@ -166,14 +124,7 @@ class RunManager:
         return entry
 
     def _sweep(self) -> int:
-        """Убрать из реестра старые записи прогонов; вернуть число удалённых.
-
-        finish_run чистит только те прогоны, до которых дошёл, и лишь по
-        сроку в 12 ч. Запись убитого/упавшего процесса не удалял никто —
-        теперь её снимает эта уборка: по TTL, по числу завершённых и по
-        числу паузных. Активные и стоящие в очереди не трогаются никогда,
-        а свежие паузы живут для «Продолжить» (но не бесконечно много).
-        """
+        """Убрать из реестра старые записи прогонов; вернуть число удалённых. finish_run чистит только те прогоны, до которых дошёл, и лишь по сроку в 12 ч."""
         now = time.time()
         removed = 0
         with self._lock:
@@ -184,8 +135,7 @@ class RunManager:
             def _idle(r: dict) -> bool:
                 return not r.get("active") and not r.get("queued")
 
-            # 1) По сроку жизни: всё завершённое старше _RUN_TTL_S. Паузные
-            #    записи TTL не считает: их берегут для «Продолжить».
+            # 1) По сроку жизни: всё завершённое старше _RUN_TTL_S.
             for rid in [rid for rid, r in self._runs.items()
                         if _idle(r) and not r.get("paused")
                         and now - r.get("started_at", 0) > _RUN_TTL_S]:
@@ -198,8 +148,7 @@ class RunManager:
             for rid, _r in paused[:max(0, len(paused) - _MAX_PAUSED_RUNS)]:
                 del self._runs[rid]
                 removed += 1
-            # 3) По количеству: самые старые завершённые сверх лимита
-            #    (самая длинная сессия не должна растить реестр бесконечно).
+            # 3) По количеству: самые старые завершённые сверх лимита (самая длинная сессия не должна растить реестр бесконечно).
             finished = sorted((kv for kv in self._runs.items()
                                if _idle(kv[1]) and not kv[1].get("paused")),
                               key=lambda kv: kv[1].get("started_at", 0))
@@ -226,19 +175,7 @@ class RunManager:
             return bool(r and r.get("paused"))
 
     def clear_paused_run(self, run_id: str = "") -> str | None:
-        """Finalize a PAUSED run right now and return its id (else None).
-
-        «Продолжить» sends a fresh /run while the paused run may still be
-        marked active — finish_run() only fires _FINISH_DELAY seconds after
-        the done message. Without this the resume was pushed into the QUEUE
-        behind a run that is never started again (finish_run skips the queue
-        for a paused run), and the SSE stream (/logs without run_id) kept
-        pointing at the dead paused run — so the search never resumed.
-
-        The paused child has already sent its "done" (that is how the user
-        got the «Продолжить» button); we give it a moment to exit so its last
-        checkpoint/Excel writes can't collide with the resumed run.
-        """
+        """Finalize a PAUSED run right now and return its id (else None)."""
         target = run_id or self.active_run_id() or ""
         if not target:
             return None
@@ -263,13 +200,7 @@ class RunManager:
         return pos
 
     def finish_run(self, run_id: str):
-        """Mark run done, start next queued run if any.
-
-        A PAUSED run keeps entry["paused"]=True so the frontend can offer
-        «Продолжить»; queued runs are NOT autostarted after a pause —
-        finishing a paused run must not silently launch the next search
-        while the user believes everything is on hold.
-        """
+        """Mark run done, start next queued run if any."""
         next_entry = None
         was_paused = False
         with self._lock:
@@ -284,9 +215,7 @@ class RunManager:
                         r["active"] = True
                         next_entry = r
                         break
-            # Cleanup old finished runs. Generous (12 h): a PAUSED run kept its
-            # params so the user could step away and still press «Продолжить» —
-            # a 1-hour sweep threw them away.
+            # Cleanup old finished runs.
             now = time.time()
             to_remove = [rid for rid, r in self._runs.items()
                          if not r["active"] and not r.get("queued")
@@ -297,12 +226,7 @@ class RunManager:
             self.start_process(next_entry)
 
     def _mark_current_search(self, entry: dict) -> None:
-        """Stamp the start of this search into output/.current_search.json.
-
-        Written for every run that actually starts (queued ones are stamped
-        when their turn comes), so a page reload or an app restart keeps
-        «Текущий результат» pointing at the same search.
-        """
+        """Stamp the start of this search into output/.current_search.json."""
         payload = {
             "run_id":     entry.get("id"),
             "started_at": time.time(),
@@ -334,8 +258,7 @@ class RunManager:
         entry["skip_file"] = skip_file
         pause_file = os.path.join(stop_dir, f"{run_id}.pause")
         entry["pause_file"] = pause_file
-        # Домашняя уборка: файлы-сигналы запусков, убитых watchdog'ом, никто
-        # не удалял — они копились сотнями. Чистим старше суток.
+        # Домашняя уборка: файлы-сигналы запусков, убитых watchdog'ом, никто не удалял — они копились сотнями.
         try:
             now = time.time()
             for _name in os.listdir(stop_dir):
@@ -392,8 +315,7 @@ class RunManager:
             try:
                 clean = _ANSI_RE.sub("", msg)
                 if level == "result":
-                    # msg is already a JSON string from _emit_result;
-                    # parse it to get the dict for the frontend
+                    # msg is already a JSON string from _emit_result; parse it to get the dict for the frontend
                     mp_queue.put({"type": "result", "data": json.loads(clean)})
                 else:
                     mp_queue.put({"type": "log", "level": level, "msg": clean})
@@ -406,25 +328,16 @@ class RunManager:
                 skip_event = entry["skip_event"]
                 pause_event = entry.get("pause_event") or threading.Event()
                 # A pause is a graceful stop that REMEMBERS the run params:
-                # run_web unwinds through the same checkpoint path as stop.
                 if pause_event.is_set():
                     stop_event.set()
-                # pause_event MUST be handed to run_web: state._PAUSE_EVENT is
-                # what the closing lines and the done message read, and a fresh
-                # internal event would never be set by stop_run().
-                # Стартовый/финальный прогресс — как в runner.run_process:
-                # API знает знаменатель сразу, а после конца видит all/done.
+                # pause_event MUST be handed to run_web: state._PAUSE_EVENT is what the closing lines and the done message read, and a fresh internal event would never be set by stop_run().
                 _total_cities = len(params.get("cities") or [])
                 if _total_cities:
                     mp_queue.put({"type": "progress", "cities_done": 0,
                                   "cities_total": _total_cities})
                 files = _parser.run_web(params, _log_to_queue, stop_event, skip_event,
                                         pause_event)
-                # Build the frontend-friendly merged JSON (english keys, all
-                # cities) so the results table and stats render correctly even
-                # when only Excel output was requested. If per-city JSON files
-                # exist they are merged directly; otherwise xlsx is read back
-                # with header labels converted to english field keys.
+                # Build the frontend-friendly merged JSON (english keys, all cities) so the results table and stats render correctly even when only Excel output was requested.
                 try:
                     from yandex_maps_parser.exporters import write_frontend_json
                     ff = write_frontend_json(files, RESULTS_DIR, params.get("cities"))
@@ -447,11 +360,7 @@ class RunManager:
                 if params.get("output_json"):  fmts.append("json")
                 if params.get("output_excel"): fmts.append("xlsx")
                 if params.get("output_map"):   fmts.append("map")
-                # CRITICAL: Send done to mp_queue so the bridge forwards it
-                # to the SSE endpoint BEFORE the sentinel. The bridge will
-                # exit after seeing the sentinel, and the SSE endpoint will
-                # deliver the done message to the frontend.
-                # This is the ONLY place done is sent for normal completion.
+                # CRITICAL: Send done to mp_queue so the bridge forwards it to the SSE endpoint BEFORE the sentinel.
                 skipped = list(getattr(_parser.state, '_SKIPPED_CITIES', []))
                 if _total_cities and not stop_event.is_set() and not pause_event.is_set():
                     mp_queue.put({"type": "progress", "cities_done": _total_cities,
@@ -471,8 +380,7 @@ class RunManager:
                 try:
                     mp_queue.put({"type": "log", "level": "warn",
                                   "msg": f"Ошибка: {exc}\n{tb}"})
-                    # Явная ошибка: мост пометит прогон failed, и клиент
-                    # отличит «сломалось» от «ничего не найдено».
+                    # Явная ошибка: мост пометит прогон failed, и клиент отличит «сломалось» от «ничего не найдено».
                     mp_queue.put({"type": "error", "message": str(exc)})
                     mp_queue.put({"type": "done", "files": [], "count": 0,
                                   "stopped": False, "paused": False,
@@ -496,8 +404,7 @@ class RunManager:
                         os.remove(skip_f)
                     except OSError:
                         pass
-                # The pause file too: a leftover one would pause the next run
-                # that reuses the same run_id path (resume reuses it).
+                # The pause file too: a leftover one would pause the next run that reuses the same run_id path (resume reuses it).
                 pause_f = entry.get("pause_file")
                 if pause_f:
                     try:
@@ -510,19 +417,7 @@ class RunManager:
         t.start()
 
     def stop_run(self, run_id: str = "", pause: bool = False) -> list[str]:
-        """Stop a run by ID or the active run; returns the affected run ids.
-
-        With pause=True the run unwinds the same graceful way but the entry
-        keeps its params and gets paused=True — the frontend then offers
-        «Продолжить» instead of treating it as a finished search.
-
-        GRACEFUL FIRST: the stop event/file is set and the run is allowed to
-        unwind on its own (the in-process stop checks now abort detail
-        fetches within ~1-3s, so a graceful stop is fast). Only if the child
-        process is still alive after _STOP_GRACE_SEC does a background thread
-        force-kill it. This preserves the final checkpoint/Excel writes and
-        lets the child send its "done" message with real file list.
-        """
+        """Stop a run by ID or the active run; returns the affected run ids."""
         with self._lock:
             targets = []
             if run_id and run_id in self._runs:
@@ -532,16 +427,7 @@ class RunManager:
                     if r["active"] and not r.get("queued"):
                         targets.append(r)
             for entry in targets:
-                # A pause IS a graceful stop for the engine, but the two must
-                # stay distinguishable: the child runs TWO file watchers
-                # (`{run_id}.pause` and `{run_id}.stop`, each polling every
-                # 0.5 s). Writing BOTH files for a pause made the outcome a
-                # coin flip — when the stop watcher fired first, the child's
-                # `state._PAUSE_EVENT` was never set and the engine unwound as
-                # a plain stop: no «Продолжить», the search was simply over.
-                # Now a pause writes ONLY the pause file; the child's pause
-                # watcher (runner.run_process._watch_pause) sets both of ITS
-                # events, so the unwind is graceful and remembered.
+                # A pause IS a graceful stop for the engine, but the two must stay distinguishable: the child runs TWO file watchers (`{run_id}.pause` and `{run_id}.stop`, each polling every 0.5 s).
                 if pause:
                     entry["paused"] = True
                     pf = entry.get("pause_file")
@@ -559,9 +445,7 @@ class RunManager:
                                 f.write("stop")
                         except Exception:
                             pass
-                # Both events are shared objects in thread-fallback mode (the
-                # files are not watched there at all), so set them for a pause
-                # as well — only the flags decide what the UI is told.
+                # Both events are shared objects in thread-fallback mode (the files are not watched there at all), so set them for a pause as well — only the flags decide what the UI is told.
                 pev = entry.get("pause_event") if pause else None
                 if pev:
                     try:
@@ -574,9 +458,7 @@ class RunManager:
                         stop_ev.set()
                     except Exception:
                         pass
-                # Do NOT terminate() inline — that hard-kills the child before
-                # it can save its checkpoint / finalize Excel / send "done".
-                # Escalate in the background only if it doesn't exit on its own.
+                # Do NOT terminate() inline — that hard-kills the child before it can save its checkpoint / finalize Excel / send "done".
                 proc = entry.get("process")
                 if proc and proc.is_alive():
                     _grace = _PAUSE_GRACE_SEC if pause else _STOP_GRACE_SEC
@@ -651,13 +533,7 @@ class RunManager:
     def status(self) -> dict:
         active = self.active_run_id()
         queued = sum(1 for r in self._runs.values() if r.get("queued"))
-        # A PAUSED run stays out of `active_run` as soon as it is finalized, so
-        # the frontend had no way to learn about it after a page reload — the
-        # «Продолжить» button simply never appeared and users started a fresh
-        # search instead (and then reported that «пауза прекращает поиск»).
-        # The newest paused entry travels with the status so the dock can
-        # restore itself. Its params/resume payload come from the same builder
-        # the done message uses.
+        # A PAUSED run stays out of `active_run` as soon as it is finalized, so the frontend had no way to learn about it after a page reload — the «Продолжить» button simply never appeared and users started a fresh search instead (and then reported that «пауза прекращает поиск»).
         paused = None
         with self._lock:
             entries = sorted(self._runs.values(),
@@ -704,12 +580,10 @@ def _callback_payload(entry: dict) -> dict:
         "cities":     entry.get("cities", []),
         "started_at": entry.get("started_at", 0),
         "finished_at": time.time(),
-        # Новые поля: клиент видит причину падения и прогресс, а не гадает по
-        # «count: 0». Старые поля остались на своих местах (совместимость).
+        # Новые поля: клиент видит причину падения и прогресс, а не гадает по «count: 0».
         "error":      entry.get("error"),
         "progress":   {"cities_done":    int(entry.get("cities_done") or 0),
-                       # Знаменатель берём из списка городов, если счётчик
-                       # моста ещё не дошёл (прогон мог упасть до первого города).
+                       # Знаменатель берём из списка городов, если счётчик моста ещё не дошёл (прогон мог упасть до первого города).
                        "cities_total":   int(entry.get("cities_total") or 0)
                                          or len(entry.get("cities") or []),
                        "records_so_far": int(entry.get("records_so_far") or 0)},
@@ -743,17 +617,7 @@ def _post_callback(url: str, payload: dict) -> None:
         pass
 
 def _apply_progress(entry: dict, data) -> None:
-    """Обновить прогресс прогона: города и найденные записи.
-
-    Прогресс уже течёт в потоке логов: runner.run_web отдаёт
-    "city/<номер>/<всего>/<город>" на входе города,
-    "city_done|<номер>|<всего>|<город>|<итог>|<записей>" на выходе и
-    "city_list|<города>" один раз со всем списком. Разбираем эти сообщения,
-    чтобы родитель знал, сколько городов пройдено (n8n смотрит
-    progress.cities_done), и не трогаем движок ради счётчиков.
-    Явное сообщение {"type": "progress", cities_done: …} тоже принимается —
-    на случай, если продюсер начнёт слать его напрямую.
-    """
+    """Обновить прогресс прогона: города и найденные записи."""
     if isinstance(data, dict):
         for key in ("cities_done", "cities_total", "records_so_far"):
             if data.get(key) is not None:
@@ -791,12 +655,7 @@ def _apply_progress(entry: dict, data) -> None:
 
 
 def _fire_api_callback(entry: dict) -> None:
-    """Отправить итоги прогона на callback_url (если он задан) — в фоне.
-
-    Вызывается один раз на прогон, когда мост подтвердил конец (см.
-    _bridge_reader). Ошибка доставки не поднимается: прогон уже записан,
-    а автоматизация получит статус и опросом /api/v1/status.
-    """
+    """Отправить итоги прогона на callback_url (если он задан) — в фоне."""
     url = str((entry.get("params") or {}).get("callback_url") or "").strip()
     if not url:
         return
@@ -806,39 +665,37 @@ def _fire_api_callback(entry: dict) -> None:
         daemon=True, name=f"yp-callback-{entry.get('id', '')}",
     ).start()
 
-def _bridge_reader(mp_queue, reg_queue, entry):
-    """Read from multiprocessing.Queue, forward to regular Queue for SSE.
+def _offer(reg_queue, message) -> None:
+    """Положить сообщение в очередь логов, не блокируясь на полной очереди.
 
-    Exits when:
-    - Child sends None sentinel (normal completion)
-    - Child process/thread dies and queue is drained (crash)
-    - Exception occurs
-
-    CRITICAL DESIGN:
-    - The done message is ONLY sent when the producer is confirmed dead
-      (crash case). For normal completion, the producer itself sends
-      the done message before the sentinel.
-    - finish_run() is delayed by _FINISH_DELAY seconds after the bridge
-      exits. This gives the frontend time to receive the done message
-      and close the SSE connection before a new queued run starts.
+    Интерфейс мог закрыться посреди прогона: блокирующий `put()` оставил бы
+    нитку моста (и всё, что она держит) в памяти навсегда. Старые строки лога
+    уже никто не прочитает — уступаем место свежей.
     """
+    try:
+        reg_queue.put_nowait(message)
+        return
+    except queue.Full:
+        pass
+    try:
+        reg_queue.get_nowait()
+    except queue.Empty:
+        pass
+    try:
+        reg_queue.put_nowait(message)
+    except queue.Full:
+        pass
+
+
+def _bridge_reader(mp_queue, reg_queue, entry):
+    """Read from multiprocessing.Queue, forward to regular Queue for SSE."""
     mode = entry.get("_run_mode", "thread")
     proc = entry.get("process")
     thread = entry.get("_thread")
     empty_count = 0  # consecutive empty polls
 
     def _forward(m) -> None:
-        """Forward one message; record a real done so the bridge never
-        synthesises a second one (which used to arrive with stopped=False and
-        empty files/formats and could report «Готово» for a real stop).
-
-        Здесь же мост переносит итоги прогона из дочернего процесса в
-        родительский entry: files / count / cities / error / progress.
-        Дочерний процесс НЕ может писать в self._runs (это память родителя,
-        а не общая), а /api/v1/results читает именно entry["files"] — без
-        этой записи API всегда отдавал пустой список результатов и статус
-        «running» уже после конца поиска.
-        """
+        """Forward one message; record a real done so the bridge never synthesises a second one (which used to arrive with stopped=False and empty files/formats and could report «Готово» for a real stop)."""
         if isinstance(m, dict):
             kind = m.get("type")
             if kind == "done":
@@ -861,16 +718,14 @@ def _bridge_reader(mp_queue, reg_queue, entry):
                 if isinstance(_res, dict) and isinstance(_res.get("position"), dict):
                     entry["_position"] = _res["position"]   # for status() after reload
             elif kind == "error":
-                # Явная ошибка раннера: прогон помечается failed, и клиент
-                # отличает «сломалось» от «ничего не найдено». В SSE это
-                # сообщение не уходит — оно служебное, для родителя.
+                # Явная ошибка раннера: прогон помечается failed, и клиент отличает «сломалось» от «ничего не найдено».
                 entry["error"] = str(m.get("message") or m.get("error") or "unknown error")
                 return
             elif kind == "progress":
                 _apply_progress(entry, m)
             elif kind == "log" and m.get("level") == "progress":
                 _apply_progress(entry, m.get("msg"))
-        reg_queue.put(m)
+        _offer(reg_queue, m)
 
     while True:
         try:
@@ -920,67 +775,45 @@ def _bridge_reader(mp_queue, reg_queue, entry):
 
     entry["finished_at"] = entry.get("finished_at") or time.time()
 
-    # CRASH SAFETY: If the producer died without sending a done message,
-    # send one now so the frontend gets a clean completion signal. A PAUSED
-    # run keeps its paused flag + resume payload here: a hard-killed child
-    # never sent its own "done", and without this the user would see a plain
-    # «завершено» and lose the «Продолжить» button after waiting for a pause.
+    # CRASH SAFETY: If the producer died without sending a done message, send one now so the frontend gets a clean completion signal.
     if not entry.get("_done"):
         pause_ev = entry.get("pause_event")
         stop_ev = entry.get("stop_event")
         was_paused = bool(entry.get("paused") or (pause_ev and pause_ev.is_set()))
-        # Mirror runner.run_process: a user-requested stop must not be reported
-        # as a clean «Готово» on the crash path.
+        # Mirror runner.run_process: a user-requested stop must not be reported as a clean «Готово» on the crash path.
         stopped = bool(stop_ev and stop_ev.is_set() and not was_paused)
-        # Нормальный прогон ВСЕГДА отправляет done до сентинела. Если его нет
-        # и это не стоп/пауза — процесс умер молча (watchdog, kill): помечаем
-        # ошибкой, чтобы клиент не принял «count: 0» за честный пустой ответ.
+        # Нормальный прогон ВСЕГДА отправляет done до сентинела.
         if not was_paused and not stopped:
             entry["error"] = entry.get("error") or (
                 "run process ended without a done message (killed or crashed)")
-        # The payload is built in its own try: a failure inside it must not
-        # cost the frontend the done message (and with it «Продолжить»).
+        # The payload is built in its own try: a failure inside it must not cost the frontend the done message (and with it «Продолжить»).
         resume = None
         if was_paused:
             try:
                 resume = _pause_resume_payload(entry)
             except Exception:
                 resume = None
-        try:
-            reg_queue.put({"type": "done", "files": entry.get("files", []),
+        _offer(reg_queue, {"type": "done", "files": entry.get("files", []),
                            "count": entry.get("count", 0),
                            "stopped": stopped, "paused": was_paused,
                            "resume": resume,
                            "formats": [], "skipped_cities": []})
-        except Exception:
-            pass
 
     entry["_done"] = True
 
-    # Уведомление для автоматизации (callback_url из /api/v1/search): прогон
-    # кончился — сообщаем об этом наружу, не заставляя опрашивать статус.
+    # Уведомление для автоматизации (callback_url из /api/v1/search): прогон кончился — сообщаем об этом наружу, не заставляя опрашивать статус.
     try:
         _fire_api_callback(entry)
     except Exception:
         pass
 
-    # CRITICAL: Delay finish_run() to give the frontend time to receive
-    # the done message and close the SSE connection. Without this delay,
-    # a queued run could start and write to the same SSE queue before
-    # the frontend disconnects, causing results to be lost.
+    # CRITICAL: Delay finish_run() to give the frontend time to receive the done message and close the SSE connection.
     _rid = entry["id"]
     threading.Timer(_FINISH_DELAY, lambda: run_manager.finish_run(_rid)).start()
 
 
 def _watchdog(entry):
-    """Force-kill a process that has gone silent.
-
-    This is a STALL detector, not a wall-clock runtime limit: a healthy long
-    run (e.g. continuation mode across many cities) keeps emitting messages
-    through the bridge, which refreshes entry["_last_msg"]. Only when the
-    child has produced nothing for _PROCESS_TIMEOUT seconds is it presumed
-    hung and terminated.
-    """
+    """Force-kill a process that has gone silent."""
     while True:
         time.sleep(5)
         if entry.get("_done"):

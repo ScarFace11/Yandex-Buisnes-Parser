@@ -1,29 +1,4 @@
-"""Дисковый кэш HTML детальных карточек Яндекс.Карт (CDP).
-
-Одна и та же организация не перекачивается дважды: страница карточки,
-которую браузер отдал целиком, лежит в `output/.cache/pages/` и живёт
-`TTL` часов. Выигрыш считанный: загрузка карточки через CDP — это навигация
-Chrome с ожиданием рендера (секунды на организацию, при антиботе и до
-десятков секунд), а попадание в кэш — чтение файла (доли миллисекунды).
-Повторный прогон по тем же городам (второй проход, «Применить фильтры»,
-дозапуск после стопа) не ждёт браузер на каждой организации и не дёргает
-Яндекс лишний раз.
-
-Что попадает на диск: только «здоровые» страницы (см.
-`extractors.fetch_html`). Антибот-заглушка, пустой ответ и ошибка навигации
-не кэшируются — иначе заглушка жила бы сутки, и организация навсегда
-осталась бы без деталей.
-
-Управление (переменные окружения):
-
-* `YP_PAGE_CACHE=0` — выключить кэш целиком (по умолчанию включён);
-* `YP_PAGE_CACHE_TTL` — время жизни страницы в часах (по умолчанию 24);
-* `YP_PAGE_CACHE_MB` — лимит объёма папки кэша в МиБ (по умолчанию 150):
-  при переполнении удаляются самые старые страницы.
-
-`cleanup_expired()` вызывается при старте приложения (см. `app.py`),
-`cache_stats()` отдаётся в `/cache/stats` и в сводку прогона.
-"""
+"""Дисковый кэш HTML детальных карточек Яндекс.Карт (CDP)."""
 import os
 import re
 import threading
@@ -51,12 +26,18 @@ def _env_int(name: str, default: int) -> int:
 _CACHE_DIR = os.path.join(state.OUTPUT_DIR, ".cache", "pages")
 _TTL_SECONDS = _env_int("YP_PAGE_CACHE_TTL", 24) * 3600
 _MAX_BYTES = _env_int("YP_PAGE_CACHE_MB", 150) * 1024 * 1024
-# Порог «настоящей» страницы: короче — заглушка/ошибка (тот же 800-байтовый
-# порог, что в enrichment._looks_like_antiblock и в сборе выдачи).
+# Порог «настоящей» страницы: короче — заглушка/ошибка (тот же 800-байтовый порог, что в enrichment._looks_like_antiblock и в сборе выдачи).
 _MIN_BYTES = 800
 
 _lock = threading.RLock()
 _stats = {"hits": 0, "misses": 0, "stores": 0, "expired": 0, "evicted": 0}
+
+# Приблизительный объём папки: (каталог, байты, когда проверяли по-настоящему).
+# Без него каждый set_cached перебирал бы весь каталог — с сотнями страниц это
+# заметная плата за каждую карточку. Точный пересчёт — раз в минуту и при
+# выходе за лимит.
+_approx: tuple[str, int, float] | None = None
+_RESCAN_SECONDS = 60.0
 
 
 def is_enabled() -> bool:
@@ -65,11 +46,7 @@ def is_enabled() -> bool:
 
 
 def reset_stats() -> None:
-    """Сбросить счётчики попаданий/промахов в начале прогона.
-
-    Вызывается рядом с http_client.reset_stats(): иначе в сводке стояли бы
-    цифры прошлых прогонов (сервер живёт одним процессом весь день).
-    """
+    """Сбросить счётчики попаданий/промахов в начале прогона."""
     with _lock:
         for key in _stats:
             _stats[key] = 0
@@ -108,22 +85,19 @@ def _page_files() -> list[tuple[str, float, int]]:
     return out
 
 
-def _enforce_limit() -> None:
-    """Держим папку кэша в пределах _MAX_BYTES, удаляя самые старые файлы."""
-    files = _page_files()
-    total = sum(size for _, _, size in files)
-    if total <= _MAX_BYTES:
-        return
-    files.sort(key=lambda item: item[1])          # от старых к новым
-    for path, _, size in files:
-        if total <= _MAX_BYTES:
-            break
-        try:
-            os.remove(path)
-        except OSError:
-            continue
-        total -= size
-        _bump("evicted")
+def _approx_size() -> int | None:
+    """Размер папки из памяти — None, если для текущего каталога его ещё нет."""
+    if _approx is None or _approx[0] != _CACHE_DIR:
+        return None
+    return _approx[1]
+
+
+def _add_size(delta: int) -> None:
+    """Учесть изменение размера, не заглядывая в каталог."""
+    global _approx
+    current = _approx_size()
+    if current is not None and _approx is not None:
+        _approx = (_approx[0], max(0, current + delta), _approx[2])
 
 
 def get_cached(biz_id: str) -> str | None:
@@ -141,6 +115,8 @@ def get_cached(biz_id: str) -> str | None:
             os.remove(path)
         except OSError:
             pass
+        else:
+            _add_size(-st.st_size)
         _bump("expired")
         _bump("misses")
         return None
@@ -156,10 +132,36 @@ def get_cached(biz_id: str) -> str | None:
             os.remove(path)
         except OSError:
             pass
+        else:
+            _add_size(-st.st_size)
         _bump("misses")
         return None
     _bump("hits")
     return html
+
+
+def _enforce_limit() -> None:
+    """Держим папку кэша в пределах _MAX_BYTES, удаляя самые старые файлы."""
+    global _approx
+    now = time.time()
+    known = _approx_size()
+    if (known is not None and _approx is not None
+            and now - _approx[2] < _RESCAN_SECONDS and known <= _MAX_BYTES):
+        return                      # объём заведомо в норме — каталог не трогаем
+    files = _page_files()
+    total = sum(size for _, _, size in files)
+    if total > _MAX_BYTES:
+        files.sort(key=lambda item: item[1])      # от старых к новым
+        for path, _, size in files:
+            if total <= _MAX_BYTES:
+                break
+            try:
+                os.remove(path)
+            except OSError:
+                continue
+            total -= size
+            _bump("evicted")
+    _approx = (_CACHE_DIR, total, now)
 
 
 def set_cached(biz_id: str, html: str) -> None:
@@ -171,16 +173,26 @@ def set_cached(biz_id: str, html: str) -> None:
     try:
         _ensure_cache_dir()
         path = _path_for(biz_id)
-        # Пишем во временный файл и переименовываем: читатель (другой поток
-        # или следующий прогон) никогда не увидит половину страницы.
+        blob = html.encode("utf-8")
+        # Пишем во временный файл и переименовываем: читатель (другой поток или следующий прогон) никогда не увидит половину страницы.
         tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
-        with open(tmp, "w", encoding="utf-8", newline="") as fh:
-            fh.write(html)
-        os.replace(tmp, path)
+        try:
+            with open(tmp, "wb") as fh:
+                fh.write(blob)
+            os.replace(tmp, path)
+        except OSError:
+            # Неудачная запись не должна оставлять .tmp на диске навсегда
+            # (на Windows файл мог быть занят читателем).
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            return
     except OSError:
         return
     _bump("stores")
     with _lock:
+        _add_size(len(blob))
         _enforce_limit()
 
 
@@ -211,13 +223,14 @@ def cleanup_expired() -> int:
         return 0
     removed = 0
     now = time.time()
-    for path, mtime, _ in _page_files():
+    for path, mtime, size in _page_files():
         if now - mtime <= _TTL_SECONDS:
             continue
         try:
             os.remove(path)
         except OSError:
             continue
+        _add_size(-size)
         removed += 1
     if removed:
         _bump("expired", removed)

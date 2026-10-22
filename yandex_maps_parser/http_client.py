@@ -1,22 +1,9 @@
-"""
-Статистика сбора: счётчики, задержки, аналитика для интерфейса.
-
-Здесь раньше жил HTTP-движок (httpx + curl_cffi с подменой TLS-отпечатка
-Chrome). Он удалён вместе с HTTP-путём: страницы Яндекс.Карт читает только
-настоящий браузер (см. cdp_client.py и browser_search.py). Прямые запросы
-ловит антибот, а сам IP/аккаунт после серии таких обращений выглядит
-подозрительно — приложение этим не пользуется вообще.
-
-Осталось то, что нужно интерфейсу: сколько страниц открыто, сколько заняло,
-какая задержка p95 (по ней enrichment включает мягкое торможение) и
-реэкспорт лимитера из rate_limit.
-"""
+"""Статистика сбора: счётчики, задержки, аналитика для интерфейса."""
 import threading
 import time
 from collections import deque
 
-# Реэкспорт лимитера: extractors/enrichment/cdp_client импортируют эти имена
-# отсюда исторически (pyflakes помечает часть как unused — ложное срабатывание).
+# Реэкспорт лимитера: extractors/enrichment/cdp_client импортируют эти имена отсюда исторически (pyflakes помечает часть как unused — ложное срабатывание).
 from .rate_limit import (
     _get_rps, _rps_drop, _rps_reset,
     _set_cooldown, _anti_bot_detected, _anti_bot_reset, _cooldown_remaining,
@@ -85,11 +72,7 @@ def _record_latency(seconds: float) -> None:
 
 
 def _get_latency_stats() -> tuple[float, float, float]:
-    """Return (avg, p50, p95) from the rolling latency window.
-
-    Caches the computation — only recalculates when the window has changed
-    since the last call. Avoids O(n log n) sort on every request.
-    """
+    """Return (avg, p50, p95) from the rolling latency window."""
     global _cached_avg, _cached_p50, _cached_p95, _latency_cache_version
     with _latency_lock:
         if _latency_version == _latency_cache_version and _latency_window:
@@ -113,11 +96,15 @@ def get_analytics() -> dict:
         rate_limits = _stats["rate_limits"]
         retries = _stats["retries"]
     avg_latency, p50, p95 = _get_latency_stats()
-    # Calculate actual RPS
+    # Calculate actual RPS: оба значения пишутся под _stats_lock, читаем так же
+    # (иначе сброс статистики посреди чтения давал всплеск скорости).
     now = time.monotonic()
-    if _rps_start_time > 0 and now > _rps_start_time:
-        elapsed = now - _rps_start_time
-        actual_rps = _rps_request_count / elapsed if elapsed > 0 else 0
+    with _stats_lock:
+        rps_start = _rps_start_time
+        rps_count = _rps_request_count
+    if rps_start > 0 and now > rps_start:
+        elapsed = now - rps_start
+        actual_rps = rps_count / elapsed if elapsed > 0 else 0
     else:
         actual_rps = 0.0
     return {
@@ -142,10 +129,10 @@ def reset_stats() -> None:
         _stats["cooldown_seconds"] = 0.0
         _stats["retries"] = 0
         _stats["errors"] = 0
+        _rps_start_time = time.monotonic()
+        _rps_request_count = 0
     with _latency_lock:
         _latency_window.clear()
-    _rps_start_time = time.monotonic()
-    _rps_request_count = 0
 
 
 def get_stats() -> dict:

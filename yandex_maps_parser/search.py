@@ -1,18 +1,4 @@
-"""
-Поиск организаций в Яндекс.Картах — через настоящий браузер (CDP).
-
-Раньше страница выдачи приходила из коммерческого API «Поиск по
-организациям» (search-maps.yandex.ru) по API-ключу. Приложение его больше
-не использует: бесплатная версия API запрещает сохранять полученные данные
-(https://yandex.ru/dev/commercial/doc/ru/), а платная для задачи не нужна.
-Теперь поиск идёт тем же путём, что у обычного пользователя: открывается
-страница Яндекс.Карт в реальном Chrome, список прокручивается и читается
-из DOM (см. browser_search.py).
-
-Модуль сохраняет прежний контракт `search_page(...)`: наружу выдаются
-GeoJSON-подобные «фичи» с CompanyMetaData, чтобы весь остальной конвейер
-(парсинг записи, дедупликация, обогащение карточек) не менялся.
-"""
+"""Поиск организаций в Яндекс.Картах — через настоящий браузер (CDP)."""
 import threading
 
 from . import state
@@ -27,11 +13,7 @@ _cache_lock = threading.Lock()
 
 
 def search_failure_hint() -> str:
-    """Человеческое объяснение пустой выдачи.
-
-    Проверка «Вы не робот?» объясняется отдельно: браузер и интернет тут ни при
-    чём, а совет «проверьте браузер» в этой ситуации уводил в сторону.
-    """
+    """Человеческое объяснение пустой выдачи."""
     if browser_search.blocked_reason() == "captcha":
         return ("Яндекс показал проверку «Вы не робот?» вместо выдачи — браузер "
                 "и интернет тут ни при чём. Проверка включается на подозрительные "
@@ -53,12 +35,7 @@ def _remember(key: tuple, cards: list[dict]) -> None:
 
 
 def _harvest(query: str, city: str, lat: float, lon: float) -> list[dict]:
-    """Карточки выдачи для (query, точка) — с кэшем на время прогона.
-
-    Одна прокрутка страницы отдаёт до ~50 организаций, поэтому страницы
-    MAX_PAGES обслуживаются из одной выдачи: повторных открытий страницы
-    нет, лишних обращений к Яндексу тоже (меньше следов — меньше риска).
-    """
+    """Карточки выдачи для (query, точка) — с кэшем на время прогона."""
     key = _cache_key(query, lat, lon)
     with _cache_lock:
         cached = _harvest_cache.get(key)
@@ -74,13 +51,7 @@ def _harvest(query: str, city: str, lat: float, lon: float) -> list[dict]:
 def search_page(
     query: str, city: str, lat: float, lon: float, skip: int, session=None
 ) -> tuple[list[dict], int | None]:
-    """Одна «страница» выдачи Яндекс.Карт для (query, точка).
-
-    Возвращает (features, found): features — GeoJSON-подобные карточки,
-    found — сколько организаций Яндекс показал по этому запросу (None,
-    если счётчик не распознан). `session` оставлен для совместимости
-    вызовов: HTTP-сессии больше не используются, страницу открывает браузер.
-    """
+    """Одна «страница» выдачи Яндекс.Карт для (query, точка)."""
     if state._STOP_EVENT and state._STOP_EVENT.is_set():
         return [], None
     if state.is_skip_city():
@@ -90,8 +61,7 @@ def search_page(
     if not cards:
         blocked = browser_search.blocked_reason()
         if blocked:
-            # Один раз на прогон: иначе каждый город и запрос повторял бы то же
-            # самое, и в логе «Важные» было бы двадцать одинаковых строк.
+            # Один раз на прогон: иначе каждый город и запрос повторял бы то же самое, и в логе «Важные» было бы двадцать одинаковых строк.
             if not getattr(state, "SEARCH_BLOCKED", ""):
                 state.SEARCH_BLOCKED = blocked
                 state.warn(search_failure_hint())
@@ -107,11 +77,7 @@ def search_page(
 
 
 def _card_feature(card: dict) -> dict:
-    """Карточка выдачи → GeoJSON-фича в формате прежнего Search API.
-
-    Так вся дальнейшая обработка (parse_feature → дедупликация → enrich)
-    работает без изменений, хотя данные пришли из DOM, а не из API.
-    """
+    """Карточка выдачи → GeoJSON-фича в формате прежнего Search API."""
     lat, lon = card.get("lat") or "", card.get("lon") or ""
     coords: list[float] = []
     try:
@@ -124,8 +90,7 @@ def _card_feature(card: dict) -> dict:
         "id": card.get("_biz_id", ""),
         "name": card.get("name", ""),
         "address": card.get("address", ""),
-        # Сайт в выдаче не показывается — он выяснится на карточке организации
-        # (см. extractors.extract_website и фильтр в enrichment).
+        # Сайт в выдаче не показывается — он выяснится на карточке организации (см. extractors.extract_website и фильтр в enrichment).
         "url": "",
         "rating": card.get("rating", ""),
         "reviews_count": card.get("reviews_count", ""),
@@ -135,10 +100,7 @@ def _card_feature(card: dict) -> dict:
 
 
 def parse_feature(feature: dict, query: str) -> dict | None:
-    """
-    Convert a feature (DOM-карточка Яндекс.Карт) into a candidate record.
-    Returns None only if the business has no name or fails quality filters.
-    """
+    """Convert a feature (DOM-карточка Яндекс.Карт) into a candidate record."""
     from .extractors import _is_aggregator
 
     props = feature.get("properties", {})
@@ -154,9 +116,7 @@ def parse_feature(feature: dict, query: str) -> dict | None:
     if raw_url and _is_aggregator(raw_url):
         aggregator = raw_url
 
-    # Parse mode "without_website": выдача не сообщает сайт, поэтому решение
-    # принимается на карточке организации (enrichment → extract_website):
-    # запись с сайтом отбрасывается уже после загрузки карточки.
+    # Parse mode "without_website": выдача не сообщает сайт, поэтому решение принимается на карточке организации (enrichment → extract_website): запись с сайтом отбрасывается уже после загрузки карточки.
     if state.PARSE_MODE == "without_website" and raw_url and not aggregator:
         return None
 
@@ -179,8 +139,7 @@ def parse_feature(feature: dict, query: str) -> dict | None:
         "category":      ", ".join(c.get("name", "") for c in meta.get("Categories", [])),
         "address":       meta.get("address", ""),
         "phone":         phones,
-        # Рейтинг и отзывы видны прямо в выдаче (раньше приходили только
-        # с карточки — теперь экономим запросы).
+        # Рейтинг и отзывы видны прямо в выдаче (раньше приходили только с карточки — теперь экономим запросы).
         "rating":        meta.get("rating", ""),
         "reviews_count": meta.get("reviews_count", ""),
         "aggregator_url": aggregator,

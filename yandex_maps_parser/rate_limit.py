@@ -1,9 +1,4 @@
-"""
-Rate limiting: token bucket, adaptive RPS, cooldown, anti-bot backoff.
-
-All global rate-limiting state lives here. http_client.py imports
-and calls these functions — it does NOT own rate-limiting policy.
-"""
+"""Rate limiting: token bucket, adaptive RPS, cooldown, anti-bot backoff."""
 import threading
 import time
 
@@ -125,16 +120,13 @@ def _cooldown_remaining() -> float:
 
 # ── Wait for token ──────────────────────────────────────────
 def _wait_for_token() -> bool:
-    """Block until the token bucket grants a slot AND cooldown elapsed.
-    Returns True if interrupted by stop/skip."""
+    """Block until the token bucket grants a slot AND cooldown elapsed."""
     while True:
         if state._STOP_EVENT and state._STOP_EVENT.is_set():
             return True
         if state.is_skip_city():
             return True
-        # Cooldown first: try_acquire() consumes a token whenever one is
-        # available, so during a (possibly long) cooldown the old max() burned
-        # a token on every pass and then discarded it.
+        # Cooldown first: try_acquire() consumes a token whenever one is available, so during a (possibly long) cooldown the old max() burned a token on every pass and then discarded it.
         cooldown = _cooldown_remaining()
         if cooldown > 0:
             if _interruptible_sleep(cooldown, quiet=True):
@@ -148,8 +140,7 @@ def _wait_for_token() -> bool:
 
 
 def _interruptible_sleep(seconds: float, quiet: bool = False) -> bool:
-    """Wait *seconds*, checking stop/skip every second.
-    Returns True if interrupted."""
+    """Wait *seconds*, checking stop/skip every second."""
     end = time.time() + seconds
     reported: set[int] = set()
     while True:

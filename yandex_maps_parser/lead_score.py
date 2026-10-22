@@ -1,22 +1,4 @@
-"""
-Lead Score — 0..90 «насколько это горячий клиент для продажи сайта».
-
-Computed at stage 2 (после объединения филиалов и проверки активности ВК, до
-фильтров), so the numbers it needs are already in the record.
-
-Breakdown (each item is reported so the UI can explain the number):
-
-    нет сайта            +30   главный сигнал: сайта нет вообще
-    активный ВК          +20   владелец читает сообщения (полуактивный +10)
-    рейтинг >= 4.5       +15   бизнес нравится людям
-    отзывов >= 50        +15   есть поток клиентов
-    есть телефон          +5   можно позвонить сегодня
-    дорогая категория     +5   за сайт платят выше среднего
-
-Maximum is 90: «новый бизнес (< 6 мес)» из ТЗ is not counted because neither
-Яндекс.Карты не показывают дату регистрации организации. Missing data never adds points
-and never subtracts them — it simply does not count.
-"""
+"""Lead Score — 0..90 «насколько это горячий клиент для продажи сайта»."""
 from .constants import EXPENSIVE_CATEGORY_KEYWORDS
 
 # Bonus values, kept together so a test can assert the table.
@@ -34,8 +16,7 @@ _AGGREGATORS = r"taplink|linktree|linktr\.ee|becons\.ai|illions\.app"
 
 
 def has_own_website(record: dict) -> bool:
-    """A link page (taplink) does not count as a website — same rule as the
-    collection-time filter, so the score agrees with «Только без сайтов»."""
+    """A link page (taplink) does not count as a website — same rule as the collection-time filter, so the score agrees with «Только без сайтов»."""
     import re
     site = (record.get("website") or record.get("aggregator_url") or "").strip()
     if not site:

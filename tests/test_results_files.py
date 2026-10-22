@@ -66,7 +66,7 @@ def client(tmp_path, monkeypatch):
         return str(d)
 
     monkeypatch.setattr(api_mod, "_archive_today", _today_dir)
-    api_mod._REC_CACHE.clear()
+    api_mod._clear_file_caches()
 
     app = Flask(__name__)
     app.register_blueprint(api_mod.bp)
@@ -809,6 +809,49 @@ class TestHelpers:
         monkeypatch.setattr(api_mod, "_read_records_file", counting)
         assert api_mod._count_records(str(path)) == 4
         assert calls["n"] == 0                      # served from the cache
+
+    def test_count_records_matches_the_visible_rows(self, client):
+        """Число в «Истории файлов» — ровно те строки, что попадут в таблицу."""
+        from routes import api as api_mod
+        path = _make_raw(client, "raw_partial.xlsx", [
+            _rec("Есть имя", "Уфа", "https://ya.ru/1"),
+            {"name": "", "city": "Уфа"},                 # ни имени, ни ссылки
+            {"name": "", "yandex_maps_url": "https://ya.ru/2"},
+        ])
+        api_mod._REC_CACHE.clear()
+        assert api_mod._count_records(str(path)) == 2
+
+    def test_records_are_parsed_once_per_file_version(self, client, monkeypatch):
+        """Повторный запрос /results-view не перечитывает тот же файл с диска."""
+        from routes import api as api_mod
+        api_mod._clear_file_caches()
+        _make_raw(client, "raw_a.xlsx", SAMPLE)
+        calls = {"n": 0}
+        real = api_mod._read_records_file
+
+        def counting(p):
+            calls["n"] += 1
+            return real(p)
+
+        monkeypatch.setattr(api_mod, "_read_records_file", counting)
+        assert len(api_mod._collect_records("raw")) == 4
+        assert len(api_mod._collect_records("raw")) == 4
+        assert calls["n"] == 1, "второй разбор того же файла — зря потраченное время"
+
+        # Файл перезаписан — отпечаток изменился, читаем заново.
+        _make_raw(client, "raw_a.xlsx",
+                  SAMPLE + [_rec("Новый", "Уфа", "https://ya.ru/new")])
+        assert len(api_mod._collect_records("raw")) == 5
+        assert calls["n"] == 2
+
+    def test_records_cache_is_cleared_when_files_move(self, client):
+        from routes import api as api_mod
+        api_mod._clear_file_caches()
+        _make_raw(client, "raw_a.xlsx", SAMPLE)
+        assert api_mod._collect_records("raw")
+        assert api_mod._RECORDS_CACHE
+        client.post("/files/action", json={"action": "archive", "path": "raw/raw_a.xlsx"})
+        assert not api_mod._RECORDS_CACHE, "перемещённый файл не должен оставаться в памяти"
 
     def test_cities_of_sorted_by_count_then_name(self):
         from routes.api import _cities_of

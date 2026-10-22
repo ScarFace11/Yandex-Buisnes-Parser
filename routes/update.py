@@ -1,63 +1,4 @@
-"""In-app self-update for the frozen Windows build.
-
-The swap step is Windows-only: it waits for the process to exit and replaces
-files with a generated updater.bat. On macOS the app is a .app bundle that a
-signed/quarantined copy of the running process cannot safely overwrite, so
-there the app only REPORTS that a newer version exists and the UI points at
-the release page (auto_apply=false). Everything else (frozen? dev? which
-version is newer) works the same on both platforms.
-
-Flow (all triggered from the web UI):
-  GET  /update/status   — frozen? current vs latest version? update available?
-  GET  /update/download — stream the release zip to a temp file
-  POST /update/apply    — extract, verify, swap via updater.bat, restart the app
-
-Failure modes this module specifically guards against — all three were
-reported as «скачал обновление, консоль закрылась, версия та же»:
-
-1. STALE RELEASE LINK. version.json on main used to be stamped with a
-   `releases/latest/download/...` alias, but while the new release is still
-   a DRAFT (or after it was deleted) that alias silently resolves to the
-   PREVIOUS published release: the updater downloads the build the user is
-   already running and "installs" it — a no-op that looks like a failed
-   update. So only an URL pinned to the advertised version
-   (`releases/download/v<latest>/...`) is accepted, otherwise the asset is
-   resolved through the API by EXACT tag (`releases/tags/v<latest>`, which
-   answers 404 for drafts), and the version inside the downloaded zip is
-   verified before anything on disk is touched.
-
-2. SCRIPT THAT NEVER RUNS. v2.3.0 wrote updater.bat with
-   `write_text("\r\n".join(lines))` in TEXT mode: every line ended with
-   CR CR LF, cmd.exe aborted the script before the first swap command, the
-   app had already exited — nothing was copied and the old version stayed.
-   The script is now written with newline="" (exact CR LF) and validated
-   byte-for-byte before it is launched.
-
-3. HALF-DONE SWAP / LOST DATA. The old bat waited for the process with
-   `tasklist | find` + `timeout` (a non-Windows `find` on PATH breaks the
-   wait; `timeout` cannot run without a console), moved EVERY entry of the
-   app folder — including .env, logs/ and output/ — into _backup and then
-   deleted _update with the backup inside it, i.e. it destroyed the user's
-   keys and results. The new bat waits for an explicit exit marker written
-   by the app, retries locked moves, verifies the result, ROLLS BACK to the
-   backup on any failure and moves only app-owned files (exe, _internal,
-   ...) — user data stays where it is. Every step is appended to
-   _update/update.log for diagnosability.
-
-Swap strategy (a running .exe cannot overwrite itself on Windows):
-  1. Extract the downloaded zip to <user_dir>/_update/
-  2. Verify the new exe/_internal and that its version >= advertised
-  3. Write _update/updater.bat which:
-       waits for the app.exit marker (the app writes it right before exit),
-       backs up ONLY the app files to _update/_backup/,
-       moves the new files into place (retrying while files are locked),
-       starts the new exe; on any failure restores the backup;
-       keeps _backup (rollback) and update.log, cleans the rest
-  4. Respond ok, write the app.exit marker, stop the app
-
-From source (not frozen) the endpoints report frozen=False and the UI
-hides the self-update button — update via git pull instead.
-"""
+"""In-app self-update for the frozen Windows build."""
 import os
 import shutil
 import subprocess
@@ -77,17 +18,12 @@ bp = Blueprint("update", __name__)
 APP_DIR_NAME = "YandexBusinessParser"     # top-level folder inside the release zip
 EXE_NAME = "YandexBusinessParser.exe"
 ZIP_ASSET_NAME = "YandexBusinessParser-windows-x64.zip"
-# Файлы релиза по системам. Windows обновляется внутри приложения (zip с exe),
-# macOS ставится вручную с установочного образа — поэтому ему нужен свой .dmg,
-# а не чужой windows-архив. Регресс: на Mac кнопка «Скачать» отдавала
-# YandexBusinessParser-windows-x64.zip (то есть .exe) — приложение, скачанное
-# «для macOS», не запускалось.
+# Файлы релиза по системам.
 MAC_ZIP_TMPL = "YandexBusinessParser-macos-{arch}.zip"
 MAC_DMG_TMPL = "YandexBusinessParser-macos-{arch}.dmg"
 STATE_FILE = "_update_state.json"         # progress for /update/status polling
 ASSET_CACHE_TTL = 10 * 60                 # секунд: кэш проверки релиза по API
-# Кэш минимально допустимой версии: она меняется раз в несколько релизов,
-# а проверка идёт на каждом открытии окна.
+# Кэш минимально допустимой версии: она меняется раз в несколько релизов, а проверка идёт на каждом открытии окна.
 MIN_VERSION_TTL = 60 * 60
 EXIT_MARKER = "app.exit"                  # the app writes this right before exiting
 LOG_FILE = "update.log"                   # updater.bat trace, for diagnostics
@@ -101,13 +37,7 @@ def _is_frozen() -> bool:
 
 
 def _self_update_supported() -> bool:
-    """Менять файлы на диске умеет только Windows-сборка (updater.bat + exe).
-
-    macOS-версия — .app-бандл: подмена файлов запущенного бандла ломает
-    подпись, а сам он может лежать в /Applications без права на запись.
-    Поэтому там авто-обновление не предлагается — показываем «Доступна новая
-    версия» и ссылку на страницу релизов.
-    """
+    """Менять файлы на диске умеет только Windows-сборка (updater.bat + exe). macOS-версия — .app-бандл: подмена файлов запущенного бандла ломает подпись, а сам он может лежать в /Applications без права на запись."""
     import sys
     return sys.platform.startswith("win")
 
@@ -119,12 +49,7 @@ def _platform_refusal() -> dict:
 
 
 def _is_dev() -> bool:
-    """Сборка разработчика: авто-обновление отключено целиком.
-
-    Публичный релиз не должен затирать dev-сборку (и наоборот), поэтому в
-    dev-режиме мы даже не ходим на GitHub за версией: ни баннера, ни кнопки
-    «Обновить сейчас», ни замены файлов.
-    """
+    """Сборка разработчика: авто-обновление отключено целиком."""
     try:
         from config import is_dev_build
         return bool(is_dev_build())
@@ -204,12 +129,7 @@ def _releases_page() -> str:
 
 
 def _mac_arch() -> str:
-    """arm64 у Apple Silicon, x64 у Intel (и всё неопознанное — x64).
-
-    Ассеты релиза выпускаются двумя сборками (`asset_arch` в build-macos.yml),
-    поэтому ссылку нужно выбирать не только по системе, но и по архитектуре:
-    arm64-образ на Intel не запустится и наоборот.
-    """
+    """arm64 у Apple Silicon, x64 у Intel (и всё неопознанное — x64)."""
     try:
         import platform as _platform
         machine = (_platform.machine() or "").strip().lower()
@@ -219,13 +139,7 @@ def _mac_arch() -> str:
 
 
 def _release_asset_name(install: bool = False) -> str:
-    """Имя файла релиза для ТЕКУЩЕЙ системы.
-
-    `install=True` — формат для ручной установки: на macOS это .dmg (образ,
-    который монтируется и перетаскивается в «Программы»), на Windows — тот же
-    zip с exe (его ставит и внутренний обновлятор). Держим одно правило для
-    скачивания и для подписи кнопки, чтобы ссылка и текст не расходились.
-    """
+    """Имя файла релиза для ТЕКУЩЕЙ системы. `install=True` — формат для ручной установки: на macOS это .dmg (образ, который монтируется и перетаскивается в «Программы»), на Windows — тот же zip с exe (его ставит и внутренний обновлятор)."""
     import sys
     if sys.platform == "darwin":
         tmpl = MAC_DMG_TMPL if install else MAC_ZIP_TMPL
@@ -234,17 +148,7 @@ def _release_asset_name(install: bool = False) -> str:
 
 
 def _versioned_asset_url(version: str, url: str, asset: str = ZIP_ASSET_NAME) -> str:
-    """`url` if it is pinned to v<version> **and** points at `asset`, else "".
-
-    Only `.../releases/download/v<version>/<asset>` is safe to hand to the
-    updater: the `releases/latest/download/...` alias serves the previous
-    published release while the new one is a draft (GitHub hides drafts),
-    which is how a user could end up re-installing the version already on
-    disk.
-
-    Проверка имени файла обязательна: version.json штампуется ссылкой на
-    windows-архив, и без неё macOS уезжал скачивать .exe.
-    """
+    """`url` if it is pinned to v<version> **and** points at `asset`, else ""."""
     version = str(version or "").strip()
     url = str(url or "").strip()
     if not version or not url:
@@ -256,17 +160,7 @@ def _versioned_asset_url(version: str, url: str, asset: str = ZIP_ASSET_NAME) ->
 
 def _release_asset_url(version: str, asset: str = ZIP_ASSET_NAME,
                        use_cache: bool = True) -> str:
-    """browser_download_url of the requested asset of EXACTLY the v<version> release.
-
-    `/releases/tags/v<version>` is used instead of `/releases/latest`: it
-    answers 404 while the release is a draft or was deleted, and that is
-    precisely the case we must not treat as an available update. Returns ""
-    when the release is not published or has no such asset.
-
-    Имя файла (`asset`) — параметр, а не константа: на macOS нужен .dmg, и
-    кэш тоже разделён по имени файла, иначе одна платформа отдавала бы адрес,
-    сохранённый для другой.
-    """
+    """browser_download_url of the requested asset of EXACTLY the v<version> release. `/releases/tags/v<version>` is used instead of `/releases/latest`: it answers 404 while the release is a draft or was deleted, and that is precisely the case we must not treat as an available update."""
     version = str(version or "").strip()
     asset = str(asset or ZIP_ASSET_NAME).strip()
     if not version:
@@ -302,15 +196,7 @@ def _release_asset_url(version: str, asset: str = ZIP_ASSET_NAME,
 
 def _download_target(latest: str, stamped_url: str = "",
                      asset: str = ZIP_ASSET_NAME) -> tuple:
-    """(url, reason) — where the advertised version can really be downloaded.
-
-    1. the URL stamped into version.json, when it is pinned to v<latest>
-       (no network call needed — the normal case);
-    2. otherwise the asset of the exact v<latest> release through the API;
-    3. otherwise an empty url and a message explaining that the release is
-       not published yet, so the caller can tell the truth instead of
-       offering an update that would silently no-op.
-    """
+    """(url, reason) — where the advertised version can really be downloaded. 1. the URL stamped into version.json, when it is pinned to v<latest> (no network call needed — the normal case); 2. otherwise the asset of the exact v<latest> release through the API; 3. otherwise an empty url and a message explaining that the release is not published yet, so the caller can tell the truth instead of offering an update that would silently no-op."""
     version = str(latest or "").strip()
     asset = str(asset or ZIP_ASSET_NAME).strip()
     if not version:
@@ -330,10 +216,7 @@ def _ver_tuple(v: str):
 
 
 def _versions_below(current: str, minimum: str) -> bool:
-    """Версия `current` старше `minimum` (учитывая разную длину чисел).
-
-    Сравниваются только числовые части: «2.3.10» > «2.3.9», а отсутствующие
-    хвосты трактуются как нули («2.3» == «2.3.0»)."""
+    """Версия `current` старше `minimum` (учитывая разную длину чисел)."""
     a = _ver_tuple(current or "0")
     b = _ver_tuple(minimum or "0")
     if not b:
@@ -353,23 +236,7 @@ def _is_local_build() -> bool:
 
 
 def minimum_state() -> dict:
-    """Состояние порога минимальной версии — «ниже не работаем».
-
-    Порог публикуется вместе с релизом в static/version.json (`min_version`)
-    и нужен, когда старые сборки перестают быть совместимыми: формат данных,
-    маршруты API, требования площадок (например, обязательное пользовательское
-    соглашение). Одну и ту же реализацию используют окно обновления
-    (/version/minimum) и отказ начинать поиск (/run) — иначе блокировка была бы
-    только «на словах».
-
-    Осторожность важнее строгости:
-      * DEV-сборка и локальные сборки не блокируются никогда;
-      * если GitHub недоступен, ответ уходит БЕЗ блокировки и с пояснением —
-        пропавшая сеть не должна «кирпить» приложение у пользователя;
-      * если порог не задан в метаданных, блокировки нет.
-
-    В ответе только версии, признак обхода и ссылка на страницу релизов.
-    """
+    """Состояние порога минимальной версии — «ниже не работаем»."""
     from config import APP_VERSION
     out = {"current": APP_VERSION, "minimum": "", "blocked": False,
            "download_url": _releases_page(),
@@ -389,8 +256,7 @@ def minimum_state() -> dict:
         try:
             meta = _remote_meta()
         except Exception:
-            # Нет сети/репозиторий недоступен: работаем, но честно говорим,
-            # что проверить не смогли.
+            # Нет сети/репозиторий недоступен: работаем, но честно говорим, что проверить не смогли.
             cached = dict(cached) if cached else {}
             out["notice"] = ("Не удалось проверить минимальную версию "
                              "(GitHub недоступен) — обновление проверьте вручную.")
@@ -407,8 +273,6 @@ def minimum_state() -> dict:
     out["blocked"] = _versions_below(APP_VERSION, out["minimum"])
     if out["blocked"]:
         # Цель обновления — не «последняя объявленная», а ГАРАНТИРОВАННО рабочая:
-        # если на main объявлена версия ниже порога (обычное дело, пока свежий
-        # релиз — черновик), предлагать её нельзя — она тоже не запустится.
         target = latest if not _versions_below(latest, out["minimum"]) else out["minimum"]
         out["target"] = target
         out["notice"] = ("Эта версия больше не поддерживается: обновитесь до "
@@ -434,8 +298,7 @@ def update_status():
         "newer": False,
         "changelog": "",
         "download_url": "",
-        # Какой файл релиза нужен ИМЕННО этой системе: windows-zip или
-        # macos-<arch>.dmg. UI берёт отсюда и ссылку, и подпись кнопки.
+        # Какой файл релиза нужен ИМЕННО этой системе: windows-zip или macos-<arch>.dmg.
         "asset_name": _release_asset_name(install=True),
         # false → в баннере нет кнопки «Обновить сейчас» (macOS/исходники).
         "auto_apply": _is_frozen() and _self_update_supported(),
@@ -453,22 +316,16 @@ def update_status():
         out["download_url"] = _releases_page()
         out["newer"] = _ver_tuple(out["latest"] or "0") > _ver_tuple(APP_VERSION)
         if out["newer"]:
-            # Версия, до которой предлагается обновиться, и файл под эту
-            # систему — баннер показывает и то, и другое.
+            # Версия, до которой предлагается обновиться, и файл под эту систему — баннер показывает и то, и другое.
             out["target_version"] = out["latest"]
             url, why = _download_target(out["latest"], stamped, out["asset_name"])
             if url:
                 out["download_url"] = url
             else:
-                # Advertised but not installable (release still a draft, was
-                # deleted, ...). Better to say "nothing to install" than to
-                # walk the user through an update that silently no-ops.
+                # Advertised but not installable (release still a draft, was deleted, ...).
                 out["newer"] = False
                 out["notice"] = why
-        # Сборка ниже порога не должна предлагать установку версии, которая
-        # тоже ниже порога (на main объявлена предыдущая, пока свежий релиз —
-        # черновик). Вместо баннера с обновлением — окно «нужно обновить» и
-        # ссылка на страницу релизов.
+        # Сборка ниже порога не должна предлагать установку версии, которая тоже ниже порога (на main объявлена предыдущая, пока свежий релиз — черновик).
         blocked_state = minimum_state()
         if blocked_state.get("blocked"):
             out["newer"] = False
@@ -477,9 +334,7 @@ def update_status():
             out["notice"] = blocked_state.get("notice", "")
             out["download_url"] = blocked_state.get("download_url", "")
 
-        # Remember the advertised version for /update/apply: the bat is built
-        # later, and the zip must be verified against the SAME advertised
-        # version even if GitHub is unreachable by then.
+        # Remember the advertised version for /update/apply: the bat is built later, and the zip must be verified against the SAME advertised version even if GitHub is unreachable by then.
         _save_state(latest=out["latest"], download_url=out["download_url"],
                     stamped_url=stamped)
     except Exception as exc:
@@ -489,14 +344,12 @@ def update_status():
 
 @bp.route("/update/changelog")
 def update_changelog():
-    """version.json from GitHub (version, changelog, history) for the
-    «Что нового» modal. Falls back to the bundled copy when offline."""
+    """version.json from GitHub (version, changelog, history) for the «Что нового» modal."""
     from config import APP_VERSION
     try:
         meta = _remote_meta()
     except Exception:
-        # Offline: serve the bundled static/version.json so the modal
-        # still opens and shows at least the current version's notes.
+        # Offline: serve the bundled static/version.json so the modal still opens and shows at least the current version's notes.
         try:
             import json as _json
             bundled = (paths.resource_dir() if paths else Path(__file__).resolve().parent.parent) / "static" / "version.json"
@@ -524,10 +377,6 @@ def update_download():
     url = explicit or ""
     if not url:
         # NEVER fall back to the stamped `releases/latest/download/...` alias:
-        # while the release is a draft (or was deleted) it serves the PREVIOUS
-        # release and the update becomes a silent no-op — the reported bug.
-        # Only an URL pinned to v<advertised> is used, otherwise the exact tag
-        # is resolved through the API.
         latest = str(state.get("latest") or "")
         stamped = str(state.get("stamped_url") or "")
         if not latest:
@@ -605,10 +454,6 @@ def update_apply():
         return jsonify({"ok": False, "error": "В архиве нет _internal — повреждённая сборка"}), 400
 
     # 3. Verify the version INSIDE the zip against the advertised one.
-    #    While a release is still a draft, a `releases/latest/...` link
-    #    downloaded the PREVIOUS release: without this check the updater
-    #    would "successfully" install an old version (report: «остаётся
-    #    прежняя версия»). A stale zip is deleted so the retry re-downloads.
     advertised = str(st.get("latest") or "").strip()
     zip_version = ""
     for cand in (src / "_internal" / "static" / "version.json",
@@ -635,14 +480,6 @@ def update_apply():
     app_root = _app_root()
 
     # 4. Build the updater script: it runs AFTER this process exits.
-    #    The old bat waited for the app PID via `tasklist | find` and slept
-    #    with `timeout` — both break easily (a non-Windows find.exe on PATH,
-    #    no console for timeout), so the swap could start while the exe was
-    #    still locked: the move failed silently, the new _internal landed
-    #    next to the OLD exe, and the old version relaunched. This bat waits
-    #    for an explicit marker file instead, retries locked moves, verifies
-    #    the result and rolls back if anything failed. Only app-owned files
-    #    are moved — .env, logs/ and output/ stay where they are.
     backup = work / "_backup"
     bat = work / "updater.bat"
     marker = work / EXIT_MARKER
@@ -721,10 +558,7 @@ def update_apply():
         'echo [%date% %time%] rollback finished, old version kept >> "%LOG%"',
         "exit /b 1",
     ]
-    # newline="" keeps the explicit CR-LF line endings exactly as written.
-    # v2.3.0 wrote the same script in text mode, so every line ended with
-    # CR CR LF and cmd.exe aborted it before the first swap command: the app
-    # restarted, nothing was replaced and the version stayed the same.
+    # newline="" keeps the explicit CR-LF line endings exactly as written. v2.3.0 wrote the same script in text mode, so every line ended with CR CR LF and cmd.exe aborted it before the first swap command: the app restarted, nothing was replaced and the version stayed the same.
     with open(bat, "w", encoding="cp866", errors="replace", newline="") as fh:
         fh.write("\r\n".join(lines))
     raw = bat.read_bytes()
@@ -737,9 +571,7 @@ def update_apply():
                 previous_version=st.get("current", ""), error="",
                 bat=str(bat))
 
-    # 5. Launch detached, signal exit, then stop the app so the .bat can
-    #    take over. The marker makes the bat start its swap as soon as this
-    #    process is gone; the retry loops cover the shutdown window.
+    # 5. Launch detached, signal exit, then stop the app so the .bat can take over.
     if marker.exists():
         try:
             marker.unlink()
@@ -751,9 +583,7 @@ def update_apply():
     except OSError:
         pass
 
-    # 6. Give the response a moment to flush, then hard-exit: the running
-    #    exe locks itself, and the .bat can only swap files once this
-    #    process is gone (the marker + the bat's retry loops cover the gap).
+    # 6. Give the response a moment to flush, then hard-exit: the running exe locks itself, and the .bat can only swap files once this process is gone (the marker + the bat's retry loops cover the gap).
     def _bye():
         import time as _t
         _t.sleep(1.0)

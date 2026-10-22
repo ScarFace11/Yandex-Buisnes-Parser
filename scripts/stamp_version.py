@@ -1,26 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Версия в static/version.json — одна реализация для сборки и анонса.
-
-Два вызова, один код:
-
-  * build-exe.yml (шаг перед pyinstaller) — штампует копию, которая попадёт
-    ВНУТРЬ .exe: version = версия тега, download_url — ссылка на конкретный
-    тег. Файл не коммитится: он нужен только сборке (проверка версии внутри
-    скачанного архива и офлайн-режим «Что нового»).
-  * announce-release.yml (событие release: published) — та же операция, но с
-    коммитом в main: именно ЭТОТ файл читают установленные приложения, когда
-    проверяют наличие обновления.
-
-Инвариант проекта: `version` в файле на main — всегда ОПУБЛИКОВАННЫЙ релиз,
-архив которого реально можно скачать. Реклама версии без релиза (или пока
-релиз — черновик) превращает баннер обновления в обещание, которое нельзя
-выполнить: пользователь скачивает обновление и остаётся на прежней версии.
-
-Использование:
-    python scripts/stamp_version.py --tag v2.3.1 --repo owner/name
-    python scripts/stamp_version.py --version 2.3.1 --download-url https://…/x.zip
-"""
+"""Версия в static/version.json — одна реализация для сборки и анонса."""
 from __future__ import annotations
 
 import argparse
@@ -46,12 +26,7 @@ def strip_tag(tag: str) -> str:
 
 
 def versioned_download_url(repo: str, version: str, asset: str = ZIP_ASSET) -> str:
-    """Ссылка на архив КОНКРЕТНОГО тега.
-
-    Никогда не `releases/latest/download/...`: этот алиас отдаёт предыдущий
-    опубликованный релиз, пока новый — черновик, и обновление превращается в
-    установку той же версии, что уже стоит.
-    """
+    """Ссылка на архив КОНКРЕТНОГО тега."""
     repo = str(repo or "").strip().strip("/")
     if not repo or not version:
         return ""
@@ -59,19 +34,7 @@ def versioned_download_url(repo: str, version: str, asset: str = ZIP_ASSET) -> s
 
 
 def summarize(body: str, limit: int = SUMMARY_LIMIT) -> str:
-    """Первый абзац секции CHANGELOG, схлопнутый в одну строку.
-
-    Именно абзац, а не первая строка: в CHANGELOG абзац часто начинается
-    коротким жирным лидом («**Кнопка обновления работает.**») — без него
-    в «Что нового» попадал обрывок фразы.
-
-    Абзац не перешагивает через пункт списка: в версиях, где секция сразу
-    начинается перечнем, первая строка — это уже законченная фича, и без
-    остановки сводка склеивала несколько разных пунктов в одну фразу.
-    Маркер списка («- », «* », «• ») в начале отбрасывается: сводка идёт
-    в баннер обновления и в «Что нового» как обычный текст, где «- » в начале
-    выглядит мусором.
-    """
+    """Первый абзац секции CHANGELOG, схлопнутый в одну строку."""
     para = []
     for raw in (body or "").splitlines():
         line = raw.strip()
@@ -94,13 +57,7 @@ def summarize(body: str, limit: int = SUMMARY_LIMIT) -> str:
 def apply_version(path, version: str, *, changelog_file=None,
                   download_url: str = "", repo: str = "", asset: str = ZIP_ASSET,
                   bump_history: bool = True, min_version: str = "") -> dict:
-    """Проставить версию в version.json и вернуть получившийся словарь.
-
-    `min_version` — порог «ниже этой версии работать нельзя». Задаёт его автор
-    релиза, и только осознанно (например, когда появилось обязательное
-    пользовательское соглашение); пустая строка = не трогать то, что в файле.
-    Возврат версии в этом файле его НЕ сбрасывает.
-    """
+    """Проставить версию в version.json и вернуть получившийся словарь. `min_version` — порог «ниже этой версии работать нельзя»."""
     p = Path(path)
     text = p.read_text(encoding="utf-8-sig") if p.exists() else "{}"
     data = json.loads(text or "{}")
@@ -137,13 +94,7 @@ def apply_version(path, version: str, *, changelog_file=None,
 
 
 def say(text: str) -> None:
-    """Вывод, который не может уронить шаг сборки.
-
-    На windows-раннере GitHub stdout внешне — cp1252, и обычный print() с
-    русскими словами падал с UnicodeEncodeError: скрипт отрабатывал верно, а
-    шаг сборки краснел. Сначала просим UTF-8, а если не вышло — печатаем
-    ASCII-версию строки.
-    """
+    """Вывод, который не может уронить шаг сборки."""
     try:
         sys.stdout.write(text + "\n")
     except UnicodeEncodeError:

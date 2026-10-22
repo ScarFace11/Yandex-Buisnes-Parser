@@ -1,16 +1,4 @@
-"""
-VK activity stats (subscribers, days since the last wall post).
-
-Used by stage 2 (фильтрация) to score leads: an active VK community means
-the owner actually reads messages, so a website pitch lands on live eyes.
-
-Uses the official VK API with a user/service token (the same one the bulk
-sender needs). Results are cached on disk for a week so «Применить фильтры
-заново» does not hammer the API for the same communities.
-
-No token → no requests: `activity_available()` returns False and callers
-skip the step with a warning instead of writing fake zeros.
-"""
+"""VK activity stats (subscribers, days since the last wall post)."""
 import json
 import os
 import re
@@ -24,8 +12,7 @@ from . import state
 VK_API = "https://api.vk.com/method"
 VK_VERSION = "5.131"
 
-# A community is «active» when something was posted recently enough that the
-# owner still opens it; semi-active still gets a bump in the lead score.
+# A community is «active» when something was posted recently enough that the owner still opens it; semi-active still gets a bump in the lead score.
 ACTIVE_MAX_DAYS = 30
 SEMI_MAX_DAYS = 180
 
@@ -62,11 +49,7 @@ def _token() -> str:
 
 
 def screen_name(url: str) -> str:
-    """`https://vk.com/pivmilya` → `pivmilya`; empty for unusable links.
-
-    A bare screen name is also accepted, so batch callers can feed the
-    extracted value back in without double-parsing it into nothing.
-    """
+    """`https://vk.com/pivmilya` → `pivmilya`; empty for unusable links."""
     raw = (url or "").strip().lstrip("@")
     m = _VK_URL_RE.search(raw)
     if m:
@@ -75,9 +58,7 @@ def screen_name(url: str) -> str:
         screen = raw
     else:
         return ""
-    # «wall-1_2», «photo-3_4» are service paths, not communities. A screen
-    # name like «club123» is a real id, so only the segment before the first
-    # separator is checked against the reserved words.
+    # «wall-1_2», «photo-3_4» are service paths, not communities.
     head = re.split(r"[-_.]", screen, maxsplit=1)[0].lower()
     if head in _NON_PROFILE or screen.lower() in _NON_PROFILE:
         return ""
@@ -164,15 +145,7 @@ def classify(last_post_days) -> str:
 
 
 def fetch_stats(vk_url: str, token: str = "", cache: dict | None = None) -> dict:
-    """Return {activity, followers, last_post_days} for one VK link.
-
-    Empty dict when the link is unusable or the API refused. Groups and
-    personal pages are both handled; «followers» is -1 when the community
-    hides its member list.
-
-    `cache` lets a batch caller keep the whole cache in memory instead of
-    re-reading the JSON file per community (see annotate_records).
-    """
+    """Return {activity, followers, last_post_days} for one VK link."""
     screen = screen_name(vk_url)
     if not screen:
         return {}
@@ -240,11 +213,7 @@ def fetch_stats(vk_url: str, token: str = "", cache: dict | None = None) -> dict
 
 
 def annotate_records(records: list[dict], log_fn=None) -> int:
-    """Fill vk_activity / vk_followers / vk_last_post_days in place.
-
-    Returns the number of records that got real data. Records without a VK
-    link keep empty values (they are not «inactive» — they are unknown).
-    """
+    """Fill vk_activity / vk_followers / vk_last_post_days in place."""
     log = log_fn or (lambda *_: None)
     token = _token()
     if not token:
@@ -257,12 +226,10 @@ def annotate_records(records: list[dict], log_fn=None) -> int:
     if not targets:
         return 0
 
-    # One file read + one write for the whole batch: the cache used to be
-    # re-read and re-written for every community (O(n²) disk I/O).
+    # One file read + one write for the whole batch: the cache used to be re-read and re-written for every community (O(n²) disk I/O).
     cache = _load_cache()
     done = 0
-    # VK's rate limit is per token, so extra threads only add contention;
-    # the requests are paced centrally anyway.
+    # VK's rate limit is per token, so extra threads only add contention; the requests are paced centrally anyway.
     for record, screen in targets:
         stats = fetch_stats(screen, token, cache=cache)
         if not stats:

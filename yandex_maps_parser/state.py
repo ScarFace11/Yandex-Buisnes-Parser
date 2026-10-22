@@ -1,14 +1,4 @@
-"""
-Mutable runtime state and configuration defaults.
-
-All modules that need config values import this module as:
-    from . import state
-and access values as `state.CITY`, `state._LOG_FN`, etc.
-This ensures run_web() updates are visible across all modules.
-
-Logging helpers (info / warn / ok) also live here so every module
-has a single import point for both config and logging.
-"""
+"""Mutable runtime state and configuration defaults."""
 import threading
 import time as _time
 
@@ -18,9 +8,7 @@ from tqdm import tqdm
 # ⏸ Отладочный CDP-браузер (видимый, без пула вкладок, без headless).
 DEBUG_CDP_WINDOW = False  # задаётся через runner.run_web(params)
 
-# Реэкспорт настроек config: остальные модули читают их через state.*.
-# (pyflakes помечает эти импорты как «unused» — это ложное срабатывание,
-# привязки нужны именно в пространстве имён state.)
+# Реэкспорт настроек config: остальные модули читают их через state.*. (pyflakes помечает эти импорты как «unused» — это ложное срабатывание, привязки нужны именно в пространстве имён state.)
 from config import (
     SEARCH_QUERIES,
     CITY,
@@ -51,58 +39,35 @@ from config import (
     PROXIES,
 )
 
-# Pipeline mode: "raw" — collect everything unfiltered (stage 1), filters
-# are applied afterwards by processing.apply_filters (stage 2). Any other
-# value (incl. unset) keeps the legacy single-stage behaviour (CLI, API).
+# Pipeline mode: "raw" — collect everything unfiltered (stage 1), filters are applied afterwards by processing.apply_filters (stage 2).
 PIPELINE = ""
 # What happens to raw files after stage 2: "keep" | "archive" | "delete".
 RAW_MODE = "keep"
 
-# Social mode: "all" | "with_socials" | "without_socials"
-# Set by run_web(); controls whether enrichment fetches detail pages
-# and whether the frontend filters results by social media presence.
+# Social mode: "all" | "with_socials" | "without_socials" Set by run_web(); controls whether enrichment fetches detail pages and whether the frontend filters results by social media presence.
 SOCIAL_MODE = "all"
 # «С соцсетями» + выбранные плитки: бизнес обязан иметь ВСЕ эти соцсети.
-# Пустое множество = фильтр выключен (обычный режим «with_socials»).
 REQUIRED_SOCIALS: set[str] = set()
 
 # Optional output-quality filters (set from the web form, stage 2).
-# COLLAPSE_CHAINS — merge records of the same business chain (same
-#   normalized name + overlapping phone/social links) into one row.
-# Applied by processing.apply_filters() AFTER collection in raw mode.
 COLLAPSE_CHAINS = False
 
 # Parse mode (web form toggle):
-#   "without_website" (default) — only businesses WITHOUT their own website
-#       (link aggregators like taplink/linktree are NOT websites — kept).
-#   "all" — parse every organization regardless of website presence.
-# The choice also works at collection time: a business whose site is visible
-# in the search payload is skipped before the (expensive) detail page, and one
-# whose site is discovered on the card is dropped instead of written to raw.
 PARSE_MODE = "without_website"
 
-# «🚫 Исключить по словам» — те же слова, что уходят этапу 2, но нужны уже
-# на сборе: запись из чёрного списка не загружает карточку и не пишется в raw.
-# Нормализуется processing.parse_blacklist_words в runner._apply_params.
+# «🚫 Исключить по словам» — те же слова, что уходят этапу 2, но нужны уже на сборе: запись из чёрного списка не загружает карточку и не пишется в raw.
 BLACKLIST_WORDS: list[str] = []
 
-# Фильтры, решаемые по ОДНОЙ готовой записи: сбор снимает по ним запись сразу
-# (см. processing.crawl_skip_reason), иначе она появлялась бы в живой таблице
-# и исчезала только после этапа 2. `VK_CHECK` гасит порог оценки на сборе:
-# с включённой проверкой ВК этап 2 добавляет баллы за активность, и сбор не
-# должен снять запись, которая там осталась бы.
+# Фильтры, решаемые по ОДНОЙ готовой записи: сбор снимает по ним запись сразу (см. processing.crawl_skip_reason), иначе она появлялась бы в живой таблице и исчезала только после этапа 2. `VK_CHECK` гасит порог оценки на сборе: с включённой проверкой ВК этап 2 добавляет баллы за активность, и сбор не должен снять запись, которая там осталась бы.
 MIN_LEAD_SCORE = 0
 ONLY_SINGLE_BRANCH = False
 ONLY_NEW_MONTHS = None
 VK_CHECK = False
 
-# Источник данных: только Яндекс.Карты (2ГИС удалён по требованию
-# правообладателя, платные API Яндекса не используются).
+# Источник данных: только Яндекс.Карты (2ГИС удалён по требованию правообладателя, платные API Яндекса не используются).
 SOURCE = "yandex"
 
 # Excel export columns: set of CSV_FIELDS keys to include in the .xlsx.
-# None (default) = all columns. Set from the web form per run; the choice
-# is persisted in the browser (localStorage) and sent with each run.
 EXCEL_COLUMNS = None  # set[str] | None
 
 # ── Runtime-only state ────────────────────────────────────────
@@ -114,11 +79,7 @@ _SKIP_CITY_EVENT = None  # threading.Event; set to skip current city (not the wh
 
 
 def request_stop() -> None:
-    """Request a graceful stop of the whole run (safe to call anytime).
-
-    Parser modules (лимиты и отказ внешних сервисов) use this to halt the run from
-    deep inside the pipeline without importing runner internals.
-    """
+    """Request a graceful stop of the whole run (safe to call anytime)."""
     if _STOP_EVENT is not None:
         try:
             _STOP_EVENT.set()
@@ -129,8 +90,6 @@ _CITY_RECORDS_FOUND = 0  # records found in current city (for skip confirmation)
 _city_records_lock = threading.Lock()
 
 # ── Предфильтр сбора ───────────────────────────────────────────
-# Сколько записей отброшено УЖЕ на сборе и почему (crawl_skip_reason).
-# Счётчики только читаются интерфейсом и логом: сами записи никуда не идут.
 _CRAWL_SKIPPED: dict[str, int] = {}
 _CRAWL_SKIPPED_LOGGED: dict[str, int] = {}
 _crawl_skipped_lock = threading.Lock()
@@ -143,11 +102,6 @@ CRAWL_SKIP_LABELS = {
 }
 
 # ── Непрочитанные карточки ─────────────────────────────────────
-# Организация попала в выгрузку, но её карточка не открылась: телефона,
-# сайта и соцсетей у неё нет не потому, что их нет, а потому что страница не
-# прочиталась. Раньше такие записи пропадали тихо (одна строка в логе на
-# карточку — и всё), и в выгрузке они выглядели как обычные «без контактов».
-# Счётчик делает потерю видимой: сколько, почему и в конце прогона.
 _READ_FAILURES: dict[str, int] = {}
 _READ_FAILURES_LOGGED: dict[str, int] = {}
 _read_failures_lock = threading.Lock()
@@ -157,21 +111,13 @@ READ_FAILURE_LABELS = {
     "no_content":  "страница без содержимого",
 }
 
-# Set by run() for the city that just finished: True when the search returned
-# organizations but every one of them was already parsed in an earlier run
-# (global seen store), so the city produced nothing new. run_web() uses it to
-# explain the empty result instead of leaving the user with "нашлось 0".
+# Set by run() for the city that just finished: True when the search returned organizations but every one of them was already parsed in an earlier run (global seen store), so the city produced nothing new. run_web() uses it to explain the empty result instead of leaving the user with "нашлось 0".
 CITY_ALL_SEEN = False
 
-# Set by search_page() when Yandex answered a search with its SmartCaptcha
-# («Вы не робот?») instead of a result list. Empty string — a normal run.
-# A city that found nothing because of a challenge must not be explained with
-# «попробуйте изменить запросы или фильтры»: no search happened at all.
+# Set by search_page() when Yandex answered a search with its SmartCaptcha («Вы не робот?») instead of a result list.
 SEARCH_BLOCKED = ""
 
-# ⏸ Last known run position, updated as the search moves on (city / query /
-# point). Frozen at pause time into a resume payload so «Продолжить» can tell
-# the user exactly where the search stopped.
+# ⏸ Last known run position, updated as the search moves on (city / query / point).
 _pause_info_lock = threading.Lock()
 PAUSE_INFO: dict = {"city": "", "city_idx": 0, "cities_total": 0,
                     "query": "", "point": 0, "points_total": 0, "records": 0}
@@ -211,22 +157,13 @@ _prog_tot: int = 0
 _prog_stage: str = ""
 
 # ── Work-based progress tracking ──────────────────────────────
-# Combined progress = search_points_done + enrichment_done
-#                     ─────────────────────────────────────────
-#                     search_points_total + candidates_total
-#
-# This gives accurate percentage throughout the entire run, not just the
-# search phase.  Candidates total grows during search; enrichment_done
-# grows during enrichment; the percentage reflects real work completed.
 _work_candidates_total: int = 0   # total candidates discovered (grows during search)
 _work_candidates_done: int = 0    # candidates fully enriched so far
 
 # Semaphore limiting concurrent detail-page requests; re-created by run_web
 _detail_semaphore = threading.Semaphore(MAX_WORKERS)
 
-# Incremental record persistence: runner sets _RESULT_FILE to a .jsonl path
-# and every enriched record is appended there (thread-safe), so a hard crash
-# loses nothing that was already fetched. Final consolidation happens in runner.
+# Incremental record persistence: runner sets _RESULT_FILE to a .jsonl path and every enriched record is appended there (thread-safe), so a hard crash loses nothing that was already fetched.
 _RESULT_FILE: str | None = None
 # Open file handle for the sidecar — avoids re-opening the file per record.
 _RESULT_HANDLE = None
@@ -236,14 +173,7 @@ _RESULT_LOCK = threading.Lock()
 # ── Logging helpers ───────────────────────────────────────────
 
 def short_path(path: str) -> str:
-    """Короткий путь файла для лога: «output/москва_….xlsx» вместо полного.
-
-    Полный путь (C:\\Users\\User\\…) в строке лога длиннее самой строки:
-    переносы ломают чтение, а корень всегда один и тот же. Обрезаем до
-    корня результатов (RESULTS_DIR) — в логе остаётся «output/файл.xlsx»
-    (сегмент корня подписываем сами, он настраиваемый). При любом сбое
-    возвращаем как есть — лог не должен падать из-за косметики.
-    """
+    """Короткий путь файла для лога: «output/москва_….xlsx» вместо полного."""
     try:
         p = str(path)
         root = str(RESULTS_DIR or "")
@@ -258,12 +188,7 @@ def short_path(path: str) -> str:
 
 
 def _cli_write(msg: str) -> None:
-    """CLI-mode console write that never raises.
-
-    A broken Windows console handle (OSError 22 'Invalid argument')
-    must never kill a run just because a cosmetic message couldn't be
-    printed. Web mode uses _LOG_FN and never reaches this path.
-    """
+    """CLI-mode console write that never raises."""
     try:
         tqdm.write(msg)
     except (OSError, ValueError):
@@ -303,39 +228,26 @@ def error(msg: str) -> None:
 
 
 def tech(msg: str) -> None:
-    """Technical details for developers: browser log (hidden behind the
-    «Технические детали» toggle) + run file. NOT shown as a normal log line.
-    Use for raw error payloads, stack details, HTTP internals."""
+    """Technical details for developers: browser log (hidden behind the «Технические детали» toggle) + run file."""
     if _LOG_FN:
         _LOG_FN("tech", msg)
 
 
 def syslog(msg: str) -> None:
-    """System/developer log: goes to file only, NOT to browser.
-    Use for internal traces: HTTP details, function calls, timings."""
+    """System/developer log: goes to file only, NOT to browser."""
     if _SYSLOG_FN:
         _SYSLOG_FN(msg)
 
 
 def stats_event(payload: dict) -> None:
-    """Structured statistics for the web UI (level «stats»).
-
-    The browser renders a real card (rows + bars) from this payload instead of
-    parsing ASCII bars out of the log text. CLI mode keeps the text summary
-    (print_stats falls back to it when _LOG_FN is not set).
-    """
+    """Structured statistics for the web UI (level «stats»)."""
     if _LOG_FN:
         import json as _json
         _LOG_FN("stats", _json.dumps(payload, ensure_ascii=False))
 
 
 def _progress(current: int, total: int, stage: str = "") -> None:
-    """Push progress event to the web interface (no-op in CLI mode).
-
-    Updates the search-phase counters and emits a work-based progress event.
-    The progress value represents: (search_done + enrich_done) / (search_total + candidates_total).
-    Progress payload format: "work_done/work_total/stage/found"
-    """
+    """Push progress event to the web interface (no-op in CLI mode)."""
     global _prog_cur, _prog_tot, _prog_stage, _last_inc_emit
     _prog_cur = current
     _prog_tot = total
@@ -351,24 +263,14 @@ def _progress(current: int, total: int, stage: str = "") -> None:
 
 
 def _add_candidates(n: int) -> None:
-    """Record that n new candidates were discovered and will be enriched.
-
-    Called from enrich() when a batch starts.  Increases the estimated total
-    work so the progress percentage accurately reflects remaining effort.
-    """
+    """Record that n new candidates were discovered and will be enriched."""
     global _work_candidates_total
     with _found_lock:
         _work_candidates_total += n
 
 
 def _inc_found() -> None:
-    """Increment the found counter (thread-safe) and emit a throttled progress ping.
-
-    Called from enrichment worker threads — may fire from multiple threads concurrently.
-    Emits at most one progress event per _INC_EMIT_INTERVAL seconds to avoid flooding
-    the SSE channel while still giving the UI live feedback during detail fetching.
-    Progress payload format: "work_done/work_total/stage/found"
-    """
+    """Increment the found counter (thread-safe) and emit a throttled progress ping."""
     global _found_count, _work_candidates_done, _last_inc_emit
     with _found_lock:
         _found_count += 1
@@ -377,7 +279,6 @@ def _inc_found() -> None:
 
     now = _time.monotonic()
     # Check throttle outside the lock; a small race here is harmless (worst case:
-    # two threads both pass and emit — that's fine, just one extra ping).
     if now - _last_inc_emit >= _INC_EMIT_INTERVAL:
         _last_inc_emit = now
         if _LOG_FN:
@@ -391,11 +292,7 @@ def _inc_found() -> None:
 
 
 def _emit_analytics_throttled(now: float) -> None:
-    """Emit compact analytics summary every _ANALYTICS_INTERVAL seconds.
-    
-    Only writes a short one-line summary to syslog (file), NOT the full JSON.
-    The full analytics dict is served via the /analytics API endpoint.
-    """
+    """Emit compact analytics summary every _ANALYTICS_INTERVAL seconds."""
     global _last_analytics_emit
     if now - _last_analytics_emit < _ANALYTICS_INTERVAL:
         return
@@ -427,26 +324,15 @@ def _reset_found() -> None:
 
 
 def _emit_result(record: dict) -> None:
-    """Persist a fully-enriched record (JSONL sidecar) and stream it to the web interface.
-
-    Called from enrichment worker threads after a business record is complete.
-    Thread-safe: queue.Queue.put() is thread-safe, and JSONL appends are guarded
-    by _RESULT_LOCK. We only read _LOG_FN / _RESULT_FILE (set once before threads
-    start) and pass a JSON string.
-    """
+    """Persist a fully-enriched record (JSONL sidecar) and stream it to the web interface."""
     import json as _json
-    # Stamp which city produced this record so the frontend can group
-    # stats both overall and per city (records may span several cities
-    # in one multi-city run).
+    # Stamp which city produced this record so the frontend can group stats both overall and per city (records may span several cities in one multi-city run).
     try:
         if CITY and not record.get("city"):
             record["city"] = CITY
     except Exception:
         pass
-    # Lead score right away (not only at stage 2): the live table, the raw
-    # files and the frontend JSON then carry the score, and stage 2 only
-    # re-computes it after the VK activity check (which can add points).
-    # Missing fields simply score 0 — never a fake value.
+    # Lead score right away (not only at stage 2): the live table, the raw files and the frontend JSON then carry the score, and stage 2 only re-computes it after the VK activity check (which can add points).
     try:
         from .lead_score import annotate_records
         annotate_records([record])
@@ -476,7 +362,6 @@ def _emit_result(record: dict) -> None:
 
 
 # ── Incremental Excel toggle ──────────────────────────────────
-# Enabled by run() / run_web() when OUTPUT_EXCEL is True.
 _EXCEL_APPEND_ENABLED = False
 
 

@@ -1,28 +1,20 @@
-"""
-Path resolution for frozen (PyInstaller) and normal (source) runs.
+"""Path resolution for frozen (PyInstaller) and normal (source) runs.
 
-Three kinds of locations:
-- RESOURCE_DIR — read-only files bundled with the app (templates/, static/).
-  In a PyInstaller bundle this is the extraction dir (sys._MEIPASS); in a
-  source checkout it is the project root.
-- USER_DIR — writable location for user data (output/, logs/, .env,
-  settings.json). When frozen this is the folder containing the .exe
-  so data survives between launches; on macOS the .app bundle itself may sit
-  in a read-only /Applications, so data moves to
-  ~/Library/Application Support/<App> (macOS convention); in a source
-  checkout it is the project root (current behaviour, nothing changes).
-- CONFIG_PATH — the .env file; same as USER_DIR but resolved before config
-  import, so env vars load even in the frozen extraction dir.
+Три вида мест:
+- RESOURCE_DIR — только для чтения, файлы в комплекте (templates/, static/):
+  в бандле PyInstaller это папка распаковки (sys._MEIPASS), в исходниках —
+  корень проекта.
+- USER_DIR — куда можно писать (output/, logs/, .env, settings.json).
+  Во frozen-сборке это папка с .exe, чтобы данные жили между запусками;
+  на macOS сам .app обычно лежит в read-only /Applications, поэтому данные
+  уходят в ~/Library/Application Support/<App>; в исходниках — корень проекта.
+- CONFIG_PATH — файл .env; та же USER_DIR, но вычисляется до импорта config,
+  чтобы переменные окружения читались и в распакованной папке сборки.
 
-Результаты можно держать отдельно от служебных файлов: папка из
-settings.json (ключ «results_root») принимает raw/, processed/ и _archive/,
-а кэш найденного, чекпоинты, история поиска и отметки «просмотрено» остаются
-в USER_DIR/output/. Пустая настройка = прежнее поведение (всё в output/).
-
-Usage:
-    import paths
-    app = Flask(__name__, template_folder=paths.template_dir(), static_folder=paths.static_dir())
-    config.OUTPUT_DIR = paths.output_dir()   # ... or import paths wherever a dir is needed
+Результаты можно держать отдельно от служебных файлов: папка из settings.json
+(ключ «results_root») принимает raw/, processed/ и _archive/, а кэш найденного,
+чекпоинты, история поиска и отметки «просмотрено» остаются в USER_DIR/output/.
+Пустая настройка = прежнее поведение (всё в output/).
 """
 import json
 import os
@@ -33,8 +25,7 @@ from pathlib import Path
 
 APP_SLUG = "YandexBusinessParser"
 
-# Служебный файл настроек приложения (не в git): папка результатов и
-# переопределения по этапам.
+# Служебный файл настроек приложения (не в git): папка результатов и переопределения по этапам.
 SETTINGS_FILE = "settings.json"
 RESULTS_ROOT_KEY = "results_root"
 STAGE_KEYS = {"raw": "raw_dir", "processed": "processed_dir", "archive": "archive_dir"}
@@ -63,20 +54,12 @@ def _app_slug() -> str:
     return APP_SLUG
 
 
-# Метка локальной сборки: её создают build.bat / build-mac.sh и workflow
-# build-manual.yml. У такой сборки версия не меняется, поэтому порог минимальной
-# версии к ней не применяется (см. config.skips_min_version) — автор запускает
-# любую версию у себя. У скачанного релиза метки нет, и он порог соблюдает.
+# Метка локальной сборки: её создают build.bat / build-mac.sh и workflow build-manual.yml.
 LOCAL_BUILD_MARKER = ".local-build"
 
 
 def local_build_marker() -> Path:
-    """Путь к метке локальной сборки.
-
-    Windows: рядом с exe (папка onedir). macOS: в корне .app — её создают ДО
-    подписи, поэтому файл входит в подпись бандла и ничего не ломает.
-    У скачанного релиза ни там, ни там метки нет.
-    """
+    """Путь к метке локальной сборки."""
     d = _exe_dir()
     if _is_macos():
         # .app: Contents/MacOS/<bin> → .app/Contents → корень бандла
@@ -88,11 +71,7 @@ def resource_dir() -> Path:
     """Read-only bundled resources (templates/, static/)."""
     if not is_frozen():
         return Path(__file__).resolve().parent
-    # PyInstaller onefile extracts to _MEIPASS; onedir puts data files next to
-    # the executable under _internal/. In a macOS .app bundle the same files
-    # may end up under Contents/Frameworks (_MEIPASS) or Contents/Resources,
-    # and which one is not worth guessing — the folder that actually holds
-    # templates/ wins.
+    # PyInstaller onefile extracts to _MEIPASS; onedir puts data files next to the executable under _internal/.
     exe = _exe_dir()
     candidates = []
     meipass = getattr(sys, "_MEIPASS", None)
@@ -109,19 +88,14 @@ def data_dir() -> Path:
     """Корень пользовательских данных (output/, logs/, .env, configs)."""
     if is_frozen():
         if _is_macos():
-            # .app обычно лежит в /Applications (только для чтения) — данные
-            # уходят в стандартную папку macOS, как у любого десктоп-приложения.
+            # .app обычно лежит в /Applications (только для чтения) — данные уходят в стандартную папку macOS, как у любого десктоп-приложения.
             return Path.home() / "Library" / "Application Support" / _app_slug()
         return _exe_dir()
     return Path(__file__).resolve().parent
 
 
 def user_dir() -> Path:
-    """Writable location for user data (output/, logs/, .env, configs).
-
-    The folder is created on first access so first launch of the .exe
-    never fails with a missing-directory error.
-    """
+    """Writable location for user data (output/, logs/, .env, configs)."""
     d = data_dir()
     d.mkdir(parents=True, exist_ok=True)
     return d
@@ -154,23 +128,14 @@ def load_settings() -> dict:
 
 
 def save_settings(values: dict) -> None:
-    """Атомарно дописывает ключи в settings.json.
-
-    Файл читают оба процесса (родитель и парсер), поэтому запись идёт через
-    временный файл + os.replace — иначе парсер может поймать полуфайл.
-    """
+    """Атомарно дописывает ключи в settings.json."""
     data = load_settings()
     data.update(values or {})
     replace_settings(data)
 
 
 def replace_settings(data: dict) -> None:
-    """Атомарно ЗАМЕНИТЬ settings.json целиком.
-
-    Нужен для операций, которые убирают ключи (сброс настроек до
-    стандартных): save_settings только добавляет/перезаписывает. Та же
-    запись через временный файл + os.replace.
-    """
+    """Атомарно ЗАМЕНИТЬ settings.json целиком."""
     path = settings_path()
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -195,12 +160,7 @@ def results_root() -> Path:
 
 
 def stage_dir(stage: str) -> Path:
-    """Папка этапа (raw|processed|archive).
-
-    Без настройки — подпапка внутри корня результатов (raw/, processed/,
-    _archive/). Если для этапа задали свою папку (расширенный режим), она
-    используется как есть — без лишней вложенности.
-    """
+    """Папка этапа (raw|processed|archive)."""
     override = str(load_settings().get(STAGE_KEYS.get(stage, "")) or "").strip()
     if override:
         return _expand(override)
@@ -208,11 +168,7 @@ def stage_dir(stage: str) -> Path:
 
 
 def output_dir() -> str:
-    """Служебные файлы приложения (кэш найденного, чекпоинты, история).
-
-    Намеренно НЕ следует за папкой результатов: смена папки не должна
-    обнулять кэш «уже найдено» или терять точку продолжения.
-    """
+    """Служебные файлы приложения (кэш найденного, чекпоинты, история)."""
     p = user_dir() / "output"
     p.mkdir(exist_ok=True)
     return str(p)
@@ -255,11 +211,7 @@ def output_dirs() -> dict:
 
 
 def check_dir(path: str) -> str:
-    """Создаёт папку и проверяет, что в неё можно писать. Возвращает ошибку.
-
-    Пустая строка = всё хорошо. Путь к файлу, отсутствие прав, недоступный
-    диск — всё это должна внятно увидеть форма, а не упасть при сохранении.
-    """
+    """Создаёт папку и проверяет, что в неё можно писать."""
     try:
         p = _expand(path)
         p.mkdir(parents=True, exist_ok=True)
@@ -272,12 +224,7 @@ def check_dir(path: str) -> str:
 
 
 def refresh_output_dirs() -> dict:
-    """Перечитать settings.json и раздать новые папки всем модулям.
-
-    config/state/api/run_manager запоминают папки при импорте, а
-    настройку можно поменять уже во время поиска — поэтому после сохранения
-    (в UI) и на границе каждого города (в парсере) вызывается этот метод.
-    """
+    """Перечитать settings.json и раздать новые папки всем модулям. config/state/api/run_manager запоминают папки при импорте, а настройку можно поменять уже во время поиска — поэтому после сохранения (в UI) и на границе каждого города (в парсере) вызывается этот метод."""
     import sys
 
     dirs = output_dirs()
@@ -290,10 +237,7 @@ def refresh_output_dirs() -> dict:
         "run_manager": {"RESULTS_DIR": dirs["root"]},
     }
     for mod_name, attrs in targets.items():
-        # sys.modules.get, НЕ import_module: в дочернем процессе парсера
-        # routes.api ещё не загружен, и import_module тянул бы в child весь
-        # Flask-стек ради одного RESULT_DIR. Обновляем только уже загруженные
-        # модули — у незагруженного обновлять нечего.
+        # sys.modules.get, НЕ import_module: в дочернем процессе парсера routes.api ещё не загружен, и import_module тянул бы в child весь Flask-стек ради одного RESULT_DIR.
         mod = sys.modules.get(mod_name)
         if mod is None:
             continue

@@ -1,6 +1,4 @@
-"""
-File output: CSV, JSON, Excel (.xlsx), and HTML map.
-"""
+"""File output: CSV, JSON, Excel (.xlsx), and HTML map."""
 import csv
 import json
 import os
@@ -27,12 +25,10 @@ from .constants import (
 from . import state
 from .social_normalize import normalize_record
 
-# Ссылка на карточку организации: единственный источник — Яндекс.Карты,
-# поэтому в выгрузке всегда ровно одна колонка со ссылкой.
+# Ссылка на карточку организации: единственный источник — Яндекс.Карты, поэтому в выгрузке всегда ровно одна колонка со ссылкой.
 _MAP_FIELDS = ("yandex_maps_url",)
 
-# Extra columns that files need but reports don't show (raw files keep the
-# website so stage 2 can re-apply «только без сайтов» without re-crawling).
+# Extra columns that files need but reports don't show (raw files keep the website so stage 2 can re-apply «только без сайтов» without re-crawling).
 INTERNAL_FIELDS = ("website",)
 
 
@@ -73,10 +69,7 @@ def load_jsonl(path: str) -> list[dict]:
 
 
 def record_key(rec: dict) -> str:
-    """
-    Stable dedup key for a business record.
-    Priority: map URL -> phone digits -> normalized name+address.
-    """
+    """Stable dedup key for a business record."""
     url = _map_url_of(rec)
     if url:
         return "u|" + url
@@ -120,11 +113,6 @@ def _phone_digits(rec: dict) -> str:
 
 
 # ── Chain-merge strategies («Объединять филиалы сетей») ───────
-# The dropdown in the UI maps 1:1 onto these keys:
-#   name_city — same normalized name within one city (default)
-#   name      — same normalized name across ALL cities
-#   phone     — records sharing any phone digit-string
-#   email     — records sharing any e-mail address
 CHAIN_KEYS = ("name_city", "name", "phone", "email")
 
 
@@ -134,13 +122,7 @@ def collapse_chains_chain_keys() -> tuple:
 
 
 def _chain_key_fn(strategy: str):
-    """Return record → group-key mapping for the merge strategy.
-
-    Pure name keys group strictly by name (name_city keeps each city
-    apart); contact-based keys (phone/email) group purely by the contact —
-    records sharing the same number/address are one chain regardless of
-    name, since a shared working contact is the stronger signal.
-    """
+    """Return record → group-key mapping for the merge strategy."""
     def _emails(rec: dict) -> list[str]:
         raw = str(rec.get("email") or "")
         if not raw:
@@ -177,20 +159,10 @@ def _chain_key_fn(strategy: str):
 
 
 def collapse_chains(records: list[dict], strategy: str = "name_city") -> list[dict]:
-    """Merge records of the same business chain into one row.
-
-    strategy selects the grouping (see CHAIN_KEYS); after grouping, the
-    name_city groups are additionally split by shared contact info, so
-    same-named but genuinely different businesses stay apart. Rows without
-    the strategy's key pass through unchanged. The kept row is the one with
-    the most socials; phones and social links from the others are merged
-    into it.
-    """
+    """Merge records of the same business chain into one row. strategy selects the grouping (see CHAIN_KEYS); after grouping, the name_city groups are additionally split by shared contact info, so same-named but genuinely different businesses stay apart."""
     key_fn = _chain_key_fn(strategy)
     by_key: dict[tuple, list[dict]] = {}
-    # Records without the strategy's key (no name, no phone, no email) must
-    # survive untouched — dropping them silently emptied whole result sets
-    # when «Правило объединения» was switched to phone/email.
+    # Records without the strategy's key (no name, no phone, no email) must survive untouched — dropping them silently emptied whole result sets when «Правило объединения» was switched to phone/email.
     out: list[dict] = []
     for r in records:
         key = key_fn(r)
@@ -204,24 +176,12 @@ def collapse_chains(records: list[dict], strategy: str = "name_city") -> list[di
         if len(group) < 2:
             out.extend(group)
             continue
-        # Only the strict «Название + Город» key needs the extra split by
-        # shared contacts: a pure-name key merges the chain across cities by
-        # definition, and phone/email keys are already contact-tight.
+        # Only the strict «Название + Город» key needs the extra split by shared contacts: a pure-name key merges the chain across cities by definition, and phone/email keys are already contact-tight.
         if strategy != "name_city":
             for base in _merge_group(group):
                 out.append(base)
             continue
-        # Split the name-group into sub-groups connected by shared contact
-        # info (the same name may be genuinely different businesses).
-        #
-        # Группы ищутся по указателям (телефон → подгруппа, ссылка на
-        # соцсеть → подгруппа), а не перебором всех уже собранных подгрупп
-        # с пересчётом телефона на каждом шаге: прежний перебор был
-        # квадратичным — на 20 000 записях 1.2 с только здесь (строгий
-        # «Название + Город» без этого разбиения — 0.3 с), и рост
-        # продолжился бы вчетверо на каждом удвоении списка.
-        # Выбранная подгруппа — МИНИМАЛЬНЫЙ номер среди совпавших: прежний
-        # перебор тоже брал первую подходящую сверху вниз.
+        # Split the name-group into sub-groups connected by shared contact info (the same name may be genuinely different businesses).
         merged: list[list[dict]] = []
         by_phone: dict[str, int] = {}
         by_social: dict[str, int] = {}
@@ -252,11 +212,7 @@ def collapse_chains(records: list[dict], strategy: str = "name_city") -> list[di
 
 
 def _merge_group(group: list[dict]) -> list[dict]:
-    """Collapse one connected group into a single (richest) row.
-
-    Phones and social links of the branches are merged into the kept
-    record; a singleton passes through untouched.
-    """
+    """Collapse one connected group into a single (richest) row."""
     if len(group) < 2:
         return list(group)
     # Keep the richest record, merge phones + socials from the rest
@@ -280,12 +236,7 @@ def _merge_group(group: list[dict]) -> list[dict]:
 
 
 def apply_output_filters(records: list[dict], chain_key: str = "name_city") -> list[dict]:
-    """Apply the optional web-form output filters (in place on a copy).
-
-    Stage-2 filters only: chain merge first, then record-level filters —
-    merging before filtering keeps every contact from dropped branches.
-    chain_key selects the chain-merge strategy (see CHAIN_KEYS).
-    """
+    """Apply the optional web-form output filters (in place on a copy)."""
     records = list(records)
     try:
         if state.COLLAPSE_CHAINS:
@@ -296,13 +247,7 @@ def apply_output_filters(records: list[dict], chain_key: str = "name_city") -> l
 
 
 def collapse_chains_name_city(records: list[dict]) -> list[dict]:
-    """Stage-2 chain merge with the strict «Название + Город» key.
-
-    Unlike collapse_chains() (which additionally splits groups by shared
-    contact info), this merges every same-named business in a city into
-    one row — exactly the stage-2 acceptance criterion. The kept row is
-    the richest one; phones and social links of the branches are merged.
-    """
+    """Stage-2 chain merge with the strict «Название + Город» key."""
     by_key: dict[tuple, list[dict]] = {}
     for r in records:
         name = _norm_name(r.get("name"))
@@ -340,13 +285,7 @@ def collapse_chains_name_city(records: list[dict]) -> list[dict]:
 
 
 def _merge_chain_size(base: dict, group: list[dict]) -> None:
-    """Сколько филиалов у объединённой строки — максимум по группе.
-
-    «Объединять филиалы сетей» схлопывает ветки сети в одну строку, но
-    счётчик филиалов должен остаться прежним (сеть из 5 филиалов ≠ одиночка),
-    иначе фильтр «только одиночки» после объединения пропустил бы её.
-    Пустые значения не считаются нулём: неизвестное не гасит известное.
-    """
+    """Сколько филиалов у объединённой строки — максимум по группе."""
     best = None
     for r in group:
         try:
@@ -360,11 +299,7 @@ def _merge_chain_size(base: dict, group: list[dict]) -> None:
 
 
 def _dict_rows(f) -> list[dict]:
-    """Read CSV rows with delimiter auto-detection.
-
-    Newer files are ';' (RU Excel), older ones were ','. Sniff the header;
-    fall back through candidates so both formats keep parsing.
-    """
+    """Read CSV rows with delimiter auto-detection."""
     sample = f.readline()
     f.seek(0)
     delim = ";"
@@ -392,8 +327,7 @@ def load_existing_urls(csv_path: str) -> set[str]:
 # ── CSV ───────────────────────────────────────────────────────
 
 def save_csv(records: list[dict], path: str, append: bool) -> None:
-    # Delimiter is ';' — Russian-locale Excel splits columns on ';' by
-    # default, so a comma-separated file would open as a single column.
+    # Delimiter is ';' — Russian-locale Excel splits columns on ';' by default, so a comma-separated file would open as a single column.
     mode = "a" if append and os.path.exists(path) else "w"
     with open(path, mode, newline="", encoding="utf-8-sig") as f:
         w = csv.DictWriter(f, fieldnames=CSV_FIELDS, extrasaction="ignore", delimiter=";")
@@ -418,16 +352,10 @@ def save_json(records: list[dict], path: str, append: bool) -> None:
 
 
 # ── Frontend-friendly merged JSON ──────────────────────────────
-#
-# The web UI loads a single "_results_for_frontend.json" after a run so
-# the table / stats render even when the user only enabled Excel output.
-# Records must use ENGLISH field keys (name, category, vk, ...), not the
-# Russian Excel header labels, otherwise every cell renders as a dash.
 
 # Reverse map: Russian Excel header label -> english CSV_FIELDS key
 _LABEL_TO_FIELD = {label: field for field, label in HEADER_LABELS.items()}
-# Колонка aggregator_url раньше называлась «Taplink / Linktree» — старые
-# выгрузки по этому заголовку всё ещё читаются.
+# Колонка aggregator_url раньше называлась «Taplink / Linktree» — старые выгрузки по этому заголовку всё ещё читаются.
 _LABEL_TO_FIELD.setdefault("Taplink / Linktree", "aggregator_url")
 
 
@@ -458,22 +386,13 @@ def _records_from_xlsx(path: str) -> list[dict]:
 
 
 def _records_from_csv(path: str) -> list[dict]:
-    """Read records out of a parser CSV with correct english keys.
-
-    Зеркало _records_from_xlsx: русские заголовки конвертируются обратно в
-    английские ключи (HEADER_LABELS), «✓» у reviewed не важен. Кодировка —
-    UTF-8 c BOM (encoding="utf-8-sig"), как их пишет save_csv.
-    """
+    """Read records out of a parser CSV with correct english keys."""
     import csv
 
     out: list[dict] = []
     try:
         with open(path, encoding="utf-8-sig", errors="ignore", newline="") as fh:
-            # save_csv пишет с ';' (русская локаль Excel), но принимать надо
-            # и запятую/таб — файлы могут приходить из внешних источников.
-            # Sniffer не умеет в кавычки с запятой внутри, поэтому просто
-            # считаем поля заголовка каждым кандидатом: где больше — тот и
-            # разделитель.
+            # save_csv пишет с ';' (русская локаль Excel), но принимать надо и запятую/таб — файлы могут приходить из внешних источников.
             header = fh.readline()
             fh.seek(0)
             delim, best_n = ";", 0
@@ -507,24 +426,12 @@ def _records_from_csv(path: str) -> list[dict]:
 
 
 def write_frontend_json(files: list[str], out_dir: str, cities: list[str] | None = None) -> str | None:
-    """
-    Merge per-city JSON / xlsx outputs from a run into one frontend file.
-
-    Returns the new filename ("_results_for_frontend.json") or None when
-    there is nothing to merge. Records come from any user-facing .json files
-    first (they keep english keys + city); falls back to reading .xlsx
-    (headers are converted back to english keys) otherwise.
-    """
+    """Merge per-city JSON / xlsx outputs from a run into one frontend file."""
     json_files = [f for f in files if f.endswith(".json") and not f.startswith(("_", "."))]
     merged: list[dict] = []
 
     def _business_records(data) -> list[dict]:
-        """Keep only dicts shaped like business records.
-
-        Guards against non-record JSON (e.g. a search-history entry with
-        run_id/queries keys) sneaking into the merged frontend file and
-        rendering as garbage rows in the results table.
-        """
+        """Keep only dicts shaped like business records."""
         if not isinstance(data, list):
             return []
         return [r for r in data if isinstance(r, dict) and (r.get("name") or r.get("yandex_maps_url"))]
@@ -538,10 +445,7 @@ def write_frontend_json(files: list[str], out_dir: str, cities: list[str] | None
             except Exception:
                 pass
     else:
-        # City name per output file: filenames are "{slug}_{YYYYMMDD}_{HHMMSS}",
-        # where slug is the city name lowercased with non-word chars replaced
-        # by "_" (e.g. "саратов...", "ростов_на_дону..."). Map back to the
-        # real city name so per-city stats work even without JSON output.
+        # City name per output file: filenames are "{slug}_{YYYYMMDD}_{HHMMSS}", where slug is the city name lowercased with non-word chars replaced by "_" (e.g. "саратов...", "ростов_на_дону...").
         city_by_slug: dict[str, str] = {}
         if cities:
             for c in cities:
@@ -563,7 +467,6 @@ def write_frontend_json(files: list[str], out_dir: str, cities: list[str] | None
                     rec["city"] = city
             merged.extend(recs)
         # CSV (например processed/csv/*_filtered.csv при «Формат результата: CSV»):
-        # без этого CSV-поиск не наполнял таблицу сразу после завершения.
         csv_files = [f for f in files if f.endswith(".csv") and not f.startswith(("_", "."))]
         for name in csv_files:
             recs = _records_from_csv(os.path.join(out_dir, name))
@@ -609,15 +512,7 @@ def _map_field(records: list[dict] | None = None) -> str:
 
 
 def _enabled_fields(extra: tuple[str, ...] = (), records: list[dict] | None = None) -> list[str]:
-    """Excel columns for this run: all CSV_FIELDS or the user-selected subset.
-
-    state.EXCEL_COLUMNS (set of field keys) is set from the web form's
-    «Настройка Excel-выгрузки» tab and persisted in the browser. Ordering
-    always follows CSV_FIELDS so the file layout stays stable.
-
-    `extra` forces columns in regardless of the selection — used by raw
-    exports, which must carry the website for stage 2 (INTERNAL_FIELDS).
-    """
+    """Excel columns for this run: all CSV_FIELDS or the user-selected subset. state.EXCEL_COLUMNS (set of field keys) is set from the web form's «Настройка Excel-выгрузки» tab and persisted in the browser."""
     fields = list(CSV_FIELDS)
     for f in extra:
         if f not in fields:
@@ -630,8 +525,7 @@ def _enabled_fields(extra: tuple[str, ...] = (), records: list[dict] | None = No
     if not cols:
         return fields
     sel = set(cols)
-    # «Ссылка» в выборе колонок — это и есть карточка организации: даже если
-    # сохранённый набор пришёл из старой версии приложения, колонка попадёт в файл.
+    # «Ссылка» в выборе колонок — это и есть карточка организации: даже если сохранённый набор пришёл из старой версии приложения, колонка попадёт в файл.
     if sel & set(_MAP_FIELDS):
         sel.add(keep_map)
     out = [f for f in fields if f in sel or f in extra]
@@ -698,18 +592,6 @@ def _apply_conditional_formatting(ws) -> None:
 
 
 # ── Excel incremental (web mode) ─────────────────────────────
-#
-# The workbook stays open in memory during the run.  Records are appended
-# immediately, but the file is saved to disk only every _EXCEL_FLUSH_RECORDS
-# records / _EXCEL_FLUSH_SECONDS seconds: openpyxl перезаписывает книгу
-# ЦЕЛИКОМ, поэтому частое сохранение — квадратичная работа.
-#
-# Замер (1500 организаций): сброс каждые 5 записей — 288 с, каждые 50 — 34 с,
-# каждые 200 — 12 с (на 500 записях — 40 / 4.5 / 2 с). При этом файл на диске
-# не единственное место, где живут записи: каждая уже ушла в JSONL-сайдкар
-# (`state._emit_result`), а полный xlsx собирается в конце прогона
-# (`_finalize_excel`). Отсюда цена сброса: файл может отставать по свежести,
-# но не теряет данные и не тормозит сбор. Thread-safe via _EXCEL_LOCK.
 
 _EXCEL_FLUSH_RECORDS = 200     # ... или столько записей
 _EXCEL_FLUSH_SECONDS = 60.0    # ... или столько секунд — что раньше
@@ -751,13 +633,7 @@ def _init_excel(path: str) -> None:
 
 
 def _append_excel(record: dict) -> None:
-    """Append one record to the in-progress workbook (thread-safe).
-
-    Строка попадает в книгу сразу (файл всегда валиден), а на диск книга
-    уходит по порогу записей или времени — см. _EXCEL_FLUSH_RECORDS.
-    Ошибка сохранения не гасится молча: без неё неполный файл выглядел бы
-    как «нашлось мало организаций».
-    """
+    """Append one record to the in-progress workbook (thread-safe)."""
     with _EXCEL_LOCK:
         if not _excel.open or _excel.wb is None:
             return
@@ -781,7 +657,6 @@ def _save_excel_file(state_obj: "_ExcelState") -> None:
         state_obj._last_save = time.monotonic()
     except Exception as exc:
         # Счётчик сбрасывается, чтобы не пытаться сохранять на каждую запись:
-        # следующая попытка — по времени, а не в том же цикле.
         state_obj._dirty = 0
         state_obj._last_save = time.monotonic()
         if not state_obj._save_failed:
@@ -794,12 +669,7 @@ def _save_excel_file(state_obj: "_ExcelState") -> None:
 
 
 def _finalize_excel(records: list[dict]) -> None:
-    """Add conditional formatting, legend/help/stats, then close.
-
-    CRITICAL: Data rows are saved FIRST to guarantee the file is always
-    valid. Extra sheets (legend/help/stats) are added AFTER and wrapped
-    in try/except so a failure in one sheet doesn't corrupt the data.
-    """
+    """Add conditional formatting, legend/help/stats, then close."""
     with _EXCEL_LOCK:
         if not _excel.open or _excel.wb is None:
             return
@@ -812,7 +682,6 @@ def _finalize_excel(records: list[dict]) -> None:
         ws.freeze_panes = "B2"
 
         # CRITICAL: Save the workbook with data FIRST.
-        # This guarantees the file is always valid even if extra sheets fail.
         try:
             wb.save(_excel.path)
         except Exception:
@@ -852,11 +721,7 @@ def _finalize_excel(records: list[dict]) -> None:
 # ── Excel (batch / CLI) ──────────────────────────────────────
 
 def save_excel(all_records: list[dict], path: str, extra_fields: tuple[str, ...] = ()) -> None:
-    """Create a complete Excel file from scratch (used by CLI).
-
-    `extra_fields` adds columns that are not part of the user's report but
-    are needed on disk (see INTERNAL_FIELDS).
-    """
+    """Create a complete Excel file from scratch (used by CLI). `extra_fields` adds columns that are not part of the user's report but are needed on disk (see INTERNAL_FIELDS)."""
     all_records = [normalize_record(r) for r in all_records]
     fields = _enabled_fields(extra_fields, all_records)
     wb = openpyxl.Workbook()

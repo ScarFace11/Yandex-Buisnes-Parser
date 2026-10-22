@@ -1,6 +1,4 @@
-"""
-Business-record enrichment: fetch detail pages, extract socials, deduplicate.
-"""
+"""Business-record enrichment: fetch detail pages, extract socials, deduplicate."""
 import json
 import random
 import threading
@@ -24,19 +22,7 @@ from . import state
 from . import cdp_client
 
 def _looks_like_antiblock(html) -> bool:
-    """True when a fetched page is an anti-bot stub / too short to be real.
-
-    Yandex serves an empty "robot" page (a few hundred bytes) to requests it
-    suspects are bots. Real detail pages are usually tens of KB.
-
-    NOTE: the size bar is intentionally LOW (800 bytes — same floor the CDP
-    harvest loop uses). Many small businesses (ateliers, one-master shops)
-    have genuinely small pages (2-20 KB) that were being misclassified as
-    anti-bot stubs at the old 5000-byte threshold — each false positive then
-    burned a wasted CDP retry + up to 3 throttled httpx attempts (60s each)
-    before the record was emitted. Only the real anti-bot markers, or a page
-    so empty it can't be real, should trigger the expensive fallback ladder.
-    """
+    """True when a fetched page is an anti-bot stub / too short to be real."""
     if not html:
         return True
     if len(html) < 800:
@@ -53,17 +39,10 @@ def _stop_requested() -> bool:
     )
 
 
-# tqdm is not thread-safe: in CLI mode several search workers update the
-# shared search/detail progress bars concurrently, so every mutation is
-# guarded by this lock.
+# tqdm is not thread-safe: in CLI mode several search workers update the shared search/detail progress bars concurrently, so every mutation is guarded by this lock.
 _pbar_lock = threading.Lock()
 
 # Government institutions almost never have social media.
-# Skip detail fetch for these to save 30-120s per organization.
-# NOTE: Only check NAME — category can contain "поликлиника" for private clinics
-# (e.g. "Смайл" with category "Стоматологическая поликлиника" is PRIVATE).
-# Keywords are stems on purpose: government names appear in many case forms
-# ("поликлиника № 4", "…больницы № 3", "госпиталя"), so match on the stem.
 _GOV_NAME_KEYWORDS = (
     "поликлиник", "больниц", "госпитал",
     "муниципальн", "государств", "федеральн",
@@ -71,29 +50,18 @@ _GOV_NAME_KEYWORDS = (
 )
 
 def _is_government_institution(record: dict) -> bool:
-    """Check if a record is likely a government institution (no socials).
-
-    Only checks the NAME — a private clinic named "Смайл" with category
-    "Стоматологическая поликлиника" should NOT be skipped.
-    """
+    """Check if a record is likely a government institution (no socials)."""
     name = record.get("name", "").lower()
     return any(kw in name for kw in _GOV_NAME_KEYWORDS)
 
-# Adaptive concurrency semaphore: starts at MAX_WORKERS, dynamically reduced
-# when p95 latency is high to prevent the "death spiral" of all workers waiting.
+# Adaptive concurrency semaphore: starts at MAX_WORKERS, dynamically reduced when p95 latency is high to prevent the "death spiral" of all workers waiting.
 _concurrency_semaphore: threading.Semaphore | None = None
 _semaphore_lock = threading.Lock()
 _effective_workers: int = 0
 
 
 def _poll_semaphore_acquire(semaphore, timeout: float) -> bool:
-    """Acquire a semaphore, polling stop/skip every 0.5s.
-
-    A plain `acquire(timeout=5)` blocks the full 5s before the caller can
-    check stop/skip, which made the stop button lag up to 5s whenever the
-    worker pool was saturated. Polling in small slices keeps stop/skip
-    responsive (~0.5s) without changing the effective concurrency limit.
-    """
+    """Acquire a semaphore, polling stop/skip every 0.5s."""
     deadline = time.monotonic() + timeout
     while True:
         if state._STOP_EVENT and state._STOP_EVENT.is_set():
@@ -109,12 +77,7 @@ def _poll_semaphore_acquire(semaphore, timeout: float) -> bool:
 
 
 def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None = None) -> list[dict]:
-    """Fetch detail pages in parallel and attach social links to each record.
-
-    `pool` is the run-level executor; reusing it across grid points keeps the
-    worker threads (and their per-thread HTTP sessions / TLS connections)
-    alive instead of rebuilding 20 threads per point.
-    """
+    """Fetch detail pages in parallel and attach social links to each record. `pool` is the run-level executor; reusing it across grid points keeps the worker threads (and their per-thread HTTP sessions / TLS connections) alive instead of rebuilding 20 threads per point."""
     results: list[dict] = []
 
     # Initialize adaptive concurrency semaphore
@@ -132,8 +95,7 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
         raw     = record.pop("_raw_feature", {})
         agg_url = record.pop("_aggregator_url", "")
         detail_url_override = record.pop("_detail_url", "")
-        # Выдача Яндекс.Карт не показывает сайт организации (в API он был),
-        # поэтому «только без сайтов» добивает запись уже после карточки.
+        # Выдача Яндекс.Карт не показывает сайт организации (в API он был), поэтому «только без сайтов» добивает запись уже после карточки.
         record.pop("_site_unknown", None)
         biz_name = record.get("name", "?")
 
@@ -142,10 +104,7 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
         if state.is_skip_city():
             return None
 
-        # Чёрный список известен уже из выдачи (название/категория, иногда
-        # описание) — такую запись не показываем и НЕ грузим ей карточку.
-        # Пустые parse_mode/social_mode по умолчанию — здесь может сработать
-        # только чёрный список: сайта и соцсетей в записи ещё нет.
+        # Чёрный список известен уже из выдачи (название/категория, иногда описание) — такую запись не показываем и НЕ грузим ей карточку.
         if crawl_skip_reason(record, words=state.BLACKLIST_WORDS) == "blacklist":
             state.inc_crawl_skip("blacklist")
             state.syslog(f"skip_prefilter[blacklist]: {biz_name}")
@@ -156,9 +115,7 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
         socials: dict[str, str] = {}
         raw_json = json.dumps(raw, ensure_ascii=False)
 
-        # Adaptive throttling: when p95 latency is very high, add a small
-        # delay before each detail fetch to reduce concurrent load on Yandex.
-        # This prevents the "death spiral" where all 10 workers wait 100s+ each.
+        # Adaptive throttling: when p95 latency is very high, add a small delay before each detail fetch to reduce concurrent load on Yandex.
         try:
             from .http_client import _get_latency_stats
             _, _, p95 = _get_latency_stats()
@@ -168,25 +125,9 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
             pass
 
         # The Search API payload sometimes already includes real social links.
-        # Only real URLs count — no fabricated WhatsApp from phone numbers and
-        # no Telegram from @mentions in context text.
         socials.update(extract_socials(raw_json))
 
-        # Fetch the detail page unless the raw payload already gives a solid
-        # picture (>= 2 platforms). A single raw platform is often partial or
-        # a false positive — the heavier detail page usually has the full set
-        # (e.g. VK was missed because a TG link appeared first in raw JSON).
-        # Detail-page socials MERGE into the raw ones instead of replacing them.
-        # NOTE: Yandex Search API almost NEVER includes social links in raw
-        # data — they are only on the detail page. So we must always fetch
-        # the detail page even when raw_socials=0.
-        #
-        # OPTIMIZATION: If social_mode is "with_socials" and the raw feature
-        # already has >= 2 social platforms, skip the expensive detail fetch.
-        # This avoids downloading 200KB HTML pages for businesses that already
-        # clearly have social media — saving ~50% of enrichment time.
-        # EXCEPTION: when required social tiles are selected, raw data may miss
-        # one of them — the detail page is the only place to find it.
+        # Fetch the detail page unless the raw payload already gives a solid picture (>= 2 platforms).
         _raw_missing_required = bool(state.REQUIRED_SOCIALS) and not all(
             socials.get(p) for p in state.REQUIRED_SOCIALS
         )
@@ -200,8 +141,7 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
             state.syslog(f"skip_gov: {biz_name} (government institution)")
             should_fetch = False
 
-        # Adaptive concurrency: sleep when latency is very high
-        # This naturally reduces throughput without broken semaphore manipulation.
+        # Adaptive concurrency: sleep when latency is very high This naturally reduces throughput without broken semaphore manipulation.
         if should_fetch and _concurrency_semaphore:
             try:
                 from .http_client import _get_latency_stats
@@ -220,8 +160,6 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
             if state.is_skip_city():
                 return None
             # Acquire concurrency slot with timeout so stop can interrupt.
-            # Polled in 0.5s slices: a plain acquire(timeout=5) would not
-            # notice a stop for up to 5s while the pool is saturated.
             _sem_acquired = False
             if _concurrency_semaphore:
                 acquired = _poll_semaphore_acquire(_concurrency_semaphore, 5.0)
@@ -233,9 +171,7 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
                     # Retry once more (still no stop — just slow pool)
                     acquired = _poll_semaphore_acquire(_concurrency_semaphore, 5.0)
                     if not acquired:
-                        # Failed again: either stop was set mid-retry (in which
-                        # case abort) or the pool stayed saturated — proceed
-                        # without a slot only if no stop/skip was requested.
+                        # Failed again: either stop was set mid-retry (in which case abort) or the pool stayed saturated — proceed without a slot only if no stop/skip was requested.
                         if state._STOP_EVENT and state._STOP_EVENT.is_set():
                             return None
                         if state.is_skip_city():
@@ -243,47 +179,28 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
                 _sem_acquired = acquired
             state.syslog(f"fetch_detail: biz_id={biz_id}, name={biz_name}, raw_socials={len(socials)}")
             detail_url = detail_url_override or f"https://yandex.ru/maps/org/{biz_id}"
-            # Try browser first (fast, no throttling), fallback to httpx
-            # Priority: CDP > Playwright > httpx — the pool that is up is
-            # usually CDP (runner initializes it first; Playwright is only
-            # a fallback for sources on Python < 3.14).
+            # Try browser first (fast, no throttling), fallback to httpx Priority: CDP > Playwright > httpx — the pool that is up is usually CDP (runner initializes it first; Playwright is only a fallback for sources on Python < 3.14).
             html = None
             _fetch_source = "none"
             _fetch_t0 = time.monotonic()
-            # Единственный способ — реальный браузер (Chrome/Chromium через
-            # CDP). HTTP-фолбэка нет: прямые запросы к Яндекс.Картам ловит
-            # антибот, и они заметно «светят» IP и аккаунт.
-            # Через fetch_html, а не cdp_client.fetch_page: только так
-            # работает дисковый кэш страниц (повторный прогон берёт готовую
-            # карточку и не ждёт браузер на каждой организации).
+            # Единственный способ — реальный браузер (Chrome/Chromium через CDP).
             if state.USE_BROWSER and cdp_client.is_available():
                 html = fetch_html(detail_url, biz_id=biz_id)
                 _fetch_source = "cdp"
 
-            # Anti-bot stub from the browser? Yandex serves an empty/"robot"
-            # page to some requests — retry once on a fresh tab.
-            # NOTE: html may be None because stop/skip aborted the CDP fetch
-            # (fetch_page returns None on stop) — in that case DON'T waste a
-            # retry on a page we're about to abandon anyway.
+            # Anti-bot stub from the browser?
             if (not _stop_requested() and _looks_like_antiblock(html)
                     and state.USE_BROWSER and cdp_client.is_available()):
                 state.syslog(f"fetch_detail: anti-bot stub for {biz_name}, retrying on a fresh tab...")
                 html = fetch_html(detail_url, biz_id=biz_id)
                 _fetch_source = "cdp"
 
-            # Резервный путь без браузера больше не используется: если пул
-            # вкладок не поднялся, запись уходит без соцсетей — это честнее,
-            # чем долбить Яндекс HTTP-запросами.
+            # Резервный путь без браузера больше не используется: если пул вкладок не поднялся, запись уходит без соцсетей — это честнее, чем долбить Яндекс HTTP-запросами.
             _fetch_elapsed = time.monotonic() - _fetch_t0
-            # Extractors run on a complex JSON blob / HTML and can raise; if
-            # they did, the slot was never released and the pool silently lost
-            # a worker for the rest of the batch. Release in a finally.
+            # Extractors run on a complex JSON blob / HTML and can raise; if they did, the slot was never released and the pool silently lost a worker for the rest of the batch.
             try:
                 if html:
-                    # Одним разбором страницы: встроенные данные и секция
-                    # контактов разбираются один раз, а не на каждый шаг
-                    # (замер: 15.7 мс на карточку против 5–6 мс). Нужное
-                    # решается ДО разбора: лишние шаги не считаются вовсе.
+                    # Одним разбором страницы: встроенные данные и секция контактов разбираются один раз, а не на каждый шаг (замер: 15.7 мс на карточку против 5–6 мс).
                     need_rating = (not record.get("rating")
                                    or not record.get("reviews_count"))
                     need_phone = not str(record.get("phone") or "").strip()
@@ -292,39 +209,31 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
                     page = extract_page(html, rating=need_rating,
                                         phone=need_phone, website=need_site,
                                         aggregator=need_agg)
-                    # Порядок приоритета: выдача → встроенные данные → секция
-                    # контактов карточки.
+                    # Порядок приоритета: выдача → встроенные данные → секция контактов карточки.
                     for k, v in page["socials_json"].items():
                         socials.setdefault(k, v)
                     for k, v in page["socials_contacts"].items():
                         socials.setdefault(k, v)
-                    # Rating/reviews live in the same blob as the socials, so this
-                    # is free. Values already present (из выдачи Яндекс.Карт) win.
+                    # Rating/reviews live in the same blob as the socials, so this is free.
                     if need_rating:
                         if page["rating"] and not record.get("rating"):
                             record["rating"] = page["rating"]
                         if page["reviews"] and not record.get("reviews_count"):
                             record["reviews_count"] = page["reviews"]
-                    # Телефон: выдача Яндекс.Карт его не показывает — на карточке
-                    # организации он есть как ссылка tel:, а страница уже загружена.
+                    # Телефон: выдача Яндекс.Карт его не показывает — на карточке организации он есть как ссылка tel:, а страница уже загружена.
                     if need_phone and page["phone"]:
                         record["phone"] = page["phone"]
                         state.syslog(f"phone_from_page: {biz_name} → {page['phone']}")
-                    # Сайт организации: раньше его отдавал API вместе с выдачей,
-                    # теперь — блок контактов карточки (см. extract_website).
+                    # Сайт организации: раньше его отдавал API вместе с выдачей, теперь — блок контактов карточки (см. extract_website).
                     site = page["website"] if need_site else ""
                     if site:
                         record["website"] = site
                         state.syslog(f"website_from_page: {biz_name} → {site[:80]}")
-                    # Ссылка-витрина (taplink/linktree): Яндекс показывает её как
-                    # «Сайт», но отдельным полем. Раньше карточка её не читала,
-                    # и колонка «Сайт / Таплинк» была пустой всегда.
+                    # Ссылка-витрина (taplink/linktree): Яндекс показывает её как «Сайт», но отдельным полем.
                     if need_agg and page["aggregator"]:
                         record["aggregator_url"] = page["aggregator"]
                         state.syslog(f"aggregator_from_page: {biz_name} → {page['aggregator'][:80]}")
-                    # Зеркало social_normalize.normalize_record: обычный сайт виден
-                    # в колонке «Сайт / Таплинк» и в ЖИВОЙ таблице, а не только
-                    # в файлах, которые пишет этап сохранения.
+                    # Зеркало social_normalize.normalize_record: обычный сайт виден в колонке «Сайт / Таплинк» и в ЖИВОЙ таблице, а не только в файлах, которые пишет этап сохранения.
                     if record.get("website") and not record.get("aggregator_url"):
                         record["aggregator_url"] = record["website"]
                 state.syslog(f"fetch_detail done: {biz_name}, socials_after={list(socials.keys())}, source={_fetch_source}, time={_fetch_elapsed:.1f}s")
@@ -340,8 +249,7 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
         if not _stop_requested() and agg_url and len(socials) < 2:
             state.syslog(f"fetch_aggregator: {biz_name}, url={agg_url}")
             try:
-                # Страница-агрегатор открывается тем же браузером — прямые
-                # HTTP-запросы к чужим сайтам приложение больше не делает.
+                # Страница-агрегатор открывается тем же браузером — прямые HTTP-запросы к чужим сайтам приложение больше не делает.
                 agg_html = cdp_client.fetch_page(agg_url)
                 if agg_html:
                     for k, v in extract_socials(agg_html).items():
@@ -352,24 +260,17 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
         with _pbar_lock:
             pbar.update(1)
 
-        # Post-fetch guard: stop/skip may have been requested while the detail
-        # page was loading. Don't emit a record that would bleed into the next
-        # city or after shutdown.
+        # Post-fetch guard: stop/skip may have been requested while the detail page was loading.
         if state._STOP_EVENT and state._STOP_EVENT.is_set():
             return None
         if state.is_skip_city():
             return None
 
-        # Соцсети переносим в запись ДО решения о фильтрах: и режим
-        # «с/без соцсетей», и обязательные сети читаются по самой записи.
+        # Соцсети переносим в запись ДО решения о фильтрах: и режим «с/без соцсетей», и обязательные сети читаются по самой записи.
         for platform in KNOWN_PLATFORMS:
             record[platform] = socials.get(platform, "")
 
-        # Предфильтр сбора: запись, которую всё равно снимут фильтры (чёрный
-        # список, «только без сайтов», соцсети), не попадает ни в живой поток —
-        # им наполняется таблица результатов, — ни в output/raw/. Правила
-        # общие с этапом 2 (processing.crawl_skip_reason), иначе «Применить
-        # фильтры заново» находило бы расхождения.
+        # Предфильтр сбора: запись, которую всё равно снимут фильтры (чёрный список, «только без сайтов», соцсети), не попадает ни в живой поток — им наполняется таблица результатов, — ни в output/raw/.
         _reason = crawl_skip_reason(
             record,
             words=state.BLACKLIST_WORDS,
@@ -410,9 +311,7 @@ def enrich(candidates: list[dict], pbar: tqdm, pool: ThreadPoolExecutor | None =
                 for f in pending:
                     f.cancel()
                 break
-            # 1s granularity: stop/skip is noticed within ~1s even when all
-            # in-flight detail fetches are slow to finish (they also abort
-            # early on stop via the CDP/httpx stop checks).
+            # 1s granularity: stop/skip is noticed within ~1s even when all in-flight detail fetches are slow to finish (they also abort early on stop via the CDP/httpx stop checks).
             done, pending = _future_wait(pending, timeout=1,
                                           return_when=concurrent.futures.FIRST_COMPLETED)
             for fut in done:
@@ -442,14 +341,7 @@ def collect_candidates(
     seen_lock=None,
     search_session=None,
 ) -> tuple[list[dict], int | None, int]:
-    """Search-phase only: gather candidate records for one (query, point).
-
-    Returns (candidates, found, new_candidates). The detail-fetch phase is
-    run separately by the runner (enrich()) so the next point's search can
-    overlap the current point's detail loading (producer/consumer pipeline).
-    `found` is the total count reported by the Search API (None if unknown —
-    e.g. on network error); `new_candidates` counts deduped new records.
-    """
+    """Search-phase only: gather candidate records for one (query, point)."""
     from .search import search_page, parse_feature
 
     candidates: list[dict] = []

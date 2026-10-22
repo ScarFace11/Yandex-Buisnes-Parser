@@ -1,7 +1,5 @@
 # runner.py
-"""
-Top-level entry points: run() for CLI and run_web() for the Flask interface.
-"""
+"""Top-level entry points: run() for CLI and run_web() for the Flask interface."""
 import json
 import os
 import re
@@ -33,15 +31,7 @@ colorama_init(autoreset=True)
 
 
 def _console_print(*args, **kwargs) -> None:
-    """print() that never raises.
-
-    On Windows the console handle behind sys.stdout (wrapped by colorama
-    at import time) can be invalid or closed — e.g. when the Flask app is
-    started detached or the console window goes away — and any write,
-    even a bare print(), then raises OSError(22, 'Invalid argument').
-    Console output is cosmetic, so swallow the error instead of letting
-    it abort the whole search run.
-    """
+    """print() that never raises."""
     try:
         print(*args, **kwargs)
     except (OSError, ValueError):
@@ -57,10 +47,7 @@ except ImportError:
 
 
 def run() -> None:
-    """
-    Main parse loop — reads config from the `state` module so that
-    run_web() can override settings before calling this function.
-    """
+    """Main parse loop — reads config from the `state` module so that run_web() can override settings before calling this function."""
     # File-only: full config dump for developer trace
     state.syslog(f"run() start: city={state.CITY}")
     state.syslog(f"  queries={state.SEARCH_QUERIES}")
@@ -72,8 +59,7 @@ def run() -> None:
     state.syslog(f"  social_mode={state.SOCIAL_MODE}, fetch_detail={state.FETCH_DETAIL}")
     state.syslog(f"  source={state.SOURCE}")
 
-    # Web: minimal user-facing header (guarded — a broken Windows
-    # console handle must never kill the run, see _console_print).
+    # Web: minimal user-facing header (guarded — a broken Windows console handle must never kill the run, see _console_print).
     _console_print()
     state.info(f"  🔍 Поиск в «{state.CITY}» — запросы: {', '.join(state.SEARCH_QUERIES)}")
     state.info("  🗺  Источник: Яндекс.Карты")
@@ -83,9 +69,7 @@ def run() -> None:
     envelope = None
     if coords:
         center_lat, center_lon, envelope = coords
-        # Откуда взялись координаты: из офлайн-справочника или с карты
-        # (для городов вне каталога). Это видно в логе — если поиск ушёл
-        # не в тот город, причина читается сразу, без разбора кода.
+        # Откуда взялись координаты: из офлайн-справочника или с карты (для городов вне каталога).
         try:
             from .city_coords import lookup as _coord_lookup
             _coord_src = "справочник городов" if _coord_lookup(state.CITY) else "карта"
@@ -94,16 +78,12 @@ def run() -> None:
         state.ok(f"  → {center_lat:.5f}, {center_lon:.5f}"
                  + (f" ({_coord_src})" if _coord_src else ""))
     else:
-        # Город не опознан. Раньше здесь молча подставлялась Москва, и прогон
-        # по любому незнакомому названию искал в Москве. Теперь ищем по
-        # тексту «запрос + город» (Яндекс разрешает город сам), а сетка точек
-        # не строится — её не вокруг чего строить.
+        # Город не опознан.
         center_lat, center_lon = None, None
         state.warn(f"  Координаты «{state.CITY}» не найдены — ищу по названию "
                    "города в запросе (без сетки точек)")
 
-    # Сетка имеет смысл только с координатами: без них среди точек нечего
-    # перебирать, а в логе появились бы «None» вместо широты.
+    # Сетка имеет смысл только с координатами: без них среди точек нечего перебирать, а в логе появились бы «None» вместо широты.
     use_grid = bool(state.USE_GRID and center_lat is not None)
     if state.USE_GRID and not use_grid:
         state.info("  🗺  Сетка точек пропущена: у города нет координат")
@@ -118,18 +98,13 @@ def run() -> None:
         ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
         base = f"{slug}_{ts}"
 
-    # Resume needs a STABLE checkpoint key across separate runs — the output
-    # base is timestamped, so a fresh run would never find the checkpoint.
-    # The key is per-city (queries are stored inside the completed set, so
-    # resuming with a different query list still works point-by-point).
+    # Resume needs a STABLE checkpoint key across separate runs — the output base is timestamped, so a fresh run would never find the checkpoint.
     ckpt_key = f"{slug}_resume" if state.RESUME_MODE else base
 
     paths = _resolve(base)
 
     state._reset_found()
-    # NOTE: pause position (city) is NOT reset here — run() is called per city
-    # from run_web's city loop, which has already set the current city.
-    # Resetting city here would blank it right after the loop set it.
+    # NOTE: pause position (city) is NOT reset here — run() is called per city from run_web's city loop, which has already set the current city.
     state.update_pause_info(query="", point=0, points_total=0)
     reset_stats()
     # Счётчики кэша страниц — тоже на прогон (см. stats.print_limit_stats).
@@ -139,23 +114,14 @@ def run() -> None:
     except Exception:
         pass
 
-    # Every enriched record is appended to the JSONL sidecar as it is found
-    # (see state._emit_result), so a hard kill loses nothing already fetched.
+    # Every enriched record is appended to the JSONL sidecar as it is found (see state._emit_result), so a hard kill loses nothing already fetched.
     state._RESULT_FILE = paths["jsonl"]
     try:
         state._RESULT_HANDLE = open(paths["jsonl"], "a", encoding="utf-8")
     except Exception:
         state._RESULT_HANDLE = None
 
-    # Start incremental Excel: create workbook with headers on first record
-    # COLLAPSE_CHAINS needs the whole record set to merge chains, so it can't
-    # append row-by-row — disable the incremental workbook and rebuild Excel
-    # once at the end from the filtered records instead.
-    # Two-stage pipeline (PIPELINE == "raw"): the legacy root-level exports
-    # ({city}_{ts}.xlsx/.csv/...) must stay silent — raw data lives in
-    # output/raw/ and the filtered result is written by stage 2 into
-    # output/processed/{format}/. Writing both duplicated every file and
-    # confused «Формат результата» (e.g. CSV requested, root xlsx appeared).
+    # Start incremental Excel: create workbook with headers on first record COLLAPSE_CHAINS needs the whole record set to merge chains, so it can't append row-by-row — disable the incremental workbook and rebuild Excel once at the end from the filtered records instead.
     _legacy_exports = state.PIPELINE != "raw"
     if state.OUTPUT_EXCEL and not state.COLLAPSE_CHAINS and _legacy_exports:
         state._EXCEL_APPEND_ENABLED = True
@@ -211,8 +177,6 @@ def run() -> None:
         query_records: list[dict] = []
         processed_keys: list[tuple] = []
         # Search-phase bookkeeping for the «всё уже спарсено ранее» verdict:
-        # how many organizations the API itself returned, and how many of them
-        # were new (not in the seen store).
         api_hits = 0
         new_candidates_total = 0
 
@@ -236,18 +200,7 @@ def run() -> None:
             batch_thread.start()
 
         def _join_stop_aware(thread) -> bool:
-            """Join a batch thread, polling stop/skip every 0.25s.
-
-            Enrichment aborts within ~1s of stop/skip (its wait loop checks
-            every second), so normally the thread finishes quickly and its
-            records are collected normally (CSV/checkpoint stay complete).
-            Only if the thread is STILL alive ~2s after stop/skip was
-            requested do we abandon the join — the per-record records were
-            already persisted by state._emit_result() during enrichment
-            (jsonl + Excel + SSE), so nothing on disk is lost.
-
-            Returns True when records were collected, False when abandoned.
-            """
+            """Join a batch thread, polling stop/skip every 0.25s."""
             if thread is None:
                 return True
             stop_observed = 0.0
@@ -263,12 +216,7 @@ def run() -> None:
             return True
 
         def drain_batch() -> None:
-            """Wait for current enrichment batch and collect results.
-
-            Stop/skip aware: when requested, abandon the join immediately —
-            individual records were already emitted to jsonl/Excel/SSE by the
-            enrichment workers, so nothing is lost.
-            """
+            """Wait for current enrichment batch and collect results."""
             nonlocal batch_key, batch_thread
             if batch_thread is not None:
                 if _join_stop_aware(batch_thread):
@@ -341,18 +289,12 @@ def run() -> None:
             # Start enrichment for THIS point
             start_batch(key, candidates)
 
-            # Now wait for the PREVIOUS point's enrichment while we go back
-            # to the top of the loop and search the next point.
-            # This allows search-next-point and enrich-current-point to overlap.
+            # Now wait for the PREVIOUS point's enrichment while we go back to the top of the loop and search the next point.
             join_prev_batch(prev_batch_thread, prev_batch_key)
             prev_batch_thread = batch_thread
             prev_batch_key = batch_key
 
-        # Wait for the final batch. After the loop prev_batch_thread is the SAME
-        # thread as batch_thread (each iteration assigns prev = current), so
-        # drain_batch() already collects the last point — a separate
-        # join_prev_batch() would process it a second time (duplicate
-        # mark_progress → progress beyond 100 %).
+        # Wait for the final batch.
         drain_batch()
 
         state.info(f"  ✅ «{query}»: {len(query_records)} записей")
@@ -430,23 +372,14 @@ def run() -> None:
     state.syslog(f"jsonl_records={len(jsonl_records)}, full_after_dedupe={len(full_records)}")
 
     # ── Stage 1 raw export (two-stage pipeline) ─────────────────
-    # Save the UNFILTERED per-query records to output/raw/ so stage 2 can
-    # re-filter them any time without a new crawl. Skipped when interrupted:
-    # partial data must survive, but an incomplete snapshot must not be
-    # exported as a complete one (edge case 3) — stop_event check in run_web.
     state._RAW_FILES_LAST_RUN = []
-    # Files of THIS run: run() is called per city, so the per-city list above
-    # is useless for stage 2 — a multi-city run kept only the last city's raw
-    # files and exported just that city. `_RAW_FILES_RUN` accumulates across
-    # the whole run (created by run_web) and is what stage 2 filters.
+    # Files of THIS run: run() is called per city, so the per-city list above is useless for stage 2 — a multi-city run kept only the last city's raw files and exported just that city. `_RAW_FILES_RUN` accumulates across the whole run (created by run_web) and is what stage 2 filters.
     if not isinstance(getattr(state, "_RAW_FILES_RUN", None), list):
         state._RAW_FILES_RUN = []
     if state.PIPELINE == "raw" and jsonl_records:
         try:
             from .processing import annotate_branch_counts, export_raw_records
-            # «🎯 Тип компании»: branch_count считается по всему городу ДО
-            # разбивки на файлы (филиалы сети часто попадают в разные запросы),
-            # так что число попадает в raw и живёт до «Применить фильтры заново».
+            # «🎯 Тип компании»: branch_count считается по всему городу ДО разбивки на файлы (филиалы сети часто попадают в разные запросы), так что число попадает в raw и живёт до «Применить фильтры заново».
             annotate_branch_counts(jsonl_records)
             _by_qc: dict[tuple, list[dict]] = {}
             for _r in jsonl_records:
@@ -508,10 +441,7 @@ def run() -> None:
 
     state._EXCEL_APPEND_ENABLED = False
 
-    # Nothing found at all → never leave an empty output behind. The Excel
-    # workbook is created at run start for crash-safe incremental writes, so
-    # without this a city that produced nothing (e.g. a repeat run over an
-    # already-parsed city) ended with a valid but empty «пустой excel файл».
+    # Nothing found at all → never leave an empty output behind.
     if not all_results and not full_records:
         for _key in ("xlsx", "csv", "json", "map"):
             _p = paths.get(_key)
@@ -539,8 +469,7 @@ def run() -> None:
     except Exception:
         _api_requests = 0
     _found_ctx = f" (из {_api_requests} запросов)" if _api_requests else ""
-    # «Найдено 0» при включённых фильтрах выглядит как сорвавшийся поиск, а не
-    # как работающий предфильтр: показываем, сколько записей сбор снял сам.
+    # «Найдено 0» при включённых фильтрах выглядит как сорвавшийся поиск, а не как работающий предфильтр: показываем, сколько записей сбор снял сам.
     _skipped_ctx = ""
     try:
         _skipped_total = state.crawl_skip_summary()["total"]
@@ -550,9 +479,7 @@ def run() -> None:
         pass
     state.ok(f"  Найдено записей: {len(all_results)}{_found_ctx}{_skipped_ctx}")
     if full_records:
-        # Paths already announced as «📁 город: файл» are not repeated here —
-        # each output path shows up once per run. _shown_file_paths only
-        # exists in the web runner; the plain run() still prints everything.
+        # Paths already announced as «📁 город: файл» are not repeated here — each output path shows up once per run. _shown_file_paths only exists in the web runner; the plain run() still prints everything.
         shown = globals().get("_shown_file_paths") or set()
         def _skip(rel_path: str) -> bool:
             import os as _os
@@ -569,10 +496,7 @@ def run() -> None:
 
     state.ok(f"{'═' * 58}\n")
 
-    # Verdict for «город уже парсился»: the API DID return organizations, but
-    # not a single one was new — everything is in the global seen store. Say it
-    # plainly instead of leaving a bare «0 записей». run_web() raises the same
-    # text to the UI when no city of the run produced anything.
+    # Verdict for «город уже парсился»: the API DID return organizations, but not a single one was new — everything is in the global seen store.
     state.CITY_ALL_SEEN = bool(
         not all_results and _api_hits > 0 and _new_candidates == 0
     )
@@ -580,9 +504,7 @@ def run() -> None:
     if not full_records:
         state.warn("Подходящих записей не найдено. Попробуйте изменить запросы или фильтры.")
         if getattr(state, "SEARCH_BLOCKED", ""):
-            # Пустота из-за капчи — не повод менять запросы и фильтры: выдачи
-            # вообще не было, и это надо сказать отдельно от «ничего не нашлось».
-            # Текст берётся тот же, что и в строке поиска — одно объяснение.
+            # Пустота из-за капчи — не повод менять запросы и фильтры: выдачи вообще не было, и это надо сказать отдельно от «ничего не нашлось».
             try:
                 from .search import search_failure_hint
                 state.warn("  ⚠ " + search_failure_hint())
@@ -606,11 +528,7 @@ def _apply_params(params: dict) -> None:
     state.OUTPUT_FILENAME = None
     state.APPEND_MODE     = False
     state.RESUME_MODE     = bool(params.get("resume", False))
-    # Two-stage pipeline: "raw" — сбор применяет только те фильтры, которые
-    # известны по самой записи (чёрный список, «только без сайтов», соцсети:
-    # см. processing.crawl_skip_reason), а фильтры, которым нужен весь набор
-    # (объединение филиалов, «тип компании», оценка лида), ждут этапа 2.
-    # Unset → legacy behaviour.
+    # Two-stage pipeline: "raw" — сбор применяет только те фильтры, которые известны по самой записи (чёрный список, «только без сайтов», соцсети: см. processing.crawl_skip_reason), а фильтры, которым нужен весь набор (объединение филиалов, «тип компании», оценка лида), ждут этапа 2. Unset → legacy behaviour.
     _pl = params.get("pipeline", "")
     state.PIPELINE = _pl if _pl in ("raw", "") else ""
     state.RAW_MODE = params.get("raw_mode", "keep") if state.PIPELINE == "raw" else "keep"
@@ -629,9 +547,6 @@ def _apply_params(params: dict) -> None:
     state.FETCH_DETAIL    = bool(params.get("fetch_detail", True))
     state.SOCIAL_MODE      = params.get("social_mode", "all")
     # Required socials (stage-2 filter): the business must have ALL of them.
-    # Kept in state regardless of the mode — enrich() uses it to decide whether
-    # a detail page is worth fetching, while the actual dropping happens in
-    # processing.apply_filters on the raw records.
     try:
         from yandex_maps_parser.constants import KNOWN_PLATFORMS as _KP
         _rs = params.get("required_socials") or []
@@ -640,12 +555,9 @@ def _apply_params(params: dict) -> None:
         state.REQUIRED_SOCIALS = set()
     state.MAX_CANDIDATES_PER_CITY = max(0, int(params.get("max_candidates", 200)))
     # Parse mode: "without_website" (only businesses without a website) | "all".
-    # Работает и на сборе (запись с сайтом не попадает ни в живую таблицу, ни
-    # в raw), и на этапе 2 — «Применить фильтры заново» считает так же.
     _pm = params.get("parse_mode", "without_website")
     state.PARSE_MODE = _pm if _pm in ("without_website", "all") else "without_website"
     # Чёрный список нужен уже сбору: слово снимает запись ДО загрузки карточки.
-    # Нормализуем теми же правилами, что и этап 2 (лимиты, lowercase).
     try:
         from .processing import parse_blacklist_words
         state.BLACKLIST_WORDS = parse_blacklist_words(params.get("blacklist_words") or [])
@@ -653,11 +565,8 @@ def _apply_params(params: dict) -> None:
         state.BLACKLIST_WORDS = []
     state.reset_crawl_skips()
     # Счётчики непрочитанных карточек — на прогон целиком (как и предфильтр):
-    # лог отчитывается по каждому городу дельтой, а в итоге — суммой.
     state.reset_read_failures()
-    # Фильтры, которые сбор может решить по одной записи (см.
-    # processing.crawl_skip_reason): без них снятые этапом 2 записи появлялись
-    # бы в живой таблице и пропадали только в конце прогона.
+    # Фильтры, которые сбор может решить по одной записи (см. processing.crawl_skip_reason): без них снятые этапом 2 записи появлялись бы в живой таблице и пропадали только в конце прогона.
     try:
         state.MIN_LEAD_SCORE = int(params.get("min_lead_score") or 0)
     except (TypeError, ValueError):
@@ -677,15 +586,11 @@ def _apply_params(params: dict) -> None:
         state.EXCEL_COLUMNS = {str(f) for f in _ec if str(f) in _valid}
     else:
         state.EXCEL_COLUMNS = None
-    # Страницы читает только настоящий браузер (Chrome/Chromium через CDP),
-    # поэтому выбор «способа парсинга» больше не нужен: HTTP-путь удалён.
+    # Страницы читает только настоящий браузер (Chrome/Chromium через CDP), поэтому выбор «способа парсинга» больше не нужен: HTTP-путь удалён.
     state.USE_BROWSER    = bool(params.get("use_browser", True))
     # Debug window: separate Chrome, visible, CDP only (no tab pool).
-    # Optional; off by default.
     state.DEBUG_CDP_WINDOW = bool(params.get("debug_cdp_window", False))
-    # Socials are ALWAYS collected from business cards (the UI has no switch
-    # for it any more): without them neither the social filters nor the lead
-    # score can work. `fetch_detail=False` stays honored for API clients.
+    # Socials are ALWAYS collected from business cards (the UI has no switch for it any more): without them neither the social filters nor the lead score can work. `fetch_detail=False` stays honored for API clients.
     if not params.get("fetch_detail", True):
         state.FETCH_DETAIL = False
     # Re-create semaphore to match the new MAX_WORKERS setting
@@ -697,11 +602,7 @@ class _NoRawData(Exception):
 
 
 def _run_was_interrupted() -> bool:
-    """True when the last run_web() was stopped by the user or crashed.
-
-    Edge case 3 of the two-stage pipeline: partial data stays in raw/,
-    but stage 2 (filtering) must NOT run on an incomplete crawl.
-    """
+    """True when the last run_web() was stopped by the user or crashed."""
     return bool(getattr(state, "_RUN_INTERRUPTED", False))
 
 
@@ -726,15 +627,7 @@ def _collect_run_files(started_at: float) -> list[str]:
 
 
 def run_web(params: dict, log_fn, stop_event=None, skip_event=None, pause_event=None) -> list[str]:
-    """
-    Run the parser with settings from the web form.
-    Supports multi-city: if 'cities' list is provided, processes each
-    city sequentially, creating separate files per city.
-
-    params    — dict of settings from the browser form.
-    log_fn    — callable(level: str, msg: str) for streaming logs to the browser.
-    Returns a list of filenames (relative to OUTPUT_DIR) created during this run.
-    """
+    """Run the parser with settings from the web form."""
     _apply_params(params)
 
     # Build city list: 'cities' takes priority, fallback to 'city' string
@@ -750,7 +643,6 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None, pause_event=
     _run_start_time = time.time()  # track overall run start for history
     _last_finished_city = ""       # последний город, доведённый до конца
     # Interrupted-run flag for the two-stage pipeline (edge case 3):
-    # partial data must stay in raw/, stage 2 must not run.
     state._RUN_INTERRUPTED = False
     _loop_ok = False   # True only when the city loop finished without an exception
 
@@ -771,22 +663,16 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None, pause_event=
             _file_logger.log(level, msg)
 
     # File-only system log: writes to log file but NOT to browser.
-    # Use for developer traces: function calls, HTTP details, internals.
     def _syslog(msg: str) -> None:
         if _file_logger:
             _file_logger.log("sys", msg)
 
     # Web-only log: writes to browser but NOT to file.
-    # Use for user-facing messages that shouldn't clutter the file log.
     def _weblog(level: str, msg: str) -> None:
         if log_fn:
             log_fn(level, msg)
 
-    # Browser-visible duplicate guard for human log lines only. It must
-    # NOT swallow repeated 'progress'/'result'/'tech' events (quota pings
-    # and record streams legitimately repeat). One shared memory for the
-    # combined and web-only writers so a line printed through either path
-    # suppresses its immediate twin through the other.
+    # Browser-visible duplicate guard for human log lines only.
     _last_web_msg = [""]
 
     def _dedup_emit(level: str, msg: str, emit) -> None:
@@ -808,17 +694,12 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None, pause_event=
     state._TQDM_DISABLE  = True
     state._STOP_EVENT    = stop_event
     state._SKIP_CITY_EVENT = skip_event or threading.Event()
-    # A pause maps onto the stop event: the run unwinds through the same
-    # graceful path (checkpoint + Excel finalize). The pause_event flag only
-    # changes the wording of the closing log lines.
+    # A pause maps onto the stop event: the run unwinds through the same graceful path (checkpoint + Excel finalize).
     if pause_event is None:
         pause_event = threading.Event()
     state._PAUSE_EVENT   = pause_event
     state._SKIPPED_CITIES = []
-    # Raw xlsx files of THIS run (filled per city in run() and read by the
-    # stage-2 block below). On «Продолжить» it is pre-seeded with the slice
-    # collected before the pause — those organizations are already in the
-    # seen-cache, so without this they could never reach the final result.
+    # Raw xlsx files of THIS run (filled per city in run() and read by the stage-2 block below).
     state._RAW_FILES_RUN = []
     if state.RESUME_MODE and state.PIPELINE == "raw":
         try:
@@ -829,16 +710,13 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None, pause_event=
                            f"сырых файлов прошлого запуска")
         except Exception:
             state._RAW_FILES_RUN = []
-    # File paths already announced via «📁 город: файл» — the final summary
-    # («Excel → …», «JSON → …») skips them so each path prints once.
+    # File paths already announced via «📁 город: файл» — the final summary («Excel → …», «JSON → …») skips them so each path prints once.
     _shown_file_paths: set[str] = set()
     _total_records = 0
-    # One flag per city that actually ran: True when the city produced nothing
-    # because every organization found there was parsed in an earlier run.
+    # One flag per city that actually ran: True when the city produced nothing because every organization found there was parsed in an earlier run.
     _seen_flags: list[bool] = []
     state._ALL_ALREADY_SEEN = False
-    # Проверка «Вы не робот?» от Яндекса: сбрасывается на каждый прогон, чтобы
-    # прошлая капча не объясняла сегодняшнюю пустоту.
+    # Проверка «Вы не робот?» от Яндекса: сбрасывается на каждый прогон, чтобы прошлая капча не объясняла сегодняшнюю пустоту.
     state.SEARCH_BLOCKED = ""
     try:
         from . import browser_search
@@ -846,9 +724,7 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None, pause_event=
     except Exception:
         pass
 
-    # Continuation mode: after the user's cities, keep parsing further cities
-    # from the catalog (population order), until continue_limit extra cities
-    # have run. Runs after the logging setup so the announce reaches the UI.
+    # Continuation mode: after the user's cities, keep parsing further cities from the catalog (population order), until continue_limit extra cities have run.
     continue_extra = int(params.get("continue_limit", 0) or 0)
     if params.get("continue_cities") and continue_extra > 0:
         try:
@@ -873,16 +749,9 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None, pause_event=
     _syslog(f"Вывод: excel={state.OUTPUT_EXCEL}, json={state.OUTPUT_JSON}, csv={state.OUTPUT_CSV}, map={state.OUTPUT_MAP}")
     _syslog(f"GRID: enabled={state.USE_GRID}, radius={state.GRID_RADIUS_KM}km, step={state.GRID_STEP_KM}km")
 
-    # Initialize the browser pool. Единственный способ сбора данных —
-    # реальный Chrome/Chromium через CDP (см. cdp_client): он неотличим от
-    # обычного браузера пользователя, тогда как HTTP-запросы (httpx/curl_cffi)
-    # Яндекс режет антиботом, а сам аккаунт/IP попадает под подозрение.
-    # HTTP-фолбэк удалён — если браузер не запустился, честно говорим об этом,
-    # а не долбим сервис «серыми» запросами.
+    # Initialize the browser pool.
     if state.USE_BROWSER:
         # Выбор браузера: параметр запуска → settings.json → автоматически.
-        # Путь проверяет cdp_client: удалённый браузер не должен ломать сбор
-        # «не найден» при живом Chrome рядом.
         _browser_path = str(params.get("browser_path") or "").strip()
         if not _browser_path:
             try:
@@ -911,19 +780,13 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None, pause_event=
         else:
             _syslog("debug_cdp_window: failed to open window")
             _weblog("warn", "  ⚠ Не удалось открыть отладочный Chrome")
-    # Deduped: the same line was previously printed twice for single-city
-    # runs (once here, once via the city header path).
-    # Города печатаются полностью: в живом прогоне пользователь выбрал
-    # «Москва», а лог показывал «Калуга» — одно число городов не давало
-    # заметить, что в форму попало не то название.
+    # Deduped: the same line was previously printed twice for single-city runs (once here, once via the city header path).
     _dedup_weblog("info", f"  Поиск: {len(cities)} город(ов) — {', '.join(cities)}; "
                          f"запросы: {', '.join(state.SEARCH_QUERIES)}")
-    # Журнал источников: дата сбора и откуда взяты данные. В выгрузке то же
-    # время лежит в колонке «Дата сбора» (parsed_at) у каждой организации.
+    # Журнал источников: дата сбора и откуда взяты данные.
     _dedup_weblog("info", f"  📅 Данные собираются сейчас: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
                          " · источник — публичная выдача Яндекс.Карт")
-    # Лимиты: приложение не «долбит» сервис, а ждёт между запросами;
-    # при 429 пауза увеличивается сама (rate_limit).
+    # Лимиты: приложение не «долбит» сервис, а ждёт между запросами; при 429 пауза увеличивается сама (rate_limit).
     _dedup_weblog("info", "  🐢 Вежливый режим: пауза между запросами, "
                          "авто-замедление при 429 — сервис не получает шквал запросов")
 
@@ -932,9 +795,7 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None, pause_event=
             if stop_event and stop_event.is_set():
                 break
 
-            # Папку результатов могли поменять в интерфейсе уже во время
-            # поиска: новая настройка вступает в силу со СЛЕДУЮЩЕГО города,
-            # текущий дописывается туда, где начался.
+            # Папку результатов могли поменять в интерфейсе уже во время поиска: новая настройка вступает в силу со СЛЕДУЮЩЕГО города, текущий дописывается туда, где начался.
             try:
                 import paths as _paths_mod
                 _paths_mod.refresh_output_dirs()
@@ -961,8 +822,7 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None, pause_event=
                     _file_logger.log_city_start(city_idx + 1, total_cities, city)
                 # Signal city transition to frontend
                 _combined_log("progress", f"city/{city_idx + 1}/{total_cities}/{city}")
-                # Once per run: tell the frontend the full queue so it can
-                # prefill queued cities and show «Городов обработано: X из Y».
+                # Once per run: tell the frontend the full queue so it can prefill queued cities and show «Городов обработано: X из Y».
                 if city_idx == 0:
                     _combined_log("progress", f"city_list|{'/'.join(cities)}")
 
@@ -996,9 +856,7 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None, pause_event=
             all_files.extend(city_files)
             _syslog(f"Город {city}: файлы={city_files}, records={records_found}")
 
-            # Refresh the merged frontend JSON after EVERY city, not just at
-            # the end — so the results table / stats stay populated even if
-            # the app is killed or the run is stopped before all cities.
+            # Refresh the merged frontend JSON after EVERY city, not just at the end — so the results table / stats stay populated even if the app is killed or the run is stopped before all cities.
             try:
                 from .exporters import write_frontend_json
                 write_frontend_json(all_files, str(getattr(state, "RESULTS_DIR", None) or state.OUTPUT_DIR), cities)
@@ -1010,9 +868,7 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None, pause_event=
                 _weblog("ok", f"  📁 {city}: {', '.join(state.short_path(f) for f in city_files)}")
         _loop_ok = True
     finally:
-        # «Города уже парсились ранее»: each city that ran returned zero new
-        # organizations while the API did return some. The UI shows this text
-        # instead of a bare «найдено 0» (and no files were written).
+        # «Города уже парсились ранее»: each city that ran returned zero new organizations while the API did return some.
         state._ALL_ALREADY_SEEN = bool(
             _seen_flags and all(_seen_flags) and _total_records == 0
         )
@@ -1070,8 +926,7 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None, pause_event=
                     "vk_min_followers": params.get("vk_min_followers") or 0,
                     "min_lead_score":   params.get("min_lead_score") or 0,
                     "sort_by_score":    bool(params.get("sort_by_score", True)),
-                    # Чёрный список («🚫 Исключить по словам»): слова приезжают
-                    # из формы и снимают записи ДО остальных фильтров.
+                    # Чёрный список («🚫 Исключить по словам»): слова приезжают из формы и снимают записи ДО остальных фильтров.
                     "blacklist_words":  params.get("blacklist_words") or [],
                     # «🎯 Тип компании»: только одиночки и/или только новые.
                     "only_single_branch": bool(params.get("only_single_branch", False)),
@@ -1082,16 +937,11 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None, pause_event=
                 if params.get("output_json"):  _formats.append("json")
                 if params.get("output_csv"):   _formats.append("csv")
                 if params.get("output_map"):   _formats.append("html")
-                # Every raw file of this run — including the slice written
-                # before a pause (preloaded in run_web on resume).
+                # Every raw file of this run — including the slice written before a pause (preloaded in run_web on resume).
                 _raw_input = (list(getattr(state, "_RAW_FILES_RUN", []) or [])
                               or list(getattr(state, "_RAW_FILES_LAST_RUN", []) or []))
                 if not _raw_input:
-                    # Собирать было нечего (пустая выдача, капча, все записи
-                    # сняты предфильтром) — фильтровать тоже нечего. Раньше
-                    # этап 2 всё равно запускался и добавлял к честной причине
-                    # пустоты ложную: «Ничего не найдено по заданным фильтрам.
-                    # Измените настройки».
+                    # Собирать было нечего (пустая выдача, капча, все записи сняты предфильтром) — фильтровать тоже нечего.
                     _weblog("info", "  🧪 Этап 2 пропущен: сырых данных нет — "
                                      "фильтровать нечего (причина выше)")
                     raise _NoRawData()
@@ -1121,8 +971,7 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None, pause_event=
                 pass
         elif state.PIPELINE == "raw":
             state._RUN_INTERRUPTED = True
-            # Пауза — это не обрыв: сырые данные те же, но фильтрация ждёт
-            # продолжения, и формулировка не должна пугать пользователя.
+            # Пауза — это не обрыв: сырые данные те же, но фильтрация ждёт продолжения, и формулировка не должна пугать пользователя.
             _interrupted_msg = (
                 "  ⏸ Поиск на паузе — сырые данные сохранены в output/raw/, "
                 "фильтрация выполнится после «Продолжить»"
@@ -1133,8 +982,7 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None, pause_event=
                 _weblog("warn", _interrupted_msg)
             except Exception:
                 pass
-        # «Собрано до города X»: при остановке/паузе/лимите пользователь
-        # должен видеть, какие данные уже на диске, а какие города остались.
+        # «Собрано до города X»: при остановке/паузе/лимите пользователь должен видеть, какие данные уже на диске, а какие города остались.
         if not _loop_ok and _last_finished_city:
             try:
                 _dedup_weblog("info", f"  📦 Собрано до города «{_last_finished_city}» включительно — "
@@ -1145,10 +993,7 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None, pause_event=
         state._SYSLOG_FN     = None
         state._TQDM_DISABLE  = False
         state._SKIP_CITY_EVENT = None
-        # NOTE: _SKIPPED_CITIES intentionally NOT cleared here — callers
-        # (run_process / thread fallback) read it after run_web() returns to
-        # attach the skipped-city list to the "done" message. It is reset at
-        # the start of each run_web() invocation.
+        # NOTE: _SKIPPED_CITIES intentionally NOT cleared here — callers (run_process / thread fallback) read it after run_web() returns to attach the skipped-city list to the "done" message.
 
     return all_files
 
@@ -1157,19 +1002,7 @@ def run_web(params: dict, log_fn, stop_event=None, skip_event=None, pause_event=
 
 def _watch_pause_file(pause_file: str, pause_event, stop_event,
                       poll: float = 0.5, stop_grace: float = 2.0) -> None:
-    """Poll `pause_file` and, when it appears, flag the run as paused.
-
-    A pause is a graceful stop PLUS the pause flag: both events are set, so
-    the engine unwinds through the same checkpoint path while the closing
-    lines and the done message can still say «поставлен на паузу».
-
-    Order cannot be assumed. The stop signal may already be set when this
-    watcher starts — an older build wrote the stop file for a pause too, and
-    a stop racing a pause looks exactly the same from here. Returning at the
-    first sight of a stop turned a pause into a plain stop (no «Продолжить»,
-    the search was just over), so the pause file gets a short grace window
-    after the stop is seen before this watcher gives up.
-    """
+    """Poll `pause_file` and, when it appears, flag the run as paused."""
     import time as _t
     deadline = None
     while True:
@@ -1187,19 +1020,7 @@ def _watch_pause_file(pause_file: str, pause_event, stop_event,
 
 def run_process(params: dict, mp_queue, stop_file: str | None = None,
                 skip_file: str | None = None, pause_file: str | None = None) -> None:
-    """Entry point for a child process running a search.
-
-    Each child process gets its own copy of state.py (via fork/spawn),
-    so there are no conflicts between parallel searches.
-
-    params     — search parameters (serializable).
-    mp_queue   — multiprocessing.Queue for streaming logs/results.
-    stop_file  — optional file path; if it exists, the run stops gracefully.
-    skip_file  — optional file path; if it exists, the current city is skipped.
-    pause_file — optional file path; pausing stops the run the same graceful
-                 way (checkpoint saved), the parent marks it paused=True and
-                 the frontend offers «Продолжить».
-    """
+    """Entry point for a child process running a search."""
     import threading as _threading
 
     # Create a stop event for this child process
@@ -1220,8 +1041,7 @@ def run_process(params: dict, mp_queue, stop_file: str | None = None,
                 _t.sleep(0.5)
         _threading.Thread(target=_watch_stop, daemon=True).start()
 
-    # Watch the pause file in a background thread: a pause maps onto the
-    # stop event (graceful unwind + checkpoint) but stays distinguishable.
+    # Watch the pause file in a background thread: a pause maps onto the stop event (graceful unwind + checkpoint) but stays distinguishable.
     if pause_file:
         _threading.Thread(
             target=_watch_pause_file,
@@ -1255,18 +1075,13 @@ def run_process(params: dict, mp_queue, stop_file: str | None = None,
             pass
 
     try:
-        # Стартовый прогресс для родителя: сколько городов всего. У одного
-        # города движок своих сообщений о переходе не шлёт (они нужны полосе
-        # городов в интерфейсе), а API должен знать знаменатель сразу.
+        # Стартовый прогресс для родителя: сколько городов всего.
         _total_cities = len(params.get("cities") or [])
         if _total_cities:
             mp_queue.put({"type": "progress", "cities_done": 0,
                           "cities_total": _total_cities})
         files = run_web(params, _q_log, stop_event, skip_event, pause_event)
-        # Build the frontend-friendly merged JSON (english keys, all cities)
-        # so the results table and stats render correctly even when only
-        # Excel output was requested. Per-city JSON files are merged directly;
-        # otherwise xlsx is read back with header labels -> english keys.
+        # Build the frontend-friendly merged JSON (english keys, all cities) so the results table and stats render correctly even when only Excel output was requested.
         try:
             from .exporters import write_frontend_json
             ff = write_frontend_json(files, str(getattr(state, "RESULTS_DIR", None) or state.OUTPUT_DIR), params.get("cities"))
@@ -1291,15 +1106,11 @@ def run_process(params: dict, mp_queue, stop_file: str | None = None,
         if params.get("output_map"):   fmts.append("map")
         skipped = getattr(state, '_SKIPPED_CITIES', [])
         # Enrich the resume payload with the pause position.
-        # This code runs INSIDE the child process, whose state.py holds the
-        # live position (city/query/point) — the parent cannot see it.
         try:
             _pos = state.pause_position()
         except Exception:
             _pos = {}
-        # Финальный прогресс: прогон дошёл до конца — все города пройдены и
-        # записей столько же, сколько в итоге. При стопе/паузе не сообщаем:
-        # сколько городов успело пройти, уже знает родитель по city_done.
+        # Финальный прогресс: прогон дошёл до конца — все города пройдены и записей столько же, сколько в итоге.
         if _total_cities and not stop_event.is_set() and not pause_event.is_set():
             mp_queue.put({"type": "progress", "cities_done": _total_cities,
                           "cities_total": _total_cities,
@@ -1307,8 +1118,7 @@ def run_process(params: dict, mp_queue, stop_file: str | None = None,
         mp_queue.put({"type": "done", "files": files, "count": count,
                       "stopped": stop_event.is_set() and not pause_event.is_set(),
                       "paused": pause_event.is_set(),
-                      # True → nothing new: every organization was already parsed
-                      # in an earlier run (the UI explains it instead of «0»).
+                      # True → nothing new: every organization was already parsed in an earlier run (the UI explains it instead of «0»).
                       "all_seen": bool(getattr(state, "_ALL_ALREADY_SEEN", False)),
                       "resume": {
                           "queries": params.get("queries") or [],
@@ -1321,8 +1131,7 @@ def run_process(params: dict, mp_queue, stop_file: str | None = None,
     except Exception as exc:
         try:
             mp_queue.put({"type": "log",  "level": "warn", "msg": f"Ошибка: {exc}"})
-            # Явная ошибка для родителя: мост пометит прогон failed, и
-            # /api/v1/status отличит «сломалось» от «ничего не найдено».
+            # Явная ошибка для родителя: мост пометит прогон failed, и /api/v1/status отличит «сломалось» от «ничего не найдено».
             mp_queue.put({"type": "error", "message": str(exc)})
             mp_queue.put({"type": "done", "files": [], "count": 0,
                           "stopped": stop_event.is_set() and not pause_event.is_set(),
@@ -1337,8 +1146,7 @@ def run_process(params: dict, mp_queue, stop_file: str | None = None,
             mp_queue.put(None)
         except Exception:
             pass
-        # Clean up stop + skip + pause files (a leftover pause file would
-        # immediately pause the NEXT run that reuses the same run_id path).
+        # Clean up stop + skip + pause files (a leftover pause file would immediately pause the NEXT run that reuses the same run_id path).
         for f in (stop_file, skip_file, pause_file):
             if f:
                 try:

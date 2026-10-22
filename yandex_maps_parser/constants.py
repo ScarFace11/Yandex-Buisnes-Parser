@@ -1,6 +1,4 @@
-"""
-Immutable constants shared across all parser modules.
-"""
+"""Immutable constants shared across all parser modules."""
 import re
 
 # ── Агрегаторы ссылок — считаются «без сайта» ────────────────
@@ -14,8 +12,7 @@ LINK_AGGREGATORS: set[str] = {
     "mtr.bio", "shor.by", "linkin.bio", "seemehigh.com", "4.bio",
 }
 
-# Only the four client-facing networks are collected (user decision 2026-09);
-# every other platform found on a page is ignored, not stored.
+# Only the four client-facing networks are collected (user decision 2026-09); every other platform found on a page is ignored, not stored.
 SOCIAL_DOMAINS: dict[str, re.Pattern] = {
     "vk":        re.compile(r"vk\.com|vk\.ru", re.I),
     "telegram":  re.compile(r"t\.me|telegram\.me", re.I),
@@ -59,8 +56,7 @@ QUERY_COLORS = [
 
 CSV_FIELDS = [
     "reviewed",
-    # Lead score is computed at stage 2 — first column after the mark so a
-    # «hot» contact is visible without scrolling.
+    # Lead score is computed at stage 2 — first column after the mark so a «hot» contact is visible without scrolling.
     "lead_score",
     "name", "category", "address", "phone",
     # Restored: the score needs real rating/reviews values, not guesses.
@@ -71,17 +67,11 @@ CSV_FIELDS = [
     "aggregator_url",
     "yandex_maps_url",
     "query", "parsed_at",
-    # Two-stage pipeline: raw files must carry the city so stage 2 can group
-    # by «Название + Город» without a new crawl.
-    # NOTE: "website" is deliberately NOT a report column — the user asked for
-    # a map link instead. Raw files still carry it (save_excel with
-    # INTERNAL_FIELDS) so «только без сайтов» works in stage 2 without a
-    # re-crawl.
+    # Two-stage pipeline: raw files must carry the city so stage 2 can group by «Название + Город» without a new crawl.
     "city",
 ]
 
 # Lead Score: категории, за услуги которым платят выше среднего.
-# Сравнение идёт по подстроке в поле category (регистр не важен).
 EXPENSIVE_CATEGORY_KEYWORDS = (
     "стоматолог", "dent", "клиник", "медицин", "косметолог",
     "недвижим", "агентств недвижим", "застройщик", "риелтор",
@@ -120,10 +110,7 @@ HEADER_LABELS = {
     "instagram":     "Instagram",
     "telegram":      "Telegram",
     "whatsapp":      "WhatsApp",
-    # Соцсети ниже больше НЕ собираются (клиентские — только vk/ig/tg/wa), но
-    # подписи оставлены нарочно: _LABEL_TO_FIELD строится из этого словаря и
-    # по нему читаются СТАРЫЕ CSV/XLSX, где колонки Facebook/YouTube/… ещё есть.
-    # Удалять их — значит ломать повторный импорт прошлых выгрузок.
+    # Соцсети ниже больше НЕ собираются (клиентские — только vk/ig/tg/wa), но подписи оставлены нарочно: _LABEL_TO_FIELD строится из этого словаря и по нему читаются СТАРЫЕ CSV/XLSX, где колонки Facebook/YouTube/… ещё есть.
     "facebook":      "Facebook",
     "youtube":       "YouTube",
     "tiktok":        "TikTok",
@@ -135,9 +122,7 @@ HEADER_LABELS = {
     "parsed_at":     "Дата сбора",
     "city":          "Город",
     "website":       "Сайт",
-    # «Тип компании» (stage «Фильтрация результата»): внутренние поля raw-
-    # выгрузки, как website — в отчёт они не попадают, но их читает этап 2
-    # (обратная карта «русский заголовок → ключ» ищет подписи именно здесь).
+    # «Тип компании» (stage «Фильтрация результата»): внутренние поля raw- выгрузки, как website — в отчёт они не попадают, но их читает этап 2 (обратная карта «русский заголовок → ключ» ищет подписи именно здесь).
     "branch_count":  "Филиалов",
     "added_at":      "Добавлено",
     # Ссылка на карточку организации в Яндекс.Картах — в CSV_FIELDS.

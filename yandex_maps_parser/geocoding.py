@@ -1,11 +1,4 @@
-"""
-Координаты города и сетка точек поиска.
-
-Геокодер-API Яндекс.Карт тоже платный (а бесплатная версия запрещает
-сохранять данные), поэтому центр города берётся из карты: страница поиска
-по названию города в реальном браузере сама проставляет центр в адресе
-(ll/sll). Никаких HTTP-запросов с ключом приложение не делает.
-"""
+"""Координаты города и сетка точек поиска."""
 import math
 
 from . import state
@@ -15,17 +8,7 @@ _geocode_cache: dict[str, tuple[float, float, tuple[float, float, float, float] 
 
 
 def geocode_city(city: str) -> tuple[float, float, tuple[float, float, float, float] | None] | None:
-    """
-    Return (lat, lon, envelope) for *city*.
-
-    envelope — рамка города (юг, север, запад, восток) из офлайн-таблицы
-    city_coords: сетка точек обрезается по ней, чтобы круг радиусом 20 км не
-    захватывал пригороды и соседние районы.
-
-    Для городов вне каталога рамки нет (None) — сетка строится по кругу.
-    Это честнее, чем выдумывать границы: раньше рамку давал геокодер-API,
-    который мы больше не используем.
-    """
+    """Return (lat, lon, envelope) for *city*. envelope — рамка города (юг, север, запад, восток) из офлайн-таблицы city_coords: сетка точек обрезается по ней, чтобы круг радиусом 20 км не захватывал пригороды и соседние районы."""
     key = city.strip().lower()
     if key in _geocode_cache:
         return _geocode_cache[key]
@@ -49,14 +32,7 @@ def build_grid(
     clon: float,
     envelope: tuple[float, float, float, float] | None = None,
 ) -> list[tuple[float, float]]:
-    """
-    Return a list of (lat, lon) points covering a circle of
-    state.GRID_RADIUS_KM around (clat, clon) with state.GRID_STEP_KM spacing.
-
-    When *envelope* (the city's bounding box) is given, the search area is
-    clipped to envelope ∩ circle, dropping points that fall outside the city
-    (forests, fields, neighbouring districts) and saving Search API quota.
-    """
+    """Return a list of (lat, lon) points covering a circle of state.GRID_RADIUS_KM around (clat, clon) with state.GRID_STEP_KM spacing."""
     lat_step = state.GRID_STEP_KM / 111.32
     lon_step = state.GRID_STEP_KM / (111.32 * math.cos(math.radians(clat)))
     r_lat = state.GRID_RADIUS_KM / 111.32
@@ -66,10 +42,6 @@ def build_grid(
     lon0, lon1 = clon - r_lon, clon + r_lon
 
     # Рамка города только ОТБРАСЫВАЕТ точки, но не сдвигает саму сетку.
-    # Раньше границы цикла обрезались по рамке — и решётка начиналась с края
-    # bbox, а не с того же места, что без рамки: точек становилось больше
-    # (Казань: 46 → 51), а не меньше. Рамка должна убирать запросы, а не
-    # добавлять, поэтому шагаем по-прежнему по кругу и фильтруем точки.
     env = envelope if envelope else None
 
     pts: list[tuple[float, float]] = []
@@ -95,12 +67,7 @@ def build_grid(
 
 
 def build_grid_index(points: list[tuple[float, float]]) -> dict[tuple[float, float], dict]:
-    """
-    Map every grid point to its up / left / up-left neighbours (or None),
-    assuming row-major order (same latitude = one row). Used by the adaptive
-    grid: a point whose known neighbours were all empty is skipped without a
-    request.
-    """
+    """Map every grid point to its up / left / up-left neighbours (or None), assuming row-major order (same latitude = one row)."""
     by_lat: dict[float, list[float]] = {}
     for lat, lon in points:
         by_lat.setdefault(lat, []).append(lon)

@@ -1,12 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Собрать yandex_maps_parser/city_coords.py из выгрузки scripts/gen_city_coords.py.
-
-Запуск:  python scripts/build_city_coords.py [_coords_raw.json]
-Без аргумента читает _coords_raw.json в корне проекта — её пишет
-scripts/gen_city_coords.py вместе с отчётом _coords_report.txt (там видно
-display_name каждого найденного города: по нему и проверяется, что для
-«Минска» нашёлся Минск в Беларуси, а не деревня в Красноярском крае).
-"""
+"""Собрать yandex_maps_parser/city_coords.py из выгрузки scripts/gen_city_coords.py."""
 import json
 import sys
 from pathlib import Path

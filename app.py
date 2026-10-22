@@ -1,22 +1,13 @@
-"""Flask application entry point.
-
-All routes are organized in blueprints under routes/.
-Run management is in run_manager.py.
-
-Supports running from source (python app.py) and as a frozen PyInstaller
-bundle (paths.py resolves templates/static/writable dirs accordingly).
-"""
+"""Flask application entry point."""
 import sys
 import multiprocessing
 
-# MUST run before anything else when frozen: without this, a PyInstaller exe
-# relaunches the whole application for every multiprocessing child.
+# MUST run before anything else when frozen: without this, a PyInstaller exe relaunches the whole application for every multiprocessing child.
 multiprocessing.freeze_support()
 
 import os
 
-# Frozen exe: chdir to a writable dir so relative paths (output/, logs/)
-# land next to the .exe instead of the read-only extraction dir.
+# Frozen exe: chdir to a writable dir so relative paths (output/, logs/) land next to the .exe instead of the read-only extraction dir.
 import paths
 
 # Вывод в UTF-8 и без падений — одно место на все точки входа (см. console_io).
@@ -24,16 +15,8 @@ from console_io import enable_utf8, say
 
 
 def _ensure_streams(max_log_bytes: int = 2 * 1024 * 1024) -> None:
-    """Ставит stdout/stderr, если их нет (macOS .app запускается без консоли).
-
-    В оконном режиме PyInstaller оставляет `sys.stdout is None`: обычный
-    print() это терпит, но любая запись в поток или падение с трейсбеком
-    никуда не попадает. Перенаправляем вывод в app.log рядом с данными
-    (output/, logs/) — там же, где всё остальное. Файл обрезается, чтобы
-    не расти бесконечно.
-    """
-    # Перенаправленный вывод (лог-файл, пайп) — в UTF-8: системная кодировка
-    # русской Windows (cp1251/cp866) роняла приложение на первом же сообщении.
+    """Ставит stdout/stderr, если их нет (macOS .app запускается без консоли)."""
+    # Перенаправленный вывод (лог-файл, пайп) — в UTF-8: системная кодировка русской Windows (cp1251/cp866) роняла приложение на первом же сообщении.
     enable_utf8()
 
     if sys.stdout is not None and sys.stderr is not None:
@@ -82,16 +65,11 @@ def create_app() -> Flask:
         APP_VERSION = "dev"
         is_dev_build = lambda: True
     app.config["APP_VERSION"] = APP_VERSION
-    # Из исходников шаблоны читаются заново на каждый запрос: во время работы
-    # над интерфейсом правка templates/index.html должна быть видна после
-    # обновления страницы, а не после перезапуска сервера (Jinja кеширует
-    # скомпилированные шаблоны при debug=False). В собранном приложении файлы
-    # неизменяемы — там лишний stat на рендер ни к чему.
+    # Из исходников шаблоны читаются заново на каждый запрос: во время работы над интерфейсом правка templates/index.html должна быть видна после обновления страницы, а не после перезапуска сервера (Jinja кеширует скомпилированные шаблоны при debug=False).
     if not getattr(sys, "frozen", False):
         app.config["TEMPLATES_AUTO_RELOAD"] = True
         app.jinja_env.auto_reload = True
-    # Сборка разработчика: в шапке горит метка DEV (другой exe, другой порт,
-    # без авто-обновления — см. config.is_dev_build).
+    # Сборка разработчика: в шапке горит метка DEV (другой exe, другой порт, без авто-обновления — см. config.is_dev_build).
     app.config["DEV_BUILD"] = bool(is_dev_build())
     app.jinja_env.globals["APP_VERSION"] = APP_VERSION
     app.jinja_env.globals["DEV_BUILD"] = bool(is_dev_build())
@@ -104,17 +82,7 @@ def create_app() -> Flask:
 
     @app.after_request
     def _no_stale_ui(resp):
-        """Интерфейс не должен отдаваться из кеша браузера.
-
-        Раньше HTML и статика уходили без Cache-Control, и браузер применял
-        эвристическое кеширование (по Last-Modified): после перезапуска в
-        вкладке оставался старый интерфейс, а старая вёрстка перекрывала
-        экран — исправление выглядело как «ничего не изменилось».
-
-        HTML — no-store (страница всегда свежая), CSS/JS — no-cache с
-        ревалидацией (304 вместо повторной загрузки). Локальный сервер,
-        так что кеш здесь нечего экономить.
-        """
+        """Интерфейс не должен отдаваться из кеша браузера."""
         ctype = (resp.headers.get("Content-Type") or "").lower()
         if "text/html" in ctype:
             resp.headers["Cache-Control"] = "no-store"
@@ -165,13 +133,7 @@ def _startup_port() -> int:
 
 
 def _port_is_free(port: int) -> bool:
-    """Свободен ли порт на loopback.
-
-    Проверка идёт двумя способами: сначала пробуем подключиться — если кто-то
-    принимает соединение, порт занят (на Windows SO_REUSEADDR разрешает
-    занять уже слушающий порт, и один только bind соврал бы). Затем пробуем
-    сам bind — так ловятся порты, зарезервированные системой.
-    """
+    """Свободен ли порт на loopback."""
     import socket
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.settimeout(0.25)
@@ -189,13 +151,7 @@ def _port_is_free(port: int) -> bool:
 
 
 def _available_port(preferred: int, tries: int = 20) -> int:
-    """Возвращает занятый порт или следующий свободный.
-
-    Порт 5000 на macOS занимает системный AirPlay Receiver, а на любой
-    системе он может быть занят другой программой. Раньше приложение просто
-    падало с «address already in use» — вместо этого берём следующий порт и
-    печатаем его в лог (на macOS он же откроется в браузере).
-    """
+    """Возвращает занятый порт или следующий свободный."""
     if _port_is_free(preferred):
         return preferred
     for p in range(preferred + 1, min(preferred + tries, 65536)):
@@ -206,29 +162,14 @@ def _available_port(preferred: int, tries: int = 20) -> int:
 
 
 def _should_open_browser() -> bool:
-    """Открывать ли интерфейс при старте в браузере по умолчанию.
-
-    Раньше интерфейс открывался в окне Chrome (CDP-окно): у пользователей
-    без Chrome окно не появлялось вовсе. Теперь стартовая страница всегда
-    открывается в системном браузере по умолчанию — Windows берёт
-    ассоциацию ОС (Edge/Opera/Chrome…), macOS открывает Safari.
-    YP_OPEN_BROWSER=0 отключает автозапуск (нужно автотестам сборки и
-    тому, кто держит свою вкладку).
-    """
+    """Открывать ли интерфейс при старте в браузере по умолчанию."""
     if os.getenv("YP_OPEN_BROWSER", "").strip().lower() in ("0", "false", "no"):
         return False
     return True
 
 
 def _open_default_browser(url: str) -> bool:
-    """Открывает URL в системном браузере по умолчанию (macOS → Safari).
-
-    Windows: os.startfile использует ассоциацию ОС — откроется тот браузер,
-    что выбран в системе по умолчанию (Edge, Opera, Chrome, Firefox…),
-    без требования установленного Chrome. macOS: сначала явно Safari
-    (браузер ОС по умолчанию), при неудаче — общий webbrowser.open.
-    Возвращает True, если открытие удалось.
-    """
+    """Открывает URL в системном браузере по умолчанию (macOS → Safari)."""
     import webbrowser
     try:
         if sys.platform == "darwin":
@@ -249,13 +190,7 @@ def _open_default_browser(url: str) -> bool:
 
 
 def _open_startup_url(url: str) -> None:
-    """Показывает интерфейс пользователю при старте.
-
-    Сначала — браузер по умолчанию (macOS: Safari). Если открыть его не
-    удалось (нет ассоциации, headless-окружение) — прежнее видимое окно
-    Chrome с CDP, если Chrome установлен. Иначе остаётся консоль/лог
-    с адресом.
-    """
+    """Показывает интерфейс пользователю при старте."""
     if _open_default_browser(url):
         return
     try:
@@ -281,12 +216,7 @@ def _open_browser_later(url: str, delay: float = 1.5) -> None:
 
 
 def _maybe_run_selfcheck() -> None:
-    """`--check`: самопроверка без запуска интерфейса (см. selfcheck.py).
-
-    Флаг проверяется до выбора порта и до открытия окна: сервер не
-    поднимается вовсе, поэтому команду можно гонять в фоне, по SSH и в CI.
-    То же работает и в .exe-сборке: `YandexBusinessParser.exe --check`.
-    """
+    """`--check`: самопроверка без запуска интерфейса (см. selfcheck.py)."""
     if "--check" not in sys.argv:
         return
     try:
@@ -299,12 +229,7 @@ def _maybe_run_selfcheck() -> None:
 
 
 def _maybe_run_headless() -> None:
-    """`--run`: сбор по сохранённому пресету без интерфейса (см. headless.py).
-
-    Проверяется до выбора порта и до открытия окна: Flask не поднимается,
-    поэтому прогон можно оставить в фоне, запустить по SSH или по расписанию.
-    В сборке — `YandexBusinessParser.exe --run --preset «Уфа стоматология»`.
-    """
+    """`--run`: сбор по сохранённому пресету без интерфейса (см. headless.py)."""
     if "--run" not in sys.argv:
         return
     try:
@@ -317,16 +242,7 @@ def _maybe_run_headless() -> None:
 
 
 def _maybe_run_browser_probe() -> bool:
-    """Probe-режим для проверки браузера внутри .exe (YP_BROWSER_PROBE=1).
-
-    В frozen-сборке `sys.executable` — это сам exe, поэтому обычный
-    сабпроцесс-тест «python -c …» не сработал бы. Вместо него родитель
-    запускает СВОЙ exe с YP_BROWSER_PROBE=1: процесс молча поднимает тот же
-    браузер через CDP, что и боевой прогон, и выходит с кодом 0/1.
-    Проверяет ровно тот движок, которым собираются данные.
-
-    Returns True, если процесс работал в probe-режиме (и надо выйти).
-    """
+    """Probe-режим для проверки браузера внутри .exe (YP_BROWSER_PROBE=1)."""
     if os.environ.get("YP_BROWSER_PROBE", "").strip().lower() not in ("1", "true", "yes", "on"):
         return False
     try:
@@ -341,25 +257,12 @@ def _maybe_run_browser_probe() -> bool:
 
 
 def _should_open_cdp_window() -> bool:
-    """Открывать ли при старте отдельное окно Chrome с CDP.
-
-    По умолчанию НЕТ: интерфейс теперь открывается в браузере по умолчанию,
-    а для парсинга runner сам запускает свой headless Chrome — стартовое
-    окно Chrome не нужно (у пользователей без Chrome оно и раньше не
-    открывалось). YP_DEBUG_WINDOW=1 включает окно для отладки: видимый
-    Chrome на временном профиле с CDP-портом, работает и при сломанном
-    системном Chrome.
-    """
+    """Открывать ли при старте отдельное окно Chrome с CDP."""
     return os.getenv("YP_DEBUG_WINDOW", "0").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _open_cdp_window_later(url: str, delay: float = 0.5) -> None:
-    """Открывает отладочное окно Chrome в фоне (не блокирует app.run).
-
-    В окне сразу открывается интерфейс приложения (url), чтобы не
-    набирать адрес вручную. Окно живёт до выхода из приложения
-    (close_debug_window в atexit).
-    """
+    """Открывает отладочное окно Chrome в фоне (не блокирует app.run)."""
     import atexit
     import threading
 
@@ -368,8 +271,7 @@ def _open_cdp_window_later(url: str, delay: float = 0.5) -> None:
             from yandex_maps_parser import cdp_client
             atexit.register(cdp_client.close_debug_window)
             port = cdp_client.open_debug_window(start_url=url)
-            # print — отдельно: на cp1251-консоли эмодзи падает, а окно
-            # уже открыто; главное, чтобы сам процесс запустился.
+            # print — отдельно: на cp1251-консоли эмодзи падает, а окно уже открыто; главное, чтобы сам процесс запустился.
             try:
                 if port:
                     print(f"  [CDP] окно Chrome открыто, CDP-порт {port}")
@@ -387,8 +289,7 @@ def _open_cdp_window_later(url: str, delay: float = 0.5) -> None:
 
 
 if __name__ == "__main__":
-    # Probe-режим: молча проверить Chromium и выйти (используется .exe-сборкой
-    # для сабпроцесс-теста — см. _maybe_run_browser_probe в этом файле).
+    # Probe-режим: молча проверить Chromium и выйти (используется .exe-сборкой для сабпроцесс-теста — см. _maybe_run_browser_probe в этом файле).
     _maybe_run_browser_probe()
     # --check: те же проверки, что и в окне «Диагностика», но без сервера.
     _maybe_run_selfcheck()

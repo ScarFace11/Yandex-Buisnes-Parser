@@ -1,34 +1,4 @@
-"""Шаблоны сообщений для ВК/TG/WA/IG («📝 Шаблоны»).
-
-Хранятся в settings.json (общие для команды), а не в localStorage: цель —
-единый tone of voice. Правила подстановки описаны здесь один раз и
-переиспользуются сервером (рассылка VK и /bulk/urls); в модулях static/js
-живёт зеркало для клика по таблице и превью — держать их надо синхронно.
-
-Схема хранения::
-
-    "message_templates": {
-        "version": 1,
-        "updated_at": "2026-09-26T12:00:00+00:00",
-        "active_template_ids": {"vk": "tpl_vk_intro", "telegram": null, ...},
-        "show_missing_as_var": false,
-        "template_modes": {"vk": "single", "telegram": "random", ...},
-        "random_template_ids": {"vk": ["tpl_1", "tpl_2"], ...},
-        "avoid_repeats": false,
-        "custom_variables": [{name, value, column, variants, description, created_at}],
-        "templates": [{id, category, name, text, variant_ids, is_default, created_at}],
-    }
-
-Пользовательские переменные: `value` — статичный текст (одинаковый во всех
-сообщениях); вместо него можно задать `column` — тогда значение берётся из
-поля записи (столбца таблицы результатов) для каждой компании своё; или
-`variants` — список строк: при каждой подстановке берётся случайный вариант.
-
-Составной шаблон: у обычного шаблона заполнено `variant_ids` (id других
-шаблонов ТОЙ ЖЕ категории) — при подстановке берётся случайный вложенный
-шаблон и подставляется его текст. Такой шаблон ничем не отличается от
-обычного во всех местах выбора (таблица, обход, рассылка).
-"""
+"""Шаблоны сообщений для ВК/TG/WA/IG («📝 Шаблоны»)."""
 from __future__ import annotations
 
 import random
@@ -71,8 +41,7 @@ PICK_MODES = ("single", "random")
 SOCIAL_KEYS = ("vk", "telegram", "whatsapp", "instagram")
 SOCIAL_LABELS = {"vk": "VK", "telegram": "TG", "whatsapp": "WA", "instagram": "IG"}
 
-# Реестр переменных: ключ → (подпись для UI, поле записи).
-# `socials` собирается отдельно (пустое поле — маркер).
+# Реестр переменных: ключ → (подпись для UI, поле записи). `socials` собирается отдельно (пустое поле — маркер).
 VARIABLES = (
     ("name", "название компании", "name"),
     ("city", "город", "city"),
@@ -86,8 +55,7 @@ VARIABLES = (
     ("socials", "список соцсетей", ""),
 )
 
-# Алиасы: старые и альтернативные имена переменных.
-# `название_бизнеса` — синтаксис прежней «Отправить в VK», его поддерживаем.
+# Алиасы: старые и альтернативные имена переменных. `название_бизнеса` — синтаксис прежней «Отправить в VK», его поддерживаем.
 VARIABLE_ALIASES = {
     "название_бизнеса": "name",
     "reviews_count": "reviews",
@@ -96,8 +64,7 @@ VARIABLE_ALIASES = {
 # Встроенные имена заняты: свою переменную так назвать нельзя.
 RESERVED_VAR_NAMES = frozenset(VARIABLE_ALIASES) | {key for key, _label, _f in VARIABLES}
 
-# Служебные переменные: значение вычисляется в момент подстановки, хранить
-# нечего. Дата/время — по часовому поясу сервера, приветствие — по часу.
+# Служебные переменные: значение вычисляется в момент подстановки, хранить нечего.
 SPECIAL_VARIABLES = ("дата", "время", "приветствие")
 RESERVED_VAR_NAMES |= frozenset(SPECIAL_VARIABLES)
 
@@ -110,14 +77,12 @@ _GREETING_PARTS = (
     (24, "Доброй ночи"),
 )
 
-# Имя пользовательской переменной: буквы/цифры/подчёркивание, кириллица —
-# тот же алфавит, что у подстановки \{...\} в тексте шаблона.
+# Имя пользовательской переменной: буквы/цифры/подчёркивание, кириллица — тот же алфавит, что у подстановки \{...\} в тексте шаблона.
 _VAR_NAME_RE = re.compile(r"^[A-Za-z0-9_а-яА-ЯёЁ]+$")
 
 _VAR_FIELD = {key: field for key, _label, field in VARIABLES}
 
-# Пять стандартных шаблонов — сеются при первом запуске и возвращаются
-# кнопкой «Сброс к стандартным».
+# Пять стандартных шаблонов — сеются при первом запуске и возвращаются кнопкой «Сброс к стандартным».
 DEFAULT_TEMPLATES = [
     {
         "id": "tpl_vk_intro",
@@ -184,13 +149,7 @@ def _clean_var_variants(raw) -> list:
 
 
 def normalize_custom_variables(raw) -> list:
-    """Привести список своих переменных к безопасному виду.
-
-    Имя — непустое, по _VAR_NAME_RE, без коллизий со встроенными переменными
-    и алиасами и без дублей (регистр не важен). Задан столбец — значение
-    берётся из записи, статичный текст не нужен; без столбца нужен текст.
-    Не-список и мусор отбрасываются, кап — MAX_CUSTOM_VARS.
-    """
+    """Привести список своих переменных к безопасному виду."""
     if not isinstance(raw, list):
         return []
     out: list = []
@@ -239,14 +198,7 @@ def _now() -> str:
 
 
 def normalize_templates(raw) -> list:
-    """Привести список шаблонов к безопасному виду.
-
-    Мусор и пустые имя/текст отбрасываются, id уникализируется, категория
-    вне набора → «vk», имя и текст обрезаются по лимитам. Список — не список
-    (None, строка, мусор) → пустой список. variant_ids — только id,
-    присутствующие в самом списке (самоссылки и чужие id вычищаются
-    в _prune_variant_ids после нормализации всего списка).
-    """
+    """Привести список шаблонов к безопасному виду."""
     if not isinstance(raw, list):
         return []
     out: list = []
@@ -301,11 +253,7 @@ def _clean_variant_ids(raw) -> list:
 
 
 def _prune_variant_ids(templates: list) -> None:
-    """Вычистить из variant_ids ссылки на несуществующие/чужие шаблоны.
-
-    Самоссылка тоже вычищается: составной шаблон не может включать себя.
-    Вызывается после нормализации всего списка — когда все id известны.
-    """
+    """Вычистить из variant_ids ссылки на несуществующие/чужие шаблоны."""
     info = {t["id"]: t["category"] for t in templates}
     for t in templates:
         cat = t["category"]
@@ -338,12 +286,7 @@ def normalize_modes(raw) -> dict:
 
 
 def normalize_random_ids(raw, templates) -> dict:
-    """Наборы для случайного выбора по категориям.
-
-    Только существующие id СВОЕЙ категории (шаблон удалён или переехал в
-    другую категорию — из набора выпадает автоматически), дедуп, порядок
-    сохраняется, кап — MAX_TEMPLATES. Не-список → пустой набор.
-    """
+    """Наборы для случайного выбора по категориям."""
     by_cat = {cat: set() for cat in CATEGORIES}
     for t in templates:
         by_cat.setdefault(t["category"], set()).add(t["id"])
@@ -365,11 +308,7 @@ def normalize_random_ids(raw, templates) -> dict:
 
 
 def migrate_templates(raw) -> tuple:
-    """Привести хранилище к текущей версии. Возвращает (данные, предупреждения).
-
-    Файл из более новой сборки не разрушаем: сохраняем как есть, только
-    предупреждаем. Битый/отсутствующий version трактуем как 1.
-    """
+    """Привести хранилище к текущей версии."""
     warnings: list = []
     if not isinstance(raw, dict):
         raw = {}
@@ -478,16 +417,7 @@ def _special_value(key: str) -> str:
 
 def substitute(text: str, record: dict, show_missing_as_var: bool = False,
                custom_variables=None) -> str:
-    """Подставить {переменные} значениями записи.
-
-    Свои переменные (custom_variables) приоритетнее встроенных: задан
-    столбец — значение из записи, иначе статичный текст; задан список
-    variants — при каждой подстановке берётся случайный вариант. Служебные
-    ({дата}, {время}, {приветствие}) вычисляются в момент подстановки.
-    Известная, но пустая переменная → «—» (или остаётся {var} при
-    show_missing_as_var). Неизвестная переменная остаётся как есть — так
-    её видно и можно поправить шаблон.
-    """
+    """Подставить {переменные} значениями записи."""
     record = record or {}
     custom = {
         str(v.get("name")): v
@@ -528,13 +458,7 @@ def substitute(text: str, record: dict, show_missing_as_var: bool = False,
 # ── Случайный выбор шаблонов ──────────────────────────────────
 
 def resolve_variant_text(template: dict, templates: list) -> str | None:
-    """Текст составного шаблона: случайный вложенный шаблон той же категории.
-
-    Составной = у шаблона есть живые variant_ids. Вложенные тоже могут быть
-    составными — раскрываем рекурсивно с защитой от циклов. Нет валидных
-    вариантов (битые ссылки, цикл) — None: вызывающий код использует
-    собственный text шаблона.
-    """
+    """Текст составного шаблона: случайный вложенный шаблон той же категории."""
     if not isinstance(template, dict):
         return None
     variant_ids = template.get("variant_ids") or []
@@ -558,12 +482,7 @@ def resolve_variant_text(template: dict, templates: list) -> str | None:
 
 
 def pick_random_text(texts: list, last_text: str | None = None, avoid_repeats: bool = False) -> str | None:
-    """Случайный текст из набора; с avoid_repeats — не повторять последний.
-
-    Исключение последнего опустошило набор (был один шаблон) — выбор из
-    полного набора: один шаблон всегда даёт один и тот же текст, и это
-    корректно. Пустой набор → None.
-    """
+    """Случайный текст из набора; с avoid_repeats — не повторять последний."""
     pool = [t for t in (texts or []) if isinstance(t, str) and t.strip()]
     if not pool:
         return None
@@ -575,12 +494,7 @@ def pick_random_text(texts: list, last_text: str | None = None, avoid_repeats: b
 
 
 def resolve_pick_state(social: str, state: dict) -> dict:
-    """Данные выбора для категории: {(texts, names, mode, avoid)}.
-
-    В random-режиме берутся тексты из набора random_template_ids; набор
-    пуст — значит, случайный выбор не настроен (клиент решает, что делать:
-    обычно fallback на активный шаблон).
-    """
+    """Данные выбора для категории: {(texts, names, mode, avoid)}."""
     state = state or {}
     modes = state.get("template_modes") if isinstance(state.get("template_modes"), dict) else {}
     mode = modes.get(social) if modes.get(social) in PICK_MODES else "single"

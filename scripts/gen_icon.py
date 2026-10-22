@@ -1,17 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Фирменная иконка приложения: static/icon.icns (+ static/icon.png).
-
-Рисуем «пин» на синем градиенте (цвета — из палитры интерфейса) и собираем
-из рендеров стандартный .icns-контейнер без сторонних утилит: каждая
-лекция — PNG (ic07…ic10, ic11…ic14, включая Retina-варианты). Так иконку
-можно перерисовать одной командой, а не искать исходник:
-
-    pip install pillow          # dev-зависимость, в requirements не входит
-    python scripts/gen_icon.py
-
-parser-mac.spec берёт static/icon.icns по умолчанию (YP_ICON — переопределение),
-поэтому после запуска скрипта сборка `./build-mac.sh` уже подхватывает её.
-"""
+"""Фирменная иконка приложения: static/icon.icns (+ static/icon.png)."""
 import io
 import math
 import struct
@@ -57,7 +45,6 @@ def _pin_mask(size: int) -> Image.Image:
     cx, cy, r = s // 2, int(s * 0.42), int(s * 0.19)
     d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=255)
     # Вершины острия лежат ТОЧНО на окружности (x = √(r² − 0.35r²)):
-    # шире круга — на стыке вылезает уступ, уже — заметная выемка.
     joint = int(r * math.sqrt(1 - 0.35 * 0.35))
     d.polygon([(cx - joint, cy + int(r * 0.35)),
                (cx + joint, cy + int(r * 0.35)),
