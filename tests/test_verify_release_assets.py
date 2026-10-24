@@ -224,6 +224,24 @@ class TestZipChecks:
 # ── Проверка dmg ───────────────────────────────────────────────
 
 class TestDmgChecks:
+    @pytest.fixture(autouse=True)
+    def _no_platform_hdiutil(self, monkeypatch):
+        """Синтетический образ проверяем без hdiutil.
+
+        Тесты собирают крошечный UDIF из заголовка koly и plist, а не
+        настоящий том. hdiutil на новых macOS отказывается его открывать
+        («image not recognized»), хотя структура для нашей проверки целая.
+        Сам вызов hdiutil остаётся в check_dmg и проверяется на реальных
+        образах в релизном workflow.
+        """
+        monkeypatch.setattr(vra, "dmg_hdiutil", lambda path: [])
+
+    def test_hdiutil_problems_reach_the_result(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(vra, "dmg_hdiutil",
+                            lambda path: ["hdiutil verify: image not recognized"])
+        problems = vra.check_dmg(make_dmg(tmp_path / "a.dmg"))
+        assert problems == ["hdiutil verify: image not recognized"]
+
     def test_a_whole_image_has_no_problems(self, tmp_path):
         assert vra.check_dmg(make_dmg(tmp_path / "a.dmg")) == []
 
