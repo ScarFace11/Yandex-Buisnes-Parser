@@ -40,8 +40,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest
+          pip install -r requirements-dev.txt
 
       - name: Run tests
         # Playwright browsers не ставим: тесты парсера мокают HTTP/CDP, а
@@ -56,8 +55,12 @@ jobs:
           YANDEX_API_KEY: ci-dummy-key
         run: |
           set -o pipefail
+          # Покрытие считаем только на Ubuntu и тем же прогоном: вторая
+          # матрица тестов ради одного числа не нужна.
+          cov=""
+          if [ "$RUNNER_OS" = "Linux" ]; then cov="--cov --cov-report=term"; fi
           code=0
-          python -m pytest tests/ -q 2>&1 | tee pytest_out.txt || code=$?
+          python -m pytest tests/ -q $cov 2>&1 | tee pytest_out.txt || code=$?
           if [ "$code" -ne 0 ]; then
             fails=$(grep -E '^(FAILED|ERROR) ' pytest_out.txt | head -40 | paste -sd ';' -)
             totals=$(grep -E '[0-9]+ (failed|passed)' pytest_out.txt | tail -2 | tr '\n' ' ')
@@ -71,6 +74,12 @@ jobs:
           fi
           exit "$code"
 
+      - name: Coverage summary
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          grep -E '^TOTAL' pytest_out.txt | tee -a "$GITHUB_STEP_SUMMARY" || true
+
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -82,6 +91,28 @@ jobs:
         # Опечатка в .spec всплывает только на теге — там уже поздно.
         run: |
           python -c "import ast, pathlib; [ast.parse(pathlib.Path(p).read_text(encoding='utf-8'), p) for p in ('parser.spec', 'parser-mac.spec')]; print('specs OK')"
+
+  quality:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install ruff
+        run: |
+          python -m pip install --upgrade pip
+          pip install "ruff~=0.17"
+
+      - name: Ruff check
+        # Конфигурация — pyproject.toml: синтаксис, pyflakes, дубли
+        # определений и неиспользуемые переменные. Стилистические правила,
+        # которые проект сознательно не соблюдает, отключены там же.
+        run: ruff check .
 
   workflows-lint:
     name: Workflow YAML

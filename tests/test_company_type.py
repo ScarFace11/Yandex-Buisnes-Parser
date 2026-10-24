@@ -355,7 +355,6 @@ class TestPreviewCompanyType:
     def test_client_and_server_agree_on_periods(self):
         """Реестр месяцев и дефолт в браузере — те же, что на сервере."""
         import re
-        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         from tests._appjs import read_app_js
         app_js = read_app_js()
         decl = re.search(r"const COMPANY_TYPE_PERIODS = \{(.*?)\};\n", app_js, re.S)

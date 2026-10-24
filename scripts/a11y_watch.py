@@ -211,7 +211,7 @@ def run_once(full: bool = False, label: str = "") -> int:
 
 
 def watch(interval: float = 1.0, debounce: float = 1.5, full: bool = False) -> int:
-    """Наблюдение за файлами интерфейса: правка → аудит. Возврат — код последнего."""
+    """Наблюдение за файлами интерфейса: правка → аудит. Работает до Ctrl+C."""
     configure_output()
     paths = watched_files()
     if not paths:
@@ -220,7 +220,7 @@ def watch(interval: float = 1.0, debounce: float = 1.5, full: bool = False) -> i
     print(f"── слежу за {len(paths)} файлами интерфейса "
           f"(Ctrl+C — стоп)\n   {', '.join(_rel(p) for p in paths)}",
           flush=True)
-    code = run_once(full=full, label="первый прогон")
+    run_once(full=full, label="первый прогон")
     state = snapshot(paths)
     while True:
         time.sleep(interval)
@@ -243,7 +243,7 @@ def watch(interval: float = 1.0, debounce: float = 1.5, full: bool = False) -> i
             label += f" и ещё {len(changed) - 4}"
         if removed:
             label += f" (удалено: {len(removed)})"
-        code = run_once(full=full, label=label)
+        run_once(full=full, label=label)
 
 
 def main(argv=None) -> int:

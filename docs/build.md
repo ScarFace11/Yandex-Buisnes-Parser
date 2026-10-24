@@ -130,7 +130,7 @@ APPLE_ID=you@example.com APPLE_APP_SPECIFIC_PASSWORD=xxxx APPLE_TEAM_ID=TEAMID \
 
 | Workflow | Когда запускается | Что делает |
 |---|---|---|
-| `ci.yml` | каждый PR, push в `main` | тесты на трёх системах (Ubuntu, Windows, macOS) + node-тесты UI + проверка, что `.spec`-файлы и workflow-YAML парсятся |
+| `ci.yml` | каждый PR, push в `main` | тесты на трёх системах (Ubuntu, Windows, macOS), node-тесты UI, `ruff`, покрытие на Ubuntu и проверка, что `.spec`-файлы и workflow-YAML парсятся |
 | `build-exe.yml` | тег `v*` | гейт версии, тесты, Windows `.exe` (в него штампуется версия тега), смоук-тест, черновик GitHub Release |
 | `build-macos.yml` | тег `v*` | `.app` для arm64 и x64, подпись Developer ID **или ad-hoc**, нотаризация, смоук-тест, `.zip` + `.dmg` |
 | `build-manual.yml` | вручную (Actions → Run workflow или `gh workflow run build-manual.yml -f target=both`) | сборка «как есть» без релиза и без смены версии: Windows `.exe` и macOS `.zip` (arm64/x64) в артефактах запуска — файл просто скачивается и порог минимальной версии к нему не применяется |
@@ -207,8 +207,20 @@ git commit -am "chore(release): минимальная версия 2.3.4" && gi
 ## 🧪 Тесты
 
 ```bash
+pip install -r requirements-dev.txt
 python -m pytest tests -q          # backend: пайплайн, фильтры, пауза, API
 node --test tests/ui/               # UI: лог, таблица, пресеты, история файлов
+ruff check .                        # синтаксис, pyflakes, дубли и мёртвые переменные
+python -m pytest tests -q --cov    # покрытие (настройки — в pyproject.toml)
 ```
 
-CI прогоняет оба набора на Ubuntu, Windows и macOS.
+Браузерные проверки доступности (`tests/test_a11y_browser.py`) открывают
+настоящий Chrome по CDP, требуют установленного браузера и идут дольше
+остальных — локально их удобно гонять точечно:
+
+```bash
+python -m pytest tests/test_a11y_browser.py -q
+```
+
+CI прогоняет pytest на Ubuntu, Windows и macOS, отдельным джобом — `ruff`, а
+покрытие считает на Ubuntu тем же прогоном и кладёт итог в сводку проверки.

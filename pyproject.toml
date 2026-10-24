@@ -1,0 +1,57 @@
+# Инструменты качества кода. Рантайм-зависимости — в requirements.txt,
+# dev-инструменты — в requirements-dev.txt.
+#
+# Ruff выбран вместо flake8/pylint: один быстрый бинарь и одна секция
+# конфигурации, которую читают и редактор, и CI. Набор правил намеренно
+# консервативный: синтаксис и явные ошибки (pyflakes + E4/E7/E9), без
+# косметики вроде длины строки — она не должна блокировать PR.
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+exclude = [
+  ".venv",
+  "build",
+  "dist",
+  "dist-dev",
+  "dist-mac",
+  "_update",
+  "output",
+  "logs",
+  "static/vendor",
+]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+ignore = [
+  # app.py обязан позвать freeze_support() и настроить UTF-8 до импортов;
+  # state.py и http_client.py держат реэкспорты, на которые опираются тесты.
+  "E402",
+  "F401",
+  # Компактные однострочники и lambda в таблицах — сознательный стиль проекта.
+  "E701",
+  "E702",
+  "E731",
+]
+
+[tool.coverage.run]
+source = [
+  "yandex_maps_parser",
+  "routes",
+  "run_manager",
+  "config",
+  "paths",
+  "retention",
+  "presets_store",
+  "search_history",
+  "run_logger",
+]
+branch = false
+
+[tool.coverage.report]
+skip_empty = true
+exclude_lines = [
+  "pragma: no cover",
+  "if __name__ == .__main__.:",
+  "raise NotImplementedError",
+]

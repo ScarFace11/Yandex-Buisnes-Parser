@@ -166,8 +166,6 @@ def _merge_reference_group(group):
 
 def _generated_group(n: int, seed: int = 11):
     """Одноимённые фирмы одного города: часть — одна сеть (общий телефон/ссылка)."""
-    import random
-    rnd = random.Random(seed)
     recs = []
     for i in range(n):
         shared = i % 7 == 0
