@@ -670,7 +670,7 @@ def _openapi_spec() -> dict:
         "whatsapp": {"type": "string"},
         "site": {"type": "string"},
         "yandex_maps_url": {"type": "string"},
-        "lead_score": {"type": "number", "description": "Оценка лида 0–90"},
+        "lead_score": {"type": "number", "description": "Оценка лида 0–100"},
     }
     run_status = {
         "type": "string", "enum": ["queued", "running", "paused", "done", "failed"],

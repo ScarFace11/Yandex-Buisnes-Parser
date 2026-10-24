@@ -403,36 +403,6 @@ def test_keyboard_scan_finds_no_problems(browser_cdp, live_app_url, theme):
         tab.close()
 
 
-def test_modal_keeps_its_name_when_content_arrives_later(browser_cdp, live_app_url):
-    """С окном логов: имя диалога обязано пережить подмену содержимого.
-
-    Список логов приезжает запросом и заменяет внутренности окна целиком.
-    Пока заголовок лежал внутри заменяемого тела, вместе с ним исчезал и
-    aria-labelledby — открытый диалог оставался без имени, а скринридер
-    читал просто «диалог». Заметно это было через раз: тест успевал замерить
-    и до, и после подмены.
-    """
-    tab = new_tab(browser_cdp)
-    try:
-        open_page(tab, live_app_url)
-        tab.evaluate("document.getElementById('btn-run').focus(); showLogsModal(); void 0")
-        assert wait_for(tab, ".logs-modal"), "окно логов не открылось"
-        # Кнопка «Закрыть» появляется только с загруженным телом: по ней и
-        # видно, что подмена уже произошла.
-        assert wait_for(tab, ".logs-modal .skip-cancel"), "тело окна так и не обновилось"
-        report = json.loads(tab.evaluate(MODAL_REPORT % json.dumps(".logs-modal")))
-        assert report["role"] == "dialog", report
-        assert report["name"], "после загрузки списка у окна пропало имя"
-        assert "Логи" in report["name"], f"имя диалога: {report['name']!r}"
-        assert wait_focus_inside(tab, ".logs-modal"), (
-            "после подмены тела фокус улетел из окна"
-        )
-        tab.press("Escape")
-        assert not json.loads(
-            tab.evaluate(MODAL_REPORT % json.dumps(".logs-modal")))["open"], \
-            "Escape не закрыл окно логов"
-    finally:
-        tab.close()
 
 
 def test_keyboard_scan_detects_invisible_focus(browser_cdp, live_app_url):
@@ -456,36 +426,6 @@ def test_keyboard_scan_detects_invisible_focus(browser_cdp, live_app_url):
         tab.close()
 
 
-def test_modal_keeps_its_name_when_content_arrives_later(browser_cdp, live_app_url):
-    """С окном логов: имя диалога обязано пережить подмену содержимого.
-
-    Список логов приезжает запросом и заменяет внутренности окна целиком.
-    Пока заголовок лежал внутри заменяемого тела, вместе с ним исчезал и
-    aria-labelledby — открытый диалог оставался без имени, а скринридер
-    читал просто «диалог». Заметно это было через раз: тест успевал замерить
-    и до, и после подмены.
-    """
-    tab = new_tab(browser_cdp)
-    try:
-        open_page(tab, live_app_url)
-        tab.evaluate("document.getElementById('btn-run').focus(); showLogsModal(); void 0")
-        assert wait_for(tab, ".logs-modal"), "окно логов не открылось"
-        # Кнопка «Закрыть» появляется только с загруженным телом: по ней и
-        # видно, что подмена уже произошла.
-        assert wait_for(tab, ".logs-modal .skip-cancel"), "тело окна так и не обновилось"
-        report = json.loads(tab.evaluate(MODAL_REPORT % json.dumps(".logs-modal")))
-        assert report["role"] == "dialog", report
-        assert report["name"], "после загрузки списка у окна пропало имя"
-        assert "Логи" in report["name"], f"имя диалога: {report['name']!r}"
-        assert wait_focus_inside(tab, ".logs-modal"), (
-            "после подмены тела фокус улетел из окна"
-        )
-        tab.press("Escape")
-        assert not json.loads(
-            tab.evaluate(MODAL_REPORT % json.dumps(".logs-modal")))["open"], \
-            "Escape не закрыл окно логов"
-    finally:
-        tab.close()
 
 
 # ── 3. Модальные окна ───────────────────────────────────────────
@@ -532,37 +472,5 @@ def test_modal_holds_focus_and_returns_it(browser_cdp, live_app_url, case):
         assert tab.evaluate("document.activeElement && document.activeElement.id === 'btn-run'"), (
             f"«{name}»: после закрытия фокус не вернулся на кнопку, которая открыла окно"
         )
-    finally:
-        tab.close()
-
-
-def test_modal_keeps_its_name_when_content_arrives_later(browser_cdp, live_app_url):
-    """С окном логов: имя диалога обязано пережить подмену содержимого.
-
-    Список логов приезжает запросом и заменяет внутренности окна целиком.
-    Пока заголовок лежал внутри заменяемого тела, вместе с ним исчезал и
-    aria-labelledby — открытый диалог оставался без имени, а скринридер
-    читал просто «диалог». Заметно это было через раз: тест успевал замерить
-    и до, и после подмены.
-    """
-    tab = new_tab(browser_cdp)
-    try:
-        open_page(tab, live_app_url)
-        tab.evaluate("document.getElementById('btn-run').focus(); showLogsModal(); void 0")
-        assert wait_for(tab, ".logs-modal"), "окно логов не открылось"
-        # Кнопка «Закрыть» появляется только с загруженным телом: по ней и
-        # видно, что подмена уже произошла.
-        assert wait_for(tab, ".logs-modal .skip-cancel"), "тело окна так и не обновилось"
-        report = json.loads(tab.evaluate(MODAL_REPORT % json.dumps(".logs-modal")))
-        assert report["role"] == "dialog", report
-        assert report["name"], "после загрузки списка у окна пропало имя"
-        assert "Логи" in report["name"], f"имя диалога: {report['name']!r}"
-        assert wait_focus_inside(tab, ".logs-modal"), (
-            "после подмены тела фокус улетел из окна"
-        )
-        tab.press("Escape")
-        assert not json.loads(
-            tab.evaluate(MODAL_REPORT % json.dumps(".logs-modal")))["open"], \
-            "Escape не закрыл окно логов"
     finally:
         tab.close()

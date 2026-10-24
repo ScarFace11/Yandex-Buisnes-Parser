@@ -249,7 +249,7 @@ globalThis.setTimeout = (cb, ms) => { scheduled.push({ cb, ms }); return 0; };
 globalThis.clearTimeout = () => {};
 
 // Score tables and limits live at module scope — load them verbatim.
-(0, eval)(['SCORE_MAX', 'SCORE_AGGREGATORS', 'SCORE_EXPENSIVE', 'SCORE_RULES',
+(0, eval)(['SCORE_MAX', 'SCORE_NEW_MONTHS', 'SCORE_VK_RULES', 'SCORE_AGGREGATORS', 'SCORE_EXPENSIVE', 'SCORE_RULES',
   'REVIEWED_AUTOSAVE_MS', 'FILE_ACT_ICONS', 'UI_ICONS', 'REFILTER_LABEL',
   // Показ по отметке «Просмотрено» — цикл заголовка колонки «✓».
   'REVIEWED_FILTER_CYCLE',
@@ -295,7 +295,7 @@ const fns = [
   // Lead score: filterTable mirrors the server-side threshold + ordering,
   // renderPage renders the «Оценка» cell, scoreHTML explains it per record.
   'minScoreThreshold', 'scoreHTML', 'scoreBreakdown', 'scoreWhyText', 'scoreNum',
-  'scoreOwnWebsite', 'scoreRating',
+  'scoreOwnWebsite', 'scoreRating', 'scoreHasSocials', 'scoreNewBusiness', 'scoreVkChecked',
   // renderPage переставляет ячейки по пользовательскому порядку столбцов.
   'applyColOrder', 'applyColClasses', 'normalizeColOrder', 'moveCol',
 ];
@@ -1337,19 +1337,21 @@ test('«Сохранить сейчас» reports what it wrote', async () => {
 // ── 9. Lead score breakdown (tooltip) ────────────────────────
 test('scoreHTML lists only the criteria that fired', () => {
   const r = {
-    name: 'Клиника', lead_score: 90, phone: '+7 900 000-00-00', website: '',
+    name: 'Клиника', lead_score: 100, phone: '+7 900 000-00-00', website: '',
     rating: '4.7', reviews_count: '128', vk_activity: 'active', category: 'Стоматология',
+    telegram: 'https://t.me/clinic',
+    added_at: new Date(Date.now() - 40 * 86400000).toISOString().slice(0, 10),
   };
   const html = globalThis.scoreHTML(r);
   assert.match(html, /score-badge hot/);
   assert.match(html, /✅ Нет сайта \+30/);
-  assert.match(html, /✅ Активный ВК \+20/);
+  assert.match(html, /✅ Активный ВК \(бонус\) \+10/);
   assert.match(html, /✅ Рейтинг 4\.7 \+15/);
   assert.match(html, /✅ Отзывов 128 \+15/);
-  assert.match(html, /✅ Есть телефон \+5/);
-  assert.match(html, /✅ Дорогая категория \+5/);
+  assert.match(html, /✅ Есть телефон \+10/);
+  assert.match(html, /✅ Дорогая категория \+10/);
   assert.ok(!/❌/.test(html), 'ни одного промаха — только сработавшие критерии');
-  assert.match(html, /Итого: 90 \(макс\. 90\)/);
+  assert.match(html, /Итого: 100 \(макс\. 100\)/);
 });
 
 test('scoreHTML marks the criteria that did not fire', () => {
@@ -1358,20 +1360,33 @@ test('scoreHTML marks the criteria that did not fire', () => {
   assert.match(why, /❌ Телефон — не указан/);
   assert.match(why, /❌ Дорогая категория — нет/);
   assert.match(why, /❌ Рейтинг — нет данных/);
+  assert.match(why, /❌ Соцсетей нет/);
+  assert.match(why, /❌ Дата добавления — нет данных/);
   assert.ok(!/✅/.test(why));
-  assert.match(why, /Итого: 0 \(макс\. 90\)/);
+  assert.match(why, /Итого: 0 \(макс\. 100\)/);
 });
 
 test('scoreBreakdown sums exactly what the tooltip shows', () => {
-  const { sum, lines } = globalThis.scoreBreakdown({ phone: '+7 1', category: 'Кафе', lead_score: 0 });
-  assert.equal(sum, 35, 'нет сайта 30 + телефон 5');
+  const { sum, total, lines } = globalThis.scoreBreakdown({ phone: '+7 1', category: 'Кафе', lead_score: 0 });
+  assert.equal(sum, 40, 'нет сайта 30 + телефон 10');
+  assert.equal(total, 40);
   assert.equal(lines.filter(l => l.startsWith('✅')).length, 2);
+});
+
+test('score breakdown counts socials and a recent card', () => {
+  const added = new Date(Date.now() - 40 * 86400000).toISOString().slice(0, 10);
+  const { total } = globalThis.scoreBreakdown({
+    website: 'https://x.ru', telegram: 'https://t.me/x', added_at: added,
+  });
+  assert.equal(total, 20, 'соцсети 10 + недавно на Картах 10');
+  const old = globalThis.scoreBreakdown({ website: 'https://x.ru', added_at: '2020-01-01' });
+  assert.equal(old.total, 0, 'старая карточка баллов за новизну не даёт');
 });
 
 test('score breakdown treats a taplink page as «нет сайта»', () => {
   const why = globalThis.scoreWhyText({ aggregator_url: 'https://taplink.cc/x', website: '', lead_score: 30 }, 30);
   assert.match(why, /✅ Нет сайта \+30/);
-  assert.match(why, /Итого: 30 \(макс\. 90\)/);
+  assert.match(why, /Итого: 30 \(макс\. 100\)/);
 });
 
 test('score breakdown normalises a 0..50 rating', () => {
@@ -1380,20 +1395,28 @@ test('score breakdown normalises a 0..50 rating', () => {
 });
 
 test('score breakdown hides the losing VK variant', () => {
-  const active = globalThis.scoreWhyText({ website: 'https://x.ru', vk_activity: 'active', lead_score: 20 }, 20);
-  assert.match(active, /✅ Активный ВК \+20/);
+  const active = globalThis.scoreWhyText({ website: 'https://x.ru', vk_activity: 'active', lead_score: 10 }, 10);
+  assert.match(active, /✅ Активный ВК \(бонус\) \+10/);
   assert.ok(!/Полуактивный/.test(active), 'полуактивный не поминается, когда ВК активен');
-  const semi = globalThis.scoreWhyText({ website: 'https://x.ru', vk_activity: 'semi', lead_score: 10 }, 10);
-  assert.match(semi, /✅ Полуактивный ВК \+10/);
+  const semi = globalThis.scoreWhyText({ website: 'https://x.ru', vk_activity: 'semi', lead_score: 5 }, 5);
+  assert.match(semi, /✅ Полуактивный ВК \(бонус\) \+5/);
   assert.ok(!/ВК не активен/.test(semi), 'активный не поминается, когда ВК полуактивен');
-  const none = globalThis.scoreWhyText({ website: 'https://x.ru', lead_score: 0 }, 0);
+  const none = globalThis.scoreWhyText({ website: 'https://x.ru', vk_activity: 'inactive', lead_score: 0 }, 0);
   assert.match(none, /❌ ВК не активен/);
-  assert.match(none, /❌ Полуактивный ВК — нет/);
+});
+
+test('VK is not scored when the API key was never set', () => {
+  // vk_activity пуст, а ключа в этой сессии нет — значит ВК не проверяли.
+  // «Не активен» здесь было бы выдумкой, и баллы за это не снимаются.
+  const why = globalThis.scoreWhyText({ website: 'https://x.ru', lead_score: 0 }, 0);
+  assert.match(why, /ВК не проверялся — ключ не задан/);
+  assert.ok(!/ВК не активен/.test(why), 'без ключа активность не выдумывается');
+  assert.ok(!/Активный ВК/.test(why));
 });
 
 test('score tooltip admits when the stored score differs from the data', () => {
-  const why = globalThis.scoreWhyText({ phone: '+7 1', category: 'Кафе', lead_score: 35 }, 35);
-  assert.match(why, /Итого: 35/);
+  const why = globalThis.scoreWhyText({ phone: '+7 1', category: 'Кафе', lead_score: 40 }, 40);
+  assert.match(why, /Итого: 40/);
   const stale = globalThis.scoreWhyText({ website: 'https://x.ru', lead_score: 20 }, 20);
   assert.match(stale, /оценка сохранена при поиске/);
   assert.match(stale, /критерии дают 0/);

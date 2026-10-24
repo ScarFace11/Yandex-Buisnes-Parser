@@ -10,6 +10,7 @@ from PIL import Image, ImageDraw
 ROOT = Path(__file__).resolve().parent.parent
 ICNS_PATH = ROOT / "static" / "icon.icns"
 PNG_PATH = ROOT / "static" / "icon.png"
+ICO_PATH = ROOT / "static" / "icon.ico"
 
 SS = 4              # суперсэмплинг: рисуем в 4x и ужимаем — без лесенок
 BASE = 1024         # базовый размер, из него рендерятся все лекции
@@ -72,6 +73,9 @@ def _icns_entry(kind: str, size: int) -> bytes:
 def main() -> None:
     ICNS_PATH.parent.mkdir(parents=True, exist_ok=True)
     render(BASE).save(PNG_PATH)          # исходник для фавикона и документации
+    # Windows: многоразмерный .ico — его берут и PyInstaller, и окно консоли.
+    render(256).save(ICO_PATH, format="ICO", sizes=[
+        (16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
     # ic07…ic10 — обычные размеры, ic11…ic14 — их Retina-двойки (16@2x … 256@2x).
     entries = [_icns_entry(k, s) for k, s in (
         ("ic07", 128), ("ic08", 256), ("ic09", 512), ("ic10", 1024),
@@ -80,7 +84,8 @@ def main() -> None:
     body = b"".join(entries)
     ICNS_PATH.write_bytes(b"icns" + struct.pack(">I", len(body) + 8) + body)
     print(f"[ok] {ICNS_PATH.relative_to(ROOT)} — {ICNS_PATH.stat().st_size} Б; "
-          f"{PNG_PATH.relative_to(ROOT)} — {PNG_PATH.stat().st_size} Б")
+          f"{PNG_PATH.relative_to(ROOT)} — {PNG_PATH.stat().st_size} Б; "
+          f"{ICO_PATH.relative_to(ROOT)} — {ICO_PATH.stat().st_size} Б")
 
 
 if __name__ == "__main__":

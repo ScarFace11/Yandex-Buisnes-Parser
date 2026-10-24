@@ -18,6 +18,10 @@ block_cipher = None
 # YP_DEV=1 → внутреннее имя сборки (для локальных сборок разработчика).
 DEV_BUILD = os.environ.get("YP_DEV", "").strip().lower() not in ("", "0", "false", "no")
 APP_NAME = "YandexBusinessParserDev" if DEV_BUILD else "YandexBusinessParser"
+# Фирменная иконка .exe: в проводнике, на ярлыке и в панели задач.
+ICON = os.path.join("static", "icon.ico")
+if not os.path.exists(ICON):
+    ICON = None
 
 a = Analysis(
     ['app.py'],
@@ -79,6 +83,7 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name=APP_NAME,
+    icon=ICON,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

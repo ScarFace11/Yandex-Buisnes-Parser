@@ -288,6 +288,36 @@ def _open_cdp_window_later(url: str, delay: float = 0.5) -> None:
     threading.Timer(delay, _go).start()
 
 
+def _set_windows_console_icon() -> None:
+    """Фирменная иконка окну консоли: .exe в проводнике уже с ней, а
+    запущенное окно в панели задач иначе показывает питоновский значок.
+    Только Windows и только когда .ico есть рядом; ошибки не мешают старту."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        ico = os.path.join(paths.static_dir(), "icon.ico")
+        if not os.path.exists(ico):
+            return
+        user32 = ctypes.windll.user32
+        user32.LoadImageW.restype = ctypes.c_void_p
+        user32.LoadImageW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p,
+                                      ctypes.c_uint, ctypes.c_int, ctypes.c_int,
+                                      ctypes.c_uint]
+        user32.GetConsoleWindow.restype = ctypes.c_void_p
+        hwnd = user32.GetConsoleWindow()
+        if not hwnd:
+            return
+        image_icon, load_from_file, wm_seticon = 1, 0x10, 0x80
+        for size, kind in ((16, 0), (32, 1)):
+            handle = user32.LoadImageW(None, ico, image_icon, size, size,
+                                       load_from_file)
+            if handle:
+                user32.SendMessageW(ctypes.c_void_p(hwnd), wm_seticon, kind, handle)
+    except Exception:
+        pass
+
+
 if __name__ == "__main__":
     # Probe-режим: молча проверить Chromium и выйти (используется .exe-сборкой для сабпроцесс-теста — см. _maybe_run_browser_probe в этом файле).
     _maybe_run_browser_probe()
@@ -295,6 +325,7 @@ if __name__ == "__main__":
     _maybe_run_selfcheck()
     # --run: сбор по сохранённому пресету без интерфейса.
     _maybe_run_headless()
+    _set_windows_console_icon()
     _port = _available_port(_startup_port())
     try:
         from config import APP_VERSION, is_dev_build

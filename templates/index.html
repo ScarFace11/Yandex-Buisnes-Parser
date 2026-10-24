@@ -30,6 +30,7 @@
     js:  "{{ url_for('static', filename='vendor/leaflet/leaflet.js') }}"
   };
 </script>
+<link rel="icon" type="image/png" href="{{ url_for('static', filename='icon.png') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 <body>
@@ -673,9 +674,13 @@
                       <div class="sf-row"><span>Полуактивный ВК</span><b>+10</b></div>
                       <div class="sf-row"><span>Рейтинг ≥ 4.5</span><b>+15</b></div>
                       <div class="sf-row"><span>Отзывов ≥ 50</span><b>+15</b></div>
-                      <div class="sf-row"><span>Есть телефон</span><b>+5</b></div>
-                      <div class="sf-row"><span>Дорогая категория</span><b>+5</b></div>
-                      <div class="sf-total">Максимум — <b>90</b> баллов. Отсутствующие данные не добавляют и не убавляют баллы.</div>
+                      <div class="sf-row"><span>Есть телефон</span><b>+10</b></div>
+                      <div class="sf-row"><span>Дорогая категория</span><b>+10</b></div>
+                      <div class="sf-row"><span>Есть соцсети</span><b>+10</b></div>
+                      <div class="sf-row"><span>Недавно на Картах</span><b>+10</b></div>
+                      <div class="sf-row"><span>Активный ВКонтакте</span><b>+10 бонус</b></div>
+                      <div class="sf-row"><span>Полуактивный ВК</span><b>+5 бонус</b></div>
+                      <div class="sf-total">Максимум — <b>100</b> баллов: семь базовых критериев дают ровно 100, активность ВК добирает недостающие, но выше 100 не поднимает. Без ключа ВК этот критерий не оценивается — «ВК не активен» не выдумывается, и баллы за него не теряются.</div>
                     </div>
                   </details>
                 </div>
@@ -1195,7 +1200,7 @@
                   <th class="nosort" data-col="phone"
                       title="Телефон не сортируется: в ячейке несколько номеров и порядок им не задаётся">Телефон</th>
                   <th data-col="score" onclick="sortTableByKey('score')"
-                      title="Оценка лида 0–90. Наведите курсор на число — покажем, какие критерии сработали именно у этой компании.">Оценка</th>
+                      title="Оценка лида 0–100. Наведите курсор на число — покажем, какие критерии сработали именно у этой компании.">Оценка</th>
                   <th data-col="socials">Соцсети</th>
                   <th data-col="rating" onclick="sortTableByKey('rating')"
                       title="Клик — сортировка по рейтингу, ещё раз — по числу отзывов; направление меняется следующими кликами">Рейтинг</th>

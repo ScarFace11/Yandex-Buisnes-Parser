@@ -78,3 +78,19 @@ screenshots/
 yp-*.log
 icon-preview.png
 icon-final.png
+spheres.json
+
+# Tool caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+node_modules/
+
+# Logs
+*.log
+
+# Coverage
+.coverage
+.coverage.*
+coverage.json
+htmlcov/

@@ -184,10 +184,11 @@ class TestApplyFilters:
     def test_lead_score_is_computed_before_the_filters(self, tmp_path):
         res = processing.apply_filters([self._raw_for_scoring(tmp_path)], {})
         by_name = {r["name"]: r for r in res["groups"]["кафе"]["Уфа"]}
-        # 30 (нет сайта) + 15 (рейтинг 4.8) + 15 (120 отзывов) + 5 (телефон).
+        # 30 (нет сайта) + 15 (рейтинг 4.8) + 15 (120 отзывов)
+        # + 10 (телефон) + 10 (ссылка на ВК = есть соцсети).
         # The VK bonus is absent because activity was never checked.
-        assert by_name["Горячий"]["lead_score"] == 65
-        assert by_name["Тёплый"]["lead_score"] == 5     # phone only
+        assert by_name["Горячий"]["lead_score"] == 80
+        assert by_name["Тёплый"]["lead_score"] == 10    # phone only
 
     def test_min_lead_score_drops_cold_leads(self, tmp_path):
         res = processing.apply_filters(

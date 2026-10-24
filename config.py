@@ -9,7 +9,7 @@ from console_io import enable_utf8, say
 enable_utf8()
 
 # Версия приложения. Для публичного релиза — без суффиксов: "2.3.4.1".
-APP_VERSION = "2.3.4.1"
+APP_VERSION = "2.3.4.2"
 
 
 def is_dev_build() -> bool:

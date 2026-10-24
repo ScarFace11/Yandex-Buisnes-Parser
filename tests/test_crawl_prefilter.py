@@ -169,7 +169,7 @@ class TestSkipReason:
 
 class TestRecordLevelFilters:
     COLD = {"name": "Холодный", "website": "https://cold.ru"}          # 0 баллов
-    HOT = {"name": "Горячий", "category": "стоматология", "phone": "+7 999"}  # 40
+    HOT = {"name": "Горячий", "category": "стоматология", "phone": "+7 999"}  # 50
 
     def test_min_score_drops_a_cold_lead(self):
         assert processing.crawl_skip_reason(
@@ -180,7 +180,7 @@ class TestRecordLevelFilters:
     def test_score_filter_fills_lead_score_on_keep(self):
         rec = dict(self.HOT)
         assert processing.crawl_skip_reason(rec, min_lead_score=40) == ""
-        assert rec["lead_score"] == 40, "оценка заполнена сразу для живой таблицы"
+        assert rec["lead_score"] == 50, "оценка заполнена сразу для живой таблицы"
 
     def test_min_score_is_skipped_when_vk_check_adds_points(self):
         """Этап 2 с проверкой ВК добавит баллы — сбор не должен снимать."""

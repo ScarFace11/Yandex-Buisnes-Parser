@@ -666,9 +666,11 @@ function socialsHTML(row, rowKey, rowIsRev) {
 }
 
 // ── Lead score breakdown ─────────────────────────────────────
-// Зеркало yandex_maps_parser/lead_score.py: те же шесть бонусов, чтобы
-// подсказка называла именно те критерии, которые сработали у этой записи.
-const SCORE_MAX = 90;
+// Зеркало yandex_maps_parser/lead_score.py: те же семь сигналов и веса,
+// чтобы подсказка называла именно те критерии, что сработали у записи.
+// База складывается в 100; активность ВК — бонус, выше 100 шкала не растёт.
+const SCORE_MAX = 100;
+const SCORE_NEW_MONTHS = 12;
 const SCORE_AGGREGATORS = /taplink|linktree|linktr\.ee|becons\.ai|illions\.app/i;
 // Дорогие категории — копия EXPENSIVE_CATEGORY_KEYWORDS из constants.py.
 const SCORE_EXPENSIVE = [
@@ -699,17 +701,32 @@ function scoreRating(r) {
   return v;
 }
 
+function scoreHasSocials(r) {
+  return ['vk', 'telegram', 'instagram', 'whatsapp']
+    .some(p => !!String(r[p] || '').trim());
+}
+
+// «Добавлено» на Картах недавно. Пустая или битая дата баллов не даёт.
+function scoreNewBusiness(r) {
+  const raw = String(r.added_at || '').trim().slice(0, 10);
+  if (raw.length < 10) return false;
+  const t = Date.parse(raw);
+  return isFinite(t) && (Date.now() - t) <= SCORE_NEW_MONTHS * 30 * 86400000;
+}
+
+// ВК оцениваем только тогда, когда его проверяли: ключ задан в этой сессии
+// или активность уже лежит в записи (файл собран с ключом). Иначе «ВК не
+// активен» было бы выдумкой, а не сигналом.
+function scoreVkChecked(r) {
+  return !!String(r.vk_activity || '').trim()
+    || (typeof vkTokenReady !== 'undefined' && !!vkTokenReady);
+}
+
 // Каждое правило: сколько даёт, когда сработало, и что писать, когда нет.
 // `no`: null = строку вообще не показываем (альтернатива уже заняла место).
 const SCORE_RULES = [
   { pts: 30, hit: r => !scoreOwnWebsite(r),
     yes: () => 'Нет сайта', no: () => 'Сайт есть' },
-  { pts: 20, hit: r => String(r.vk_activity || '').toLowerCase() === 'active',
-    yes: () => 'Активный ВК',
-    no: r => String(r.vk_activity || '').toLowerCase() === 'semi' ? null : 'ВК не активен' },
-  { pts: 10, hit: r => String(r.vk_activity || '').toLowerCase() === 'semi',
-    yes: () => 'Полуактивный ВК',
-    no: r => String(r.vk_activity || '').toLowerCase() === 'active' ? null : 'Полуактивный ВК — нет' },
   { pts: 15, hit: r => scoreRating(r) >= 4.5,
     yes: r => `Рейтинг ${scoreRating(r)}`,
     no: r => scoreRating(r) > 0 ? `Рейтинг ${scoreRating(r)} < 4.5` : 'Рейтинг — нет данных' },
@@ -717,13 +734,25 @@ const SCORE_RULES = [
     yes: r => `Отзывов ${Math.round(scoreNum(r.reviews_count))}`,
     no: r => scoreNum(r.reviews_count) > 0
       ? `Отзывов ${Math.round(scoreNum(r.reviews_count))} < 50` : 'Отзывов — нет данных' },
-  { pts: 5, hit: r => !!String(r.phone || '').trim(),
+  { pts: 10, hit: r => !!String(r.phone || '').trim(),
     yes: () => 'Есть телефон', no: () => 'Телефон — не указан' },
-  { pts: 5, hit: r => SCORE_EXPENSIVE.some(w => String(r.category || '').toLowerCase().includes(w)),
+  { pts: 10, hit: r => SCORE_EXPENSIVE.some(w => String(r.category || '').toLowerCase().includes(w)),
     yes: () => 'Дорогая категория', no: () => 'Дорогая категория — нет' },
+  { pts: 10, hit: r => scoreHasSocials(r),
+    yes: () => 'Есть соцсети', no: () => 'Соцсетей нет' },
+  { pts: 10, hit: r => scoreNewBusiness(r),
+    yes: () => 'Недавно на Картах',
+    no: r => String(r.added_at || '').trim()
+      ? 'Добавлено больше года назад' : 'Дата добавления — нет данных' },
 ];
 
-// { sum, lines } — сумма сработавших правил и готовые строки подсказки.
+// ВК — бонус: добирает баллы до 100, но не растягивает шкалу.
+const SCORE_VK_RULES = [
+  { pts: 10, hit: a => a === 'active', yes: 'Активный ВК (бонус)' },
+  { pts: 5, hit: a => a === 'semi', yes: 'Полуактивный ВК (бонус)' },
+];
+
+// { sum, bonus, total, lines } — база, ВК-бонус, итог со шкалой 100 и строки.
 function scoreBreakdown(r) {
   const lines = [];
   let sum = 0;
@@ -736,17 +765,30 @@ function scoreBreakdown(r) {
       if (miss) lines.push(`❌ ${miss}`);
     }
   }
-  return { sum, lines };
+  let bonus = 0;
+  if (scoreVkChecked(r)) {
+    const activity = String(r.vk_activity || '').toLowerCase();
+    const vk = SCORE_VK_RULES.find(rule => rule.hit(activity));
+    if (vk) {
+      bonus += vk.pts;
+      lines.push(`✅ ${vk.yes} +${vk.pts}`);
+    } else {
+      lines.push('❌ ВК не активен');
+    }
+  } else {
+    lines.push('ℹ️ ВК не проверялся — ключ не задан, на оценку не влияет');
+  }
+  return { sum, bonus, total: Math.min(SCORE_MAX, sum + bonus), lines };
 }
 
 // Подсказка отвечает на вопрос «почему именно столько»: только сработавшие
 // критерии, остальные — как промахи, внизу сумма.
 function scoreWhyText(r, v) {
-  const { sum, lines } = scoreBreakdown(r);
+  const { total, lines } = scoreBreakdown(r);
   const head = lines.length ? lines.join('\n') : 'Ни один критерий не сработал';
-  const tail = sum === v
+  const tail = total === v
     ? `Итого: ${v} (макс. ${SCORE_MAX})`
-    : `Итого: ${v} (макс. ${SCORE_MAX}) — оценка сохранена при поиске,\nпо текущим данным критерии дают ${sum}`;
+    : `Итого: ${v} (макс. ${SCORE_MAX}) — оценка сохранена при поиске,\nпо текущим данным критерии дают ${total}`;
   return head + '\n' + '─'.repeat(20) + '\n' + tail;
 }
 
