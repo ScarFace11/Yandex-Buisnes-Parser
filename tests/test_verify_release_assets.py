@@ -386,6 +386,11 @@ class TestVerifyAsset:
 class TestVerifyRelease:
     """Прогон целиком: сеть подменена, файлы лежат на диске."""
 
+    @pytest.fixture(autouse=True)
+    def _no_platform_hdiutil(self, monkeypatch):
+        # Синтетический dmg проверяется структурно — см. TestDmgChecks.
+        monkeypatch.setattr(vra, "dmg_hdiutil", lambda path: [])
+
     def _patch(self, monkeypatch, assets):
         def fake_fetch(repo, tag="", token="", timeout=30):
             return {"tag_name": f"v{VERSION}", "draft": False,
